@@ -113,6 +113,10 @@ Skill order:
 - `production-code` applies before edits to tracked files, untracked files, scratch implementation files, generated source, and new worktrees; do not treat it as only a final-completion gate.
 - PRs should stay below 1,300 changed code lines. `repo-large-implementation` and `delivery-governance` must split, shrink, or consolidate scope before coding when a planned PR is likely to exceed that budget.
 - Run the bundled `production-code` quality gate (`~/.claude/skills/production-code/scripts/code_quality_gate.py`) before finalizing so duplicate code, reimplemented helpers, bloat, fake-green suppressions, temp artifacts, and cleanup failures are resolved before handoff.
+- For non-trivial diffs, run `code-review` after the production-code gate and
+  before commit/push. Review against the correct fixed point, keep Standards
+  findings separate from Spec findings, disposition every finding, and rerun
+  affected proof plus the production-code gate after any fix.
 - Do not invoke `execution-planning` again for an execution-only pass when a governing artifact already exists; execute against the artifact and keep its checklist current.
 - Do not bypass `repo-production-workflow` by manually jumping from Repo Context Forge to edits. The bundle exists to keep preflight, implementation discipline, affected-surface proof, and final verification in force.
 
@@ -122,7 +126,19 @@ Module shape is a first-class production contract:
 - Prefer deepening an existing module over creating a new public module.
 - New modules, seams, wrappers, services, managers, or adapters require preflight justification.
 - Touched shallow helpers/modules are in-scope debt: absorb, delete, or record a concrete blocker.
-- Tests should cross the public interface; if they cannot, use `improve-codebase-architecture` before editing.
+- Use `codebase-design` for Module, Interface, Seam, Adapter, and deep-module
+  vocabulary.
+- Tests should cross the public Interface; if they cannot, use
+  `codebase-design` for a targeted Interface/Seam decision or
+  `improve-codebase-architecture` for broader deepening work before editing.
+
+Domain and skill-authoring discipline:
+
+- Use `domain-modeling` when updating `CONTEXT.md`, ADR-style records, or
+  durable project language.
+- Use `writing-great-skills` when writing, editing, or reviewing skills.
+- `grilling` is the shared one-question-at-a-time interview primitive for
+  skills that need to stress-test plans or resolve decision dependencies.
 
 Delivery and review discipline:
 
@@ -149,6 +165,10 @@ Complete only when: Greptile is 5/5 when present; all legitimate comments are fi
 For any coding, debugging, review, refactor, explanation, planning, or repository exploration task inside a git repository, run Repo Context Forge before choosing files, editing code, or running GitNexus analysis.
 
 Exception: documentation-only changes do not require Repo Context Forge, even when they update behavior, deploy, runtime, operator, or governance docs. For docs-only work, use checkout/branch verification, `fff` MCP or direct file inspection, minimal edits, a cleanup loop, and lightweight docs/diff checks. If the work also changes code, config, runtime wiring, generated source, or executable behavior, Repo Context Forge is required before choosing files or editing.
+
+Governance docs that change agent behavior, such as `CLAUDE.md`,
+`AGENTS.md`, or `docs/agents/`, should also run `code-review` before handoff;
+trivial docs edits can stay on the lightweight path.
 
 Use the installed bootstrap wrapper via the `Bash` tool:
 

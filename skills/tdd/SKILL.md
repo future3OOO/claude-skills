@@ -9,17 +9,29 @@ description: Test-driven development with red-green-refactor loop. Use when user
 
 Production behavior changes require one failing behavior test before production code changes.
 
-The test must fail for the expected product/code reason. If it passes immediately, errors because of invalid setup, or only proves implementation shape, it is not a valid RED gate.
+The test must fail for the expected product/code reason. If it passes immediately, errors because of invalid setup, or only proves implementation shape, it is not a valid RED gate. A tautological test — one that asserts a mock you configured or restates the implementation — can never go RED for a product reason; rewrite it at a real Seam.
 
 ## Philosophy
 
-**Core principle**: Tests should verify behavior through public interfaces, not implementation details. Code can change entirely; tests shouldn't.
+**Core principle**: Tests should verify behavior through the public Interface,
+not Implementation details. Code can change entirely; tests shouldn't. Use the
+Module / Interface / Seam vocabulary from `/codebase-design`.
 
 **Good tests** are integration-style: they exercise real code paths through public APIs. They describe _what_ the system does, not _how_ it does it. A good test reads like a specification - "user can checkout with valid cart" tells you exactly what capability exists. These tests survive refactors because they don't care about internal structure.
 
-**Bad tests** are coupled to implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing implementation, not behavior.
+**Bad tests** are coupled to Implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the Interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing Implementation, not behavior.
 
-See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
+See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking
+guidelines.
+
+## Seams — where tests go
+
+A **Seam** is the public boundary you test at: the Interface where behavior is
+observed without reaching inside. Tests live at Seams, not internals.
+
+Test only at agreed Seams. Before writing a test, name the Seam under test and
+confirm it when the request leaves room for interpretation. Ask: "What is the
+public Interface, and which Seam should this test cross?"
 
 ## Anti-Pattern: Horizontal Slices
 
@@ -50,31 +62,36 @@ RIGHT (vertical):
 
 ### 1. Planning
 
-When exploring the codebase, use the project's domain glossary so that test names and interface vocabulary match the project's language, and respect ADRs in the area you're touching.
+When exploring the codebase, use the project's domain glossary so that test names and Interface vocabulary match the project's language, and respect ADRs in the area you're touching.
 
 Before production edits:
 
 - [ ] Inspect existing test style and test commands
-- [ ] Confirm with user what interface changes are needed
+- [ ] Confirm with user what Interface changes are needed
 - [ ] Confirm with user which behaviors to test (prioritize)
-- [ ] Identify the public interface or observable workflow being changed
-- [ ] Identify whether the current module/interface is testable
-- [ ] Identify opportunities for [deep modules](deep-modules.md) (Ousterhout-style small stable interface, deep implementation)
-- [ ] Design interfaces for [testability](interface-design.md)
+- [ ] Identify the public Interface or observable workflow being changed
+- [ ] Identify whether the current Module/Interface is testable
+- [ ] Identify opportunities for deep Modules using `/codebase-design`
+- [ ] Design Interfaces for testability using `/codebase-design`
 - [ ] List the behaviors to test (not implementation steps)
 - [ ] Name the first behavior slice to prove
 - [ ] For non-trivial work, list remaining behavior slices
 - [ ] Get user approval on the plan
 
-Ask: "What should the public interface look like? Which behaviors are most important to test?"
+Ask: "What should the public Interface look like? Which behaviors are most important to test?"
 
 **You can't test everything.** Confirm with the user exactly which behaviors matter most. Focus testing effort on critical paths and complex logic, not every possible edge case.
 
 ### Architecture/Testability Gate
 
-If a behavior cannot be tested cleanly through a public interface, requires mocking internal collaborators, or coordinates several shallow modules, do not force a bad test.
+If a behavior cannot be tested cleanly through a public Interface, requires mocking internal collaborators, or coordinates several shallow Modules, do not force a bad test.
 
-Stop and use `improve-codebase-architecture` to inspect the module, interface, seam, and deepening opportunity. TDD should prove behavior through a good interface; it should not normalize shallow modules.
+Stop and use `/codebase-design` to inspect the Module, Interface, Seam, and
+deepening opportunity. Use `/improve-codebase-architecture` when the decision
+requires a repo scan or multiple candidate refactors. TDD should prove behavior
+through a good Interface; it should not normalize shallow Modules.
+
+When `/diagnose` ran first, consume its surface map. The failing test should cross the mapped Interface at a real Seam; do not regenerate the diagnose map here. If no real Seam exists, escalate to `/improve-codebase-architecture` instead of mocking the Module under test.
 
 ### 2. Tracer Bullet
 
@@ -105,11 +122,11 @@ Rules:
 
 ### 4. Refactor
 
-After all tests pass, look for [refactor candidates](refactoring.md):
+After all tests pass, look for refactor candidates through `/codebase-design`:
 
 - [ ] Extract duplication
 - [ ] Deepen modules (move complexity behind simple interfaces)
-- [ ] Apply SOLID principles where natural
+- [ ] Apply the deletion test to shallow pass-through Modules
 - [ ] Consider what new code reveals about existing code
 - [ ] Run tests after each refactor step
 
@@ -119,7 +136,7 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 
 ```
 [ ] Test describes behavior, not implementation
-[ ] Test uses public interface only
+[ ] Test uses public Interface only
 [ ] Test would survive internal refactor
 [ ] Code is minimal for this test
 [ ] No speculative features added
