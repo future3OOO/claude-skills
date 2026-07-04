@@ -39,11 +39,25 @@ It is an orchestration skill; it does not replace the referenced skills.
    - Run the bundled production-code gate before finalizing the implementation.
    - Re-check no-change surfaces named in preflight.
    - Call the `gitnexus` MCP server's detect-changes tool after edits and before committing.
-7. After commit/push/PR-update, run the PR Reviewer Completion Gate in `~/.claude/CLAUDE.md` before declaring complete or moving to another slice/PRD.
+7. For non-trivial diffs, run the [code-review](../code-review/SKILL.md) skill
+   after the production-code gate and before commit/push.
+   - Review against the correct fixed point and governing PRD, issue, or spec.
+   - Keep Standards findings separate from Spec findings.
+   - Disposition every finding as fixed, rejected-with-evidence, or an accepted
+     follow-up with a tracked issue.
+   - After any fix, rerun the affected proof and the production-code gate.
+8. For non-trivial or risky diffs, use a fresh read-only review Agent before
+   commit when a second opinion would materially reduce risk.
+   - Provide the live branch/head, base ref, governing issue/PRD, TDD proof,
+     `code-review` findings and dispositions, and named no-change surfaces.
+   - Validate the Agent's advice against code, tests, reviewers, GitNexus, and
+     production-code gates before changing or committing.
+9. After commit/push/PR-update, run the PR Reviewer Completion Gate in `~/.claude/CLAUDE.md` before declaring complete or moving to another slice/PRD.
    - The task is not complete until that gate passes for the current PR head.
-8. Final response must include:
+10. Final response must include:
    - summary of the behavior changed
    - verification commands and outcomes
+   - `code-review` findings and dispositions when it ran
    - reviewer-loop status, blockers, unverified surfaces, or follow-ups
 
 ## Scope Rules
@@ -59,3 +73,6 @@ It is an orchestration skill; it does not replace the referenced skills.
 - Do not use GitHub review comments as a substitute for inspecting the packet target surface.
 - Do not treat local branch-only tests as sufficient proof for transaction-sensitive or contract-sensitive changes.
 - Do not add a wrapper, second implementation path, or broad configurability unless preflight proves it is the shortest correct path.
+- Do not report PR/review work complete merely because changes were committed,
+  pushed, or a PR was updated. Completion requires the reviewer-loop gate on
+  the latest head.
