@@ -1,6 +1,7 @@
 ---
 name: diagnosing-bugs
-description: Compatibility alias for diagnose. Use when upstream docs or users invoke diagnosing-bugs; the canonical local diagnosis workflow is diagnose.
+description: Compatibility alias for diagnose.
+disable-model-invocation: true
 ---
 
 # Diagnosing Bugs

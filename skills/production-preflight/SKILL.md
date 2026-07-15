@@ -1,6 +1,6 @@
 ---
 name: production-preflight
-description: Produce the required before-edit proof for production code changes in this repo. Use before writing code on implementation, refactor, bug-fix, or review-comment turns that need explicit preflight, especially when the change must prove reuse path, chosen approach, rejected alternatives, touchpoints, verify vs update surfaces, modularity plan, risk checks, and honest openQuestions.
+description: Produce the required before-edit proof for production code changes — reuse path, chosen approach, touchpoints, verify vs update surfaces, module shape, risks, and honest openQuestions. Use before writing code on implementation, refactor, bug-fix, or review-comment passes.
 ---
 
 # Production Preflight
@@ -77,6 +77,8 @@ Before production edits, name the module shape:
 - `rejectedShallowPath`: shallow helper/wrapper/module split deliberately avoided
 
 Prefer deepening an existing module. Apply Ousterhout's deep-module test: does this hide meaningful complexity behind a small, stable public interface, or create a shallow helper/wrapper split? A new module must earn its interface by hiding complexity, improving locality, or creating a real seam used by more than one caller, adapter, or test surface.
+
+Touched shallow helpers/modules are in-scope debt: absorb, delete, or record a concrete blocker in the preflight.
 
 Block if the public test surface cannot be named, or if a new module is proposed without a concrete reason existing modules cannot absorb the behavior.
 

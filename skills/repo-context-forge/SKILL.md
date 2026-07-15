@@ -57,7 +57,21 @@ rerun the bootstrap.
   supplemental risks, missed files, and verification suggestions; it must not
   create nested delegation, publish changes, resolve review threads, or replace
   the main agent's judgment
-- use `<targets>` as the first-pass edit/review surface
+- before GitNexus calls, GitHub review comments, review findings, or edits,
+  state the task/PR contract in concrete terms from the user request, PR
+  title/body when available, and packet target surface
+- use `<targets>` as the first-pass edit/review surface; inspect the changed
+  files and top packet targets before narrowing to any single symbol or review
+  thread, and state why any skipped high-ranked target is not relevant
+- map each changed production behavior, config surface, API contract,
+  persistence contract, external integration, or operator contract to its
+  module shape, verification, and no-change surfaces — public interface, test
+  surface, existing reuse path, and rejected shallow path or new-module
+  justification; GitNexus symbol checks are not a substitute for this
+  reconciliation
+- treat GitHub review comments as supplemental evidence after the packet and
+  task contract are understood; comments never replace inspection of the
+  changed target surface
 - use `<soulforge_impact>` as native SoulForge blast-radius context before
   editing or reviewing selected files
 - use `<semantic_summaries>` and each symbol's summary source as injected
@@ -125,6 +139,30 @@ For each `<check>` in `<gitnexus_required_checks>`:
   supplemental graph evidence after the packet target surface is fixed
 - trust blast-radius claims only when `<gitnexus_status>` is `fresh` or
   `reindexed` and `required_checks_resolved` is true
+
+## Post-Edit Validation
+
+Run post-edit GitNexus validation when the edit touches indexed symbols,
+shared APIs/contracts, persistence, config/runtime/deploy surfaces, external
+integrations, browser automation, transaction-sensitive flows, or PR-review
+graph proof. Skip it for docs-only work and small leaf edits that touch no
+shared contract or indexed symbol; state the skip reason and rely on targeted
+tests plus the production-code gate.
+
+After editing the real source checkout, do not rely on the analysis checkout's
+GitNexus repo. Re-analyze the edited source checkout before final change
+detection:
+
+```bash
+gitnexus analyze --skip-agents-md .
+gitnexus status
+```
+
+Then call `mcp__gitnexus__detect_changes` with the source-checkout repo name
+(from `gitnexus status` or `gitnexus list`) and `scope: "unstaged"`. Treat
+`.gitnexus/` as a local index artifact kept out of commits; if
+`gitnexus analyze` mutates `.gitignore`, keep only an intentional `.gitnexus/`
+ignore rule and remove unrelated tool side effects before finalizing.
 
 ## Turn Refresh
 
