@@ -20,19 +20,23 @@ It is an orchestration skill; it does not replace the referenced skills.
    - Name the behavior being changed.
    - Name skipped high-ranked targets and why they are out of scope.
    - Estimate whether the implementation can stay near the review-budget target (~500 net lines); if not, escalate to the repo-large-implementation skill before editing.
+   - For bug, regression, or flaky-failure fixes, invoke the diagnose skill before preflight: no fix until the root cause is reproduced and stated as a testable hypothesis.
 3. Run the packet-listed GitNexus required checks via the `gitnexus` MCP server (Claude Code exposes these as `mcp__gitnexus__<tool>` tools).
    - Use the packet repo value.
    - Do not let broader GitNexus output shrink the packet surface.
    - Run impact analysis before editing indexed symbols.
-4. Delegate a read-only scope check to the Codex advisor before preflight. The advisor is a GPT-5.6 (Codex) delegate served through the local CLIProxyAPI proxy, not the codex plugin.
+4. Delegate a read-only scope check to the Codex advisor before preflight. The advisor is the Codex delegate served through the local CLIProxyAPI proxy, not the codex plugin. The claudex/claudehx alias environment in `~/.bashrc` owns the advisor model id (`CLAUDE_CODE_SUBAGENT_MODEL`) and proxy endpoint; do not pin model ids in this skill.
    - In sessions where `CLAUDE_CODE_SUBAGENT_MODEL` routes subagents to the Codex model (claudex/claudehx), spawn the advisor via the Agent tool and record its agent id for the challenge round.
-   - In sessions without the override, run a headless proxy consult via Bash (`claude -p` with the claudex proxy environment and `--model gpt-5.6-sol`, `--output-format json`) and record the returned session id.
+   - In sessions without the override, run a headless proxy consult via Bash (`claude -p --output-format json` under the claudex alias environment, passing that environment's `CLAUDE_CODE_SUBAGENT_MODEL` as `--model`) and record the returned session id.
+   - If a consult times out, check whether the prior run is still alive and cancel it before retrying; blind retries duplicate the consult. Run long consults in the background.
+   - If the advisor is unavailable (proxy down, auth expired, stale model id), do not block on an advisory input: proceed under the remaining gates and state the skipped consult in the final response.
    - Forward the task contract, packet targets, and GitNexus impact summary; ask specifically for missed seams, callers, contracts, and no-change surfaces the scope may have skipped. The advisor must not edit.
    - Advisor findings are advisory: validate them against the packet and GitNexus before adopting; feed confirmed missed seams into preflight.
 5. Run the [production-preflight](../production-preflight/SKILL.md) skill before the first tracked edit.
    - Anchor `affectedSurface`, `proofPlan`, `touchpoints`, `verify`, and `update` to the Repo Context Forge packet, GitNexus checks, and confirmed Codex scope findings.
    - If preflight has blocking `openQuestions`, stop before editing.
 6. Invoke the [production-code](../production-code/SKILL.md) skill before writing any repository file content, then implement under it.
+   - For behavior changes, follow the tdd skill under production-code: write the failing test through the public Interface first, against the real seam. This produces the TDD proof step 9 forwards.
    - Choose the smallest production-safe implementation path before editing.
    - This includes tracked files, untracked files, scratch implementation files, generated source, and new worktrees.
    - Make the smallest direct change.
@@ -51,8 +55,10 @@ It is an orchestration skill; it does not replace the referenced skills.
    - Disposition every finding as fixed, rejected-with-evidence, or an accepted
      follow-up with a tracked issue.
    - After any fix, rerun the affected proof and the production-code gate.
-9. Run the Codex challenge round before any commit, push, PR open, or PR update.
+9. For non-trivial diffs (same threshold as step 8), run the Codex challenge round before any commit, push, PR open, or PR update.
+   - Fix-only commits whose every change addresses a finding already confirmed in this pass's challenge or code-review round do not need a new round; state the skipped round in the final response.
    - Continue the SAME advisor context from step 4 so it retains the original scope: `SendMessage` to the recorded agent id (Agent-tool path), or `claude -p --resume <session-id>` with the proxy environment (headless path).
+   - If the recorded advisor context is unreachable (dead agent id, expired session, compaction), run a fresh consult re-forwarding the step 4 payload plus the current diff. If the advisor is unavailable entirely, proceed as in step 4 and state the skipped round.
    - Provide the live branch/head, base ref, governing issue/PRD, the diff, TDD proof, and `code-review` findings and dispositions; ask whether the change is correct, complete against the scoped seams, the smallest production change, and free of fake tests and imaginary-risk engineering.
    - The advisor is advisory: validate its advice against code, tests, reviewers, GitNexus, and production-code gates before changing or committing. Fix confirmed findings locally before pushing to cut reviewer-fleet rounds.
 10. After commit/push/PR-update, run the PR Reviewer Completion Gate in `~/.claude/CLAUDE.md` before declaring complete or moving to another slice/PRD.
