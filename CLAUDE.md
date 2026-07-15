@@ -101,7 +101,7 @@ If the parent session needs an independent second opinion, spawn a fresh agent r
 
 ## 7. Repo Production Skill Order
 
-Use the `repo-production-workflow` skill as the default first skill for production repository work. It owns the execution sequence (Repo Context Forge → packet-scoped GitNexus → Codex scope check → `production-preflight` → `production-code` through final verification → `code-review` → Codex challenge round before commit/push/PR); this section owns only when skills fire.
+Use the `repo-production-workflow` skill as the default first skill for production repository work. It owns the execution sequence (Repo Context Forge → packet-scoped GitNexus → Codex scope check → `production-preflight` → `production-code` through final verification → `code-review` → Codex challenge round for non-trivial diffs before commit/push/PR); this section owns only when skills fire.
 
 Invocation policy:
 

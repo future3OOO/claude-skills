@@ -56,7 +56,7 @@ It is an orchestration skill; it does not replace the referenced skills.
      follow-up with a tracked issue.
    - After any fix, rerun the affected proof and the production-code gate.
 9. For non-trivial diffs (same threshold as step 8), run the Codex challenge round before any commit, push, PR open, or PR update.
-   - Fix-only commits whose every change addresses a finding already confirmed in this pass's challenge or code-review round do not need a new round; state the skipped round in the final response.
+   - Fix-only commits whose every change addresses a finding already confirmed in this pass's challenge round, code-review, or the PR reviewer loop do not need a new round; state the skipped round in the final response.
    - Continue the SAME advisor context from step 4 so it retains the original scope: `SendMessage` to the recorded agent id (Agent-tool path), or `claude -p --resume <session-id>` with the proxy environment (headless path).
    - If the recorded advisor context is unreachable (dead agent id, expired session, compaction), run a fresh consult re-forwarding the step 4 payload plus the current diff. If the advisor is unavailable entirely, proceed as in step 4 and state the skipped round.
    - Provide the live branch/head, base ref, governing issue/PRD, the diff, TDD proof, and `code-review` findings and dispositions; ask whether the change is correct, complete against the scoped seams, the smallest production change, and free of fake tests and imaginary-risk engineering.
@@ -67,6 +67,7 @@ It is an orchestration skill; it does not replace the referenced skills.
    - summary of the behavior changed
    - verification commands and outcomes
    - `code-review` findings and dispositions when it ran
+   - Codex advisor status: scope-check and challenge-round findings adopted or rejected, or the skipped round with its reason
    - reviewer-loop status, blockers, unverified surfaces, or follow-ups
 
 ## Scope Rules
