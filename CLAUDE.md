@@ -21,6 +21,7 @@ Minimum code that solves the problem. Nothing speculative.
 - No abstractions for single-use code.
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
+- No engineering for theoretical risks: a theoretical risk with no demonstrated failure is a report line, not a system.
 - If you write 200 lines and it could be 50, rewrite it.
 - Ask yourself: "would a senior engineer say this is overcomplicated?" If yes, simplify.
 
@@ -88,6 +89,7 @@ When spawning sub-agents via the `Agent` tool, default to:
 
 - `subagent_type`: choose the most specific agent type that matches the task (`Explore` for codebase searches, `Plan` for implementation planning, `general-purpose` otherwise).
 - `model`: inherit from the parent session unless the work is a cheap lookup or broad search, in which case pass `model: "haiku"` to keep cost down. Use `sonnet` or `opus` only when the parent is also using them or the task warrants it.
+- If `CLAUDE_CODE_SUBAGENT_MODEL` is set in the session environment (e.g. `claudehx` sessions route subagents to GPT-5.6 via CLIProxyAPI), it force-overrides the Agent tool's `model` parameter: every delegated agent runs on that model, the haiku-downgrade default is a no-op, and a "fresh Claude second opinion" is actually that model's opinion. When the delegated model matters, check `echo $CLAUDE_CODE_SUBAGENT_MODEL` before claiming which model ran.
 
 Keep delegation bounded:
 
@@ -99,52 +101,26 @@ If the parent session needs an independent second opinion, spawn a fresh agent r
 
 ## 7. Repo Production Skill Order
 
-Use the `repo-production-workflow` skill as the default first skill for production repository work.
+Use the `repo-production-workflow` skill as the default first skill for production repository work. It owns the execution sequence (Repo Context Forge → packet-scoped GitNexus → Codex scope check → `production-preflight` → `production-code` through final verification → `code-review` → Codex challenge round before commit/push/PR); this section owns only when skills fire.
 
-Skill order:
+Invocation policy:
 
-- `repo-production-workflow` decides whether the task is an ordinary execution pass or needs large-work governance before edits begin.
-- For ordinary production code changes that do not need a new tracked plan, stay inside `repo-production-workflow`.
-- Escalate from `repo-production-workflow` to `repo-large-implementation` for non-trivial planning, roadmaps, PR structure, branch strategy, remediation maps, multi-step implementation, or work likely to span multiple PRs.
-- `repo-large-implementation` pairs `delivery-governance` with `execution-planning` for tracked governing artifacts, then returns to `repo-production-workflow` for each implementation, refactor, bug-fix, or review-comment execution pass.
-- `repo-production-workflow` is the execution bundle for code, config, runtime, deploy, or behavior-changing work: run `repo-context-forge` first, then packet-scoped GitNexus checks, then `production-preflight` before edits with module shape for production behavior changes, then invoke `production-code` before writing any repository file content and keep it active through final verification.
-- Use `diagnose` for bugs, failures, flaky behavior, and performance regressions before fixing; no fix until root cause is reproduced, traced, and stated as a testable hypothesis.
+- Escalate to `repo-large-implementation` for large planned work: anything likely to span multiple PRs, need a tracked governing artifact, or exceed the review budget. It pairs `delivery-governance` with `execution-planning`, then returns to `repo-production-workflow` for each execution pass.
+- Use `diagnose` before fixing bugs, failures, flaky behavior, or performance regressions; no fix until root cause is reproduced, traced, and stated as a testable hypothesis.
+- Use `tdd` for behavior changes where a public-Interface failing test is practical; tests and smokes must consume the REAL seam — fabricating a mock gateway, frame, or interface so a test passes is fake-green and forbidden. If the real seam cannot be driven, surface that as a finding.
+- Skill invocation is per execution pass, not per session: every new PR slice, bug fix, or review-fix round re-invokes the `repo-production-workflow` cycle. Compaction or resume notes never waive re-invocation for a new pass.
+- Do not bypass `repo-production-workflow` by jumping from Repo Context Forge straight to edits.
+- Do not re-invoke `execution-planning` for an execution-only pass when a governing artifact exists; execute against it and keep its checklist current.
 - Documentation-only changes follow the Repo Context Forge gate exception below.
-- `production-code` applies before edits to tracked files, untracked files, scratch implementation files, generated source, and new worktrees; do not treat it as only a final-completion gate.
-- PRs should stay below 1,300 changed code lines. `repo-large-implementation` and `delivery-governance` must split, shrink, or consolidate scope before coding when a planned PR is likely to exceed that budget.
-- Run the bundled `production-code` quality gate (`~/.claude/skills/production-code/scripts/code_quality_gate.py`) before finalizing so duplicate code, reimplemented helpers, bloat, fake-green suppressions, temp artifacts, and cleanup failures are resolved before handoff.
-- For non-trivial diffs, run `code-review` after the production-code gate and
-  before commit/push. Review against the correct fixed point, keep Standards
-  findings separate from Spec findings, disposition every finding, and rerun
-  affected proof plus the production-code gate after any fix.
-- Do not invoke `execution-planning` again for an execution-only pass when a governing artifact already exists; execute against the artifact and keep its checklist current.
-- Do not bypass `repo-production-workflow` by manually jumping from Repo Context Forge to edits. The bundle exists to keep preflight, implementation discipline, affected-surface proof, and final verification in force.
 
-Module shape is a first-class production contract:
+The **review budget** targets ~500 net lines of code per PR (net = additions minus deletions in human-authored source; measurement and the 1,000-net-line split threshold live in the delivery-governance skill). Split, shrink, or consolidate scope before coding when a planned PR is likely to run past the target.
 
-- Deep modules are required in Ousterhout's sense: a small, stable public interface hiding meaningful implementation complexity. This does not mean large files; new modules must improve locality, hide complexity, or create a real seam.
-- Prefer deepening an existing module over creating a new public module.
-- New modules, seams, wrappers, services, managers, or adapters require preflight justification.
-- Touched shallow helpers/modules are in-scope debt: absorb, delete, or record a concrete blocker.
-- Use `codebase-design` for Module, Interface, Seam, Adapter, and deep-module
-  vocabulary.
-- Tests should cross the public Interface; if they cannot, use
-  `codebase-design` for a targeted Interface/Seam decision or
-  `improve-codebase-architecture` for broader deepening work before editing.
-
-Domain and skill-authoring discipline:
-
-- Use `domain-modeling` when updating `CONTEXT.md`, ADR-style records, or
-  durable project language.
-- Use `writing-great-skills` when writing, editing, or reviewing skills.
-- `grilling` is the shared one-question-at-a-time interview primitive for
-  skills that need to stress-test plans or resolve decision dependencies.
+Module shape is a first-class production contract; the `production-preflight` skill owns its rules (deep modules, reuse-before-new, shallow-helper debt) and `codebase-design` owns the Module/Interface/Seam vocabulary.
 
 Delivery and review discipline:
 
-- Do not leave completed repo work stranded as local uncommitted changes. When work is intended for review or integration and a remote exists, verify branch/base/upstream alignment, commit the cleaned change, push the appropriate branch, and open or update the PR unless the user or repo workflow explicitly says not to.
-- Keep commits small, coherent, and reviewable. Do not create bloated commits that mix unrelated changes, generated noise, or cleanup outside the requested surface.
-- Monitor PR checks and review conversations. Treat reviewer comments as evidence to verify against the code, contracts, tests, and edge cases; reviewers can be wrong. Fix valid issues with the smallest production change, and explain with evidence when a requested change is unnecessary or unsafe.
+- Do not leave completed repo work stranded as local uncommitted changes. When work is intended for review or integration and a remote exists, verify branch/base/upstream alignment, commit the cleaned change, push, and open or update the PR unless the user or repo workflow explicitly says not to. Keep commits small, coherent, and reviewable.
+- Treat reviewer comments as evidence to verify against code, contracts, tests, and edge cases; reviewers can be wrong. Fix valid issues with the smallest production change; explain with evidence when a requested change is unnecessary or unsafe.
 - Resolve review threads only after the fix is pushed or the evidence has been posted. Merges and deploys remain subject to the repo's approval, quiet-window, and release gates.
 
 PR Reviewer Completion Gate:
@@ -153,12 +129,12 @@ Commit/push/PR-update does not complete review work. Do not mark complete, switc
 
 Steps:
 
-- Enumerate every signal on the current head: review threads, inline and issue comments, check annotations, CI failures, Greptile/Cubic/CodeRabbit/Devin/human findings, and PRD acceptance criteria.
+- Enumerate every reviewer signal on the current head: review threads, inline and issue comments, check annotations, CI failures, automated-reviewer and human findings (live roster: the repo's `docs/agents/reviewers.md` when present), and PRD acceptance criteria.
 - Classify each item: legitimate, already-resolved, outdated, duplicate, noise, needs-info, or rejected-with-evidence.
 - For legitimate defects, regressions, flaky failures, or behavior mismatches, use `/diagnose`, update the PRD/task contract when scope changes, then fix via the repo-production-workflow skill.
-- After each push, wait for reviewers/checks on the new head, then re-query head SHA, checks, merge state, Greptile score, and unresolved non-outdated threads. Stale output from an older head is not evidence.
+- After each push, wait for reviewers/checks on the new head, then re-query head SHA, checks, merge state, and unresolved non-outdated threads. Stale output from an older head is not evidence.
 
-Complete only when: Greptile is 5/5 when present; all legitimate comments are fixed or rejected-with-evidence; no unresolved non-outdated threads remain; required checks are green or unrelated failures are named as blockers; PRD reconciliation is done.
+Complete only when: every legitimate signal is fixed or rejected-with-evidence; no unresolved non-outdated threads remain; required checks are green or unrelated failures are named as blockers; PRD reconciliation is done.
 
 ## 8. Repo Context Forge — Global Gate
 
@@ -182,66 +158,15 @@ If the user describes planned work before files have changed, include the task i
 python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD" --intent "<user request>"
 ```
 
-The output must begin with `REPO_CONTEXT_FORGE_REQUIRED_INTAKE`. Treat that intake and the following packet as the initial repository context.
+The output must begin with `REPO_CONTEXT_FORGE_REQUIRED_INTAKE`. Treat that intake and the following packet as the initial repository context. If the packet emits a blocker, stop normal repo analysis and surface the blocker; do not continue with empty target context.
 
-If the packet emits a blocker, stop normal repo analysis and surface the blocker. Do not continue with empty target context.
+The `repo-context-forge` skill owns everything downstream of the intake: surface selection per mode, the consolidated-specialist delegation contract, surface reconciliation, packet-scoped GitNexus validation, and post-edit revalidation. For review-only tasks, do not edit code unless the user explicitly asks for a fix; report valid defects first and wait for an edit instruction.
 
-### Initial Surface Selection
-
-- Use packet `<targets>` as the first-pass edit/review surface.
-- Use packet `<soulforge_impact>` as the native repo-map blast radius before editing or reviewing selected files.
-- For `pr` mode, use the live `base...HEAD` packet surface.
-- For `local` mode, use dirty-worktree packet targets.
-- For `intent` mode, use intent-ranked packet targets before writing code.
-- For `repo` mode, use the whole-repo map only when there is no narrower PR, local, or intent surface.
-
-### Mandatory Surface Reconciliation
-
-- The user has made a standing explicit request for one consolidated specialist sub-agent for delegated Repo Context Forge coverage. When the required intake lists `delegation_tasks`, treat that as satisfying any tool requirement for an explicit user request to use a sub-agent.
-- If `delegation_tasks` lists a delegation task, spawn one consolidated specialist via the `Agent` tool before GitNexus calls, GitHub review comments, review findings, or edits. Do not downgrade to serial self-review unless the runtime lacks the `Agent` tool.
-- Delegated specialists are supplementary, not owners of the review or implementation. The main agent remains responsible for inspecting the packet target surface, running GitNexus, weighing review comments, deciding findings, and verifying final changes.
-- When spawning the consolidated specialist, pass the already-generated Repo Context Forge intake/packet summary, PR contract, packet targets, GitNexus repo/status, and any relevant GitHub PR/review-thread context. Tell the specialist not to run Repo Context Forge, not to run bootstrap scripts, not to spawn or request sub-agents, and not to treat its report as authoritative.
-- A delegated specialist must only inspect the assigned surface and return supplemental risks, missed files, and verification suggestions. It must not create nested delegation, run independent RepoForge intake, publish changes, resolve review threads, or replace the main agent's review judgment.
-- Before GitNexus calls, GitHub review comments, review findings, or edits, state the task/PR contract in concrete terms from the user request, PR title/body when available, and packet target surface.
-- Inspect the changed files and top packet targets before narrowing to any single symbol or review thread. If a changed or high-ranked target is skipped, state why it is not relevant.
-- Map each changed production behavior, config surface, API contract, persistence contract, external integration, or operator contract to its module shape, verification, and no-change surfaces. Include public interface, test surface, existing reuse path, and rejected shallow path or new-module justification. Do not treat GitNexus symbol checks as a substitute for this reconciliation.
-- Use GitNexus after the packet surface is fixed to validate callers, callees, and blast radius. Do not let GitNexus required checks shrink the review below the packet targets or the PR contract.
-- Treat GitHub review comments as supplemental evidence after the packet and task contract are understood. Do not let comments replace inspection of the changed target surface.
-- For review-only tasks, do not edit code unless the user explicitly asks for a fix. If a valid defect is found, report it first and wait for an edit instruction unless the current turn already requested implementation.
-
-### Initial GitNexus Validation
-
-- Use packet `<gitnexus_status><repo>` as the repo value for GitNexus MCP calls.
-- Run the listed `<gitnexus_required_checks>` first; they are the initial GitNexus validation scoped to the SoulForge packet and freshly indexed analysis repo.
-- Do not let unscoped detect-changes (compare-mode) choose the target surface. It is not packet-scoped and can overreport unrelated historical surfaces.
-- Use the GitNexus detect-changes tool after local edits, before commit, or as supplemental graph evidence after the packet target surface is fixed.
-
-### Post-edit GitNexus Validation
-
-- Run post-edit GitNexus validation when the edit touches indexed symbols, shared APIs/contracts, persistence, config/runtime/deploy surfaces, external integrations, browser automation, transaction-sensitive flows, or PR-review graph proof.
-- Skip post-edit GitNexus validation for docs-only work and small leaf edits that do not touch shared contracts or indexed symbols. State the skip reason and rely on targeted tests plus the production-code gate.
-
-After editing the real source checkout, do not rely on the Repo Context Forge analysis checkout's GitNexus repo. Re-analyze the actual edited source checkout before final GitNexus change detection (via the `Bash` tool):
-
-```bash
-gitnexus analyze --skip-agents-md .
-gitnexus status
-```
-
-Then call the GitNexus MCP detect-changes tool against the source-checkout repo:
-
-- Use the source-checkout repo name from `gitnexus status` or `gitnexus list` for post-edit MCP calls.
-- Call `mcp__gitnexus__detect_changes` with `repo: "<source-checkout-repo>"` and `scope: "unstaged"`.
-- Treat `.gitnexus/` as a local GitNexus index artifact. It should be ignored by the repository or otherwise kept out of commits.
-- If `gitnexus analyze` mutates `.gitignore`, keep only an intentional `.gitnexus/` ignore rule and remove unrelated tool side effects before finalizing.
-
-The source checkout should be treated as input. Repo Context Forge must not leave `.soulforge`, `.codex`, `.claude`, or incidental `.gitignore` mutations in the user's checkout; an intentional `.gitnexus/` ignore rule is allowed when GitNexus indexes the source checkout.
+The source checkout is input: Repo Context Forge must not leave `.soulforge`, `.codex`, `.claude`, or incidental `.gitignore` mutations in the user's checkout; an intentional `.gitnexus/` ignore rule is allowed when GitNexus indexes the source checkout.
 
 ## 9. GitNexus — Global Workflow
 
-When you are inside an indexed repository, use GitNexus to understand structure, blast radius, and execution flow before making changes. If Repo Context Forge is available, run it first and use its packet-scoped GitNexus repo and required checks before any broader GitNexus analysis.
-
-GitNexus is registered as an MCP server in Claude Code; its tools appear as `mcp__gitnexus__<tool>`. Use those MCP tools directly — do not shell out to the GitNexus CLI for query, context, impact, or detect-changes (CLI is for indexing, status, clean, and other admin operations only).
+Inside an indexed repository, use GitNexus for structure, blast radius, and execution flow before making changes — packet-scoped per the Repo Context Forge gate above. Its tools appear as `mcp__gitnexus__<tool>`; use the MCP tools directly and reserve the CLI for indexing, status, and admin operations.
 
 ### Search Flow
 
@@ -253,9 +178,10 @@ GitNexus is registered as an MCP server in Claude Code; its tools appear as `mcp
   - `mcp__gitnexus__context` for callers/callees and process participation
   - `mcp__gitnexus__impact` (direction `upstream`) before editing
 - Always run impact analysis before editing a symbol in an indexed repo.
+- Consuming an internal seam from a NEW file (tests, smokes, harnesses, scripts) requires `mcp__gitnexus__context` on that seam BEFORE writing the consumer — a new file has no indexed symbols, so the edit-time impact rule alone never fires for it. Import the existing tested owner of the behavior instead of writing a second parsing/lifecycle client.
 - Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
-- Reindex after structural changes or git mutations when staleness is detected.
+- Reindex after structural changes or git mutations when staleness is detected. For indexed repos this is enforced: the edit gate blocks code edits whenever `.gitnexus/meta.json.lastCommit` differs from HEAD — run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status` so graph evidence always matches the current PR head.
 
 ### Hooks
 
-Hook configuration lives in `~/.claude/settings.json`. The current `PostToolUse` hook runs `code-quality-gate.sh` after `Edit`, `Write`, and `NotebookEdit` calls. Native MCP tool calls (such as `fff`) are not covered by Bash hooks; rely on the search flow above for those.
+Hook configuration lives in `~/.claude/settings.json`. The `PostToolUse` hook runs `code-quality-gate.sh` after `Edit`, `Write`, and `NotebookEdit` calls. The `PreToolUse` `rcf-intake-gate.sh` hook BLOCKS code edits inside git repos on three tiers: no Repo Context Forge intake in the session transcript; for GitNexus-indexed repos, no `mcp__gitnexus__*` call yet in the session; and a stale index (`.gitnexus/meta.json.lastCommit` != HEAD). Docs `*.md`, scratch, and non-repo paths are exempt; kill switch: `~/.claude/hooks/rcf-gate-disabled`. `SessionStart` hooks re-inject per-pass skill discipline after compaction/resume and surface an active `CLAUDE_CODE_SUBAGENT_MODEL` override at startup. Native MCP tool calls (such as `fff`) are not covered by Bash hooks; rely on the search flow above for those.
