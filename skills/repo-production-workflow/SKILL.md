@@ -49,7 +49,9 @@ It is an orchestration skill; it does not replace the referenced skills.
    - Re-check no-change surfaces named in preflight.
    - Call the `gitnexus` MCP server's detect-changes tool after edits and before committing.
 8. For non-trivial diffs, run the [code-review](../code-review/SKILL.md) skill
-   after the production-code gate and before commit/push.
+   after the production-code gate and before commit/push. Non-trivial means
+   any diff beyond a mechanical edit with no behavior surface (formatting,
+   renames, comments, docs); this definition also sets the step-9 threshold.
    - Review against the correct fixed point and governing PRD, issue, or spec.
    - Keep Standards findings separate from Spec findings.
    - Disposition every finding as fixed, rejected-with-evidence, or an accepted
