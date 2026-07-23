@@ -93,8 +93,6 @@ When spawning sub-agents via the `Agent` tool, default to:
 
 Keep delegation bounded:
 
-- Do not keep more than one delegated agent running at a time unless the user explicitly asks for broader parallelism in that turn.
-- If multiple delegated checks are required, run them serially and integrate or close each agent before starting the next.
 - Do not run build, typecheck, or proof commands concurrently with a delegated agent unless the user explicitly asks for that level of parallel execution.
 
 If the parent session needs an independent second opinion, spawn a fresh agent rather than asking the same context-laden agent to self-review.
