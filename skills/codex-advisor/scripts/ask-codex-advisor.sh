@@ -79,11 +79,10 @@ if [[ -z "$base_url" || -z "$token" || -z "$model" ]]; then
   exit 2
 fi
 
-# Effort is PINNED, not inherited: a review Interface must not vary in depth
-# with whoever calls it (a caller at medium would silently get a shallower
-# advisor). Override for a deliberately cheap consult:
-#   CODEX_ADVISOR_EFFORT=high ask-codex-advisor.sh ...   (or medium)
-advisor_effort="${CODEX_ADVISOR_EFFORT:-xhigh}"
+# Reasoning depth is NOT settable here. Proven 2026-07-25 at the proxy wire:
+# claude -p stamps `effortLevel` from ~/.claude/settings.json into every
+# request (currently xhigh) and ignores CLAUDE_EFFORT, so any per-consult
+# override would be decorative. Change depth in settings.json if you must.
 
 warnings="none"
 normalized_slug="$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//')"
@@ -173,7 +172,7 @@ ${staged:-<empty>}
 ${branch_diff:-<empty>}"
 fi
 
-role="Codex advisor mode, read-only. You are the advisor DELEGATE for a single consult: answer from the payload and your own repository reads. Load ONLY the rubric skills named in the checkpoint below (or /codebase-design for a bare shape question) and apply their exact vocabulary; do not load unrelated skills — a skill whose trigger merely matches a word in this prompt is not relevant to a scope or diff review. HARD CRITERIA: a test that mocks, stubs, or fixture-substitutes a collaborator instead of crossing a real production seam is NOT proof — call it out as a hard violation, never a judgement call; and never demand a guard, fallback, retry, or config for a theoretical failure nobody has demonstrated — an undemonstrated risk is at most one report line, never a required change. Be terse: no restating the question, no speculative tangents, no hedging padding. You must NOT invoke heavyweight repo EXECUTION skills or substitute workflows (repo-production-workflow, repo-context-forge bootstrap, production-preflight, production-code), must NOT spawn subagents, and must NOT run any advisor script or delegate this consult onward — you are the delegate, and the calling agent owns the workflow. Report missing preflight or Module-shape evidence instead of generating substitute preflight artifacts. Do not create, edit, or write files; do not commit, push, or deploy; do not mutate any external system. Cite file:line when using repo evidence, flag uncertainty plainly, and give findings, not orders. Stdout only. Answer in <=${budget} words."
+role="Codex advisor mode, read-only. You are the advisor DELEGATE for a single consult: answer from the payload and your own repository reads. Load ONLY the rubric skills named in the checkpoint below (or /codebase-design for a bare shape question) and apply their exact vocabulary; do not load unrelated skills — a skill whose trigger merely matches a word in this prompt is not relevant to a scope or diff review. HARD CRITERIA: a test that mocks, stubs, or fixture-substitutes a collaborator instead of crossing a real production seam is NOT proof — call it out as a hard violation, never a judgement call; and never demand a guard, fallback, retry, or config for a theoretical failure nobody has demonstrated — an undemonstrated risk is at most one report line, never a required change. Be terse: no restating the question, no speculative tangents, no hedging padding. You must NOT invoke heavyweight repo EXECUTION skills or substitute workflows (repo-production-workflow, repo-context-forge bootstrap, production-preflight, production-code), must NOT spawn subagents, and must NOT run any advisor script or delegate this consult onward — you are the delegate, and the calling agent owns the workflow. Report missing preflight or Module-shape evidence instead of generating substitute preflight artifacts. Do not create, edit, or write files; do not commit, push, or deploy; do not mutate any external system. Critique the Repo Context Forge packet and GitNexus impact/context summary the CALLER supplied: is the surface complete, are the named seams right, which callers or contracts does it omit? Do NOT re-run the graph yourself — that duplicates the lead agent's work and is the lead's responsibility. If the caller supplied no packet or no impact summary, say so as your first finding and treat the scope as unproven rather than doing the analysis for them. Read INTERIOR behavior with targeted line ranges (sed -n '120,180p', Read with offset, rg -n -A/-B) rather than whole-file skims — the sharpest findings come from the exact lines around a function, not from file summaries. Cite file:line when using repo evidence, flag uncertainty plainly, and give findings, not orders. Stdout only. Answer in <=${budget} words."
 
 prompt="${role}
 ${phase_prompt}
@@ -182,17 +181,16 @@ ${evidence}
 === Consult
 ${question}"
 
-printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s model=%s effort=%s warnings=%s provider=codex\n' \
-  "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" "$advisor_effort" "$warnings" >&2
+printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s model=%s warnings=%s provider=codex\n' \
+  "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" "$warnings" >&2
 
 set +e
 printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
-  CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 CLAUDE_EFFORT="$advisor_effort" \
   claude -p "${session_args[@]}" \
     --model "$model" \
     --output-format text \
     --append-system-prompt "$role" \
-    --allowed-tools "Read Grep Glob Skill Bash(git diff:*) Bash(git status:*) Bash(git log:*) Bash(git branch:*) Bash(git rev-parse:*) Bash(gh issue view:*) Bash(gh pr view:*) Bash(rg:*) Bash(ls:*) Bash(sed:*) Bash(cat:*)" \
+    --allowed-tools "Read Grep Glob Skill Bash(git diff:*) Bash(git status:*) Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git branch:*) Bash(git rev-parse:*) Bash(git ls-files:*) Bash(git grep:*) Bash(gh issue view:*) Bash(gh pr view:*) Bash(gh run view:*) Bash(rg:*) Bash(grep:*) Bash(ls:*) Bash(find:*) Bash(sed:*) Bash(awk:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(cut:*) Bash(sort:*) Bash(uniq:*) Bash(tr:*) Bash(comm:*) Bash(diff:*) Bash(jq:*) Bash(basename:*) Bash(dirname:*) Bash(realpath:*)" \
     --disallowed-tools "Edit Write NotebookEdit Task"
 status=$?
 set -e

@@ -43,17 +43,15 @@ SEPARATE files, and never wrap it in `timeout`:
 A consult typically runs 2-15 minutes and **buffers**: an in-flight run writes
 zero bytes. Zero output is not failure — judge only after the process exits.
 
-Model and depth are PINNED, not inherited: the model comes from the claudex
-alias (`gpt-5.6-sol`) and effort is forced to `xhigh` regardless of the calling
-session's effort, so a caller at low/medium cannot silently get a shallower
-review. Both are echoed in the session marker. `xhigh` is the STANDING DEFAULT and stays that way — depth is the point of a
-review Interface, and it runs in the background where nothing waits on it. Use
-`CODEX_ADVISOR_EFFORT=high` (or `medium`) only for a consult the operator has
-explicitly asked to run shallower; a per-task instruction to use `high` does
-not change this default. The value is echoed in the session marker, so the
-depth actually used is auditable after the fact. Service tier is standard: the proxied path
-does not engage fast/priority, and advisor latency is background work that
-never blocks the operator — spend priority tier on interactive paths instead.
+The model is pinned by the claudex alias (`gpt-5.6-sol`) and echoed in the
+session marker. Reasoning depth is NOT settable per consult: `claude -p`
+stamps `effortLevel` from `~/.claude/settings.json` into every request
+(currently `xhigh`) and ignores `CLAUDE_EFFORT` — proven at the proxy wire on
+2026-07-25, where a caller setting high, xhigh, or nothing all produced
+`level=xhigh`. Change depth in `settings.json` if you must; do not add a
+per-consult override, it will be decorative. Service tier is standard: the
+proxied path does not engage fast/priority, and advisor latency is background
+work that never blocks the operator.
 
 Success requires all three: `exit_code=0`, non-empty stdout, and the terminal
 stderr marker `codex_advisor_complete status=0 provider=codex`. A missing
@@ -109,10 +107,16 @@ surrounding sequence, this one owns the consults.)
 
 ### 1. Before Code: Scope Challenge
 
-After Repo Context Forge and packet-scoped GitNexus, before `production-preflight`.
+After Repo Context Forge and packet-scoped GitNexus, before
+`production-preflight` — preflight does not start until this consult has
+returned and its scope findings are dispositioned. The advisor critiques the
+graph evidence you supply; it does not re-run the graph.
 
-Supply: task contract and slice outcomes; packet targets, coverage plan, and
-skipped high-ranked targets; GitNexus callers/callees/blast radius; intended
+Supply (the consult is only as good as this — a bare question makes the
+advisor redo the lead's work at several times the cost): task contract and
+slice outcomes; packet targets, coverage plan, and skipped high-ranked
+targets; the GitNexus impact/context output you already ran —
+callers/callees/blast radius; intended
 Module, public Interface, hidden Implementation complexity; existing reuse
 path; new Seam justification or why to deepen the existing Module; touched
 shallow Module debt; TDD hypothesis or planned first failing test; test surface
