@@ -47,7 +47,8 @@ Model and depth are PINNED, not inherited: the model comes from the claudex
 alias (`gpt-5.6-sol`) and effort is forced to `xhigh` regardless of the calling
 session's effort, so a caller at low/medium cannot silently get a shallower
 review. Both are echoed in the session marker. For a deliberately cheap consult
-set `CODEX_ADVISOR_EFFORT=medium`. Service tier is standard: the proxied path
+set `CODEX_ADVISOR_EFFORT=high` (or `medium`); the value is echoed in the
+session marker so the depth actually used is auditable. Service tier is standard: the proxied path
 does not engage fast/priority, and advisor latency is background work that
 never blocks the operator — spend priority tier on interactive paths instead.
 
@@ -57,7 +58,10 @@ marker means the consult did not complete; do not accept the advice, advance
 the checkpoint, or classify the advisor as unavailable. Startup session lines
 are metadata, not completion.
 
-Before any relaunch, `pgrep -f "claude -p --model"` and cancel strays; blind
+Before any relaunch, LIST first with `pgrep -af "claude -p --model"`, identify
+strays by age and session, then kill those explicit PIDs. Do NOT `pkill -f` —
+the pattern matches your own shell (its command line contains the string), so
+it self-kills with exit 143/144 and leaves the real stray running. Blind
 retries duplicate consults and burn tokens in parallel.
 
 ## No Recursion

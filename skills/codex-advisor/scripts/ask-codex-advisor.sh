@@ -82,7 +82,7 @@ fi
 # Effort is PINNED, not inherited: a review Interface must not vary in depth
 # with whoever calls it (a caller at medium would silently get a shallower
 # advisor). Override for a deliberately cheap consult:
-#   CODEX_ADVISOR_EFFORT=medium ask-codex-advisor.sh ...
+#   CODEX_ADVISOR_EFFORT=high ask-codex-advisor.sh ...   (or medium)
 advisor_effort="${CODEX_ADVISOR_EFFORT:-xhigh}"
 
 warnings="none"
