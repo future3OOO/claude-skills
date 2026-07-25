@@ -46,9 +46,12 @@ zero bytes. Zero output is not failure — judge only after the process exits.
 Model and depth are PINNED, not inherited: the model comes from the claudex
 alias (`gpt-5.6-sol`) and effort is forced to `xhigh` regardless of the calling
 session's effort, so a caller at low/medium cannot silently get a shallower
-review. Both are echoed in the session marker. For a deliberately cheap consult
-set `CODEX_ADVISOR_EFFORT=high` (or `medium`); the value is echoed in the
-session marker so the depth actually used is auditable. Service tier is standard: the proxied path
+review. Both are echoed in the session marker. `xhigh` is the STANDING DEFAULT and stays that way — depth is the point of a
+review Interface, and it runs in the background where nothing waits on it. Use
+`CODEX_ADVISOR_EFFORT=high` (or `medium`) only for a consult the operator has
+explicitly asked to run shallower; a per-task instruction to use `high` does
+not change this default. The value is echoed in the session marker, so the
+depth actually used is auditable after the fact. Service tier is standard: the proxied path
 does not engage fast/priority, and advisor latency is background work that
 never blocks the operator — spend priority tier on interactive paths instead.
 
