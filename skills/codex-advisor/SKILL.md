@@ -67,11 +67,21 @@ The advisor is a full agent. Unguarded it reads the repo, invokes
 five concurrent generations on 2026-07-25, each re-summarizing the same WIP,
 one of them killing its own siblings. Two layers prevent it now:
 
-1. `CODEX_ADVISOR_ACTIVE=1` is exported into the delegate, so a nested wrapper
-   call fails closed with exit 3.
+1. `CODEX_ADVISOR_ACTIVE=1` **and the shared `ADVISOR_ACTIVE=1`** are exported
+   into the delegate; either marker makes a nested consult fail closed with
+   exit 3. The Codex-side `claude-advisor` wrapper honours the same shared
+   marker, so the loop cannot cross tools either (a codex exec delegate was
+   observed attempting its own claude-advisor consult).
 2. The wrapper's appended role tells the delegate it IS the delegate.
 
-The advisor MAY use rubric skills read-only (`/tdd`, `/codebase-design`, `/code-quality`) to sharpen its critique. It
+This blocks ACCIDENTAL recursion through descendant shells; it is not a
+security sandbox, since a capable delegate could unset both variables. The
+role prompt and the read-only tool policy remain necessary layers.
+
+The advisor is DIRECTED to load its rubric read-only — `/codebase-design`
+before judging Module shape or Seam placement, `/tdd` before judging test
+quality, `/code-quality` before judging bloat — and told not to load unrelated
+skills (permissive wording let an irrelevant skill hijack a consult). It
 must NOT invoke heavyweight execution skills or substitute workflows
 (`repo-production-workflow`, Repo Context Forge bootstrap,
 `production-preflight`, `production-code`), spawn subagents, or delegate

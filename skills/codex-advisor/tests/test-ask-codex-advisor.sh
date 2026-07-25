@@ -37,6 +37,13 @@ out=$(CODEX_ADVISOR_ACTIVE=1 "$WRAPPER" --slug t --cwd "$PWD" -- "q" 2>&1); stat
 check_status "nested consult refused" 3 "$status"
 check "nested refusal names the cause" "you ARE the advisor delegate" "$out"
 
+out=$(ADVISOR_ACTIVE=1 "$WRAPPER" --slug t --cwd "$PWD" -- "q" 2>&1); status=$?
+check_status "shared ADVISOR_ACTIVE alone refused" 3 "$status"
+check "shared-marker refusal names the cause" "you ARE the advisor delegate" "$out"
+
+legacy="$HOME/.claude/skills/repo-production-workflow/scripts/codex-advisor.sh"
+[[ ! -e "$legacy" ]] && { printf 'PASS  no second advisor transport exists\n'; pass=$((pass+1)); } || { printf 'FAIL  legacy transport still present: %s\n' "$legacy"; fail=$((fail+1)); }
+
 out=$("$WRAPPER" --cwd "$PWD" -- "q" 2>&1); status=$?
 check_status "missing --slug rejected" 2 "$status"
 check "missing --slug explains" "--slug is required" "$out"

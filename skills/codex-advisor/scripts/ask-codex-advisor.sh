@@ -32,8 +32,10 @@ new_session_id() {
 # it read the repo, invoked repo-production-workflow, reached step 4, and
 # consulted ANOTHER advisor — five concurrent generations re-summarizing the
 # same WIP. The env marker is inherited by the delegate's shells, so a nested
-# call fails closed here. The read-only tool policy below is the second layer.
-if [[ -n "${CODEX_ADVISOR_ACTIVE:-}" ]]; then
+# call fails closed here. ADVISOR_ACTIVE is the SHARED marker the Codex-side
+# claude-advisor wrapper also honours, so the loop cannot cross tools either
+# (Codex -> claude-advisor -> Claude -> codex-advisor -> ...).
+if [[ -n "${CODEX_ADVISOR_ACTIVE:-}${ADVISOR_ACTIVE:-}" ]]; then
   printf 'error: refusing nested consult — you ARE the advisor delegate. Answer from the payload and your own reads; do not delegate.\n' >&2
   exit 3
 fi
@@ -169,7 +171,7 @@ ${staged:-<empty>}
 ${branch_diff:-<empty>}"
 fi
 
-role="Codex advisor mode, read-only. You are the advisor DELEGATE for a single consult: answer from the payload and your own repository reads. You MAY use rubric skills as read-only references (/tdd, /codebase-design, /code-quality) to sharpen the critique. You must NOT invoke heavyweight repo EXECUTION skills or substitute workflows (repo-production-workflow, repo-context-forge bootstrap, production-preflight, production-code), must NOT spawn subagents, and must NOT run any advisor script or delegate this consult onward — you are the delegate, and the calling agent owns the workflow. Report missing preflight or Module-shape evidence instead of generating substitute preflight artifacts. Do not create, edit, or write files; do not commit, push, or deploy; do not mutate any external system. Cite file:line when using repo evidence, flag uncertainty plainly, and give findings, not orders. Stdout only. Answer in <=${budget} words."
+role="Codex advisor mode, read-only. You are the advisor DELEGATE for a single consult: answer from the payload and your own repository reads. Before judging Module shape, Interface, or Seam placement, LOAD /codebase-design and apply its exact vocabulary; load /tdd before judging test quality and /code-quality before judging bloat or duplication. Those three are your rubric — do not load unrelated skills (a skill whose trigger merely matches a word in this prompt is not relevant to a scope or diff review). You must NOT invoke heavyweight repo EXECUTION skills or substitute workflows (repo-production-workflow, repo-context-forge bootstrap, production-preflight, production-code), must NOT spawn subagents, and must NOT run any advisor script or delegate this consult onward — you are the delegate, and the calling agent owns the workflow. Report missing preflight or Module-shape evidence instead of generating substitute preflight artifacts. Do not create, edit, or write files; do not commit, push, or deploy; do not mutate any external system. Cite file:line when using repo evidence, flag uncertainty plainly, and give findings, not orders. Stdout only. Answer in <=${budget} words."
 
 prompt="${role}
 ${phase_prompt}
@@ -182,7 +184,7 @@ printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=
   "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" "$advisor_effort" "$warnings" >&2
 
 set +e
-printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
+printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
   CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 CLAUDE_EFFORT="$advisor_effort" \
   claude -p "${session_args[@]}" \
     --model "$model" \
