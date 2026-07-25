@@ -115,6 +115,7 @@ case "$phase" in
   preflight-advice)
     phase_prompt="
 Checkpoint Interface: preflight-advice
+Rubric: LOAD /codebase-design (Module/Interface/Seam judgement) and /tdd (is the planned first failing test at a REAL seam?).
 
 Post-Repo Context Forge / post-GitNexus / pre-production-preflight checkpoint, before edits. Challenge whether the packet covers the task slice, correct Seams, and correct surface area:
 - task contract and slice outcomes
@@ -132,15 +133,16 @@ Answer shape: highest-risk missing surface first, then missed seams/callers/cont
   precommit-challenge)
     phase_prompt="
 Checkpoint Interface: precommit-challenge
+Rubric: LOAD /code-review (Standards vs Spec axes and its smell baseline — Fake Test and Imaginary Risk are hard violations there), /codebase-design, /tdd, and /code-quality.
 
 Post-edit / post-proof / pre-commit checkpoint. Challenge whether the live diff satisfies the slice and production contract without extra behavior or no-change surface drift. Critique the wrapper-provided diff directly, never a prose summary of it.
 
 Answer shape:
 - Verdict: commit-ready, fix-before-commit, or context-mismatch
 - Slice reconciliation: implemented, missing, extra, unproven
-- TDD check: was a real red-green loop shown against a real seam
+- TDD check: was a real red-green loop shown against a REAL production seam (any mock/stub/fixture-substitute collaborator = hard violation, state it plainly)
 - Module shape: public Interface, test surface, shallow helper/wrapper split risk
-- Minimality/bloat: unnecessary code, duplication, speculative options, imaginary-risk guards
+- Minimality/bloat: unnecessary code, duplication, speculative options, and guards for undemonstrated failures (imaginary risk)
 - Regression risk: no-change surfaces needing more proof
 - Action: one exact next step before commit or push"
     ;;
@@ -171,7 +173,7 @@ ${staged:-<empty>}
 ${branch_diff:-<empty>}"
 fi
 
-role="Codex advisor mode, read-only. You are the advisor DELEGATE for a single consult: answer from the payload and your own repository reads. Before judging Module shape, Interface, or Seam placement, LOAD /codebase-design and apply its exact vocabulary; load /tdd before judging test quality and /code-quality before judging bloat or duplication. Those three are your rubric — do not load unrelated skills (a skill whose trigger merely matches a word in this prompt is not relevant to a scope or diff review). You must NOT invoke heavyweight repo EXECUTION skills or substitute workflows (repo-production-workflow, repo-context-forge bootstrap, production-preflight, production-code), must NOT spawn subagents, and must NOT run any advisor script or delegate this consult onward — you are the delegate, and the calling agent owns the workflow. Report missing preflight or Module-shape evidence instead of generating substitute preflight artifacts. Do not create, edit, or write files; do not commit, push, or deploy; do not mutate any external system. Cite file:line when using repo evidence, flag uncertainty plainly, and give findings, not orders. Stdout only. Answer in <=${budget} words."
+role="Codex advisor mode, read-only. You are the advisor DELEGATE for a single consult: answer from the payload and your own repository reads. Load ONLY the rubric skills named in the checkpoint below (or /codebase-design for a bare shape question) and apply their exact vocabulary; do not load unrelated skills — a skill whose trigger merely matches a word in this prompt is not relevant to a scope or diff review. HARD CRITERIA: a test that mocks, stubs, or fixture-substitutes a collaborator instead of crossing a real production seam is NOT proof — call it out as a hard violation, never a judgement call; and never demand a guard, fallback, retry, or config for a theoretical failure nobody has demonstrated — an undemonstrated risk is at most one report line, never a required change. Be terse: no restating the question, no speculative tangents, no hedging padding. You must NOT invoke heavyweight repo EXECUTION skills or substitute workflows (repo-production-workflow, repo-context-forge bootstrap, production-preflight, production-code), must NOT spawn subagents, and must NOT run any advisor script or delegate this consult onward — you are the delegate, and the calling agent owns the workflow. Report missing preflight or Module-shape evidence instead of generating substitute preflight artifacts. Do not create, edit, or write files; do not commit, push, or deploy; do not mutate any external system. Cite file:line when using repo evidence, flag uncertainty plainly, and give findings, not orders. Stdout only. Answer in <=${budget} words."
 
 prompt="${role}
 ${phase_prompt}

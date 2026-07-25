@@ -78,10 +78,14 @@ This blocks ACCIDENTAL recursion through descendant shells; it is not a
 security sandbox, since a capable delegate could unset both variables. The
 role prompt and the read-only tool policy remain necessary layers.
 
-The advisor is DIRECTED to load its rubric read-only — `/codebase-design`
-before judging Module shape or Seam placement, `/tdd` before judging test
-quality, `/code-quality` before judging bloat — and told not to load unrelated
-skills (permissive wording let an irrelevant skill hijack a consult). It
+The advisor is DIRECTED to load a per-checkpoint rubric read-only — before
+code: `/codebase-design` + `/tdd`; before commit: `/code-review` (its smell
+baseline makes Fake Test and Imaginary Risk hard violations) +
+`/codebase-design` + `/tdd` + `/code-quality` — and told not to load unrelated
+skills (permissive wording let an irrelevant skill hijack a consult). Two
+criteria are stated as hard rules in the role itself, not left to the rubric:
+a mock/stub/fixture-substitute collaborator is never proof, and an
+undemonstrated risk is at most a report line, never a required change. It
 must NOT invoke heavyweight execution skills or substitute workflows
 (`repo-production-workflow`, Repo Context Forge bootstrap,
 `production-preflight`, `production-code`), spawn subagents, or delegate

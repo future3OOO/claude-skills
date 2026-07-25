@@ -61,6 +61,22 @@ grep -q 'disallowed-tools "Edit Write NotebookEdit Task"' "$WRAPPER" \
   && { printf 'PASS  writes and subagents blocked\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  tool policy must block Edit Write NotebookEdit Task\n'; fail=$((fail+1)); }
 
+grep -q 'Rubric: LOAD /codebase-design (Module/Interface/Seam judgement) and /tdd' "$WRAPPER" \
+  && { printf 'PASS  before-code rubric named\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  preflight-advice must name its rubric skills\n'; fail=$((fail+1)); }
+
+grep -q 'Rubric: LOAD /code-review' "$WRAPPER" \
+  && { printf 'PASS  after-code rubric loads code-review\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  precommit-challenge must load /code-review\n'; fail=$((fail+1)); }
+
+grep -q 'is NOT proof — call it out as a hard violation' "$WRAPPER" \
+  && { printf 'PASS  fake-test hard rule present\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  fake-test rule must be a hard violation\n'; fail=$((fail+1)); }
+
+grep -q 'never demand a guard, fallback, retry, or config for a theoretical failure' "$WRAPPER" \
+  && { printf 'PASS  imaginary-risk rule present\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  imaginary-risk rule missing\n'; fail=$((fail+1)); }
+
 grep -q 'allowed-tools "Read Grep Glob Skill' "$WRAPPER" \
   && { printf 'PASS  rubric skills permitted\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  Skill must stay allowed for read-only rubric use\n'; fail=$((fail+1)); }
