@@ -87,7 +87,7 @@ Fix at the source, not where the error merely appears.
 
 If the trace is unclear, add targeted instrumentation before the dangerous operation or state transition. Include the relevant value, cwd/environment/config when relevant, and a stack trace or caller context. Tag temporary logs with a unique `[DEBUG-...]` marker.
 
-If tracing requires bouncing through scattered helpers/services/managers, tests need internal mocks, or no clean seam owns the behavior, record that as a module-shape risk. After the immediate bug is understood, escalate to `/improve-codebase-architecture` rather than normalizing the shallow path.
+If tracing requires bouncing through scattered helpers/services/managers, tests need internal mocks, or no clean seam owns the behavior, record that as a module-shape risk, named with the Module / Interface / Seam / Depth vocabulary `/codebase-design` owns. After the immediate bug is understood, escalate to `/improve-codebase-architecture` — the skill that does the refactor — rather than normalizing the shallow path.
 
 ### Targeted GitNexus Check
 
