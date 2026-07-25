@@ -56,8 +56,7 @@ one of them killing its own siblings. Two layers prevent it now:
    call fails closed with exit 3.
 2. The wrapper's appended role tells the delegate it IS the delegate.
 
-The advisor MAY use rubric skills read-only (`/tdd`, `/codebase-design`,
-`/improve-codebase-architecture`, `/code-quality`) to sharpen its critique. It
+The advisor MAY use rubric skills read-only (`/tdd`, `/codebase-design`, `/code-quality`) to sharpen its critique. It
 must NOT invoke heavyweight execution skills or substitute workflows
 (`repo-production-workflow`, Repo Context Forge bootstrap,
 `production-preflight`, `production-code`), spawn subagents, or delegate
