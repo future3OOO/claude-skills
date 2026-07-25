@@ -90,7 +90,11 @@ generating substitute preflight artifacts.
 
 ## Production Checkpoints
 
-### Step 4 — Before Code: Scope Challenge
+Consult twice per production pass — once before code, once before commit.
+(These are steps 4 and 9 of `repo-production-workflow`; that skill owns the
+surrounding sequence, this one owns the consults.)
+
+### 1. Before Code: Scope Challenge
 
 After Repo Context Forge and packet-scoped GitNexus, before `production-preflight`.
 
@@ -107,7 +111,7 @@ ask-codex-advisor.sh --slug "<task>" --phase preflight-advice --cwd "$PWD" \
   -- "Question: Does the packet cover the slice, correct Seams, and correct surface area before preflight?"
 ```
 
-### Step 9 — After Code: Diff Challenge
+### 2. After Code: Diff Challenge
 
 After proof, before commit or push, for non-trivial diffs.
 
@@ -138,7 +142,7 @@ Do not act on the prior answer.
 ## Session Discipline
 
 One short stable slug per task (`issue354`, `telemetry`), reused across the
-step 4 → step 9 pair so the challenge retains the original scope. Session ids
+before-code → before-commit pair so the challenge retains the original scope. Session ids
 live in `~/.claude/codex-advisor/<cwd-key>-<slug>.sid`.
 
 Do not put phase words in the slug (`pre-commit`, `review`, `challenge`,
@@ -148,7 +152,7 @@ Use `--fresh` only when the stored session is stale or intentionally reset.
 
 ## When To Ask
 
-- repo-production-workflow steps 4 and 9 (mandatory for non-trivial diffs)
+- both production checkpoints above (mandatory for non-trivial diffs)
 - architecture, migration, correctness, security, concurrency, idempotency,
   data-loss, or non-obvious PR risk
 - when the user asks for Codex, advisor mode, or a second opinion
@@ -156,7 +160,8 @@ Use `--fresh` only when the stored session is stale or intentionally reset.
 
 Skip for mechanical edits, formatting, obvious single-file fixes, and questions
 the test suite answers directly. Fix-only commits whose every change addresses
-an already-confirmed finding may skip step 9; state the skipped round.
+an already-confirmed finding may skip the before-commit challenge; state the
+skipped round.
 
 ## Prompt Contract
 
