@@ -43,6 +43,14 @@ SEPARATE files, and never wrap it in `timeout`:
 A consult typically runs 2-15 minutes and **buffers**: an in-flight run writes
 zero bytes. Zero output is not failure — judge only after the process exits.
 
+Model and depth are PINNED, not inherited: the model comes from the claudex
+alias (`gpt-5.6-sol`) and effort is forced to `xhigh` regardless of the calling
+session's effort, so a caller at low/medium cannot silently get a shallower
+review. Both are echoed in the session marker. For a deliberately cheap consult
+set `CODEX_ADVISOR_EFFORT=medium`. Service tier is standard: the proxied path
+does not engage fast/priority, and advisor latency is background work that
+never blocks the operator — spend priority tier on interactive paths instead.
+
 Success requires all three: `exit_code=0`, non-empty stdout, and the terminal
 stderr marker `codex_advisor_complete status=0 provider=codex`. A missing
 marker means the consult did not complete; do not accept the advice, advance

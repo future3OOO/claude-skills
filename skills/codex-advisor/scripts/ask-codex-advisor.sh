@@ -77,6 +77,12 @@ if [[ -z "$base_url" || -z "$token" || -z "$model" ]]; then
   exit 2
 fi
 
+# Effort is PINNED, not inherited: a review Interface must not vary in depth
+# with whoever calls it (a caller at medium would silently get a shallower
+# advisor). Override for a deliberately cheap consult:
+#   CODEX_ADVISOR_EFFORT=medium ask-codex-advisor.sh ...
+advisor_effort="${CODEX_ADVISOR_EFFORT:-xhigh}"
+
 warnings="none"
 normalized_slug="$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//')"
 case "$normalized_slug" in
@@ -172,11 +178,12 @@ ${evidence}
 === Consult
 ${question}"
 
-printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s warnings=%s provider=codex\n' \
-  "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$warnings" >&2
+printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s model=%s effort=%s warnings=%s provider=codex\n' \
+  "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" "$advisor_effort" "$warnings" >&2
 
 set +e
 printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
+  CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 CLAUDE_EFFORT="$advisor_effort" \
   claude -p "${session_args[@]}" \
     --model "$model" \
     --output-format text \
