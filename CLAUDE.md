@@ -99,7 +99,11 @@ If the parent session needs an independent second opinion, spawn a fresh agent r
 
 ## 7. Repo Production Skill Order
 
-Use the `repo-production-workflow` skill as the default first skill for production repository work. It owns the execution sequence (Repo Context Forge → packet-scoped GitNexus → Codex scope check → `production-preflight` → `production-code` through final verification → `code-review` → Codex challenge round for non-trivial diffs before commit/push/PR); this section owns only when skills fire.
+Use the `repo-production-workflow` skill as the default first skill for production repository work. It owns the execution sequence; this section owns only when skills fire.
+
+The full chain, in order — every named skill is INVOKED with the Skill tool by exact name (reading its `SKILL.md` does not satisfy the step):
+
+`repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → Codex advisor scope check (bundled `codex-advisor.sh` via Bash ONLY — never the codex plugin/companion forwarder or the Agent tool) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` through final verification → `code-review` → Codex advisor challenge round → commit/push/PR → reviewer completion gate.
 
 Invocation policy:
 

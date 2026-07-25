@@ -8,6 +8,27 @@ description: Orchestrate production repo changes — Repo Context Forge, packet-
 Use this skill for production code changes inside a git repository.
 It is an orchestration skill; it does not replace the referenced skills.
 
+## How To Invoke The Chain
+
+Every referenced skill is INVOKED with the Skill tool by its exact name — not
+merely read. Reading a linked `SKILL.md` does not satisfy a step.
+
+| Step | Invoke | Mechanism |
+|---|---|---|
+| 1 | `repo-context-forge` | Skill tool, then its `bootstrap.py` via Bash (no slash command) |
+| 2 | `diagnose` (bugs/regressions/perf only) | Skill tool |
+| 3 | GitNexus packet checks | `mcp__gitnexus__*` MCP tools |
+| 4 | Codex advisor scope check | bundled `scripts/codex-advisor.sh` via Bash ONLY |
+| 5 | `production-preflight` | Skill tool |
+| 6 | `tdd` (behavior changes) then `production-code` | Skill tool, in that order |
+| 7 | verification | repo test/lint/build commands, bundled production-code gate, `mcp__gitnexus__detect_changes` |
+| 8 | `code-review` | Skill tool |
+| 9 | Codex advisor challenge round | same script, `--resume <session-id>` |
+
+Users may also type these as `/repo-context-forge`, `/diagnose`, `/tdd`,
+`/production-preflight`, `/production-code`, `/code-review`. Escalate to
+`repo-large-implementation` before starting multi-PR work.
+
 ## Mandatory Order
 
 1. Run the [repo-context-forge](../repo-context-forge/SKILL.md) skill before choosing files, GitNexus queries, review findings, or edits.
@@ -26,17 +47,22 @@ It is an orchestration skill; it does not replace the referenced skills.
    - Do not let broader GitNexus output shrink the packet surface.
    - Run impact analysis before editing indexed symbols.
 4. Delegate a read-only scope check to the Codex advisor before preflight. The advisor is the Codex delegate served through the local CLIProxyAPI proxy, not the codex plugin. The claudex/claudehx alias environment in `~/.bashrc` owns the advisor model id (`CLAUDE_CODE_SUBAGENT_MODEL`) and proxy endpoint; do not pin model ids in this skill.
-   - In sessions where `CLAUDE_CODE_SUBAGENT_MODEL` routes subagents to the Codex model (claudex/claudehx), spawn the advisor via the Agent tool and record its agent id for the challenge round.
-   - In sessions without the override, run the bundled consult script via Bash from the repo or worktree root, with the consult payload on stdin: `~/.claude/skills/repo-production-workflow/scripts/codex-advisor.sh <<'EOF' ... EOF`. It reads the claudex env from `~/.bashrc` and prints the `claude -p` result JSON on stdout; record its `session_id` for the challenge round. Do not merge stderr into the JSON stream (the proxy env warns on stderr), and do not hand-build the consult env from `~/.bashrc` — that path has broken on token line-continuations before.
-   - If a consult times out, check whether the prior run is still alive and cancel it before retrying; blind retries duplicate the consult. Run long consults in the background.
+   - ONE sanctioned transport, all sessions: the bundled script via Bash from the repo or worktree root, consult payload on stdin: `~/.claude/skills/repo-production-workflow/scripts/codex-advisor.sh <<'EOF' ... EOF`. Run it as a BACKGROUND Bash task, stdout to a file, stderr to a SEPARATE file, and NEVER wrap it in `timeout`. Record its `session_id` for the challenge round.
+   - NEVER route a consult through the codex plugin / companion forwarder or the Agent tool: the forwarder silently retries hung handoffs every ~5-8 minutes, each retry a fresh self-summarizing Codex session (2026-07-25 incident: five concurrent rogue consults). Do not hand-build the consult env from `~/.bashrc` either — that path breaks on token line-continuations.
+   - `claude -p --output-format json` BUFFERS: an in-flight consult writes zero bytes and typically runs 10-15 minutes at high effort. Zero output is not failure; judge only after the process exits.
+   - Before any relaunch, `pgrep -f "claude -p --model"` and cancel strays; blind retries duplicate consults and burn tokens in parallel.
    - If the advisor is unavailable (proxy down, auth expired, stale model id — the script exits nonzero), do not block on an advisory input: proceed under the remaining gates and state the skipped consult in the final response. A quoting or JSON-parse mistake in your own command is not unavailability; rerun through the script.
    - Forward the task contract, packet targets, and GitNexus impact summary; ask specifically for missed seams, callers, contracts, and no-change surfaces the scope may have skipped. The advisor must not edit.
    - Advisor findings are advisory: validate them against the packet and GitNexus before adopting; feed confirmed missed seams into preflight.
 5. Run the [production-preflight](../production-preflight/SKILL.md) skill before the first tracked edit.
    - Anchor `affectedSurface`, `proofPlan`, `touchpoints`, `verify`, and `update` to the Repo Context Forge packet, GitNexus checks, and confirmed Codex scope findings.
    - If preflight has blocking `openQuestions`, stop before editing.
-6. Invoke the [production-code](../production-code/SKILL.md) skill before writing any repository file content, then implement under it.
-   - For behavior changes, follow the tdd skill under production-code: write the failing test through the public Interface first, against the real seam. This produces the TDD proof step 9 forwards.
+6. For behavior changes, invoke the `tdd` skill FIRST and write the failing
+   test through the public Interface against the real seam; watch it fail
+   before any production edit. This produces the TDD proof step 9 forwards.
+   Skip only for genuinely non-behavioral diffs (docs, formatting, renames),
+   and say so in the final response. Never fabricate a mock seam to go green.
+   Then invoke the [production-code](../production-code/SKILL.md) skill before writing any repository file content, and implement under it.
    - Choose the smallest production-safe implementation path before editing.
    - This includes tracked files, untracked files, scratch implementation files, generated source, and new worktrees.
    - Make the smallest direct change.
@@ -59,8 +85,8 @@ It is an orchestration skill; it does not replace the referenced skills.
    - After any fix, rerun the affected proof and the production-code gate.
 9. For non-trivial diffs (same threshold as step 8), run the Codex challenge round before any commit, push, PR open, or PR update.
    - Fix-only commits whose every change addresses a finding already confirmed in this pass's challenge round, code-review, or the PR reviewer loop do not need a new round; state the skipped round in the final response.
-   - Continue the SAME advisor context from step 4 so it retains the original scope: `SendMessage` to the recorded agent id (Agent-tool path), or the consult script with `--resume <session-id>`, run from the same cwd as step 4 (headless path; sessions are per-directory).
-   - If the recorded advisor context is unreachable (dead agent id, expired session, compaction), run a fresh consult re-forwarding the step 4 payload plus the current diff. If the advisor is unavailable entirely, proceed as in step 4 and state the skipped round.
+   - Continue the SAME advisor context from step 4 so it retains the original scope: the consult script with `--resume <session-id>`, run from the same cwd as step 4 (sessions are per-directory). Same transport rules as step 4: script only, background, uncapped, no plugin, pgrep before relaunch.
+   - If the recorded session is unreachable (expired, compaction), run a fresh consult re-forwarding the step 4 payload plus the current diff. If the advisor is unavailable entirely, proceed as in step 4 and state the skipped round.
    - Provide the live branch/head, base ref, governing issue/PRD, the diff, TDD proof, and `code-review` findings and dispositions; ask whether the change is correct, complete against the scoped seams, the smallest production change, and free of fake tests and imaginary-risk engineering.
    - The advisor is advisory: validate its advice against code, tests, reviewers, GitNexus, and production-code gates before changing or committing. Fix confirmed findings locally before pushing to cut reviewer-fleet rounds.
 10. After commit/push/PR-update, run the PR Reviewer Completion Gate in `~/.claude/CLAUDE.md` before declaring complete or moving to another slice/PRD.
