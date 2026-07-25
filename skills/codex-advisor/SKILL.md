@@ -10,6 +10,13 @@ decision, implementation, tests, and final report. The advisor supplies
 independent pressure against the evidence Claude provides. It is the mirror of
 `~/.codex/skills/claude-advisor`, which Codex uses to consult Claude.
 
+The delegate is the **Claude Code harness running a Codex model** (`claude -p
+--model gpt-5.6-sol` through the local proxy) — not the Codex CLI. So it uses
+Claude Code skill invocation (the Skill tool, `/name`), not Codex's `$name`
+form; `$name` is inert here. Model diversity is the point, not harness
+diversity: an independent model reviews the same evidence. For a true Codex-CLI
+second opinion, use `codex exec` directly instead.
+
 Use the wrapper. Never hand-build the consult:
 
 ```bash
