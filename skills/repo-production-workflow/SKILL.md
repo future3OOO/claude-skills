@@ -18,12 +18,12 @@ merely read. Reading a linked `SKILL.md` does not satisfy a step.
 | 1 | `repo-context-forge` | Skill tool, then its `bootstrap.py` via Bash (no slash command) |
 | 2 | `diagnose` (bugs/regressions/perf only) | Skill tool |
 | 3 | GitNexus packet checks | `mcp__gitnexus__*` MCP tools |
-| 4 | Codex advisor scope check | bundled `scripts/codex-advisor.sh` via Bash ONLY |
+| 4 | `codex-advisor` (phase `preflight-advice`) | Skill tool, then its `ask-codex-advisor.sh` wrapper via Bash |
 | 5 | `production-preflight` | Skill tool |
 | 6 | `tdd` (behavior changes) then `production-code` | Skill tool, in that order |
 | 7 | verification | repo test/lint/build commands, bundled production-code gate, `mcp__gitnexus__detect_changes` |
 | 8 | `code-review` | Skill tool |
-| 9 | Codex advisor challenge round | same script, `--resume <session-id>` |
+| 9 | `codex-advisor` (phase `precommit-challenge`) | same wrapper, same `--slug` |
 
 Users may also type these as `/repo-context-forge`, `/diagnose`, `/tdd`,
 `/production-preflight`, `/production-code`, `/code-review`. Escalate to
@@ -46,14 +46,13 @@ Users may also type these as `/repo-context-forge`, `/diagnose`, `/tdd`,
    - Use the packet repo value.
    - Do not let broader GitNexus output shrink the packet surface.
    - Run impact analysis before editing indexed symbols.
-4. Delegate a read-only scope check to the Codex advisor before preflight. The advisor is the Codex delegate served through the local CLIProxyAPI proxy, not the codex plugin. The claudex/claudehx alias environment in `~/.bashrc` owns the advisor model id (`CLAUDE_CODE_SUBAGENT_MODEL`) and proxy endpoint; do not pin model ids in this skill.
-   - ONE sanctioned transport, all sessions: the bundled script via Bash from the repo or worktree root, consult payload on stdin: `~/.claude/skills/repo-production-workflow/scripts/codex-advisor.sh <<'EOF' ... EOF`. Run it as a BACKGROUND Bash task, stdout to a file, stderr to a SEPARATE file, and NEVER wrap it in `timeout`. Record its `session_id` for the challenge round.
-   - NEVER route a consult through the codex plugin / companion forwarder or the Agent tool: the forwarder silently retries hung handoffs every ~5-8 minutes, each retry a fresh self-summarizing Codex session (2026-07-25 incident: five concurrent rogue consults). Do not hand-build the consult env from `~/.bashrc` either — that path breaks on token line-continuations.
-   - `claude -p --output-format json` BUFFERS: an in-flight consult writes zero bytes and typically runs 10-15 minutes at high effort. Zero output is not failure; judge only after the process exits.
-   - Before any relaunch, `pgrep -f "claude -p --model"` and cancel strays; blind retries duplicate consults and burn tokens in parallel.
-   - If the advisor is unavailable (proxy down, auth expired, stale model id — the script exits nonzero), do not block on an advisory input: proceed under the remaining gates and state the skipped consult in the final response. A quoting or JSON-parse mistake in your own command is not unavailability; rerun through the script.
-   - Forward the task contract, packet targets, and GitNexus impact summary; ask specifically for missed seams, callers, contracts, and no-change surfaces the scope may have skipped. The advisor must not edit.
-   - Advisor findings are advisory: validate them against the packet and GitNexus before adopting; feed confirmed missed seams into preflight.
+4. Invoke the [codex-advisor](../codex-advisor/SKILL.md) skill for a read-only scope check before preflight, phase `preflight-advice`. That skill owns the full consult contract; the essentials:
+   - ONE transport: `~/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh --slug <task> --phase preflight-advice --cwd "$PWD" -- "Question: ..."`, run as a BACKGROUND Bash task, stdout and stderr to SEPARATE files, never wrapped in `timeout`.
+   - Consults BUFFER and run 2-15 minutes: zero bytes in-flight is normal, not failure. Success = exit 0 + non-empty stdout + terminal stderr marker `codex_advisor_complete status=0 provider=codex`.
+   - Never route a consult through the codex plugin/companion forwarder or the Agent tool; before any relaunch, `pgrep -f "claude -p --model"` and cancel strays.
+   - Reuse ONE stable `--slug` across steps 4 and 9 so the challenge keeps the original scope.
+   - If the advisor is unavailable (wrapper exits nonzero), do not block: proceed under the remaining gates and state the skipped consult in the final response. A quoting mistake in your own command is not unavailability.
+   - Forward the task contract, packet targets, and GitNexus impact summary; ask for missed seams, callers, contracts, and no-change surfaces. Advisor findings are advisory: validate against the packet and GitNexus before adopting.
 5. Run the [production-preflight](../production-preflight/SKILL.md) skill before the first tracked edit.
    - Anchor `affectedSurface`, `proofPlan`, `touchpoints`, `verify`, and `update` to the Repo Context Forge packet, GitNexus checks, and confirmed Codex scope findings.
    - If preflight has blocking `openQuestions`, stop before editing.
@@ -85,8 +84,8 @@ Users may also type these as `/repo-context-forge`, `/diagnose`, `/tdd`,
    - After any fix, rerun the affected proof and the production-code gate.
 9. For non-trivial diffs (same threshold as step 8), run the Codex challenge round before any commit, push, PR open, or PR update.
    - Fix-only commits whose every change addresses a finding already confirmed in this pass's challenge round, code-review, or the PR reviewer loop do not need a new round; state the skipped round in the final response.
-   - Continue the SAME advisor context from step 4 so it retains the original scope: the consult script with `--resume <session-id>`, run from the same cwd as step 4 (sessions are per-directory). Same transport rules as step 4: script only, background, uncapped, no plugin, pgrep before relaunch.
-   - If the recorded session is unreachable (expired, compaction), run a fresh consult re-forwarding the step 4 payload plus the current diff. If the advisor is unavailable entirely, proceed as in step 4 and state the skipped round.
+   - Invoke `codex-advisor` with phase `precommit-challenge`, the SAME `--slug` as step 4, and `--base-ref <base>`; the wrapper attaches the live diff, so never paste a prose summary as evidence. Same transport rules as step 4.
+   - If the stored session is unreachable, add `--fresh` and re-forward the step 4 payload plus the current diff. If the advisor is unavailable entirely, proceed as in step 4 and state the skipped round.
    - Provide the live branch/head, base ref, governing issue/PRD, the diff, TDD proof, and `code-review` findings and dispositions; ask whether the change is correct, complete against the scoped seams, the smallest production change, and free of fake tests and imaginary-risk engineering.
    - The advisor is advisory: validate its advice against code, tests, reviewers, GitNexus, and production-code gates before changing or committing. Fix confirmed findings locally before pushing to cut reviewer-fleet rounds.
 10. After commit/push/PR-update, run the PR Reviewer Completion Gate in `~/.claude/CLAUDE.md` before declaring complete or moving to another slice/PRD.

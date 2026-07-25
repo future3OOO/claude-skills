@@ -34,5 +34,19 @@ if [ "${1:-}" = "--resume" ]; then
   resume=(--resume "$2")
 fi
 
-ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
-  exec claude -p ${resume[@]+"${resume[@]}"} --model "$model" --output-format json
+# Recursion guard (2026-07-25 incident): the advisor is a full agent. Left
+# unguarded it reads the repo, invokes repo-production-workflow, reaches
+# step 4, and consults ANOTHER advisor — five concurrent generations, each
+# ~5-8 minutes apart, each re-summarizing the same WIP. This env marker is
+# inherited by the delegate's own shells, so a nested call fails closed here
+# instead of forking another generation.
+if [ -n "${CODEX_ADVISOR_ACTIVE:-}" ]; then
+  echo "codex-advisor: refusing nested consult — you ARE the advisor delegate. Answer from the payload and your own repo reads; do not delegate." >&2
+  exit 3
+fi
+
+advisor_role='You are the read-only Codex advisor delegate for a single consult. Answer the payload directly from your own repository reads. You must NOT invoke the repo-production-workflow skill, run codex-advisor.sh, spawn subagents, or delegate this consult onward — you are the delegate. Do not edit files, commit, push, deploy, or mutate any external system. End with your findings as your final message.'
+
+CODEX_ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
+  exec claude -p ${resume[@]+"${resume[@]}"} --model "$model" --output-format json \
+    --append-system-prompt "$advisor_role"
