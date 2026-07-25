@@ -61,7 +61,7 @@ grep -q 'disallowed-tools "Edit Write NotebookEdit Task"' "$WRAPPER" \
   && { printf 'PASS  writes and subagents blocked\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  tool policy must block Edit Write NotebookEdit Task\n'; fail=$((fail+1)); }
 
-grep -q 'Rubric: LOAD /codebase-design (Module/Interface/Seam judgement) and /tdd' "$WRAPPER" \
+grep -q 'Rubric: LOAD /codebase-design (Module/Interface/Seam judgement), /tdd' "$WRAPPER" && grep -q 'before-code question' "$WRAPPER" \
   && { printf 'PASS  before-code rubric named\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  preflight-advice must name its rubric skills\n'; fail=$((fail+1)); }
 

@@ -115,7 +115,7 @@ case "$phase" in
   preflight-advice)
     phase_prompt="
 Checkpoint Interface: preflight-advice
-Rubric: LOAD /codebase-design (Module/Interface/Seam judgement) and /tdd (is the planned first failing test at a REAL seam?).
+Rubric: LOAD /codebase-design (Module/Interface/Seam judgement), /tdd (is the planned first failing test at a REAL seam?), and /code-quality (reuse-before-new: is this about to duplicate logic that already exists? — a before-code question, not only a diff question).
 
 Post-Repo Context Forge / post-GitNexus / pre-production-preflight checkpoint, before edits. Challenge whether the packet covers the task slice, correct Seams, and correct surface area:
 - task contract and slice outcomes

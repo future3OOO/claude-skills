@@ -79,7 +79,9 @@ security sandbox, since a capable delegate could unset both variables. The
 role prompt and the read-only tool policy remain necessary layers.
 
 The advisor is DIRECTED to load a per-checkpoint rubric read-only — before
-code: `/codebase-design` + `/tdd`; before commit: `/code-review` (its smell
+code: `/codebase-design` + `/tdd` + `/code-quality` (reuse-before-new is a
+before-code question — dropping it in a 2026-07-25 A/B measurably lost the
+"this duplicates existing delta logic" finding); before commit: `/code-review` (its smell
 baseline makes Fake Test and Imaginary Risk hard violations) +
 `/codebase-design` + `/tdd` + `/code-quality` — and told not to load unrelated
 skills (permissive wording let an irrelevant skill hijack a consult). Two
