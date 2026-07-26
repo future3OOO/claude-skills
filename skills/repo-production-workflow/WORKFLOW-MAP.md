@@ -6,8 +6,11 @@ Each named skill is **invoked** with the Skill tool by exact name — reading it
 `SKILL.md` does not satisfy the step. Four gates can stop the pass entirely.
 
 > [!NOTE]
-> Diagram legend: **amber hexagons** are gates (the pass stops until something
-> is proven), **teal boxes** are ordinary steps, **green** is a terminal state.
+> Diagram legend: **violet boxes** are the codex-advisor rounds — the two
+> points where an outside model reviews the work, and the most commonly
+> skipped steps in the chain. **Amber hexagons** are gates (the pass stops
+> until something is proven), **teal boxes** are ordinary steps, **green** is
+> a terminal state.
 
 ---
 
@@ -58,12 +61,16 @@ flowchart LR
   G4 --> DONE(["pass complete"])
   A <-.-|"↩ findings · fix round · next slice<br/>re-enter at step 1"| RG
 
+  classDef advisor fill:#efe0fa,stroke:#6d2f9c,color:#33124d,stroke-width:3px
   classDef gate fill:#fbf1de,stroke:#a86c17,color:#4a3008,stroke-width:2px
   classDef step fill:#e2efee,stroke:#20605f,color:#123433
+  classDef decision fill:#eef2f6,stroke:#8894a3,color:#2b3440
   classDef done fill:#e3f2e8,stroke:#2c6b46,color:#123420
   classDef phase fill:#f6f8fa,stroke:#c9d3de,color:#4a5561
+  class AD1,AD2 advisor
   class G1,G2,G3,G4 gate
-  class A,DG,GN,AD1,PF,TD,PC,VF,CR,AD2,CM,RG step
+  class A,DG,GN,PF,TD,PC,VF,CR,CM,RG step
+  class BQ decision
   class DONE done
   class PH1,PH2,PH3,PH4,PH5 phase
 ```
@@ -112,8 +119,12 @@ flowchart LR
   end
   BEFORE -.->|same slug keeps scope| AFTER
 
+  classDef advisor fill:#efe0fa,stroke:#6d2f9c,color:#33124d,stroke-width:3px
   classDef step fill:#e2efee,stroke:#20605f,color:#123433
-  class S1,S2,S3,T1,T2,T3 step
+  classDef phase fill:#f6f8fa,stroke:#c9d3de,color:#4a5561
+  class S1,T1 step
+  class S2,S3,T2,T3 advisor
+  class BEFORE,AFTER phase
 ```
 
 **Transport rules**
