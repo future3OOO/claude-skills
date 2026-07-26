@@ -202,7 +202,7 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
   higher-risk one.
 - Consuming an internal seam from a NEW file (tests, smokes, harnesses, scripts) requires `mcp__gitnexus__context` on that seam BEFORE writing the consumer — a new file has no indexed symbols, so the edit-time impact rule alone never fires for it. Import the existing tested owner of the behavior instead of writing a second parsing/lifecycle client.
 - Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
-- Reindex after structural changes or git mutations when staleness is detected. For indexed repos this is enforced: the edit gate blocks code edits whenever `.gitnexus/meta.json.lastCommit` differs from HEAD — run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status` so graph evidence always matches the current PR head. Leave `--embeddings` off: it costs ~12% index size and does not restore `query`, which returns empty with or without it.
+- Reindex after structural changes or git mutations when staleness is detected. For indexed repos this is enforced: the edit gate blocks code edits whenever `.gitnexus/meta.json.lastCommit` differs from HEAD — run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status` so graph evidence always matches the current PR head.
 
 ### Hooks
 
