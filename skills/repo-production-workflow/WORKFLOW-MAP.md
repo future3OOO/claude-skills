@@ -25,7 +25,7 @@ flowchart LR
     direction TB
     A["1 · repo-context-forge<br/>intake packet"] --> BQ{"bug or<br/>regression?"}
     BQ -- yes --> DG["2 · diagnose<br/>reproduce → trace"]
-    DG --> GN["3 · GitNexus<br/>impact upstream"]
+    DG --> GN["3 · GitNexus<br/>context + impact<br/>callers AND callees"]
     BQ -- no --> GN
   end
 

@@ -184,10 +184,25 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
   - `mcp__gitnexus__query` for architecture and execution flows
   - `mcp__gitnexus__context` for callers/callees and process participation
   - `mcp__gitnexus__impact` (direction `upstream`) before editing
-- Always run impact analysis before editing a symbol in an indexed repo.
+- Before editing a symbol in an indexed repo, run BOTH `mcp__gitnexus__context`
+  on it (callers AND callees) and `mcp__gitnexus__impact` with
+  `direction: upstream` and `includeTests: true`. One call is never the full
+  seam. `impact` walks callers only, so an impact-only pass is structurally
+  blind to callees — and the thing a change actually breaks is usually a
+  callee: the shared writer, lock, or transition helper the edited symbol
+  calls. `includeTests` defaults to `false`, which hides the regression surface
+  the change has to keep green; always pass it explicitly.
+- Also run `impact` with `direction: downstream, includeTests: true` when
+  behavior is moved, deepened, consolidated, or hidden behind an Interface.
+- When the change touches shared state — the same table, row, file, lease, claim
+  token, or transition helper — run `mcp__gitnexus__context` on EVERY symbol
+  that mutates that state, not only the one being edited. Compare their risk
+  ratings against each other. Two writers to one row is the exact case a single
+  upstream impact call always misses, and the second writer is routinely the
+  higher-risk one.
 - Consuming an internal seam from a NEW file (tests, smokes, harnesses, scripts) requires `mcp__gitnexus__context` on that seam BEFORE writing the consumer — a new file has no indexed symbols, so the edit-time impact rule alone never fires for it. Import the existing tested owner of the behavior instead of writing a second parsing/lifecycle client.
 - Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
-- Reindex after structural changes or git mutations when staleness is detected. For indexed repos this is enforced: the edit gate blocks code edits whenever `.gitnexus/meta.json.lastCommit` differs from HEAD — run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status` so graph evidence always matches the current PR head.
+- Reindex after structural changes or git mutations when staleness is detected. For indexed repos this is enforced: the edit gate blocks code edits whenever `.gitnexus/meta.json.lastCommit` differs from HEAD — run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status` so graph evidence always matches the current PR head. Leave `--embeddings` off: it costs ~12% index size and does not restore `query`, which returns empty with or without it.
 
 ### Hooks
 

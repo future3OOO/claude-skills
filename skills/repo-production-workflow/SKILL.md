@@ -45,7 +45,12 @@ Users may also type these as `/repo-context-forge`, `/diagnose`, `/tdd`,
 3. Run the packet-listed GitNexus required checks via the `gitnexus` MCP server (Claude Code exposes these as `mcp__gitnexus__<tool>` tools).
    - Use the packet repo value.
    - Do not let broader GitNexus output shrink the packet surface.
-   - Run impact analysis before editing indexed symbols.
+   - Before editing an indexed symbol run BOTH `context` on it (callers AND
+     callees) and `impact` upstream. `impact` is caller-only, so an impact-only
+     pass cannot see the callee a change usually breaks.
+   - For shared-state work (same table, row, lease, claim token, or transition
+     helper), run `context` on every symbol that mutates that state and compare
+     their risk ratings; the writer you are not editing is often the riskier one.
 4. Invoke the [codex-advisor](../codex-advisor/SKILL.md) skill for a read-only scope check before preflight, phase `preflight-advice`. That skill owns the full consult contract; the essentials:
    - ONE transport: `~/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh --slug <task> --phase preflight-advice --cwd "$PWD" -- "Question: ..."`, run as a BACKGROUND Bash task, stdout and stderr to SEPARATE files, never wrapped in `timeout`.
    - Consults BUFFER and run 2-15 minutes: zero bytes in-flight is normal, not failure. Success = exit 0 + non-empty stdout + terminal stderr marker `codex_advisor_complete status=0 provider=codex`.
