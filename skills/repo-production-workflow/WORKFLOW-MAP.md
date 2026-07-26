@@ -13,33 +13,59 @@ Each named skill is **invoked** with the Skill tool by exact name — reading it
 
 ## 1. The chain, end to end
 
+Five phases run left to right, each one top to bottom, closing back on itself:
+reviewer findings re-enter at step 1 rather than being patched in place.
+
 ```mermaid
-flowchart TD
-  A["1 · repo-context-forge<br/>intake packet + bootstrap.py"] --> B{"bug, regression<br/>or perf?"}
-  B -- yes --> C["2 · diagnose<br/>reproduce → trace → hypothesis"]
-  B -- no --> D
-  C --> D["3 · GitNexus packet checks<br/>impact upstream before any edit"]
-  D --> E["4 · codex-advisor<br/>phase: preflight-advice<br/>scope challenge"]
-  E --> G1{{"GATE 1<br/>scope confirmed,<br/>findings dispositioned"}}
-  G1 --> F["5 · production-preflight<br/>surface · invariants · proof plan"]
-  F --> G2{{"GATE 2<br/>no blocking<br/>openQuestions"}}
-  G2 --> H["6a · tdd<br/>failing test at a REAL seam"]
-  H --> I["6b · production-code<br/>smallest correct change"]
-  I --> J["7 · verification<br/>tests · bundled gate · detect_changes"]
-  J --> K["8 · code-review<br/>Standards axis + Spec axis"]
-  K --> L["9 · codex-advisor<br/>phase: precommit-challenge<br/>diff challenge"]
-  L --> G3{{"GATE 3<br/>verdict is<br/>commit-ready"}}
-  G3 --> M["10 · commit → push → PR<br/>trigger the review fleet"]
-  M --> N["11 · reviewer completion gate"]
-  N --> G4{{"GATE 4<br/>0 unresolved<br/>non-outdated threads"}}
+flowchart LR
+  subgraph PH1["① CONTEXT · steps 1–3"]
+    direction TB
+    A["1 · repo-context-forge<br/>intake packet"] --> BQ{"bug or<br/>regression?"}
+    BQ -- yes --> DG["2 · diagnose<br/>reproduce → trace"]
+    DG --> GN["3 · GitNexus<br/>impact upstream"]
+    BQ -- no --> GN
+  end
+
+  subgraph PH2["② SCOPE · steps 4–5"]
+    direction TB
+    AD1["4 · codex-advisor<br/>preflight-advice"] --> G1{{"GATE 1<br/>scope confirmed"}}
+    G1 --> PF["5 · production-preflight<br/>surface · proof plan"]
+    PF --> G2{{"GATE 2<br/>no open blockers"}}
+  end
+
+  subgraph PH3["③ BUILD · steps 6–7"]
+    direction TB
+    TD["6a · tdd<br/>failing test, REAL seam"] --> PC["6b · production-code<br/>smallest change"]
+    PC --> VF["7 · verification<br/>tests · gate · detect_changes"]
+  end
+
+  subgraph PH4["④ CHALLENGE · steps 8–9"]
+    direction TB
+    CR["8 · code-review<br/>Standards + Spec"] --> AD2["9 · codex-advisor<br/>precommit-challenge"]
+    AD2 --> G3{{"GATE 3<br/>commit-ready"}}
+  end
+
+  subgraph PH5["⑤ SHIP · steps 10–11"]
+    direction TB
+    CM["10 · commit → push → PR<br/>trigger review fleet"] --> RG["11 · reviewer gate"]
+    RG --> G4{{"GATE 4<br/>0 unresolved threads"}}
+  end
+
+  GN --> AD1
+  G2 --> TD
+  VF --> CR
+  G3 --> CM
   G4 --> DONE(["pass complete"])
+  A <-.-|"↩ findings · fix round · next slice<br/>re-enter at step 1"| RG
 
   classDef gate fill:#fbf1de,stroke:#a86c17,color:#4a3008,stroke-width:2px
   classDef step fill:#e2efee,stroke:#20605f,color:#123433
   classDef done fill:#e3f2e8,stroke:#2c6b46,color:#123420
+  classDef phase fill:#f6f8fa,stroke:#c9d3de,color:#4a5561
   class G1,G2,G3,G4 gate
-  class A,C,D,E,F,H,I,J,K,L,M,N step
+  class A,DG,GN,AD1,PF,TD,PC,VF,CR,AD2,CM,RG step
   class DONE done
+  class PH1,PH2,PH3,PH4,PH5 phase
 ```
 
 ---
