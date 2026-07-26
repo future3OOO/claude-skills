@@ -181,9 +181,14 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 - Use Bash `rg` only when an exhaustive raw listing, exact count, machine-readable full output, or a missing `fff` tool makes it necessary.
 - Do not use `grep` or `find` for repository search unless both `fff` and `rg` are unavailable, or the task specifically requires those commands.
 - After locating the symbol or file, switch to GitNexus for meaning and safety:
-  - `mcp__gitnexus__query` for architecture and execution flows
-  - `mcp__gitnexus__context` for callers/callees and process participation
-  - `mcp__gitnexus__impact` (direction `upstream`) before editing
+  - `mcp__gitnexus__context` for a known symbol: exact match, callers, callees
+  - `mcp__gitnexus__impact` for blast radius before editing
+  - `mcp__gitnexus__query` is optional discovery only, never seam evidence: it
+    returns empty past ~4 terms and cannot retrieve a symbol by exact name
+    (measured identically through Claude and Codex). Keep it to 2-4 keywords,
+    and use `context` whenever the name is known.
+  - `processes` covers a small fraction of the graph, so an empty
+    `processes: []` is not evidence that no flow exists.
 - Before editing a symbol in an indexed repo, run BOTH `mcp__gitnexus__context`
   on it (callers AND callees) and `mcp__gitnexus__impact` with
   `direction: upstream` and `includeTests: true`. One call is never the full
