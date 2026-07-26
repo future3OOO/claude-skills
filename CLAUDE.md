@@ -123,6 +123,11 @@ Delivery and review discipline:
 
 - Do not leave completed repo work stranded as local uncommitted changes. When work is intended for review or integration and a remote exists, verify branch/base/upstream alignment, commit the cleaned change, push, and open or update the PR unless the user or repo workflow explicitly says not to. Keep commits small, coherent, and reviewable.
 - Treat reviewer comments as evidence to verify against code, contracts, tests, and edge cases; reviewers can be wrong. Fix valid issues with the smallest production change; explain with evidence when a requested change is unnecessary or unsafe.
+- Before acting on ANY reviewer or automated finding, run two checks. They are unconditional and apply to one-line fixes, not just passes that invoke `production-preflight`. Severity labels are not a work queue: automated reviewers are reliable about what code *can* do and unreliable about whether it *does*.
+  - **Premise**: name the finding's assumption about runtime, config, or installed state and verify it against the live system with a command. A false premise is rejected with the measurement quoted, and no code changes.
+  - **Occurrence**: count the failing shape in captured data, logs, or reachable callers. Zero occurrences means report line, not change.
+- Validating a finding is not validating a fix. Before shipping a change to a parser, matcher, predicate, or anything consuming external text or markup, run the NEW code over values already captured in the system and require zero regressions. A test written from the same assumption that produced the fix cannot detect its error; only the corpus can.
+- Give every finding a disposition with evidence — fixed, rejected-with-evidence, or reported-not-actioned — where the reviewer loop can see it. A rejection without a measurement is indistinguishable from one ignored.
 - Resolve review threads only after the fix is pushed or the evidence has been posted. Merges and deploys remain subject to the repo's approval, quiet-window, and release gates.
 
 PR Reviewer Completion Gate:
