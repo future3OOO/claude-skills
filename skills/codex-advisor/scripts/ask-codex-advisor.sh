@@ -190,7 +190,7 @@ printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 ANTHROPIC_BASE_U
     --model "$model" \
     --output-format text \
     --append-system-prompt "$role" \
-    --allowed-tools "Read Grep Glob Skill Bash(git diff:*) Bash(git status:*) Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git branch:*) Bash(git rev-parse:*) Bash(git ls-files:*) Bash(git grep:*) Bash(gh issue view:*) Bash(gh pr view:*) Bash(gh run view:*) Bash(rg:*) Bash(grep:*) Bash(ls:*) Bash(find:*) Bash(sed:*) Bash(awk:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(cut:*) Bash(sort:*) Bash(uniq:*) Bash(tr:*) Bash(comm:*) Bash(diff:*) Bash(jq:*) Bash(basename:*) Bash(dirname:*) Bash(realpath:*)" \
+    --allowed-tools "Read Grep Glob Skill mcp__gitnexus mcp__fff Bash(gitnexus:*) Bash(git diff:*) Bash(git status:*) Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git branch:*) Bash(git rev-parse:*) Bash(git ls-files:*) Bash(git grep:*) Bash(gh issue view:*) Bash(gh pr view:*) Bash(gh run view:*) Bash(rg:*) Bash(grep:*) Bash(ls:*) Bash(find:*) Bash(sed:*) Bash(awk:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(cut:*) Bash(sort:*) Bash(uniq:*) Bash(tr:*) Bash(comm:*) Bash(diff:*) Bash(jq:*) Bash(basename:*) Bash(dirname:*) Bash(realpath:*) Bash(du:*) Bash(python3:*)" \
     --disallowed-tools "Edit Write NotebookEdit Task"
 status=$?
 set -e
@@ -198,6 +198,13 @@ set -e
 if [[ "$status" -ne 0 ]]; then
   printf 'error: codex advisor returned status %s\n' "$status" >&2
   exit "$status"
+fi
+
+# Record the successful consult so the commit gate can prove a challenge round ran
+# against the CURRENT diff. Keyed by repo + phase; the gate compares its mtime to the
+# newest tracked-file mtime, so any edit after the consult invalidates it.
+if [[ -n "$phase" ]]; then
+  printf '%s\n' "$(date +%s)" > "$state_dir/${cwd_key}-${phase}.stamp"
 fi
 
 printf 'codex_advisor_complete status=0 provider=codex\n' >&2
