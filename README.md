@@ -54,10 +54,20 @@ SHAs are what this estate was last verified against, not minimums.
 
 | Tool | Source | Branch @ SHA |
 | --- | --- | --- |
-| GitNexus | `github.com/future3OOO/GitNexus` | `codex/add-global-codex-hooks` @ `6a305e05` |
-| Repo Context Forge | `github.com/future3OOO/repo-context-forge` | `fix/gitnexus-singleflight-crash-dump` @ `63be8751` |
-| SoulForge | `github.com/future3OOO/soulforge` | `main` @ `a8b416cf` |
-| fff | released binary, no local checkout | `0.7.1` (`e8dd50ce`) |
+| GitNexus | [future3OOO/GitNexus](https://github.com/future3OOO/GitNexus) | `codex/add-global-codex-hooks` @ `6a305e05` |
+| Repo Context Forge | [future3OOO/repo-context-forge](https://github.com/future3OOO/repo-context-forge) — **private** | `fix/gitnexus-singleflight-crash-dump` @ `63be8751` |
+| SoulForge | [future3OOO/soulforge](https://github.com/future3OOO/soulforge) | `main` @ `a8b416cf` |
+| fff | [future3OOO/fff.nvim](https://github.com/future3OOO/fff.nvim), prebuilt binary, no local checkout | `0.7.1` (`e8dd50ce`) |
+
+Two entries need more than a public clone:
+
+- **Repo Context Forge is private** — the only closed repo of the four.
+- **fff publishes no `0.7.1` GitHub Release.** The fork is public, but neither it
+  nor upstream `dmtrKovalenko/fff` publishes that release, and this mirror
+  records no downloadable artifact and no verified build recipe. The installed
+  binary self-reports `fff-mcp 0.7.1 (e8dd50ce…)`, and that commit is shared
+  upstream history, so it fixes the version but not which remote it was built
+  from.
 
 Expected paths, all hardcoded somewhere in the estate:
 
