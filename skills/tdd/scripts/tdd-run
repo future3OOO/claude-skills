@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Capture RED/GREEN evidence or record why TDD is not required.
+
+The artifact is captured evidence, not proof of causal intent or chronology.
+Its change fingerprint is stable when the same worktree content is staged.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from hooks.lib.evidence_lifecycle import (  # noqa: E402
+    PassUpdate,
+    TddRun,
+    record_tdd_decision,
+    record_tdd_run,
+    require_active_pass,
+    safe_slug,
+    update_pass,
+)
+from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+MAX_CAPTURE = 16000
+
+
+def _record_not_required(identity, slug: str, reason: str) -> int:
+    path = record_tdd_decision(identity, slug, reason)
+    update_pass(
+        identity,
+        PassUpdate(
+            gates={"tdd": "not-required"},
+            artifacts={"tddDecision": str(path)},
+            tdd_decision={"status": "not-required", "reason": reason, "artifactPath": str(path)},
+        ),
+    )
+    print(json.dumps({"artifactPath": str(path), "status": "not-required"}, sort_keys=True))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cwd", "--repo", dest="cwd", default=os.getcwd())
+    parser.add_argument("--slug", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--phase", choices=("red", "green"))
+    mode.add_argument("--not-required", metavar="REASON")
+    parser.add_argument("--behavior")
+    parser.add_argument("--seam", default="", help="real public Interface/Seam exercised by the command")
+    parser.add_argument("--expected-failure", default="")
+    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+
+    try:
+        identity = resolve_repo_identity(args.cwd)
+        state = require_active_pass(identity)
+        slug = safe_slug(args.slug)
+        if state.get("slug") != slug:
+            raise ValueError("--slug does not match the active pass")
+        if args.not_required is not None:
+            reason = args.not_required.strip()
+            if not reason:
+                raise ValueError("--not-required requires a non-empty reason")
+            if args.command:
+                raise ValueError("--not-required does not accept a command")
+            return _record_not_required(identity, slug, reason)
+
+        behavior = str(args.behavior or "").strip()
+        if not behavior:
+            raise ValueError("--behavior is required for RED/GREEN evidence")
+        command = args.command[1:] if args.command and args.command[0] == "--" else args.command
+        if not command:
+            raise ValueError("a command is required after --")
+        seam = args.seam.strip() or f"caller-declared behavior seam: {behavior}"
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(identity.root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.timeout,
+                check=False,
+            )
+            raw, exit_code, timed_out = result.stdout or b"", result.returncode, False
+        except subprocess.TimeoutExpired as exc:
+            raw = (exc.stdout or b"") + (exc.stderr or b"")
+            exit_code, timed_out = 124, True
+
+        command_text = shlex.join(command)
+        path, valid = record_tdd_run(
+            identity,
+            slug,
+            TddRun(
+                phase=args.phase,
+                behavior=behavior,
+                seam=seam,
+                expected_failure=args.expected_failure.strip(),
+                command=command_text,
+                exit_code=exit_code,
+                timed_out=timed_out,
+                output=raw,
+            ),
+        )
+        update_pass(
+            identity,
+            PassUpdate(
+                gates={f"tdd-{args.phase}": "passed" if valid else "failed", "tdd": "passed" if args.phase == "green" and valid else "pending"},
+                artifacts={"tdd": str(path)},
+                tdd_decision={"status": "completed" if args.phase == "green" and valid else "pending", "artifactPath": str(path)},
+            ),
+        )
+        text = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
+        if text:
+            print(text, end="" if text.endswith("\n") else "\n")
+        print(json.dumps({"artifactPath": str(path), "phase": args.phase, "valid": valid, "exitCode": exit_code}, sort_keys=True))
+        if not valid:
+            message = "RED evidence must fail for the expected reason." if args.phase == "red" else "GREEN evidence must pass after a changed production surface and a valid RED for the same behavior."
+            print(message, file=sys.stderr)
+            return 2
+        return 0
+    except (RepoIdentityError, ValueError, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

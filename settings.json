@@ -27,7 +27,9 @@
       "Bash(*wa_chat_history.js*--manage-gateway*)",
       "Bash(*rcf-gate-disabled*)",
       "Edit(~/.claude/hooks/**)",
-      "Edit(~/.claude/settings.json)"
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/state/**)",
+      "Edit(~/.claude/codex-advisor/**)"
     ],
     "defaultMode": "bypassPermissions"
   },
@@ -39,13 +41,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/code-quality-gate.sh"
+            "command": "/home/prop_/.claude/hooks/code-quality-gate.sh",
+            "timeout": 120
           }
         ]
-      },
-      {
-        "matcher": "*",
-        "hooks": []
       }
     ],
     "PreToolUse": [
@@ -54,16 +53,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/repoforge-commit-gate.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/prop_/.claude/hooks/codex-challenge-commit-gate.sh"
+            "command": "/home/prop_/.claude/hooks/git-policy-gate.sh",
+            "timeout": 30,
+            "statusMessage": "Checking production commit and protected-state policies"
           }
         ]
       },
@@ -74,13 +66,9 @@
             "type": "command",
             "command": "/home/prop_/.claude/hooks/rcf-intake-gate.sh",
             "timeout": 30,
-            "statusMessage": "Checking Repo Context Forge intake gate"
+            "statusMessage": "Checking Repo Context Forge and preflight advice"
           }
         ]
-      },
-      {
-        "matcher": "*",
-        "hooks": []
       }
     ],
     "SessionStart": [
@@ -95,12 +83,25 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/prop_/.claude/hooks/pre-compact-flush.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/post-edit-blast-radius.sh"
+            "command": "/home/prop_/.claude/hooks/post-edit-blast-radius.sh",
+            "timeout": 30
           }
         ]
       }
@@ -123,5 +124,8 @@
   "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
-  "theme": "light-daltonized"
+  "theme": "light-daltonized",
+  "env": {
+    "REPO_PRODUCTION_ADVISOR_TRANSPORT": "wrapper-only"
+  }
 }

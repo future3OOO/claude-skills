@@ -1,120 +1,221 @@
 ---
 name: repo-production-workflow
-description: Orchestrate production repo changes — Repo Context Forge, packet-scoped GitNexus, production-preflight, production-code through final verification, code-review for non-trivial diffs. Use for implementation, bug fixes, refactors, and review-comment fixes that must stay minimal, verified, and fail-closed.
+description: Orchestrate a complete production-repository pass in order — Repo Context Forge, diagnose when applicable, packet-scoped GitNexus, codex-advisor preflight advice, production-preflight, TDD RED/GREEN evidence, production-code and tree-bound verification, fresh code-review for non-trivial diffs, codex-advisor precommit challenge, commit/PR, and reviewer completion. Use for implementation, bug fixes, refactors, and review-comment fixes that must stay minimal, verified, and fail closed.
 ---
 
 # Repo Production Workflow
 
-Use this skill for production code changes inside a git repository.
-It is an orchestration skill; it does not replace the referenced skills.
+Use this orchestration skill for production code changes inside a Git
+repository. Every named skill is invoked with the Skill tool by exact name;
+reading its file is not invocation. `~/.claude/CLAUDE.md` owns the canonical
+hard invariants and GitNexus doctrine. This skill sequences them without
+restating or weakening them.
 
-## How To Invoke The Chain
+The per-pass state is agent-writable workflow evidence, not tamper-proof state.
+All writers and readers use the single canonical repository identity helper.
 
-Every referenced skill is INVOKED with the Skill tool by its exact name — not
-merely read. Reading a linked `SKILL.md` does not satisfy a step.
+## Pass Identity
 
-| Step | Invoke | Mechanism |
-|---|---|---|
-| 1 | `repo-context-forge` | Skill tool, then its `bootstrap.py` via Bash (no slash command) |
-| 2 | `diagnose` (bugs/regressions/perf only) | Skill tool |
-| 3 | GitNexus packet checks | `mcp__gitnexus__*` MCP tools |
-| 4 | `codex-advisor` (phase `preflight-advice`) | Skill tool, then its `ask-codex-advisor.sh` wrapper via Bash |
-| 5 | `production-preflight` | Skill tool |
-| 6 | `tdd` (behavior changes) then `production-code` | Skill tool, in that order |
-| 7 | verification | repo test/lint/build commands, bundled production-code gate, `mcp__gitnexus__detect_changes` |
-| 8 | `code-review` | Skill tool |
-| 9 | `codex-advisor` (phase `precommit-challenge`) | same wrapper, same `--slug` |
+Choose one short stable slug for the entire pass. Do not put phase words in it.
+Begin state before bootstrap:
 
-Users may also type these as `/repo-context-forge`, `/diagnose`, `/tdd`,
-`/production-preflight`, `/production-code`, `/code-review`. Escalate to
-`repo-large-implementation` before starting multi-PR work.
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" begin \
+  --repo "$PWD" --slug "<task>" --intent "<user request>"
+```
+
+Owned helpers update `~/.claude/state/<repo-key>/pass-<slug>.json` atomically as
+gates and artifacts change. A missing field is not a passed gate. `PreCompact`
+only flushes existing state; it never manufactures one.
 
 ## Mandatory Order
 
-1. Run the [repo-context-forge](../repo-context-forge/SKILL.md) skill before choosing files, GitNexus queries, review findings, or edits.
-   - If the user described planned work before files changed, pass the request as `--intent`.
-   - If Repo Context Forge emits blockers, stop and surface them.
-   - Use packet targets and coverage plan as the first-pass surface.
-   - When the packet lists `delegation_tasks`, spawn the consolidated specialist via the Agent tool before GitNexus calls or edits.
-   - The specialist is supplementary: pass the existing Repo Context Forge intake/packet summary and instruct it not to run RepoForge/bootstrap or spawn further agents.
-2. State the task contract from the user request and packet surface.
-   - Name the behavior being changed.
-   - Name skipped high-ranked targets and why they are out of scope.
-   - Estimate whether the implementation can stay near the review-budget target (~500 net lines); if not, escalate to the repo-large-implementation skill before editing.
-   - For bug, regression, or flaky-failure fixes, invoke the diagnose skill before preflight: no fix until the root cause is reproduced and stated as a testable hypothesis.
-3. Run the packet-listed GitNexus required checks via the `gitnexus` MCP server (Claude Code exposes these as `mcp__gitnexus__<tool>` tools).
-   - Use the packet repo value.
-   - Do not let broader GitNexus output shrink the packet surface.
-   - Before editing an indexed symbol run BOTH `context` on it (callers AND
-     callees) and `impact` upstream. `impact` is caller-only, so an impact-only
-     pass cannot see the callee a change usually breaks.
-   - For shared-state work (same table, row, lease, claim token, or transition
-     helper), run `context` on every symbol that mutates that state and compare
-     their risk ratings; the writer you are not editing is often the riskier one.
-4. Invoke the [codex-advisor](../codex-advisor/SKILL.md) skill for a read-only scope check before preflight, phase `preflight-advice`. That skill owns the full consult contract; the essentials:
-   - ONE transport: `~/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh --slug <task> --phase preflight-advice --cwd "$PWD" -- "Question: ..."`, run as a BACKGROUND Bash task, stdout and stderr to SEPARATE files, never wrapped in `timeout`.
-   - Consults BUFFER and run 2-15 minutes: zero bytes in-flight is normal, not failure. Success = exit 0 + non-empty stdout + terminal stderr marker `codex_advisor_complete status=0 provider=codex`.
-   - Never route a consult through the codex plugin/companion forwarder or the Agent tool; before any relaunch, `pgrep -f "claude -p --model"` and cancel strays.
-   - Reuse ONE stable `--slug` across steps 4 and 9 so the challenge keeps the original scope.
-   - If the advisor is unavailable (wrapper exits nonzero), do not block: proceed under the remaining gates and state the skipped consult in the final response. A quoting mistake in your own command is not unavailability.
-   - Forward the task contract, packet targets, and GitNexus impact summary; ask for missed seams, callers, contracts, and no-change surfaces. Advisor findings are advisory: validate against the packet and GitNexus before adopting.
-5. Run the [production-preflight](../production-preflight/SKILL.md) skill before the first tracked edit.
-   - Anchor `affectedSurface`, `proofPlan`, `touchpoints`, `verify`, and `update` to the Repo Context Forge packet, GitNexus checks, and confirmed Codex scope findings.
-   - If preflight has blocking `openQuestions`, stop before editing.
-6. For behavior changes, invoke the `tdd` skill FIRST and write the failing
-   test through the public Interface against the real seam; watch it fail
-   before any production edit. This produces the TDD proof step 9 forwards.
-   Skip only for genuinely non-behavioral diffs (docs, formatting, renames),
-   and say so in the final response. Never fabricate a mock seam to go green.
-   Then invoke the [production-code](../production-code/SKILL.md) skill before writing any repository file content, and implement under it.
-   - Choose the smallest production-safe implementation path before editing.
-   - This includes tracked files, untracked files, scratch implementation files, generated source, and new worktrees.
-   - Make the smallest direct change.
-   - Reuse existing paths before adding helpers or abstractions.
-   - Keep behavior fail-closed and boundary-validated.
-   - Do not clean up unrelated code.
-7. Verify under the production-code skill against the affected surface.
-   - Run focused tests and the repo gates relevant to touched areas (via the Bash tool).
-   - Run the bundled production-code gate before finalizing the implementation.
-   - Re-check no-change surfaces named in preflight.
-   - Call the `gitnexus` MCP server's detect-changes tool after edits and before committing.
-8. For non-trivial diffs, run the [code-review](../code-review/SKILL.md) skill
-   after the production-code gate and before commit/push. Non-trivial means
-   any diff beyond a mechanical edit with no behavior surface (formatting,
-   renames, comments, docs); this definition also sets the step-9 threshold.
-   - Review against the correct fixed point and governing PRD, issue, or spec.
-   - Keep Standards findings separate from Spec findings.
-   - Disposition every finding as fixed, rejected-with-evidence, or an accepted
-     follow-up with a tracked issue.
-   - After any fix, rerun the affected proof and the production-code gate.
-9. For non-trivial diffs (same threshold as step 8), run the Codex challenge round before any commit, push, PR open, or PR update.
-   - Fix-only commits whose every change addresses a finding already confirmed in this pass's challenge round, code-review, or the PR reviewer loop do not need a new round; state the skipped round in the final response.
-   - Invoke `codex-advisor` with phase `precommit-challenge`, the SAME `--slug` as step 4, and `--base-ref <base>`; the wrapper attaches the live diff, so never paste a prose summary as evidence. Same transport rules as step 4.
-   - If the stored session is unreachable, add `--fresh` and re-forward the step 4 payload plus the current diff. If the advisor is unavailable entirely, proceed as in step 4 and state the skipped round.
-   - Provide the live branch/head, base ref, governing issue/PRD, the diff, TDD proof, and `code-review` findings and dispositions; ask whether the change is correct, complete against the scoped seams, the smallest production change, and free of fake tests and imaginary-risk engineering.
-   - The advisor is advisory: validate its advice against code, tests, reviewers, GitNexus, and production-code gates before changing or committing. Fix confirmed findings locally before pushing to cut reviewer-fleet rounds.
-10. After commit/push/PR-update, run the PR Reviewer Completion Gate in `~/.claude/CLAUDE.md` before declaring complete or moving to another slice/PRD.
-   - The task is not complete until that gate passes for the current PR head.
-11. Final response must include:
-   - summary of the behavior changed
-   - verification commands and outcomes
-   - `code-review` findings and dispositions when it ran
-   - Codex advisor status: scope-check and challenge-round findings adopted or rejected, or the skipped round with its reason
-   - reviewer-loop status, blockers, unverified surfaces, or follow-ups
+### 1. Repo Context Forge
 
-## Scope Rules
+Invoke `repo-context-forge`, then run its wrapper with the same slug:
 
-- For review-only tasks, do not edit unless the user explicitly requested fixes.
-- For large plans, branch strategy, PR structure, multi-PR work, or any likely PR over the review budget, use the repo-large-implementation skill first, then this skill for each execution pass.
-- If not inside a git repository, state that Repo Context Forge does not apply and continue only if the task can still be safely scoped.
+```bash
+python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
+  --repo "$PWD" --workflow-slug "<task>" --intent "<user request>"
+```
 
-## Do Not
+Stop on packet blockers. Use packet targets and the coverage plan as the fixed
+first-pass surface. Spawn only the packet's consolidated specialist, when one
+is named, and give it the existing packet rather than allowing it to rerun
+bootstrap or spawn descendants.
 
-- Do not run production-preflight before Repo Context Forge on repo code changes.
-- Do not edit first and write a retrospective preflight.
-- Do not use GitHub review comments as a substitute for inspecting the packet target surface.
-- Do not treat local branch-only tests as sufficient proof for transaction-sensitive or contract-sensitive changes.
-- Do not add a wrapper, second implementation path, or broad configurability unless preflight proves it is the shortest correct path.
-- Do not report PR/review work complete merely because changes were committed,
-  pushed, or a PR was updated. Completion requires the reviewer-loop gate on
-  the latest head.
+### 2. Task contract and diagnosis
+
+State the changed behavior, governing source, skipped high-ranked targets, and
+review-budget fit. Escalate multi-PR or over-budget work to
+`repo-large-implementation` before editing.
+
+For bugs, regressions, flaky failures, or performance regressions, invoke
+`diagnose` and satisfy the canonical root-cause-first gate before proceeding.
+
+### 3. Packet-scoped GitNexus
+
+Run the packet-required GitNexus MCP checks and apply `~/.claude/CLAUDE.md` §9
+exactly. Broader graph output can widen verification but cannot silently shrink
+the packet surface. Save the caller/callee and impact evidence to the active
+pass when it will be consumed by later recorders:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" update \
+  --repo "$PWD" --phase gitnexus --gate gitnexus=passed \
+  --artifact gitnexus-context=/tmp/scratch/gitnexus-context.json
+```
+
+### 4. Codex advisor scope check
+
+Invoke `codex-advisor` with phase `preflight-advice`. That skill owns the full
+transport contract. The workflow retains only these operator facts:
+
+- run its wrapper as a background Bash task with separate stdout/stderr files;
+- accept success only after exit 0, non-empty stdout, and the terminal
+  `codex_advisor_complete` marker;
+- reuse this pass's one slug for both advisor rounds.
+
+Supply the task contract, packet, saved GitNexus evidence, intended proof, and
+no-change surfaces. When the proposal adds a module or public Seam, or alters a
+public Interface, invoke `/codebase-design` first and include its Module /
+Interface / Seam justification in this payload.
+
+An unavailable advisor is not a silent omission. The wrapper may create the
+pass-bound audited exception only when it actually exits nonzero and the caller
+supplies `--skip-reason-on-unavailable "<reason>"`. Quoting errors, empty output,
+or a missing completion marker are not unavailability and do not authorize the
+skip.
+
+### 5. Production preflight
+
+Invoke `production-preflight` before the first tracked production edit. Anchor
+all sections to the packet, GitNexus evidence, confirmed advisor findings, and
+any governing plan. Use its three-way unknowns decision. A material unresolved
+`openQuestions` item blocks editing.
+
+For transaction-sensitive work, load the canonical
+[transaction doctrine](../production-code/references/transaction-doctrine.md).
+
+### 6. TDD and implementation
+
+For behavior changes, invoke `tdd` first. Run the first RED command and each
+corresponding GREEN command through `tdd-run`; captured artifacts are evidence,
+not proof of chronology or intent. Skip TDD only for genuinely non-behavioral
+changes and record the reason in pass state.
+
+Then invoke `production-code` and make the smallest direct production change.
+Apply the canonical hard invariants; do not create local substitutes for them.
+Continuously update meaningful pass phase, dispositions, and follow-ups with
+`pass-state.py update` rather than relying on compaction recovery.
+
+### 7. Verify and bind the candidate tree
+
+Run focused and repository-required tests, lint, typecheck, build, domain gates,
+and GitNexus `detect_changes`. Recheck named no-change surfaces.
+
+Clean the diff, then stage the exact commit candidate. From this point, any
+staged change invalidates downstream tree-bound evidence and requires this
+sequence again:
+
+```bash
+git add <reviewed paths>
+python3 "$HOME/.claude/skills/production-code/scripts/record_quality_evidence.py" \
+  --repo "$PWD" --base-ref "<base>" --mode commit
+```
+
+The recorder binds evidence to `git write-tree`, current HEAD, gate version,
+packet/GitNexus input hashes, relevant untracked files, and command provenance.
+Unrelated unstaged tracked content does not change the index-bound identity;
+changes to relevant untracked code invalidate the evidence record.
+
+### 8. Fresh code review for non-trivial diffs
+
+A non-trivial diff is any production change beyond a mechanical edit with no
+behavior surface, using the recorder's deterministic threshold. Run
+`code-review` in a fresh delegate, verify its findings, and record the actual
+resolved model before attributing the opinion. Keep Standards and Spec separate.
+
+The read-only reviewer returns structured findings; the lead dispositions every
+item and writes the exact-tree artifact:
+
+```bash
+python3 "$HOME/.claude/skills/code-review/scripts/record-review.py" \
+  --repo "$PWD" --slug "<task>" --resolved-model "<actual-model>" \
+  --review-context-id "<fresh-context-id>" --fresh-delegate \
+  --input /tmp/scratch/code-review.json
+```
+
+After any fix, restage and repeat steps 7 and 8. A review artifact from another
+index tree is invalid.
+
+### 9. Codex advisor challenge
+
+For every production-code commit, invoke `codex-advisor` with phase
+`precommit-challenge`, the same slug, and `--base-ref`. Run it after exact-tree
+quality evidence exists and, for non-trivial diffs, after the fresh review artifact
+exists. The wrapper attaches those artifacts, TDD capture, packet evidence, and
+the live diff automatically.
+
+Disposition every advisor finding against code and proof. Any change requires
+restaging and repeating steps 7 through 9.
+
+A challenge exception is permitted only for a narrowly identified already-
+reviewed fix-only commit or a genuinely unavailable advisor. Create a one-use,
+reasoned nonce with the owned helper, which prints the only accepted command:
+
+```bash
+python3 "$HOME/.claude/skills/codex-advisor/scripts/record-advisor-skip.py" \
+  --cwd "$PWD" --slug "<task>" --phase precommit-challenge \
+  --reason "<specific exception>" --command 'git commit -m "<message>"'
+```
+
+Run the emitted environment-prefixed Git command unchanged. The gate parses
+invocation environment metadata, binds the nonce to repo, slug, HEAD, and index
+tree, logs its consumption, and rejects reuse. A commit-message substring or
+hand-written file never skips the gate.
+
+### 10. Commit, push, and PR
+
+Commit only the staged tree that owns current quality, review, TDD decision, and
+challenge evidence. Exact-tree binding uses design (a): staging and committing
+are separate Bash calls. After the evidence recorder and advisor bind to the
+current `git write-tree`, run plain `git commit`. The merged gate blocks commands
+that both stage and commit, `commit -a`/`--all`, and commit pathspec forms because
+PreToolUse cannot know their future tree. Ambiguous plausible commit syntax and
+internal gate errors fail closed with exit 2.
+
+Push and open or update the PR when the work is intended for integration and a
+remote exists, unless the user or repository workflow explicitly says not to.
+
+### 11. Reviewer completion
+
+Run the PR Reviewer Completion Gate in `~/.claude/CLAUDE.md` on the current PR
+head. Commit, push, or PR update is not completion. Reviewer fixes begin a new
+named production pass at step 1.
+
+## Failure Semantics
+
+Failure-open paths are limited to documentation/scratch-only operations,
+non-repository operations, non-commit Bash, and unavailable non-authoritative
+Stop feedback reported as unknown.
+
+Failure-closed paths include a plausible commit whose syntax cannot be safely
+classified, malformed commit-bearing hook input, unresolved canonical
+repository identity for a detected commit, stale RepoForge/GitNexus evidence,
+missing/malformed/stale/mismatched required attestations, malformed or unaudited
+skips, and protected workflow-state mutation attempts. Policy blocks use exit 2;
+other exits are not treated as blocks by Claude Code.
+
+## Final response
+
+Include behavior changed, exact verification commands/outcomes, review findings
+and dispositions, both advisor-round statuses or audited exception reasons,
+reviewer-loop state, and any unverified surface or follow-up.
+
+## Scope exceptions
+
+Documentation-only work keeps the global lightweight exception. Non-repository
+work states that Repo Context Forge does not apply. Review-only work does not
+edit unless the user requested fixes. None of these exemptions weaken the
+canonical hard invariants when production behavior is changed.

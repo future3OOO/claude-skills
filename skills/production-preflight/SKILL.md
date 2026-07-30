@@ -9,7 +9,7 @@ Use this skill before making tracked edits on preflight-required code turns.
 
 ## Core Doctrine
 
-- Prefer root-cause fixes over band-aids.
+- For bugs and regressions, apply the canonical root-cause-first gate in `~/.claude/CLAUDE.md` and consume `/diagnose` evidence.
 - Follow the canonical review-comment doctrine in the repo's `CLAUDE.md` (or `AGENTS.md` if that is what the repo uses).
 - Treat review comments as evidence to verify against current code and the repo contract, not authority to obey blindly.
 - If you do not know, verify before editing.
@@ -67,6 +67,8 @@ If any item is missing, use `/diagnose` before editing. If the trace crosses sca
 
 ## Module Shape Gate
 
+When the change proposes a new production module, a new public Seam, or any change to a public Interface, invoke `/codebase-design` before completing this gate. This conditional producer-side load is also required in the step-4 advisor payload; trivial edits with no shape decision pay no rubric cost.
+
 Before production edits, name the module shape:
 
 - `publicInterface`: the caller-facing interface, CLI, IPC, UI flow, or module seam the proof crosses
@@ -84,18 +86,7 @@ Block if the public test surface cannot be named, or if a new module is proposed
 
 ## Affected Transaction System Rule
 
-When the change touches claim tokens, leases, compare-and-set/version fields, transition helpers, or replay/finalize/recovery semantics, the preflight must re-walk the full affected transaction system before edits.
-
-At minimum, name:
-
-- authoritative records mutated together
-- the real mutation boundary where state must be revalidated
-- adjacent interleavings that can cross the boundary after prepare but before finalize
-- projection, replay, recovery, and no-op paths that share the same helpers or state fields
-- the authoritative contract and invariants that govern those paths
-- one combined workflow proof plus focused invariant checks
-
-If the preflight cannot name those surfaces, block in `openQuestions`.
+For transaction-sensitive work, load and apply the mandatory [canonical transaction doctrine](../production-code/references/transaction-doctrine.md). Preflight owns the before-edit map and must place any unnamed authoritative record, mutation boundary, interleaving, shared projection/recovery path, contract, invariant, or proof surface in blocking `openQuestions`.
 
 ## What To Produce
 
@@ -205,9 +196,13 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 
 ### `openQuestions`
 
-- Put unresolved facts here instead of bluffing.
-- Mark the preflight blocked if any open question is required to make a safe edit.
-- Keep questions concrete enough that the user can answer them directly.
+Use a three-way decision for every material unknown:
+
+1. **Resolve from evidence.** Inspect the packet, repository, runtime, governing artifact, or verified source and record the answer.
+2. **Interactive architecture interview.** When the unknown can change Module shape, public Interface, Seam placement, data contract, or irreversible scope and the session is interactive, invoke `/grilling` and ask one question at a time. Stop once the architecture-changing unknowns are resolved; do not turn the pass into a general questionnaire.
+3. **Block honestly.** If the fact cannot be resolved, the session is non-interactive, or safe implementation depends on the answer, keep the named question in `openQuestions` and mark preflight blocked.
+
+Do not pause for ceremonial approval after evidence has resolved the decision. Keep questions concrete enough for a direct answer and record which branch above was used.
 
 ## Review-Comment Doctrine
 

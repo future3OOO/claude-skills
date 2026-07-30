@@ -49,7 +49,8 @@ def _existing_symbol_index(
 ) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
     indexed = 0
-    tracked = [normalize_path(line) for line in git_text(ctx.repo, ["ls-files"]).splitlines() if normalize_path(line)]
+    tracked_args = ["ls-tree", "-r", "--name-only", ctx.base_for_file] if ctx.candidate_source == "index" else ["ls-files"]
+    tracked = [normalize_path(line) for line in git_text(ctx.repo, tracked_args).splitlines() if normalize_path(line)]
     candidate_languages = {item.language for item in candidates}
     candidate_roots = {_top_dir(item.path) for item in candidates}
     gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
@@ -60,7 +61,10 @@ def _existing_symbol_index(
             continue
         if not _should_index_existing(rel_path, candidate_languages, candidate_roots, packet_paths, gitnexus_paths):
             continue
-        text = read_git_file(ctx.repo, ctx.base_for_file, rel_path) if rel_path in ctx.changed_files else read_file(ctx.repo / rel_path)
+        if ctx.candidate_source == "index":
+            text = read_git_file(ctx.repo, ctx.base_for_file, rel_path)
+        else:
+            text = read_git_file(ctx.repo, ctx.base_for_file, rel_path) if rel_path in ctx.changed_files else read_file(ctx.repo / rel_path)
         if text is None or len(text.encode("utf-8", errors="ignore")) > MAX_INDEX_FILE_BYTES:
             continue
         indexed += 1
@@ -81,7 +85,7 @@ def _new_symbols(ctx: GateContext) -> list[SymbolDef]:
             for symbol in extract_symbols(rel_path, text, "added"):
                 symbols.append(SymbolDef(symbol.name, rel_path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
     for rel_path in sorted(ctx.untracked):
-        if is_production_source_path(rel_path) and (text := read_file(ctx.repo / rel_path)) is not None:
+        if is_production_source_path(rel_path) and (text := ctx.read_current(rel_path)) is not None:
             symbols.extend(extract_symbols(rel_path, text, "untracked"))
     return symbols
 
