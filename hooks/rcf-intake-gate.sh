@@ -38,6 +38,38 @@ def _nearest_existing(path: str) -> Path:
     return probe
 
 
+INTAKE_MARKER = "REPO_CONTEXT_FORGE_REQUIRED_INTAKE"
+
+
+def _command_output_text(event: object) -> list[str]:
+    """Text this transcript event received as real command output.
+
+    The marker leaks into a transcript whenever a file containing it is edited
+    or quoted, so only genuine output counts: Bash stdout and tool_result
+    blocks. Tool INPUTS, patch echoes and typed prompts prove nothing.
+    """
+    texts: list[str] = []
+    stack: list[object] = [event]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            result = value.get("toolUseResult")
+            if isinstance(result, dict) and isinstance(result.get("stdout"), str):
+                texts.append(result["stdout"])
+            if value.get("type") == "tool_result":
+                content = value.get("content")
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    texts.extend(item.get("text", "") for item in content if isinstance(item, dict))
+            for key, child in value.items():
+                if key not in {"toolUseResult", "input"}:
+                    stack.append(child)
+        elif isinstance(value, list):
+            stack.extend(value)
+    return texts
+
+
 def _gitnexus_call_targets_repo(line: str, targets: frozenset[str]) -> bool:
     # A gitnexus call only counts when a parsed tool_use event targets THIS
     # repository; substring pairs are spoofable by lines that merely mention
@@ -67,10 +99,17 @@ def _gitnexus_call_targets_repo(line: str, targets: frozenset[str]) -> bool:
 def _transcript_markers(path: str, identity: RepoIdentity) -> tuple[bool, bool]:
     saw_intake = False
     saw_gitnexus = False
-    targets = frozenset({str(identity.root), Path(identity.root).name})
+    # Only the canonical root identifies the repository; two checkouts can
+    # share a basename and would otherwise satisfy each other's evidence.
+    targets = frozenset({str(identity.root)})
     with Path(path).open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
-            saw_intake = saw_intake or "REPO_CONTEXT_FORGE_REQUIRED_INTAKE" in line
+            if not saw_intake and INTAKE_MARKER in line:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    event = None
+                saw_intake = any(INTAKE_MARKER in text for text in _command_output_text(event))
             if not saw_gitnexus and ('"name":"mcp__gitnexus__' in line or '"name": "mcp__gitnexus__' in line):
                 saw_gitnexus = _gitnexus_call_targets_repo(line, targets)
             if saw_intake and saw_gitnexus:

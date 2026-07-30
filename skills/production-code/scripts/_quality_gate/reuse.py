@@ -96,6 +96,11 @@ def _risky_added_blocks(ctx: GateContext) -> list[SymbolDef]:
         if not is_production_source_path(rel_path):
             continue
         for line_no, text in lines:
+            # Prose cannot reimplement a helper. Without this, a comment naming
+            # what the code does ("must resolve and read there") is mined for
+            # behavior tokens and reported as a duplicate implementation.
+            if text.lstrip().startswith(("#", "//", "*", "/*")):
+                continue
             dedupe_shape = bool(re.search(r"\bseen\s*=\s*set\s*\(|\bnot\s+in\s+seen\b", text))
             if not RISKY_BLOCK_RULE.search(text) and not dedupe_shape:
                 continue

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -87,10 +88,97 @@ class Classification:
     invocations: tuple[GitInvocation, ...]
     possible_commit: bool
     parse_error: str = ""
+    # Executable leaves across the whole expression, including nested shell
+    # payloads and substitutions. A caller that must mint state for exactly one
+    # command cannot learn that from the Git invocations alone.
+    command_count: int = 0
 
     @property
     def commit_invocations(self) -> tuple[GitInvocation, ...]:
         return tuple(item for item in self.invocations if item.commit_creating or item.possible_commit)
+
+
+# Stands in for a substitution's result. It must survive tokenisation and stay
+# a usable path string, so it cannot contain NUL: os.path raises on that.
+SUBSTITUTION_RESULT = "__claude_substitution__"
+
+
+def _scan_quoted(command: str, claim: Callable[[int, str, bool, bool, str], tuple[int, str] | None]) -> str:
+    """Rewrite `command` under shell quoting rules, letting `claim` take spans.
+
+    Escape pairs are copied through and quote state is tracked here, so each
+    caller states only its own rule. `claim` sees every other position as
+    (index, char, single, double, previous) and returns the index to resume
+    from plus the text to emit in place of the span it took, or None to keep
+    the character. `previous` is the last emitted text, which is how a caller
+    tells a descriptor attached to a redirection from a separate argument.
+    """
+    out: list[str] = []
+    index, single, double = 0, False, False
+    while index < len(command):
+        char = command[index]
+        if char == "\\" and index + 1 < len(command) and not single:
+            out.append(command[index:index + 2])
+            index += 2
+            continue
+        if char == "'" and not double:
+            single = not single
+        elif char == '"' and not single:
+            double = not double
+        claimed = claim(index, char, single, double, out[-1] if out else "")
+        if claimed is None:
+            out.append(char)
+            index += 1
+            continue
+        index, text = claimed
+        out.append(text)
+    return "".join(out)
+
+
+def split_substitutions(command: str) -> tuple[str, list[str]]:
+    """Replace active command substitutions with a marker, returning their text.
+
+    Single quotes make a substitution inert, so only unquoted and
+    double-quoted spans are extracted. The marker keeps word adjacency, which
+    is what tells a caller the executable itself was synthesised.
+    """
+    inner: list[str] = []
+    unbalanced: list[str] = []
+
+    def claim(index: int, char: str, single: bool, double: bool, previous: str) -> tuple[int, str] | None:
+        if single or not (command.startswith("$(", index) or char == "`"):
+            return None
+        closing, depth = ")" if char == "$" else "`", 0
+        cursor = index + (2 if char == "$" else 1)
+        start = cursor
+        while cursor < len(command):
+            if command[cursor] == "\\":
+                cursor += 2
+                continue
+            if char == "$" and command.startswith("$(", cursor):
+                depth += 1
+            elif command[cursor] == closing:
+                if depth == 0:
+                    break
+                depth -= 1
+            cursor += 1
+        if cursor >= len(command):
+            unbalanced.append(command[start:])
+            return len(command), ""
+        payload = command[start:cursor]
+        if char == "`":
+            # POSIX nests backticks by escaping the inner pair, and the shell
+            # strips those backslashes before running the payload. Leaving them
+            # in hides the nested command from this parser.
+            payload = payload.replace("\\`", "`").replace("\\\\", "\\").replace("\\$", "$")
+        inner.append(payload)
+        return cursor + 1, SUBSTITUTION_RESULT
+
+    rewritten = _scan_quoted(command, claim)
+    if unbalanced:
+        # Unbalanced substitution: nothing here can be modelled.
+        return command, unbalanced[:1]
+    return rewritten, inner
 
 
 def _without_heredoc_bodies(command: str) -> str:
@@ -104,6 +192,25 @@ def _without_heredoc_bodies(command: str) -> str:
         output.append(line)
         pending.extend(match.group(2) for match in HEREDOC.finditer(line))
     return "".join(output)
+
+
+def strip_attached_io_numbers(command: str) -> str:
+    """Remove a descriptor number written against its redirection operator.
+
+    `2>file` is pure redirection syntax, but `2 >file` passes 2 as an argument.
+    Deleting the digits only when they are attached keeps a numeric pathspec.
+    """
+    def claim(index: int, char: str, single: bool, double: bool, previous: str) -> tuple[int, str] | None:
+        if single or double or not char.isdigit():
+            return None
+        end = index
+        while end < len(command) and command[end].isdigit():
+            end += 1
+        if end < len(command) and command[end] in "<>" and previous in (" ", "\t", "\n", ""):
+            return end, ""
+        return None
+
+    return _scan_quoted(command, claim)
 
 
 def _events(command: str) -> list[list[str] | str]:
@@ -120,10 +227,6 @@ def _events(command: str) -> list[list[str] | str]:
         if skip_target:
             skip_target = False
         elif token in REDIRECTS:
-            # `2>file cmd` carries an IO number bound to the redirect. Leaving
-            # it behind made the number the executable and hid the command.
-            if segment and segment[-1].isdigit():
-                segment.pop()
             skip_target = True
         elif token in OPERATORS:
             if segment:
@@ -189,6 +292,14 @@ def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> Git
             index += step
         else:
             index += 1
+    work_tree = env.get("GIT_WORK_TREE")
+    if work_tree:
+        effective = _path(work_tree, effective)
+    elif env.get("GIT_DIR"):
+        # A GIT_DIR alone does not name a worktree — `git rev-parse
+        # --show-toplevel` under it reports the CALLER's directory — so the
+        # target repository cannot be resolved and must fail closed.
+        routed = True
     verb = argv[index] if index < len(argv) else ""
     verb_args = argv[index + 1 :]
     rebase_creating = verb == "rebase" and any(
@@ -328,23 +439,33 @@ def _consume_assignments(segment: list[str], index: int, env: dict[str, str]) ->
 
 
 def _classify_nested(
-    nested: str, cwd: str, depth: int, max_depth: int, env: dict[str, str], found: list[GitInvocation]
+    nested: str, cwd: str, depth: int, max_depth: int, env: dict[str, str], found: list[GitInvocation],
+    counter: list[str],
 ) -> str:
     """Classify a command string carried inside another command."""
-    items, error = _classify(nested, cwd, depth + 1, max_depth, env)
+    items, error = _classify(nested, cwd, depth + 1, max_depth, env, counter)
     found.extend(items)
     return error
 
 
-def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dict[str, str]) -> tuple[list[GitInvocation], str]:
+def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dict[str, str], counter: list[str]) -> tuple[list[GitInvocation], str]:
     if depth > max_depth:
         return [], "nested shell depth exceeded"
+    found: list[GitInvocation] = []
+    outer, substitutions = split_substitutions(command)
+    for inner in substitutions:
+        # A substitution executes its contents; inspect them like any command.
+        items, error = _classify(inner, cwd, depth + 1, max_depth, inherited, counter)
+        found.extend(items)
+        if error:
+            return found, error
+    command = outer
     try:
-        events = _events(_without_heredoc_bodies(command))
+        events = _events(strip_attached_io_numbers(_without_heredoc_bodies(command)))
     except ValueError as exc:
         return [], str(exc)
-    found: list[GitInvocation] = []
     current, pipe_cwd, previous = cwd, None, None
+    leaves: list[str] = []
     subshells: list[str] = []
     for position, event in enumerate(events):
         if isinstance(event, str):
@@ -376,12 +497,18 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
                 return found, "shell -c command argument missing"
         # One dispatch for every command carried inside another command.
         if nested is not None:
-            error = _classify_nested(nested, segment_cwd, depth, max_depth, env, found)
+            error = _classify_nested(nested, segment_cwd, depth, max_depth, env, found, counter)
             if error:
                 return found, error
             previous = None
             continue
         if not argv:
+            previous = None
+            continue
+        if SUBSTITUTION_RESULT in argv[0] and any(arg in COMMIT_VERBS for arg in argv[1:]):
+            # The command name itself came from a substitution, so the verb
+            # that follows may well be git's.
+            found.append(GitInvocation("", tuple(argv), segment_cwd, env, possible_commit=True))
             previous = None
             continue
         if unknown_wrapper_option and executable != "git":
@@ -392,6 +519,7 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
                 found.append(GitInvocation(hidden.verb, hidden.argv, hidden.effective_cwd, env, possible_commit=True))
                 previous = None
                 continue
+        leaves.append(executable)
         if executable == "cd":
             destination = _path(next((arg for arg in argv[1:] if arg != "--"), "~"), segment_cwd)
             if previous != "|" and next_op not in {"|", "&", "||"} and (next_op == "&&" or os.path.isdir(destination)):
@@ -401,14 +529,16 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
         elif argv[0].startswith(("$", "${")) and len(argv) > 1 and argv[1] in COMMIT_VERBS:
             found.append(GitInvocation("", tuple(argv), segment_cwd, env, possible_commit=True))
         previous = None
+    counter.extend(leaves)
     return (found, "unclosed shell group") if subshells else (found, "")
 
 
 def classify(command: str, cwd: str | os.PathLike[str], *, max_depth: int = 4) -> Classification:
     stripped = _without_heredoc_bodies(command)
-    invocations, error = _classify(command, os.path.abspath(os.path.expanduser(os.fspath(cwd))), 0, max_depth, {})
+    leaves: list[str] = []
+    invocations, error = _classify(command, os.path.abspath(os.path.expanduser(os.fspath(cwd))), 0, max_depth, {}, leaves)
     possible = any(item.possible_commit for item in invocations) or bool(error and PLAUSIBLE.search(stripped))
-    return Classification(tuple(invocations), possible, error)
+    return Classification(tuple(invocations), possible, error, len(leaves))
 
 
 def invocation_fingerprint(invocation: GitInvocation) -> str:

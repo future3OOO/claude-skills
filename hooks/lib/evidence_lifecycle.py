@@ -623,10 +623,13 @@ def record_tdd_run(identity: RepoIdentity, slug: str, run: TddRun) -> tuple[Path
     _tdd_decision_path(identity, slug).unlink(missing_ok=True)
     candidate = change_fingerprint(identity, "worktree")
     path = _tdd_evidence_path(identity, slug)
-    artifact = read_json(path) or {
-        **_tdd_base_fields(identity, state, slug, path),
-        "entries": [],
-    }
+    # A reused slug must not append to another pass's artifact: the retained
+    # identity fields would later fail validation for reasons unrelated to the
+    # new evidence.
+    base = _tdd_base_fields(identity, state, slug, path)
+    artifact = read_json(path)
+    if not artifact or any(artifact.get(key) != value for key, value in base.items()):
+        artifact = {**base, "entries": []}
     entries = artifact.get("entries") if isinstance(artifact.get("entries"), list) else []
     # GREEN must answer a RED for the same behavior at the same declared seam;
     # pairing on the behavior label alone let a pass go green against a

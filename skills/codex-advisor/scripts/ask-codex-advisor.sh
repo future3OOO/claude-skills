@@ -128,10 +128,12 @@ ${question}"
 printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s model=%s provider=codex transport=wrapper-only\n' "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" >&2
 output_file=$(mktemp "$state_dir/output.XXXXXX"); chmod 600 "$output_file"
 set +e
-printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 REPO_PRODUCTION_ADVISOR_TRANSPORT=wrapper-only ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
+# Run from the canonical root: the delegate's Read/Grep/Glob must resolve in
+# the repository whose state and diffs were attached, not the caller's cwd.
+( cd -- "$cwd" && printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 REPO_PRODUCTION_ADVISOR_TRANSPORT=wrapper-only ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
   claude -p "${session_args[@]}" --model "$model" --output-format text --append-system-prompt "$role" \
     --tools "Read,Grep,Glob,Skill" --strict-mcp-config \
-    --disallowed-tools "Edit Write NotebookEdit Task Agent Bash mcp__*" >"$output_file"
+    --disallowed-tools "Edit Write NotebookEdit Task Agent Bash mcp__*" ) >"$output_file"
 status=$?
 set -e
 if [[ "$status" -ne 0 ]]; then

@@ -24,16 +24,6 @@ from hooks.lib.git_cmd import classify, invocation_fingerprint  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 
 
-def _has_command_separator(command: str) -> bool:
-    """True when the shell would run more than one command, quoting aware."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n")
-    lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
-    try:
-        return any(set(token) <= set(";&|()\n") and token for token in lexer)
-    except ValueError:
-        return True
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cwd", default=os.getcwd())
@@ -77,8 +67,11 @@ def main(argv: list[str] | None = None) -> int:
         # Shell assignment prefixes bind to the first simple command only, so a
         # compound expression would reach the commit without the nonce. Judge
         # that from the parse, not from substrings inside a quoted message.
-        if len(classified.invocations) != 1 or _has_command_separator(args.command):
-            raise EvidenceError("--command must be a single simple command; a compound command cannot carry the skip prefix")
+        if classified.command_count != 1:
+            raise EvidenceError(
+                "--command must be a single simple command; the skip prefix cannot reach a later command "
+                f"(parsed {classified.command_count} commands, including any nested shell payload)"
+            )
         invocation = commits[0]
         if not invocation.commit_creating or invocation.possible_commit:
             raise EvidenceError("--command must be a statically classified commit invocation")

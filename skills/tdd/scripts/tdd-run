@@ -79,7 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         command = args.command[1:] if args.command and args.command[0] == "--" else args.command
         if not command:
             raise ValueError("a command is required after --")
-        seam = args.seam.strip() or f"caller-declared behavior seam: {behavior}"
+        seam = args.seam.strip()
+        if not seam:
+            raise ValueError("--seam is required for RED/GREEN evidence: name the real production interface")
         try:
             result = subprocess.run(
                 command,

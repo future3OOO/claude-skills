@@ -226,9 +226,18 @@ def _validate_quality(identity: RepoIdentity, request: ValidationRequest) -> Jso
         raise EvidenceMismatch("commit-authorising quality evidence is not index-scoped")
     if record.get("relevantUntracked") != relevant_untracked(identity):
         raise EvidenceStale("quality evidence relevant-untracked identity no longer matches")
-    validate_reference(record.get("packetInput"), "quality packet input")
+    # The referenced files must still exist AND still be the canonical inputs.
+    # Hash-stability alone let a record survive a packet regenerated at the
+    # same HEAD, which is precisely when the context has changed underneath it.
+    packet = validate_reference(record.get("packetInput"), "quality packet input")
+    repoforge = _validate_repoforge(identity, ValidationRequest())
+    current_packet = repoforge.get("packet")
+    if not isinstance(current_packet, dict) or packet["sha256"] != current_packet.get("sha256"):
+        raise EvidenceStale("quality evidence packet input is not the current Repo Context Forge packet")
     if (Path(identity.root) / ".gitnexus").is_dir():
-        validate_reference(record.get("gitnexusContext"), "quality GitNexus context")
+        context = validate_reference(record.get("gitnexusContext"), "quality GitNexus context")
+        if context["sha256"] != state.get("gitnexusContextSha256"):
+            raise EvidenceStale("quality evidence GitNexus context is not the context bound to this pass")
     implementations = record.get("gateImplementation")
     if not isinstance(implementations, list):
         raise EvidenceMalformed("quality gate implementation references are malformed")

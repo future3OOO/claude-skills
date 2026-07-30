@@ -13,6 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the gate can diff against the PR base; a shallow
+          # checkout leaves the changed set empty and the gate self-passes.
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -28,5 +33,11 @@ jobs:
         run: python3 -u skills/production-code/scripts/test_code_quality_gate.py
       - name: Advisor wrapper contract suite
         run: CLAUDE_HOME="$PWD" bash skills/codex-advisor/tests/test-ask-codex-advisor.sh
-      - name: Package gate on its own tree
-        run: python3 skills/production-code/scripts/code_quality_gate.py check --repo .
+      - name: Package gate against the pull-request delta
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -n "$base" ]; then
+            python3 skills/production-code/scripts/code_quality_gate.py check --repo . --base-ref "$base"
+          else
+            python3 skills/production-code/scripts/code_quality_gate.py check --repo . --base-ref "${{ github.event.before }}"
+          fi

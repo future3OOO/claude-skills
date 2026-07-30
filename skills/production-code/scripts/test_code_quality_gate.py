@@ -304,6 +304,51 @@ def test_single_token_cross_domain_reuse_warning_is_suppressed() -> None:
     with_repo(body)
 
 
+def test_pytest_named_module_is_test_source() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "pkg" / "loader.py", "def read_current(path: str) -> str:\n    return open(path).read()\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "reader")
+        # pytest discovers test_*.py with no tests/ directory involved, so the
+        # fixtures inside one are not a second implementation of the reader.
+        write(
+            repo / "pkg" / "test_loader.py",
+            "def test_reads(tmp_path) -> None:\n"
+            "    write(tmp_path / 'a.py', 'def read_current(p): return open(p).read()')\n"
+            "    assert True\n",
+        )
+        code, payload, _ = run_gate(repo)
+        assert payload["reuseFindings"] == [], payload["reuseFindings"]
+        assert payload["ok"] is True
+        assert code == 0
+
+    with_repo(body)
+
+
+def test_comment_prose_is_not_a_risky_block() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "skills" / "gate" / "scripts" / "context.py", "def read_current(path: str) -> str:\n    return open(path).read()\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "reader")
+        # A comment explaining a change is prose, not a second implementation,
+        # even when it sits in the same subtree as a real reader.
+        write(
+            repo / "skills" / "advisor" / "scripts" / "ask.sh",
+            "#!/usr/bin/env bash\n"
+            "# Run from the canonical root: the delegate must resolve and read there.\n"
+            "exec \"$@\"\n",
+        )
+        # A Python change in the same diff is what puts the Python reader into
+        # the existing-symbol index, which is when the comment can match it.
+        write(repo / "skills" / "advisor" / "scripts" / "state.py", "def slug() -> str:\n    return 'x'\n")
+        code, payload, _ = run_gate(repo)
+        assert payload["reuseFindings"] == [], payload["reuseFindings"]
+        assert payload["ok"] is True
+        assert code == 0
+
+    with_repo(body)
+
+
 def test_action_only_wait_helper_overlap_is_suppressed() -> None:
     def body(repo: Path) -> None:
         write(repo / "src" / "waits.py", "def wait_for_tapi_authenticated_signal(page):\n    return page.url\n")

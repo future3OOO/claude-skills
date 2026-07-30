@@ -22,7 +22,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.git_policy_gate import _creates_without_index, _future_index_reason  # noqa: E402
-from hooks.lib.evidence_lifecycle import read_active_pass, record_repoforge, start_pass  # noqa: E402
+from hooks.lib.evidence_lifecycle import (  # noqa: E402
+    PassUpdate,
+    read_active_pass,
+    record_repoforge,
+    start_pass,
+    update_pass,
+)
 from hooks.lib.skip_lifecycle import record_challenge_skip  # noqa: E402
 from hooks.lib.evidence_validation import validate_preflight_advice, validate_tdd_requirement  # noqa: E402
 from hooks.lib.git_cmd import classify  # noqa: E402
@@ -55,6 +61,12 @@ def run(argv: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
         argv, cwd=cwd, env=env, input=stdin, text=True, encoding="utf-8", errors="replace",
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout,
     )
+
+
+def intake_output_event() -> dict:
+    """A transcript event carrying genuine bootstrap stdout."""
+    marker = "REPO_CONTEXT_FORGE_REQUIRED" + "_INTAKE"
+    return {"type": "user", "toolUseResult": {"stdout": f"{marker}\nmode: pr\n"}}
 
 
 def git(repo: Path, *args: str) -> str:
@@ -122,6 +134,12 @@ class ContractTests(unittest.TestCase):
         context.write_text("{}\n", encoding="utf-8")
         meta = read_json(repo / ".gitnexus/meta.json") or {}
         record_repoforge(identity, packet, str(sha256_file(packet)), str(meta.get("lastCommit") or ""))
+        # Bind packet and GitNexus context to the pass exactly as bootstrap and
+        # the advisor preparation do, so evidence can be checked against them.
+        update_pass(identity, PassUpdate(
+            packet_path=str(packet), packet_identity=str(sha256_file(packet)),
+            gitnexus_context_path=str(context), gitnexus_context_sha256=str(sha256_file(context)),
+        ))
         return identity, packet, context
 
     def advisor_round(self, repo: Path, slug: str, phase: str, packet: Path, context: Path, output: str) -> subprocess.CompletedProcess[str]:
@@ -238,6 +256,54 @@ class ContractTests(unittest.TestCase):
         for command in forms:
             result = self.gate(repo, command)
             self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+
+    def test_command_substitution_is_inspected_or_fails_closed(self) -> None:
+        repo = self.make_repo(indexed=True)
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 6\n", encoding="utf-8")
+        git(repo, "add", "src/app.py")
+        verb = "com" + "mit"
+        for command in (
+            f'echo "$(git {verb} -m t)"',
+            f"echo `git {verb} -m t`",
+            # The substitution synthesises the executable itself.
+            f"$(printf git) {verb} -m t",
+            # POSIX nests backticks by escaping the inner pair; bash runs it.
+            f"echo `echo \\`git {verb} -m t\\``",
+        ):
+            result = self.gate(repo, command)
+            self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+        # Single quotes make a substitution inert; it must not be treated as a commit.
+        inert = classify(f"""printf '%s\\n' '$(git {verb} -m x)'""", repo)
+        self.assertFalse(inert.commit_invocations, inert.invocations)
+        self.assertFalse(inert.possible_commit)
+
+    def test_repository_routing_binds_or_blocks(self) -> None:
+        repo = self.make_repo(indexed=True)
+        other = self.make_repo(indexed=False)
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 7\n", encoding="utf-8")
+        git(repo, "add", "src/app.py")
+        # Staged content in the TARGET proves the gate evaluated that repository
+        # rather than the harness one.
+        (other / "src/app.py").write_text("def value() -> int:\n    return 8\n", encoding="utf-8")
+        git(other, "add", "src/app.py")
+        verb = "com" + "mit"
+        for command in (
+            f"GIT_DIR={shlex.quote(str(other / '.git'))} GIT_WORK_TREE={shlex.quote(str(other))} git {verb} -m t",
+            f"git --git-dir={shlex.quote(str(other / '.git'))} {verb} -m t",
+            f"git --git-dir={shlex.quote(str(other / '.git'))} --work-tree={shlex.quote(str(other))} {verb} -m t",
+        ):
+            result = self.gate(repo, command)
+            self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+
+    def test_numeric_pathspec_survives_a_spaced_redirection(self) -> None:
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        attached = classify(f"git {verb} -m x 2>/dev/null", repo).commit_invocations[0]
+        self.assertIsNone(_future_index_reason(attached))
+        spaced = classify(f"git {verb} 2 >/dev/null", repo).commit_invocations[0]
+        self.assertIsNotNone(_future_index_reason(spaced), spaced.argv)
+        quoted = classify(f'git {verb} 2 "3>" >/dev/null', repo).commit_invocations[0]
+        self.assertIsNotNone(_future_index_reason(quoted), quoted.argv)
 
     def test_query_mode_wrappers_execute_nothing(self) -> None:
         # `command -v git commit` prints a path; classifying it as a commit
@@ -364,6 +430,8 @@ class ContractTests(unittest.TestCase):
             "command -p echo touch ~/.claude/hooks/pwned",
             # `command -v` reports where a command lives; it runs nothing.
             "command -v touch ~/.claude/hooks/pwned",
+            # Reading FROM a protected path into an ordinary directory is not a write.
+            "cp -t /tmp ~/.claude/hooks/settings-copy",
         )
         for command in allowed:
             self.assertIsNone(detect_protected_mutation(command, home, cwd=cwd), command)
@@ -395,6 +463,14 @@ class ContractTests(unittest.TestCase):
             "{ touch ~/.claude/hooks/pwned; }",
             "sudo --unknown-option touch ~/.claude/hooks/pwned",
             "sudo -D /tmp sh -c 'touch ~/.claude/hooks/pwned'",
+            # The destination lives in an option value, not the last operand.
+            "cp -t ~/.claude/hooks payload",
+            "install -t ~/.claude/hooks payload",
+            "install --target-directory=~/.claude/hooks payload",
+            # rsync spells -t as --times, so its destination is still the last
+            # operand; reading -t as a target directory hides this write.
+            "rsync -t payload ~/.claude/hooks/",
+            'echo "$(cp payload ~/.claude/hooks/pwned)"',
             "/usr/bin/time -po /dev/null sh -c 'touch ~/.claude/hooks/pwned'",
             # A brace group nested in a compound statement still runs.
             "if true; then { touch ~/.claude/hooks/pwned; }; fi",
@@ -587,6 +663,30 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(self.gate(repo, command).returncode, 2)
         self.assertEqual(self.gate(repo, command.replace("-m t", "-m changed")).returncode, 2)
 
+    def test_skip_refuses_a_command_sequence_hidden_in_a_shell_payload(self) -> None:
+        # The skip prefix authorises one command. `sh -c 'printf x; git commit'`
+        # carries a sequence with no outer separator, so counting Git
+        # invocations alone would mint a nonce that covers a second command.
+        repo = self.make_repo(indexed=True)
+        identity, packet, context = self.packet_and_pass(repo, "nested-skip")
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 8\n", encoding="utf-8")
+        git(repo, "add", "src/app.py")
+        status, _, _ = run_quality(identity, scope="index", base_ref="HEAD", packet_path=str(packet), gitnexus_context_path=str(context))
+        self.assertEqual(status, 0)
+        helper = ROOT / "skills/codex-advisor/scripts/record-advisor-skip.py"
+        quoted = shlex.quote(str(repo))
+        for command in (
+            f"sh -c 'printf x; git -C {quoted} commit -m t'",
+            f"bash -c 'git -C {quoted} commit -m t && echo done'",
+        ):
+            with self.subTest(command=command):
+                issued = run([
+                    sys.executable, str(helper), "--cwd", str(repo), "--slug", "nested-skip",
+                    "--phase", "precommit-challenge", "--reason", "advisor outage", "--command", command,
+                ], cwd=repo, env=self.env)
+                self.assertEqual(issued.returncode, 2, issued.stdout)
+                self.assertIn("single simple command", issued.stderr)
+
     def test_missing_attested_artifact_blocks_even_with_valid_skip_nonce(self) -> None:
         # A present attestation whose referenced artifact vanished must stay a
         # hard block; EvidenceMissing raised after the attestation record loads
@@ -625,8 +725,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
         transcript = self.tmp / "intake-pass-transcript.jsonl"
         transcript.write_text(
-            "REPO_CONTEXT_FORGE_REQUIRED_INTAKE\n"
-            + json.dumps({"type": "tool_use", "name": "mcp__gitnexus__context", "input": {"repo": repo.name}})
+            json.dumps(intake_output_event()) + "\n"
+            + json.dumps({"type": "tool_use", "name": "mcp__gitnexus__context", "input": {"repo": str(identity.root)}})
             + "\n",
             encoding="utf-8",
         )
@@ -639,6 +739,75 @@ class ContractTests(unittest.TestCase):
         state = read_active_pass(identity)
         self.assertIsNotNone(state)
         self.assertEqual((state.get("gates") or {}).get("editIntake"), "passed")
+
+    def test_review_recorder_requires_the_declared_finding_schema(self) -> None:
+        # An artifact marked allResolved authorises the commit, so a finding
+        # with only an id must not reach it.
+        repo = self.make_repo(indexed=False)
+        identity = resolve_repo_identity(repo)
+        start_pass(identity, "review-schema", claude_session_id="s")
+        helper = ROOT / "skills/code-review/scripts/record-review.py"
+
+        def record(payload: dict) -> subprocess.CompletedProcess[str]:
+            source = self.tmp / f"review-{len(list(self.tmp.glob('review-*')))}.json"
+            source.write_text(json.dumps(payload), encoding="utf-8")
+            return run([sys.executable, str(helper), "--repo", str(repo), "--slug", "review-schema",
+                        "--input", str(source), "--resolved-model", "m", "--review-context-id", "c",
+                        "--fresh-context", "yes"], cwd=repo, env=self.env)
+
+        complete = {
+            "id": "F1", "axis": "standards", "severity": "major", "location": "src/app.py:1",
+            "claim": "c", "evidence": "e", "consequence": "q", "smallest_action": "a",
+        }
+        sparse = record({"verdict": "approve", "findings": [{"id": "F1"}],
+                         "dispositions": [{"finding_id": "F1", "status": "fixed", "fix": "abc123"}]})
+        self.assertEqual(sparse.returncode, 2, sparse.stdout)
+        legacy_status = record({"verdict": "approve", "findings": [complete],
+                                "dispositions": [{"finding_id": "F1", "status": "resolved"}]})
+        self.assertEqual(legacy_status.returncode, 2, legacy_status.stdout)
+        no_evidence = record({"verdict": "approve", "findings": [complete],
+                              "dispositions": [{"finding_id": "F1", "status": "rejected-with-evidence"}]})
+        self.assertEqual(no_evidence.returncode, 2, no_evidence.stdout)
+        self.assertIsNone(read_active_pass(identity).get("gates", {}).get("codeReview"))
+        good = record({"verdict": "approve", "findings": [complete],
+                       "dispositions": [{"finding_id": "F1", "status": "fixed", "fix": "commit abc123"}]})
+        self.assertEqual(good.returncode, 0, good.stderr)
+        self.assertEqual(read_active_pass(identity)["gates"]["codeReview"], "passed")
+
+    def test_intake_marker_must_come_from_real_command_output(self) -> None:
+        # The marker leaks into a transcript whenever a file containing it is
+        # edited or quoted, so a substring match proves nothing about whether
+        # the bootstrap ever ran.
+        repo = self.make_repo(indexed=True)
+        identity, packet, context = self.packet_and_pass(repo, "intake-provenance")
+        recorded = self.advisor_round(repo, "intake-provenance", "preflight-advice", packet, context, "Scope advice: proceed.\n")
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        marker = "REPO_CONTEXT_FORGE_REQUIRED" + "_INTAKE"
+        gitnexus_event = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "mcp__gitnexus__context", "input": {"repo": str(identity.root)}}]}}
+
+        def gate_with(intake_record: dict) -> subprocess.CompletedProcess[str]:
+            transcript = self.tmp / f"prov-{len(list(self.tmp.glob('prov-*')))}.jsonl"
+            transcript.write_text(json.dumps(intake_record) + "\n" + json.dumps(gitnexus_event) + "\n", encoding="utf-8")
+            payload = json.dumps({"tool_input": {"file_path": str(repo / "src/app.py")},
+                                  "transcript_path": str(transcript)})
+            return run([str(HOOKS / "rcf-intake-gate.sh")], cwd=repo, env=self.env, stdin=payload)
+
+        # Spoof shapes observed in real transcripts: an edit that writes the
+        # marker into a file, and a user simply typing it.
+        edit_echo = {"type": "user", "toolUseResult": {"structuredPatch": [{"lines": [f"+{marker}"]}]}}
+        self.assertEqual(gate_with(edit_echo).returncode, 2)
+        tool_input = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Edit", "input": {"new_string": marker}}]}}
+        self.assertEqual(gate_with(tool_input).returncode, 2)
+        typed = {"type": "user", "message": {"role": "user", "content": f"please run {marker} first"}}
+        self.assertEqual(gate_with(typed).returncode, 2)
+        # Genuine bootstrap output, as Bash stdout and as a tool_result block.
+        stdout_event = {"type": "user", "toolUseResult": {"stdout": f"{marker}\nmode: pr\n"}}
+        self.assertEqual(gate_with(stdout_event).returncode, 0, gate_with(stdout_event).stderr)
+        result_block = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": f"{marker}\nmode: pr\n"}]}}
+        self.assertEqual(gate_with(result_block).returncode, 0, gate_with(result_block).stderr)
 
     def test_rcf_intake_gate_rejects_wrong_repo_gitnexus_transcript(self) -> None:
         # Demonstrated hole: gitnexus calls against a different repo (for
@@ -658,22 +827,28 @@ class ContractTests(unittest.TestCase):
             return run([str(HOOKS / "rcf-intake-gate.sh")], cwd=repo, env=self.env, stdin=payload)
 
         wrong = gate_with_markers([
-            "REPO_CONTEXT_FORGE_REQUIRED_INTAKE",
+            json.dumps(intake_output_event()),
             json.dumps({"type": "tool_use", "name": "mcp__gitnexus__context", "input": {"repo": f"{repo.name}-02ebe4c3a916-23ff99ec61baa0d4"}}),
         ])
         self.assertEqual(wrong.returncode, 2, wrong.stdout + wrong.stderr)
         self.assertIn("GitNexus", wrong.stderr)
         by_root = gate_with_markers([
-            "REPO_CONTEXT_FORGE_REQUIRED_INTAKE",
+            json.dumps(intake_output_event()),
             json.dumps({"type": "tool_use", "name": "mcp__gitnexus__impact", "input": {"repo": str(identity.root)}}),
         ])
         self.assertEqual(by_root.returncode, 0, by_root.stderr)
+        # A bare basename can be shared by two checkouts and no longer counts.
+        by_name = gate_with_markers([
+            json.dumps(intake_output_event()),
+            json.dumps({"type": "tool_use", "name": "mcp__gitnexus__impact", "input": {"repo": repo.name}}),
+        ])
+        self.assertEqual(by_name.returncode, 2, by_name.stderr)
         for sibling in (
-            {"repo": repo.name},
-            {"name": "mcp__gitnexus__context", "input": {"repo": repo.name}},
+            {"repo": str(identity.root)},
+            {"name": "mcp__gitnexus__context", "input": {"repo": str(identity.root)}},
         ):
             spoofed = gate_with_markers([
-                "REPO_CONTEXT_FORGE_REQUIRED_INTAKE",
+                json.dumps(intake_output_event()),
                 json.dumps({
                     "type": "tool_use",
                     "name": "mcp__gitnexus__context",
@@ -683,8 +858,8 @@ class ContractTests(unittest.TestCase):
             ])
             self.assertEqual(spoofed.returncode, 2, spoofed.stdout + spoofed.stderr)
         nested = gate_with_markers([
-            "REPO_CONTEXT_FORGE_REQUIRED_INTAKE",
-            json.dumps({"message": {"content": [{"type": "tool_use", "name": "mcp__gitnexus__context", "input": {"repo": repo.name}}]}}),
+            json.dumps(intake_output_event()),
+            json.dumps({"message": {"content": [{"type": "tool_use", "name": "mcp__gitnexus__context", "input": {"repo": str(identity.root)}}]}}),
         ])
         self.assertEqual(nested.returncode, 0, nested.stderr)
 

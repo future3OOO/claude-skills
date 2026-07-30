@@ -78,7 +78,9 @@ def _record(repo_arg: str | None, workflow_slug: str | None, intent: str | None,
     atomic_write_bytes(packet_path, packet)
     gitnexus = _gitnexus_head(identity)
     record = record_repoforge(identity, packet_path, packet_hash, gitnexus)
-    if state is not None:
+    # Only a slug-validated pass may be advanced: a standalone bootstrap ran
+    # none of the slug, HEAD or intent checks above.
+    if workflow_slug and state is not None:
         update_pass(
             identity,
             PassUpdate(

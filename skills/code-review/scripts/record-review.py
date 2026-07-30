@@ -20,9 +20,16 @@ from hooks.lib.state_store import (  # noqa: E402
     staged_paths,
 )
 
-RESOLVED = {
-    "accepted", "fixed", "rejected", "not-applicable", "resolved",
-    "rejected-with-evidence", "accepted-follow-up",
+# A finding must carry enough for a reader to judge it; an id alone cannot be
+# reviewed, yet the resulting artifact authorises the commit.
+REQUIRED_FINDING_FIELDS = (
+    "id", "axis", "severity", "location", "claim", "evidence", "consequence", "smallest_action",
+)
+# Each disposition names what was actually done, and carries its proof.
+DISPOSITION_EVIDENCE = {
+    "fixed": "fix",
+    "rejected-with-evidence": "evidence",
+    "accepted-follow-up": "issue",
 }
 
 
@@ -55,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
         dispositions = source.get("dispositions", [])
         if not isinstance(findings, list) or not isinstance(dispositions, list):
             raise ValueError("review input must contain findings and dispositions lists")
+        for finding in findings:
+            if not isinstance(finding, dict):
+                raise ValueError("every finding must be an object")
+            missing = [field for field in REQUIRED_FINDING_FIELDS if not str(finding.get(field) or "").strip()]
+            if missing:
+                raise ValueError(f"finding {finding.get('id') or '<no id>'} is missing required fields: {', '.join(missing)}")
         disposition_by_id: dict[str, dict] = {}
         for item in dispositions:
             if not isinstance(item, dict):
@@ -76,22 +89,25 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             finding_ids.add(finding_id)
             separate = disposition_by_id.get(finding_id)
+            if separate is not None:
+                status_value = str(separate.get("status") or "").strip().lower()
+                proof_field = DISPOSITION_EVIDENCE.get(status_value)
+                if proof_field is None:
+                    raise ValueError(
+                        f"disposition {finding_id} status must be one of {', '.join(sorted(DISPOSITION_EVIDENCE))}"
+                    )
+                if not str(separate.get(proof_field) or "").strip():
+                    raise ValueError(f"disposition {finding_id} with status {status_value} requires '{proof_field}'")
             if separate is None:
                 # A finding may not disposition itself: without a lead-owned
                 # entry the reviewer could mark its own findings resolved.
                 all_resolved = False
                 continue
-            status = str((separate or finding).get("status") or "").strip().lower()
+            status = str(separate.get("status") or "").strip().lower()
             embedded = finding.get("disposition")
             disposition_text = str(embedded or "").strip()
-            if separate:
-                if status == "rejected-with-evidence":
-                    disposition_text = str(separate.get("evidence") or "").strip()
-                elif status == "accepted-follow-up":
-                    disposition_text = str(separate.get("issue") or "").strip()
-                else:
-                    disposition_text = str(separate.get("evidence") or separate.get("issue") or status).strip()
-            if status not in RESOLVED or not disposition_text:
+            disposition_text = str(separate.get(DISPOSITION_EVIDENCE[status]) or "").strip()
+            if not disposition_text:
                 all_resolved = False
             merged = dict(finding)
             merged["status"] = status

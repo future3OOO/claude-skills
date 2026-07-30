@@ -242,8 +242,10 @@ def _run(raw: str, harness_cwd: str) -> int:
     if not operations:
         return 0
     for invocation in operations:
-        if invocation.possible_commit and not invocation.commit_creating:
-            return _block("BLOCKED: ambiguous possible commit invocation")
+        if invocation.possible_commit:
+            # Ambiguity includes a commit routed at a repository we cannot
+            # resolve; validating the harness repo would authorise the wrong one.
+            return _block("BLOCKED: ambiguous or unresolved commit invocation")
         identity = _repo_for(invocation)
         if identity is None:
             continue
