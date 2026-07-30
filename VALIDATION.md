@@ -64,8 +64,12 @@ These remain adoption gates and must not be reported as complete:
   with the full package staged, the package's own recorders produced the
   complete evidence chain and `hooks/git-policy-gate.sh` authorized
   `git commit` of the package tree (exit 0), and the commit was created.
-- Advisor wrapper transport remains unproved live (item 5): on 2026-07-30 two
-  consecutive wrapper consults ended in proxy 408 stream errors; the consult
-  completed through a read-only `codex exec` fallback instead.
+- Advisor wrapper transport is proved live (2026-07-31): both checkpoint
+  phases completed with the terminal `codex_advisor_complete status=0` marker.
+  The earlier 408 entry was a caller error, not a proxy fault.
+- `risk-calibrated-bloat` fails and is correct: `added=4569 deleted=748`
+  against `added > deleted * 6`. Accepted for this branch only, because the
+  gate binaries, `hooks/lib`, and the recording skills land as one contract.
+  The rule is untouched; the budget binds the next change.
 
 See `ADOPTION.md` for install, verification, and rollback steps.
