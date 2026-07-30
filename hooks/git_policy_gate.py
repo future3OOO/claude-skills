@@ -29,7 +29,6 @@ from hooks.lib.state_store import (  # noqa: E402
     claude_home,
     code_paths,
     docs_only,
-    head_sha,
     index_tree,
     staged_paths,
 )
@@ -101,6 +100,40 @@ def _future_index_reason(invocation: GitInvocation) -> str | None:
     return None
 
 
+def _creates_without_index(invocation: GitInvocation) -> bool:
+    """True when the commit authors or rewrites a revision regardless of index.
+
+    Option VALUES must not be read as modes: `commit -m --amend` carries a
+    message, not amend mode. --allow-empty-message permits an empty message,
+    not an empty tree.
+    """
+    args = _verb_args(invocation)
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            break
+        if token.startswith("--"):
+            name = token.split("=", 1)[0]
+            if name in {"--amend", "--allow-empty"}:
+                return True
+            index += 2 if name in LONG_VALUE_OPTIONS and "=" not in token else 1
+            continue
+        if token.startswith("-") and token != "-":
+            cluster = token[1:]
+            position = 0
+            while position < len(cluster):
+                if cluster[position] in SHORT_VALUE_OPTIONS:
+                    if position + 1 == len(cluster):
+                        index += 1
+                    break
+                position += 1
+            index += 1
+            continue
+        index += 1
+    return False
+
+
 def _nontrivial(identity: RepoIdentity) -> bool:
     paths = code_paths(staged_paths(identity))
     return len(paths) > 1 or changed_line_count(identity) > 80
@@ -129,14 +162,9 @@ def _validate_commit(identity: RepoIdentity, invocation: GitInvocation) -> str:
             f"{reason} changes the future index; stage in a separate Bash call, then run plain git commit"
         )
     paths = staged_paths(identity)
-    args = _verb_args(invocation)
     # An empty index is a no-op only for a plain commit. --allow-empty creates
     # a revision and --amend rewrites one, so neither may skip evidence.
-    creates_without_index = any(
-        arg == option or arg.startswith(f"{option}=")
-        for arg in args
-        for option in ("--allow-empty", "--allow-empty-message", "--amend")
-    )
+    creates_without_index = _creates_without_index(invocation)
     if not paths and not creates_without_index:
         return "empty-index-noop"
     if paths and docs_only(paths) and not creates_without_index:

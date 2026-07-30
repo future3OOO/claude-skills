@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
-    from hooks.lib.evidence_lifecycle import EvidenceError, PassUpdate, update_pass  # noqa: E402
+    from hooks.lib.evidence_lifecycle import EvidenceError, EvidenceMissing, PassUpdate, update_pass  # noqa: E402
     from hooks.lib.evidence_validation import (  # noqa: E402
         validate_preflight_advice,
         validate_preflight_skip,
@@ -97,22 +97,25 @@ def _run() -> int:
         identity = resolve_repo_identity(_nearest_existing(target))
     except NotGitRepository:
         return 0
-    if not (identity.root / ".gitnexus").is_dir():
-        return 0
+    # Intake, packet evidence and preflight advice are required in EVERY git
+    # repository. Only the GitNexus-specific checks depend on an index existing.
+    indexed = (identity.root / ".gitnexus").is_dir()
     transcript = payload.get("transcript_path")
     if not isinstance(transcript, str) or not Path(transcript).is_file():
         return _deny("Session transcript is unavailable, so intake and advisor evidence cannot be verified.")
     saw_intake, saw_gitnexus = _transcript_markers(transcript, identity)
     if not saw_intake:
         return _deny("No Repo Context Forge intake marker exists in this session.")
-    if not saw_gitnexus:
+    if indexed and not saw_gitnexus:
         return _deny("No packet-scoped GitNexus context/impact call targeting this repository exists in this session.")
     try:
         validate_repoforge(identity)
         try:
             validate_preflight_advice(identity)
             advisor_status = "passed"
-        except EvidenceError:
+        except EvidenceMissing:
+            # Only an ABSENT attestation may fall back to the audited skip; a
+            # stale, malformed or mismatched one must block.
             validate_preflight_skip(identity)
             advisor_status = "skipped"
     except EvidenceError as exc:
@@ -122,7 +125,7 @@ def _run() -> int:
         PassUpdate(
             phase="production-code",
             next_action="tdd-or-production-code",
-            gates={"repoContextForge": "passed", "gitnexus": "passed", "preflightAdvice": advisor_status, "editIntake": "passed"},
+            gates={"repoContextForge": "passed", "gitnexus": "passed" if indexed else "not-indexed", "preflightAdvice": advisor_status, "editIntake": "passed"},
         ),
     )
     return 0

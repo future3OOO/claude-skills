@@ -21,7 +21,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.git_policy_gate import _future_index_reason  # noqa: E402
+from hooks.git_policy_gate import _creates_without_index, _future_index_reason  # noqa: E402
 from hooks.lib.evidence_lifecycle import read_active_pass, record_repoforge, start_pass  # noqa: E402
 from hooks.lib.skip_lifecycle import record_challenge_skip  # noqa: E402
 from hooks.lib.evidence_validation import validate_preflight_advice, validate_tdd_requirement  # noqa: E402
@@ -220,10 +220,43 @@ class ContractTests(unittest.TestCase):
             f"bash --norc -c 'git {verb} -m t'",
             f"2>{shlex.quote(str(repo / 'q.log'))} git {verb} -m t",
             f"git --git-dir={shlex.quote(str(repo / '.git'))} --work-tree={shlex.quote(str(repo))} {verb} -m t",
+            # Wrapper options that embed or rename the command.
+            f"env -S 'git {verb} -m t'",
+            f"exec -a renamed git {verb} -m t",
+            f"time -p git {verb} -m t",
+            # A wrapper option that takes a value must not swallow the command.
+            f"/usr/bin/time -o /tmp/probe.log git {verb} -m t",
+            f"/usr/bin/time --output=/tmp/probe.log git {verb} -m t",
+            # An unregistered wrapper option must fail closed, not be guessed past.
+            f"sudo --unknown-option git {verb} -m t",
+            # A wrapper's real value option must be consumed so recursion reaches the shell.
+            f"sudo -D /tmp sh -c 'git {verb} -m t'",
+            f"sudo --chdir=/tmp sh -c 'git {verb} -m t'",
         )
         for command in forms:
             result = self.gate(repo, command)
             self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+
+    def test_ordinary_redirections_do_not_read_as_commit_pathspecs(self) -> None:
+        # `2>&1` duplicates a descriptor; leaving the digit in argv made an
+        # ordinary commit look like it named a file to stage.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        for command in (f"git {verb} -m x 2>&1", f"git {verb} -m x >/dev/null 2>&1"):
+            invocation = classify(command, repo).commit_invocations[0]
+            self.assertIsNone(_future_index_reason(invocation), command)
+
+    def test_commit_option_values_are_not_read_as_modes(self) -> None:
+        # A message value may look like an option; only real modes count.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        message_value = classify(f"git {verb} -m --amend", repo).commit_invocations[0]
+        self.assertIsNone(_future_index_reason(message_value))
+        self.assertFalse(_creates_without_index(message_value))
+        self.assertTrue(_creates_without_index(classify(f"git {verb} --amend --no-edit", repo).commit_invocations[0]))
+        self.assertTrue(_creates_without_index(classify(f"git {verb} --allow-empty -m x", repo).commit_invocations[0]))
+        # --allow-empty-message permits an empty MESSAGE, not an empty tree.
+        self.assertFalse(_creates_without_index(classify(f"git {verb} --allow-empty-message -m ''", repo).commit_invocations[0]))
 
     def test_empty_index_commit_modes_that_create_or_rewrite_require_evidence(self) -> None:
         # An empty index is only a no-op for a plain commit. --allow-empty
@@ -310,6 +343,15 @@ class ContractTests(unittest.TestCase):
             "git commit -m 'harden the ~/.claude/hooks gate'",
             "wc -l ~/.claude/hooks/*.sh",
         )
+        allowed = allowed + (
+            # A quoted brace is an argument, not a group marker.
+            "echo '{' touch ~/.claude/hooks/pwned",
+            # Mentioning a verb is not invoking one.
+            "echo commit",
+            "grep -r commit .",
+            # A wrapper's own documented flag is not an unmodelled option.
+            "command -p echo touch ~/.claude/hooks/pwned",
+        )
         for command in allowed:
             self.assertIsNone(detect_protected_mutation(command, home, cwd=cwd), command)
         blocked = (
@@ -330,6 +372,18 @@ class ContractTests(unittest.TestCase):
             "sudo -n touch ~/.claude/hooks/pwned",
             "env touch ~/.claude/hooks/pwned",
             "D=$HOME/.claude sh -c 'touch $D/hooks/pwned'",
+            # Braced expansion must survive tokenisation.
+            'env D=${HOME}/.claude touch "$D/hooks/pwned"',
+            # env -S embeds a whole command string.
+            "env -S 'touch ~/.claude/hooks/pwned'",
+            # The advisor scripts install under skills/.
+            "touch ~/.claude/skills/codex-advisor/scripts/pwned.py",
+            # A brace group is not a subshell, but its command still runs.
+            "{ touch ~/.claude/hooks/pwned; }",
+            "sudo --unknown-option touch ~/.claude/hooks/pwned",
+            "sudo -D /tmp sh -c 'touch ~/.claude/hooks/pwned'",
+            # A brace group nested in a compound statement still runs.
+            "if true; then { touch ~/.claude/hooks/pwned; }; fi",
         )
         for command in blocked:
             self.assertIsNotNone(detect_protected_mutation(command, home, cwd=cwd), command)

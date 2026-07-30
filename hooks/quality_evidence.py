@@ -24,14 +24,17 @@ from hooks.lib.evidence_lifecycle import (  # noqa: E402
 )
 from hooks.lib.evidence_validation import validate_repoforge  # noqa: E402
 from hooks.lib.cli import parse_repo_args, repo_argument_parser  # noqa: E402
-from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError  # noqa: E402
 from hooks.lib.state_store import head_sha, index_tree  # noqa: E402
 
 
 def _gate_path() -> Path:
-    override = os.environ.get("PRODUCTION_QUALITY_GATE")
-    if override:
-        return Path(override).expanduser().resolve()
+    """Resolve the vendored gate only.
+
+    An environment override let a caller name any program whose JSON would
+    become commit-authorising evidence; hashing the substitute proves only
+    that the substitute did not change mid-run.
+    """
     return ROOT / "skills/production-code/scripts/code_quality_gate.py"
 
 
@@ -91,7 +94,10 @@ def run_quality(
         command += ["--repo-context-packet", packet_ref["path"]]
     if gitnexus_ref:
         command += ["--gitnexus-context-json", gitnexus_ref["path"]]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        raise EvidenceError("quality gate exceeded its time bound; no evidence recorded") from exc
     try:
         gate_result = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -103,8 +109,8 @@ def run_quality(
     # Without this, a stage during the run turns a pass for one tree into
     # commit-authorising evidence for another.
     if scope == "index":
-        candidate = gate_result.get("candidateTree")
-        if index_tree(identity) != tree_before or (candidate not in (None, tree_before)):
+        # The record must describe exactly the tree the gate inspected.
+        if index_tree(identity) != tree_before or gate_result.get("candidateTree") != tree_before:
             raise EvidenceError("index changed while the quality gate ran; restage and rerun")
     passed = result.returncode == 0 and gate_result.get("ok") is True
     record, path = record_quality(
@@ -124,6 +130,7 @@ def run_quality(
             result=gate_result,
         ),
         passed,
+        candidate_tree=tree_before if scope == "index" else None,
     )
     if state:
         update_pass(

@@ -69,8 +69,9 @@ def main() -> int:
         identity = resolve_repo_identity(args.repo)
         state = read_active_pass(identity) or {}
         context = _context_path(state)
-        if args.mode == "commit" and (not state or not context):
-            raise EvidenceError("commit quality evidence requires an active pass and bound GitNexus context")
+        indexed = (Path(identity.root) / ".gitnexus").is_dir()
+        if args.mode == "commit" and (not state or (indexed and not context)):
+            raise EvidenceError("commit quality evidence requires an active pass and, in an indexed repository, bound GitNexus context")
         if args.mode == "post-edit" and not context:
             status, path = _post_edit_without_context(identity, args.trigger_file)
             print(json.dumps({"artifactPath": str(path), "status": "observation"}, sort_keys=True))

@@ -26,7 +26,6 @@ from .evidence_lifecycle import (
     _repoforge_path,
     require_active_pass,
     _review_artifact_path,
-    safe_slug,
     _tdd_decision_path,
     _tdd_evidence_path,
     validate_reference,
@@ -188,7 +187,7 @@ def _validate_skip(identity: RepoIdentity, request: ValidationRequest) -> JsonOb
             raise EvidenceStale("preflight-advice skip GitNexus head is not current")
         _expiry(record, "preflight-advice skip")
         return record
-    path = _challenge_skip_path(identity, request.nonce)
+    path = Path(request.source) if request.source else _challenge_skip_path(identity, request.nonce)
     record = _load(path, "challenge skip nonce")
     _expiry(record, "challenge skip nonce")
     _expect(record, {

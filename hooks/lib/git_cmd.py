@@ -16,19 +16,42 @@ SHELLS = {"sh", "bash", "dash", "zsh"}
 # were absent, so `exec git commit` and `sudo git commit` produced no invocation.
 TRANSPARENT_WRAPPERS = {"command", "builtin", "nohup", "exec", "sudo", "doas", "stdbuf", "setsid", "time", "ionice", "nice"}
 # Shell-wrapper semantics live here and are consumed by protected_paths too.
-# Value-taking options differ per wrapper: `sudo -n` is a flag while
-# `nice -n 19` consumes its argument. Guessing either way hides the command.
+# A wrapper's options are modelled in full: which take a value, and which are
+# flags. Anything in neither set is genuinely unmodelled, and a caller must
+# fail closed rather than guess where the wrapped command starts.
 WRAPPER_VALUE_OPTIONS = {
-    "sudo": {"-u", "--user", "-g", "--group", "-C", "--close-from", "-p", "--prompt", "-r", "--role", "-t", "--type"},
+    "sudo": {"-u", "--user", "-g", "--group", "-C", "--close-from", "-p", "--prompt", "-r", "--role",
+             "-t", "--type", "-D", "--chdir", "-R", "--chroot", "-h", "--host", "-T", "--command-timeout"},
     "doas": {"-u", "-C"},
     "nice": {"-n", "--adjustment"},
     "ionice": {"-c", "-n", "--class", "--classdata"},
     "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "exec": {"-a"},
+    "time": {"-o", "--output", "-f", "--format"},
     "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
 }
-PREFIXES = {"!", "if", "then", "elif", "else", "while", "until", "do", "time", "coproc"}
+WRAPPER_FLAGS = {
+    "sudo": {"-n", "--non-interactive", "-b", "--background", "-E", "--preserve-env", "-H", "--set-home",
+             "-i", "--login", "-k", "--reset-timestamp", "-K", "--remove-timestamp", "-l", "--list",
+             "-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell", "-v", "--validate", "-A", "--askpass"},
+    "doas": {"-n", "-s", "-L"},
+    "command": {"-p", "-v", "-V"},
+    "builtin": set(),
+    "nohup": set(),
+    "exec": {"-c", "-l"},
+    "env": {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"},
+    "setsid": {"-c", "--ctty", "-f", "--fork", "-w", "--wait"},
+    "time": {"-p", "--portability", "-a", "--append", "-v", "--verbose", "-q", "--quiet"},
+    "nice": set(),
+    "ionice": {"-t", "--ignore"},
+    "stdbuf": set(),
+}
+PREFIXES = {"!", "if", "then", "elif", "else", "while", "until", "do", "coproc"}
 OPERATORS = {"&&", "||", ";", "|", "&", "\n", "(", ")", "{", "}"}
-REDIRECTS = {">", ">>", "<", "<<", "<<<", "<>"}
+# `2>&1` duplicates a descriptor: the target is a descriptor number, not a
+# path, and leaving it in argv made an ordinary commit look like it named
+# a file to stage.
+REDIRECTS = {">", ">>", "<", "<<", "<<<", "<>", ">&", ">>&", "<&"}
 GLOBAL_VALUES = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.S)
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
@@ -84,7 +107,7 @@ def _events(command: str) -> list[list[str] | str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n{}")
     lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
     tokens: list[str] = []
-    punctuation = re.compile(r"&&|\|\||<<<|>>|<<|<>|[;&|(){}\n<>]")
+    punctuation = re.compile(r"&&|\|\||<<<|>>&|>&|<&|>>|<<|<>|[;&|(){}\n<>]")
     for token in lexer:
         tokens.extend(punctuation.findall(token)) if token and set(token) <= set(";&|(){}\n<>") else tokens.append(token)
     events: list[list[str] | str] = []
@@ -178,12 +201,81 @@ def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> Git
     return GitInvocation(verb, tuple(argv), effective, dict(env), creating, possible)
 
 
-def consume_wrapper_options(segment: list[str], index: int, wrapper: str) -> int:
-    """Skip a transparent wrapper's own options, consuming values it takes."""
+def embedded_command(segment: list[str], index: int, wrapper: str) -> str | None:
+    """Return a command string a wrapper option carries, as `env -S` does.
+
+    Treating that string as an opaque option value hid the command inside it.
+    """
+    if wrapper != "env":
+        return None
+    cursor = index
+    while cursor < len(segment) and segment[cursor].startswith("-"):
+        token = segment[cursor]
+        if token in {"-S", "--split-string"} and cursor + 1 < len(segment):
+            return segment[cursor + 1]
+        if token.startswith("--split-string="):
+            return token.split("=", 1)[1]
+        if token.startswith("-S") and token != "-S":
+            return token[2:]
+        cursor += 2 if token in WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset()) and cursor + 1 < len(segment) else 1
+    return None
+
+
+def consume_wrapper_options(segment: list[str], index: int, wrapper: str, unknown: bool = False) -> tuple[int, bool]:
+    """Skip a wrapper's options, consuming values it takes.
+
+    Also reports whether an option we do not model was seen: an unregistered
+    option may or may not take a value, so anything after it is a guess and
+    callers must fail closed rather than trust the resulting position.
+    """
     takes_value = WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset())
+    flags = WRAPPER_FLAGS.get(wrapper, frozenset())
     while index < len(segment) and segment[index].startswith("-"):
-        index += 2 if segment[index] in takes_value and index + 1 < len(segment) else 1
-    return index
+        token = segment[index]
+        name = token.split("=", 1)[0]
+        if name in takes_value:
+            index += 1 if "=" in token else (2 if index + 1 < len(segment) else 1)
+            continue
+        if name not in flags:
+            unknown = True
+        index += 1
+    return index, unknown
+
+
+def consume_wrappers(segment: list[str], index: int, env: dict[str, str]) -> tuple[int, bool, str | None]:
+    """Advance past a chain of transparent wrappers to the wrapped command.
+
+    Returns the command's index, whether an option we do not model was seen,
+    and any command string a wrapper carried (as `env -S` does). Both the
+    commit classifier and the protected-path detector walk chains the same
+    way, so the rules live here once.
+    """
+    unknown = False
+    while index < len(segment):
+        name = Path(segment[index]).name
+        if name not in TRANSPARENT_WRAPPERS and name != "env":
+            break
+        nested = embedded_command(segment, index + 1, name)
+        if nested is not None:
+            return len(segment), unknown, nested
+        index, unknown = consume_wrapper_options(segment, index + 1, name, unknown)
+        index = _consume_assignments(segment, index, env)
+    return index, unknown, None
+
+
+def commit_suffix_present(segment: list[str], env: dict[str, str], cwd: str) -> GitInvocation | None:
+    """Find a token-aligned `git [globals] <commit-verb>` suffix, if any.
+
+    Used only when wrapper parsing became unreliable, so a verb merely quoted
+    or passed as an argument (`echo commit`) never matches.
+    """
+    for position, token in enumerate(segment):
+        if Path(token).name != "git":
+            continue
+        invocation = _build_git_invocation(segment[position:], env, cwd)
+        if invocation.commit_creating:
+            return invocation
+    return None
 
 
 def _consume_assignments(segment: list[str], index: int, env: dict[str, str]) -> int:
@@ -192,6 +284,15 @@ def _consume_assignments(segment: list[str], index: int, env: dict[str, str]) ->
         env[key] = value
         index += 1
     return index
+
+
+def _classify_nested(
+    nested: str, cwd: str, depth: int, max_depth: int, env: dict[str, str], found: list[GitInvocation]
+) -> str:
+    """Classify a command string carried inside another command."""
+    items, error = _classify(nested, cwd, depth + 1, max_depth, env)
+    found.extend(items)
+    return error
 
 
 def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dict[str, str]) -> tuple[list[GitInvocation], str]:
@@ -225,34 +326,35 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
         # Transparent wrappers run the command that follows them, so the gate
         # must see through every one — with its own options — before deciding
         # what the executable is.
-        while index < len(segment):
-            name = Path(segment[index]).name
-            if name == "env":
-                index = _consume_assignments(segment, consume_wrapper_options(segment, index + 1, "env"), env)
-                continue
-            if name in TRANSPARENT_WRAPPERS:
-                index = consume_wrapper_options(segment, index + 1, name)
-                index = _consume_assignments(segment, index, env)
-                continue
-            break
-        if index >= len(segment):
+        index, unknown_wrapper_option, nested = consume_wrappers(segment, index, env)
+        argv = segment[index:]
+        executable = Path(argv[0]).name if argv else ""
+        if executable in SHELLS:
+            nested, missing = _shell_c(argv)
+            if missing:
+                return found, "shell -c command argument missing"
+        # One dispatch for every command carried inside another command.
+        if nested is not None:
+            error = _classify_nested(nested, segment_cwd, depth, max_depth, env, found)
+            if error:
+                return found, error
             previous = None
             continue
-        argv = segment[index:]
-        executable = Path(argv[0]).name
+        if not argv:
+            previous = None
+            continue
+        if unknown_wrapper_option and executable != "git":
+            # Our option model failed, so the executable position is a guess.
+            # If a real commit invocation still sits in this segment, fail closed.
+            hidden = commit_suffix_present(argv, env, segment_cwd)
+            if hidden is not None:
+                found.append(GitInvocation(hidden.verb, hidden.argv, hidden.effective_cwd, env, possible_commit=True))
+                previous = None
+                continue
         if executable == "cd":
             destination = _path(next((arg for arg in argv[1:] if arg != "--"), "~"), segment_cwd)
             if previous != "|" and next_op not in {"|", "&", "||"} and (next_op == "&&" or os.path.isdir(destination)):
                 current = destination
-        elif executable in SHELLS:
-            nested, missing = _shell_c(argv)
-            if missing:
-                return found, "shell -c command argument missing"
-            if nested is not None:
-                items, error = _classify(nested, segment_cwd, depth + 1, max_depth, env)
-                found.extend(items)
-                if error:
-                    return found, error
         elif executable == "git":
             found.append(_build_git_invocation(argv, env, segment_cwd))
         elif argv[0].startswith(("$", "${")) and len(argv) > 1 and argv[1] in COMMIT_VERBS:

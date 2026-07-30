@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shlex
 import sys
@@ -23,6 +22,16 @@ from hooks.lib.skip_lifecycle import record_challenge_skip, record_preflight_ski
 from hooks.lib.evidence_validation import validate_repoforge  # noqa: E402
 from hooks.lib.git_cmd import classify, invocation_fingerprint  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+
+
+def _has_command_separator(command: str) -> bool:
+    """True when the shell would run more than one command, quoting aware."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n")
+    lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
+    try:
+        return any(set(token) <= set(";&|()\n") and token for token in lexer)
+    except ValueError:
+        return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,20 +70,20 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.command or not args.command.strip():
             raise EvidenceError("precommit-challenge skip requires --command")
-        # Shell assignment prefixes bind to the FIRST simple command only, so
-        # `cd repo && git commit` would run the commit without the nonce and be
-        # blocked. Only a single simple command can carry this prefix.
-        if len(classify(args.command, str(identity.root)).invocations) != 1 or any(
-            token in args.command for token in ("&&", "||", ";", "|", "\n")
-        ):
-            raise EvidenceError("--command must be a single simple command; compound commands cannot carry the skip prefix")
         classified = classify(args.command, str(identity.root))
         commits = classified.commit_invocations
-        if classified.parse_error or classified.possible_commit and len(commits) != 1 or len(commits) != 1:
+        if classified.parse_error or classified.possible_commit or len(commits) != 1:
             raise EvidenceError("--command must contain exactly one unambiguous commit-creating Git invocation")
+        # Shell assignment prefixes bind to the first simple command only, so a
+        # compound expression would reach the commit without the nonce. Judge
+        # that from the parse, not from substrings inside a quoted message.
+        if len(classified.invocations) != 1 or _has_command_separator(args.command):
+            raise EvidenceError("--command must be a single simple command; a compound command cannot carry the skip prefix")
         invocation = commits[0]
         if not invocation.commit_creating or invocation.possible_commit:
             raise EvidenceError("--command must be a statically classified commit invocation")
+        if resolve_repo_identity(invocation.effective_cwd).key != identity.key:
+            raise EvidenceError("--command targets a different repository than --cwd")
         _, nonce = record_challenge_skip(
             identity,
             args.slug,

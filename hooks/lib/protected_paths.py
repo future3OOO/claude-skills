@@ -9,10 +9,13 @@ from pathlib import Path
 MUTATORS = {"touch", "rm", "unlink", "rmdir", "mkdir", "truncate", "chmod", "chown", "tee"}
 TARGET_ONLY = {"cp", "install", "rsync"}
 BOTH = {"mv", "ln"}
-SHELLS = {"sh", "bash", "dash", "zsh"}
-from .git_cmd import TRANSPARENT_WRAPPERS, consume_wrapper_options
+from .git_cmd import PREFIXES, TRANSPARENT_WRAPPERS, consume_wrappers
 
+SHELLS = {"sh", "bash", "dash", "zsh"}
 WRAPPERS = TRANSPARENT_WRAPPERS | {"env"}
+# Tokens that may sit in front of a real command: brace-group markers and
+# compound-statement keywords.
+GROUP_MARKERS = PREFIXES | {"{", "}", "done", "fi", "esac", "then"}
 SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "(", ")", "{", "}"}
 VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 
@@ -26,7 +29,8 @@ def _expand(value: str, env: dict[str, str], cwd: Path) -> Path:
 
 
 def _protected(path: Path, home: Path) -> bool:
-    roots = (home / "hooks", home / "settings.json", home / "state", home / "codex-advisor")
+    roots = (home / "hooks", home / "settings.json", home / "state", home / "codex-advisor",
+             home / "skills" / "codex-advisor")
     return any(path == root or root in path.parents for root in map(lambda item: item.resolve(strict=False), roots))
 
 
@@ -36,23 +40,23 @@ def _segments(command: str) -> list[list[str] | str]:
     Flattening `(` and `)` let a subshell's `cd` or assignment leak into later
     commands, which bash never does.
     """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n{}")
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n")
     lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
     segments: list[list[str] | str] = []
     current: list[str] = []
     # shlex emits runs such as ");" as one token; split them so group
     # boundaries are never hidden inside a punctuation run.
-    punctuation = re.compile(r"&&|\|\||[;&|(){}\n]")
+    punctuation = re.compile(r"&&|\|\||[;&|()\n]")
     raw: list[str] = []
     for token in lexer:
-        raw.extend(punctuation.findall(token)) if token and set(token) <= set(";&|(){}\n") else raw.append(token)
+        raw.extend(punctuation.findall(token)) if token and set(token) <= set(";&|()\n") else raw.append(token)
     for token in raw:
         if token in {"(", ")"}:
             if current:
                 segments.append(current)
                 current = []
             segments.append(token)
-        elif token == "\n" or token and set(token) <= set(";&|{}"):
+        elif token == "\n" or token and set(token) <= set(";&|"):
             if current:
                 segments.append(current)
                 current = []
@@ -126,17 +130,28 @@ def detect_protected_mutation(command: str, home: Path, *, cwd: str | os.PathLik
         # the environment as it was BEFORE those assignments; the assignments
         # reach only the command's own environment and anything it executes.
         argument_env = dict(env)
-        while index < len(segment):
-            name = Path(segment[index]).name
-            if name not in WRAPPERS:
-                break
-            index = consume_wrapper_options(segment, index + 1, name)
-            while index < len(segment) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", segment[index]):
-                key, value = segment[index].split("=", 1)
-                local[key] = value
-                index += 1
+        # Brace markers and compound-statement keywords sit in front of a real
+        # command. A brace group runs in the CURRENT shell, so unlike a subshell
+        # it changes no scope; these tokens are simply inert here.
+        while index < len(segment) and segment[index] in GROUP_MARKERS:
+            index += 1
+        index, unknown_wrapper_option, nested_command = consume_wrappers(segment, index, local)
+        if nested_command is not None:
+            finding = detect_protected_mutation(nested_command, home, cwd=current, env=local)
+            if finding:
+                return f"wrapped command {finding}"
+            continue
         if index == len(segment):
             continue
+        if unknown_wrapper_option:
+            # Option model failed: inspect every later token as a possible
+            # mutator rather than trusting the computed executable position.
+            for position in range(index, len(segment)):
+                candidate = Path(segment[position]).name
+                if candidate in MUTATORS | TARGET_ONLY | BOTH:
+                    later = segment[position + 1 :]
+                    if _unresolved(later, argument_env) or any(_protected(path, home) for path in _paths(later, argument_env, current)):
+                        return f"mutation of protected workflow state via {candidate} behind an unmodelled wrapper option"
         name, args = Path(segment[index]).name, segment[index + 1 :]
         if name == "cd":
             current = _expand(next((arg for arg in args if arg != "--"), "~"), argument_env, current)

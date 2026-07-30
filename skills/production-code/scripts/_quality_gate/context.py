@@ -40,6 +40,10 @@ class GateContext:
 
     def read_current(self, rel_path: str) -> str | None:
         if self.candidate_source == "index":
+            # Read from the captured tree so every check sees one immutable
+            # candidate, even if the index moves during the run.
+            if self.candidate_tree:
+                return read_git_file(self.repo, self.candidate_tree, rel_path)
             return read_index_file(self.repo, rel_path)
         return read_file(self.repo / rel_path)
 

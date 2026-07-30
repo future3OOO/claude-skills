@@ -145,7 +145,10 @@ def _collect_index_scope(repo: Path, base_ref: str | None) -> dict[str, object]:
     tree = git_text(repo, ["write-tree"]).strip()
     if not tree:
         return _scope(base_ref, base_ref, f"index-tree:{base_ref}...unresolved", set(), set(), "", [], ["git write-tree failed"], candidate_source="index", candidate_tree="")
-    diff_args = ["diff", "--cached", "--no-color", base_ref]
+    # Diff the captured tree, not the live index: `--cached` re-reads whatever
+    # is staged now, so a concurrent stage could be evaluated as if it were the
+    # candidate that gets authorised.
+    diff_args = ["diff", "--no-color", base_ref, tree]
     changed = parse_name_only(git_text(repo, [*diff_args, "--name-only"]))
     raw_diff = git_text(repo, [*diff_args, "--unified=0"])
     numstats = parse_numstat(git_text(repo, [*diff_args, "--numstat"]))

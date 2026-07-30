@@ -513,9 +513,11 @@ class QualityRun:
     result: JsonObject
 
 
-def record_quality(identity: RepoIdentity, run: QualityRun, passed: bool) -> tuple[JsonObject, Path]:
+def record_quality(identity: RepoIdentity, run: QualityRun, passed: bool, *, candidate_tree: str | None = None) -> tuple[JsonObject, Path]:
     state = read_active_pass(identity)
-    tree = index_tree(identity)
+    # Index-scoped evidence is bound to the caller's immutable candidate; a
+    # recomputed tree could attach one gate result to a later index.
+    tree = candidate_tree or index_tree(identity)
     path = _quality_evidence_path(identity, tree) if run.scope == "index" else _quality_observation_path(identity, tree)
     record: JsonObject = {
         **_base("quality-evidence"),
@@ -681,6 +683,9 @@ class ValidationRequest:
     nonce: str = ""
     reason: str = ""
     command_fingerprint: str = ""
+    # Set when the record has already been claimed away from its canonical
+    # path, so validation reads the claim the caller now owns exclusively.
+    source: str = ""
 
 
 def _pass_for_slug(identity: RepoIdentity, slug: str) -> JsonObject:

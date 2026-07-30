@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 from .evidence_lifecycle import (
-    EvidenceMismatch,
     EvidenceMissing,
     JsonObject,
     ValidationRequest,
@@ -88,34 +87,36 @@ def consume_challenge_skip(
 ) -> None:
     from .evidence_validation import verify_record
 
-    request = ValidationRequest(
-        phase="precommit-challenge",
-        nonce=nonce,
-        reason=reason,
-        command_fingerprint=command_fingerprint,
-    )
+
     path = _challenge_skip_path(identity, nonce)
     consumed = path.parent / "consumed" / path.name
     consumed.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Claim the nonce with an atomic link BEFORE validating it. Validating
     # first let two concurrent gates both observe consumedAt=None and proceed.
+    # Take the record away by rename before validating it. Linking left the
+    # original in place until the end, so a second consumer could re-link it
+    # to the freed claim name and validate the same nonce again.
     claim = path.parent / f".claim-{nonce}"
     try:
-        os.link(path, claim)
-    except FileExistsError as exc:
-        raise EvidenceMismatch("challenge skip nonce is already being consumed") from exc
+        os.rename(path, claim)
     except OSError as exc:
         raise EvidenceMissing(f"challenge skip nonce is not available: {exc}") from exc
     try:
+        request = ValidationRequest(
+            phase="precommit-challenge",
+            nonce=nonce,
+            reason=reason,
+            command_fingerprint=command_fingerprint,
+            source=str(claim),
+        )
         record = verify_record("advisor-skip", identity, request)
         record["consumedAt"] = utc_timestamp()
         atomic_write_json(claim, record)
         os.replace(claim, consumed)
     except BaseException:
-        claim.unlink(missing_ok=True)
+        quarantine = path.parent / "consumed" / f"rejected-{nonce}.json"
+        os.replace(claim, quarantine)
         raise
-    finally:
-        path.unlink(missing_ok=True)
 
 
 def _skip_fields(phase: str, reason: str) -> JsonObject:
