@@ -10,7 +10,9 @@ MUTATORS = {"touch", "rm", "unlink", "rmdir", "mkdir", "truncate", "chmod", "cho
 TARGET_ONLY = {"cp", "install", "rsync"}
 BOTH = {"mv", "ln"}
 SHELLS = {"sh", "bash", "dash", "zsh"}
-WRAPPERS = {"command", "builtin", "nohup", "sudo"}
+from .git_cmd import TRANSPARENT_WRAPPERS, consume_wrapper_options
+
+WRAPPERS = TRANSPARENT_WRAPPERS | {"env"}
 SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "(", ")", "{", "}"}
 VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 
@@ -28,13 +30,29 @@ def _protected(path: Path, home: Path) -> bool:
     return any(path == root or root in path.parents for root in map(lambda item: item.resolve(strict=False), roots))
 
 
-def _segments(command: str) -> list[list[str]]:
+def _segments(command: str) -> list[list[str] | str]:
+    """Split into command segments, preserving subshell group boundaries.
+
+    Flattening `(` and `)` let a subshell's `cd` or assignment leak into later
+    commands, which bash never does.
+    """
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n{}")
     lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
-    segments: list[list[str]] = []
+    segments: list[list[str] | str] = []
     current: list[str] = []
+    # shlex emits runs such as ");" as one token; split them so group
+    # boundaries are never hidden inside a punctuation run.
+    punctuation = re.compile(r"&&|\|\||[;&|(){}\n]")
+    raw: list[str] = []
     for token in lexer:
-        if token == "\n" or token and set(token) <= set(";&|(){}"):
+        raw.extend(punctuation.findall(token)) if token and set(token) <= set(";&|(){}\n") else raw.append(token)
+    for token in raw:
+        if token in {"(", ")"}:
+            if current:
+                segments.append(current)
+                current = []
+            segments.append(token)
+        elif token == "\n" or token and set(token) <= set(";&|{}"):
             if current:
                 segments.append(current)
                 current = []
@@ -45,8 +63,31 @@ def _segments(command: str) -> list[list[str]]:
     return segments
 
 
+def _operands(args: list[str]) -> list[str]:
+    """Operands only: options are dropped, but `--` ends the option list."""
+    operands: list[str] = []
+    end_of_options = False
+    for arg in args:
+        if not end_of_options and arg == "--":
+            end_of_options = True
+            continue
+        if not arg or (not end_of_options and arg.startswith("-")) or arg in {"+x", "+X", "a+x", "u+x"}:
+            continue
+        operands.append(arg)
+    return operands
+
+
 def _paths(args: list[str], env: dict[str, str], cwd: Path) -> list[Path]:
-    return [_expand(arg, env, cwd) for arg in args if arg and not arg.startswith("-") and arg not in {"+x", "+X", "a+x", "u+x"}]
+    return [_expand(arg, env, cwd) for arg in _operands(args)]
+
+
+def _unresolved(args: list[str], env: dict[str, str]) -> bool:
+    """True when an operand still holds an expansion we cannot model."""
+    for arg in _operands(args):
+        expanded = VAR.sub(lambda match: env.get(match.group(1) or match.group(2), match.group(0)), arg)
+        if "$" in expanded or "`" in expanded:
+            return True
+    return False
 
 
 def _documented(name: str, args: list[str], env: dict[str, str], cwd: Path, home: Path) -> bool:
@@ -61,11 +102,18 @@ def _documented(name: str, args: list[str], env: dict[str, str], cwd: Path, home
     return name in SHELLS and args and _expand(args[-1], env, cwd) == (home / "hooks/tests/run.sh").resolve()
 
 
-def detect_protected_mutation(command: str, home: Path, *, cwd: str | os.PathLike[str] | None = None) -> str | None:
-    env = dict(os.environ, HOME=str(home.parent), CLAUDE_HOME=str(home))
+def detect_protected_mutation(command: str, home: Path, *, cwd: str | os.PathLike[str] | None = None, env: dict[str, str] | None = None) -> str | None:
+    env = dict(env or os.environ, HOME=str(home.parent), CLAUDE_HOME=str(home))
     current = Path(cwd or Path.cwd()).resolve(strict=False)
-    segments = _segments(command)
-    for segment in segments:
+    scopes: list[tuple[Path, dict[str, str]]] = []
+    for segment in _segments(command):
+        if segment == "(":
+            scopes.append((current, dict(env)))
+            continue
+        if segment == ")":
+            if scopes:
+                current, env = scopes.pop()
+            continue
         index, local = 0, dict(env)
         while index < len(segment) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", segment[index]):
             key, value = segment[index].split("=", 1)
@@ -74,23 +122,36 @@ def detect_protected_mutation(command: str, home: Path, *, cwd: str | os.PathLik
         if index == len(segment):
             env.update(local)
             continue
-        while index < len(segment) and Path(segment[index]).name in WRAPPERS:
-            index += 1
+        # Ordinary arguments of a command with inline assignments expand from
+        # the environment as it was BEFORE those assignments; the assignments
+        # reach only the command's own environment and anything it executes.
+        argument_env = dict(env)
+        while index < len(segment):
+            name = Path(segment[index]).name
+            if name not in WRAPPERS:
+                break
+            index = consume_wrapper_options(segment, index + 1, name)
+            while index < len(segment) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", segment[index]):
+                key, value = segment[index].split("=", 1)
+                local[key] = value
+                index += 1
         if index == len(segment):
             continue
         name, args = Path(segment[index]).name, segment[index + 1 :]
         if name == "cd":
-            current = _expand(next((arg for arg in args if arg != "--"), "~"), local, current)
+            current = _expand(next((arg for arg in args if arg != "--"), "~"), argument_env, current)
             continue
         if name in SHELLS and "-c" in args:
             nested = args[args.index("-c") + 1] if args.index("-c") + 1 < len(args) else ""
-            finding = detect_protected_mutation(nested, home, cwd=current)
+            finding = detect_protected_mutation(nested, home, cwd=current, env=local)
             if finding:
                 return f"nested shell {finding}"
             continue
-        if _documented(name, args, local, current, home):
+        if _documented(name, args, argument_env, current, home):
             continue
-        paths = _paths(args, local, current)
+        if name in MUTATORS | TARGET_ONLY | BOTH and _unresolved(args, argument_env):
+            return f"unmodelable expansion in protected-path check for {name}"
+        paths = _paths(args, argument_env, current)
         if name == "find" and any(flag in args for flag in {"-delete", "-exec", "-execdir", "-ok", "-okdir"}) and any(_protected(path, home) for path in paths):
             return "mutation of protected workflow state via find"
         if name in TARGET_ONLY and paths and _protected(paths[-1], home):

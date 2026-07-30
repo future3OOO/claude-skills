@@ -22,8 +22,6 @@ from .evidence_lifecycle import (
     _tdd_base_fields,
     _advisor_attestation_path,
     _advisor_preparation_path,
-    _challenge_skip_path,
-    _preflight_skip_path,
     _quality_evidence_path,
     _repoforge_path,
     require_active_pass,
@@ -33,6 +31,7 @@ from .evidence_lifecycle import (
     _tdd_evidence_path,
     validate_reference,
 )
+from .evidence_lifecycle import _challenge_skip_path, _preflight_skip_path  # noqa: E402
 from .repo_identity import RepoIdentity
 from .state_store import (
     change_fingerprint,

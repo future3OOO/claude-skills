@@ -17,6 +17,8 @@ from hooks.lib.repo_identity import try_resolve_repo_identity  # noqa: E402
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
+        if not isinstance(payload, dict):
+            raise ValueError("hook input must be a JSON object")
     except Exception as exc:
         print(f"PreCompact state flush skipped: malformed hook input: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 0

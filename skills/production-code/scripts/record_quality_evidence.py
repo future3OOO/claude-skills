@@ -32,7 +32,15 @@ def _context_path(state: dict) -> str:
 
 def _post_edit_without_context(identity, trigger_file: str) -> tuple[int, Path]:
     command = [sys.executable, str(GATE), "check", "--repo", str(identity.root), "--json"]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
+    except subprocess.TimeoutExpired:
+        record, path = record_quality_observation(
+            identity, status="failed", trigger_file=trigger_file,
+            gate_implementation=file_reference(GATE), command=command, exit_code=124,
+            result={"ok": False, "errors": ["quality gate timed out after 120 seconds"]},
+        )
+        return 2, path
     try:
         result = json.loads(completed.stdout)
     except json.JSONDecodeError:
@@ -60,8 +68,6 @@ def main() -> int:
     try:
         identity = resolve_repo_identity(args.repo)
         state = read_active_pass(identity) or {}
-        repoforge = validate_repoforge(identity)
-        packet = str((repoforge.get("packet") or {}).get("path") or "")
         context = _context_path(state)
         if args.mode == "commit" and (not state or not context):
             raise EvidenceError("commit quality evidence requires an active pass and bound GitNexus context")
@@ -69,6 +75,8 @@ def main() -> int:
             status, path = _post_edit_without_context(identity, args.trigger_file)
             print(json.dumps({"artifactPath": str(path), "status": "observation"}, sort_keys=True))
             return status
+        repoforge = validate_repoforge(identity)
+        packet = str((repoforge.get("packet") or {}).get("path") or "")
         status, record, path = run_quality(
             identity,
             scope="index" if args.mode == "commit" else "worktree",

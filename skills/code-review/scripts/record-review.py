@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
         slug = safe_slug(args.slug)
         if state.get("slug") != slug:
             raise ValueError("--slug does not match the active pass")
+        if not args.resolved_model.strip() or not args.review_context_id.strip():
+            raise ValueError("--resolved-model and --review-context-id must be non-empty")
         source = read_json(Path(args.input))
         if not source:
             raise ValueError("review input is missing, malformed, or not an object")
@@ -74,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             finding_ids.add(finding_id)
             separate = disposition_by_id.get(finding_id)
+            if separate is None:
+                # A finding may not disposition itself: without a lead-owned
+                # entry the reviewer could mark its own findings resolved.
+                all_resolved = False
+                continue
             status = str((separate or finding).get("status") or "").strip().lower()
             embedded = finding.get("disposition")
             disposition_text = str(embedded or "").strip()

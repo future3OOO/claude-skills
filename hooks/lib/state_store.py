@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import contextlib
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -42,13 +43,14 @@ def repo_state_dir(identity: RepoIdentity) -> Path:
     return secure_dir(state_root() / identity.key)
 
 
-def atomic_write_text(path: Path, value: str) -> None:
+def atomic_write_bytes(path: Path, value: bytes) -> None:
+    """Persist exact bytes; lossy decoding would break the recorded hash."""
     secure_dir(path.parent)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temp = Path(name)
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "wb") as handle:
             handle.write(value)
             handle.flush()
             os.fsync(handle.fileno())
@@ -56,6 +58,10 @@ def atomic_write_text(path: Path, value: str) -> None:
         path.chmod(0o600)
     finally:
         temp.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, value: str) -> None:
+    atomic_write_bytes(path, value.encode("utf-8"))
 
 
 def atomic_write_json(path: Path, value: object) -> None:
@@ -72,6 +78,22 @@ def append_jsonl(path: Path, value: object) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+@contextlib.contextmanager
+def state_lock(identity: RepoIdentity) -> Iterator[None]:
+    """Serialize concurrent updates to one repository's pass state.
+
+    Atomic replacement prevents a torn file but not a lost update: two callers
+    can each load the same snapshot and the later replacement wins.
+    """
+    path = repo_state_dir(identity) / ".pass.lock"
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(handle)
 
 
 def read_json(path: Path) -> dict[str, object] | None:
@@ -171,8 +193,23 @@ def is_docs_or_scratch(path: str) -> bool:
 
 
 def is_code_path(path: str) -> bool:
+    """Language-source classification, for checks that parse source."""
     normalized = path.replace("\\", "/")
     return not is_docs_or_scratch(normalized) and Path(normalized).suffix.lower() in CODE_SUFFIXES
+
+
+def is_reviewable_path(path: str) -> bool:
+    """Production surface for evidence binding: everything not docs or scratch.
+
+    A Dockerfile, lockfile, CI workflow or extensionless script is production
+    behaviour; binding evidence to a suffix allowlist let those changes move
+    without changing any fingerprint.
+    """
+    return not is_docs_or_scratch(path.replace("\\", "/"))
+
+
+def reviewable_paths(paths: Iterable[str]) -> list[str]:
+    return sorted({path for path in paths if is_reviewable_path(path)})
 
 
 def code_paths(paths: Iterable[str]) -> list[str]:
@@ -191,7 +228,7 @@ def changed_line_count(identity: RepoIdentity, *, cached: bool = True) -> int:
     total = 0
     for raw in _run_git_command(identity, *args).splitlines():
         fields = raw.split(b"\t", 2)
-        if len(fields) != 3 or not is_code_path(os.fsdecode(fields[2])):
+        if len(fields) != 3 or not is_reviewable_path(os.fsdecode(fields[2])):
             continue
         total += sum(int(value) for value in fields[:2] if value.isdigit())
     return total
@@ -206,13 +243,17 @@ def _content_record(path: str, content: bytes | None) -> bytes:
 def change_fingerprint(identity: RepoIdentity, source: Literal["worktree", "index"]) -> str:
     """Hash the changed code snapshot, invariant when the same content is staged."""
     if source == "worktree":
-        paths = code_paths(staged_paths(identity) + unstaged_paths(identity) + untracked_paths(identity))
+        paths = reviewable_paths(staged_paths(identity) + unstaged_paths(identity) + untracked_paths(identity))
         records = []
         for relative in paths:
             path = Path(identity.root) / relative
-            records.append(_content_record(relative, path.read_bytes() if path.is_file() else None))
+            # Never follow a symlink into its target's bytes; record the link.
+            if path.is_symlink():
+                records.append(_content_record(relative, os.fsencode(os.readlink(path))))
+            else:
+                records.append(_content_record(relative, path.read_bytes() if path.is_file() else None))
     else:
-        paths = code_paths(staged_paths(identity))
+        paths = reviewable_paths(staged_paths(identity))
         records = []
         for relative in paths:
             result = subprocess.run(
@@ -227,7 +268,7 @@ def change_fingerprint(identity: RepoIdentity, source: Literal["worktree", "inde
 
 def relevant_untracked(identity: RepoIdentity) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
-    for relative in code_paths(untracked_paths(identity)):
+    for relative in reviewable_paths(untracked_paths(identity)):
         path = Path(identity.root) / relative
         records.append({"path": relative, "sha256": sha256_file(path), "bytes": path.stat().st_size if path.exists() else None})
     return records

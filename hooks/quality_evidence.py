@@ -25,7 +25,7 @@ from hooks.lib.evidence_lifecycle import (  # noqa: E402
 from hooks.lib.evidence_validation import validate_repoforge  # noqa: E402
 from hooks.lib.cli import parse_repo_args, repo_argument_parser  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import head_sha  # noqa: E402
+from hooks.lib.state_store import head_sha, index_tree  # noqa: E402
 
 
 def _gate_path() -> Path:
@@ -81,6 +81,7 @@ def run_quality(
         if (Path(identity.root) / ".gitnexus").is_dir() and gitnexus_ref is None:
             raise EvidenceError("indexed repository requires caller-supplied GitNexus context input")
 
+    tree_before = index_tree(identity)
     command = [sys.executable, str(gate), "check", "--repo", str(identity.root), "--json"]
     if base_ref:
         command += ["--base-ref", base_ref]
@@ -98,6 +99,13 @@ def run_quality(
     if not isinstance(gate_result, dict):
         gate_result = {"ok": False, "errors": ["quality gate JSON was not an object"]}
 
+    # The gate inspected one candidate; evidence must describe that same tree.
+    # Without this, a stage during the run turns a pass for one tree into
+    # commit-authorising evidence for another.
+    if scope == "index":
+        candidate = gate_result.get("candidateTree")
+        if index_tree(identity) != tree_before or (candidate not in (None, tree_before)):
+            raise EvidenceError("index changed while the quality gate ran; restage and rerun")
     passed = result.returncode == 0 and gate_result.get("ok") is True
     record, path = record_quality(
         identity,

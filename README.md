@@ -19,7 +19,10 @@ rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' ~/.claude/skills/ sk
 rsync -a --delete ~/.claude/hooks/ hooks/
 cp ~/.claude/CLAUDE.md CLAUDE.md
 cp ~/.claude/settings.json settings.json
-git add skills hooks CLAUDE.md settings.json && git commit && git push
+git add skills hooks CLAUDE.md settings.json
+# separate calls: the gate refuses one command that both stages and creates a revision
+git commit
+git push
 ```
 
 Stage those paths explicitly rather than `git add -A`: a blanket add publishes

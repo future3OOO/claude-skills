@@ -3,11 +3,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
+# The suite executes hook entrypoints from the scratch root, so /dev/shm is
+# usable only when it is mounted exec.
+scratch=""
 if [[ -d /dev/shm && -w /dev/shm ]]; then
-  scratch="$(mktemp -d /dev/shm/repo-workflow-tests.XXXXXX)"
-else
-  scratch="$(mktemp -d)"
+  probe="$(mktemp -d /dev/shm/repo-workflow-probe.XXXXXX)"
+  printf '#!/bin/sh\nexit 0\n' > "$probe/exec-check"
+  chmod +x "$probe/exec-check"
+  "$probe/exec-check" 2>/dev/null && scratch="$(mktemp -d /dev/shm/repo-workflow-tests.XXXXXX)"
+  rm -rf "$probe"
 fi
+[[ -n "$scratch" ]] || scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 export TMPDIR="$scratch"
 export HARNESS_TMP="$scratch"

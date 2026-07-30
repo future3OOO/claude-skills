@@ -153,8 +153,10 @@ def context_command(args) -> int:
 
 
 def _verdict(text: str) -> str | None:
-    match = re.search(r"(?im)^\s*Verdict\s*:\s*(commit-ready|fix-before-commit|context-mismatch)\b", text)
-    return match.group(1).lower() if match else None
+    # The verdict is the response's conclusion, so read the LAST declaration.
+    # Taking the first match let an earlier draft verdict outrank the final one.
+    matches = re.findall(r"(?im)^\s*Verdict\s*:\s*(commit-ready|fix-before-commit|context-mismatch)\b", text)
+    return matches[-1].lower() if matches else None
 
 
 def record_command(args) -> int:
@@ -189,7 +191,7 @@ def record_command(args) -> int:
         identity,
         PassUpdate(
             phase=args.phase,
-            gates={args.phase: "passed"},
+            gates={args.phase: "passed" if args.phase != "precommit-challenge" or verdict == "commit-ready" else "blocked"},
             artifacts={args.phase: str(path), f"{args.phase}Output": str(output_path)},
         ),
     )

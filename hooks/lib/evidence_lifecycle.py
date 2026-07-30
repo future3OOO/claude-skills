@@ -28,6 +28,7 @@ from .state_store import (
     secure_dir,
     sha256_file,
     staged_paths,
+    state_lock,
     unstaged_paths,
     utc_timestamp,
 )
@@ -301,6 +302,11 @@ class PassUpdate:
 
 
 def update_pass(identity: RepoIdentity, update: PassUpdate) -> JsonObject | None:
+    with state_lock(identity):
+        return _update_pass_locked(identity, update)
+
+
+def _update_pass_locked(identity: RepoIdentity, update: PassUpdate) -> JsonObject | None:
     state = read_active_pass(identity)
     if state is None:
         return None
@@ -463,76 +469,6 @@ def record_advisor_attestation(
     return record
 
 
-def record_preflight_skip(identity: RepoIdentity, slug: str, reason: str, packet: JsonObject, gitnexus_head: object) -> Path:
-    state = _pass_for_slug(identity, slug)
-    path = _preflight_skip_path(identity, slug)
-    record: JsonObject = {
-        **_skip_fields("preflight-advice", reason),
-        **_pass_fields(identity, state, slug, claude=True),
-        "packetInput": packet,
-        "gitnexusHead": gitnexus_head,
-        "expiresAtEpoch": int(time.time()) + 3600,
-        "artifactPath": str(path),
-    }
-    _persist_skip(identity, path, record)
-    return path
-
-
-def record_challenge_skip(
-    identity: RepoIdentity,
-    slug: str,
-    reason: str,
-    command: str,
-    command_fingerprint: str,
-) -> tuple[Path, str]:
-    state = _pass_for_slug(identity, slug)
-    nonce = secrets.token_urlsafe(24)
-    path = _challenge_skip_path(identity, nonce)
-    record: JsonObject = {
-        **_skip_fields("precommit-challenge", reason),
-        **_pass_fields(identity, state, slug, claude=True),
-        "nonce": nonce,
-        "indexTree": index_tree(identity),
-        "command": command,
-        "commandSha256": hashlib.sha256(command.encode()).hexdigest(),
-        "commandFingerprint": command_fingerprint,
-        "changedCodeFiles": len(code_paths(staged_paths(identity))),
-        "changedLines": changed_line_count(identity),
-        "expiresAtEpoch": int(time.time()) + 900,
-        "consumedAt": None,
-        "artifactPath": str(path),
-    }
-    _persist_skip(identity, path, record)
-    return path, nonce
-
-
-def consume_challenge_skip(
-    identity: RepoIdentity,
-    *,
-    nonce: str,
-    reason: str,
-    command_fingerprint: str,
-) -> None:
-    from .evidence_validation import verify_record
-
-    request = ValidationRequest(
-        phase="precommit-challenge",
-        nonce=nonce,
-        reason=reason,
-        command_fingerprint=command_fingerprint,
-    )
-    record = verify_record("advisor-skip", identity, request)
-    path = _challenge_skip_path(identity, nonce)
-    consumed = path.parent / "consumed" / path.name
-    consumed.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    record["consumedAt"] = utc_timestamp()
-    atomic_write_json(path, record)
-    try:
-        os.replace(path, consumed)
-    except OSError as exc:
-        raise EvidenceError(f"challenge skip could not be consumed atomically: {exc}") from exc
-
-
 def record_quality_observation(
     identity: RepoIdentity,
     *,
@@ -647,6 +583,13 @@ def record_review(
 def record_tdd_decision(identity: RepoIdentity, slug: str, reason: str) -> Path:
     state = _pass_for_slug(identity, slug)
     path = _tdd_decision_path(identity, slug)
+    # A not-required decision declares the pass non-behavioral. Once RED/GREEN
+    # evidence exists the pass is behavioral by demonstration, so the downgrade
+    # would delete the proof and satisfy the gate with prose.
+    existing = read_json(_tdd_evidence_path(identity, slug))
+    prior = existing.get("entries") if isinstance(existing, dict) else None
+    if isinstance(prior, list) and any(isinstance(i, dict) and i.get("valid") is True for i in prior):
+        raise EvidenceMismatch("captured TDD evidence exists; a not-required decision cannot replace it")
     _tdd_evidence_path(identity, slug).unlink(missing_ok=True)
     record: JsonObject = {
         **_base("tdd-decision"),
@@ -683,18 +626,26 @@ def record_tdd_run(identity: RepoIdentity, slug: str, run: TddRun) -> tuple[Path
         "entries": [],
     }
     entries = artifact.get("entries") if isinstance(artifact.get("entries"), list) else []
+    # GREEN must answer a RED for the same behavior at the same declared seam;
+    # pairing on the behavior label alone let a pass go green against a
+    # different interface than the one that failed.
     prior_red = any(
         isinstance(item, dict)
         and item.get("phase") == "red"
         and item.get("valid") is True
         and item.get("behavior") == run.behavior
+        and item.get("seam") == run.seam
         for item in entries
     )
     changed_surface = candidate != state.get("startingChangeFingerprint")
+    # A nonzero exit alone is not RED: a timeout, an import error, or any
+    # unrelated crash also exits nonzero. The declared failure must appear in
+    # what the command actually printed.
+    observed = bool(run.expected_failure) and run.expected_failure in run.output.decode("utf-8", errors="replace")
     valid = (
-        run.exit_code != 0 and bool(run.expected_failure)
+        not run.timed_out and run.exit_code != 0 and observed
         if run.phase == "red"
-        else run.exit_code == 0 and changed_surface and prior_red
+        else not run.timed_out and run.exit_code == 0 and changed_surface and prior_red
     )
     entries.append({
         "phase": run.phase,
@@ -762,16 +713,6 @@ def _optional_pass_fields(identity: RepoIdentity, state: JsonObject | None) -> J
     }
 
 
-def _skip_fields(phase: str, reason: str) -> JsonObject:
-    return {
-        **_base("advisor-skip"),
-        "phase": phase,
-        "reason": reason,
-        "createdBy": "record-advisor-skip.py",
-        "createdAt": utc_timestamp(),
-    }
-
-
 def _finish_record(path: Path, record: JsonObject, timestamp_field: str) -> None:
     record["artifactPath"] = str(path)
     record[timestamp_field] = utc_timestamp()
@@ -787,6 +728,3 @@ def _tdd_base_fields(identity: RepoIdentity, state: JsonObject, slug: str, path:
     }
 
 
-def _persist_skip(identity: RepoIdentity, path: Path, record: JsonObject) -> None:
-    atomic_write_json(path, record)
-    append_jsonl(_audit_path(identity, "advisor-skips.jsonl"), record)

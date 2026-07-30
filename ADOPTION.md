@@ -34,11 +34,10 @@ From this repository root in an external operator terminal (not a Claude Code
 Bash tool, because the estate being replaced contains the broken path gate):
 
 ```bash
-backup="$HOME/claude-estate-backup-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$backup"
+backup="$(mktemp -d "$HOME/claude-estate-backup-$(date +%Y%m%d-%H%M%S)-XXXXXX")"
 cp -a ~/.claude/CLAUDE.md ~/.claude/settings.json ~/.claude/hooks ~/.claude/skills "$backup"/
 
-rsync -a skills/ ~/.claude/skills/
+rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
 rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json

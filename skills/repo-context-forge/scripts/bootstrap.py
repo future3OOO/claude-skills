@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.evidence_lifecycle import PassUpdate, read_active_pass, record_repoforge, safe_slug, update_pass  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import atomic_write_text, head_sha, read_json, repo_state_dir, sha256_bytes  # noqa: E402
+from hooks.lib.state_store import atomic_write_bytes, head_sha, read_json, repo_state_dir, sha256_bytes  # noqa: E402
 
 SOURCE_ROOT = Path(os.environ.get("REPO_CONTEXT_FORGE_SOURCE_ROOT", "/home/prop_/projects/repo-context-forge"))
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
@@ -75,7 +75,7 @@ def _record(repo_arg: str | None, workflow_slug: str | None, intent: str | None,
 
     directory = repo_state_dir(identity)
     packet_path = directory / "packets" / f"packet-{current_head[:12]}-{packet_hash[:12]}.txt"
-    atomic_write_text(packet_path, packet.decode("utf-8", errors="replace"))
+    atomic_write_bytes(packet_path, packet)
     gitnexus = _gitnexus_head(identity)
     record = record_repoforge(identity, packet_path, packet_hash, gitnexus)
     if state is not None:
@@ -86,6 +86,8 @@ def _record(repo_arg: str | None, workflow_slug: str | None, intent: str | None,
                 next_action="gitnexus-context",
                 gates={"repo-context-forge": "passed"},
                 artifacts={"repo-context-packet": str(packet_path), "repo-context-state": str(record["artifactPath"])},
+                packet_path=str(packet_path),
+                packet_identity=packet_hash,
             ),
         )
 

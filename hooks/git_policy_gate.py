@@ -13,12 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from hooks.lib.evidence_lifecycle import (  # noqa: E402
-    EvidenceError,
-    EvidenceMissing,
-    consume_challenge_skip,
-    require_active_pass,
-)
+from hooks.lib.evidence_lifecycle import EvidenceError, EvidenceMissing, require_active_pass  # noqa: E402
+from hooks.lib.skip_lifecycle import consume_challenge_skip  # noqa: E402
 from hooks.lib.evidence_validation import (  # noqa: E402
     validate_precommit_attestation,
     validate_quality,
@@ -133,9 +129,17 @@ def _validate_commit(identity: RepoIdentity, invocation: GitInvocation) -> str:
             f"{reason} changes the future index; stage in a separate Bash call, then run plain git commit"
         )
     paths = staged_paths(identity)
-    if not paths:
+    args = _verb_args(invocation)
+    # An empty index is a no-op only for a plain commit. --allow-empty creates
+    # a revision and --amend rewrites one, so neither may skip evidence.
+    creates_without_index = any(
+        arg == option or arg.startswith(f"{option}=")
+        for arg in args
+        for option in ("--allow-empty", "--allow-empty-message", "--amend")
+    )
+    if not paths and not creates_without_index:
         return "empty-index-noop"
-    if docs_only(paths):
+    if paths and docs_only(paths) and not creates_without_index:
         return "docs-only"
 
     state = require_active_pass(identity)

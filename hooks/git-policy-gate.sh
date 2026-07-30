@@ -4,16 +4,15 @@
 set -uo pipefail
 payload=""
 IFS= read -r -d '' payload  # returns 1 at EOF by design; -e is not set
-protected_home="${CLAUDE_HOME:-$HOME/.claude}"
-case "$payload" in
-  *git*|*Git*|*.claude*|*settings.json*|*CLAUDE_HOME*|*"$protected_home"*) ;;
-  *) exit 0 ;;
-esac
+# Every payload reaches the classifier. A raw substring prefilter cannot see
+# what the shell will assemble: `g''it commit` contains no contiguous "git"
+# yet executes one, which made the whole policy a one-quote bypass.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 required=(
   "$script_dir/git_policy_gate.py"
   "$script_dir/lib/evidence_lifecycle.py"
   "$script_dir/lib/evidence_validation.py"
+  "$script_dir/lib/skip_lifecycle.py"
   "$script_dir/lib/git_cmd.py"
   "$script_dir/lib/protected_paths.py"
   "$script_dir/lib/repo_identity.py"

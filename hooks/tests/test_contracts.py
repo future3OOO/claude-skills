@@ -22,12 +22,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.git_policy_gate import _future_index_reason  # noqa: E402
-from hooks.lib.evidence_lifecycle import (  # noqa: E402
-    read_active_pass,
-    record_challenge_skip,
-    record_repoforge,
-    start_pass,
-)
+from hooks.lib.evidence_lifecycle import read_active_pass, record_repoforge, start_pass  # noqa: E402
+from hooks.lib.skip_lifecycle import record_challenge_skip  # noqa: E402
 from hooks.lib.evidence_validation import validate_preflight_advice, validate_tdd_requirement  # noqa: E402
 from hooks.lib.git_cmd import classify  # noqa: E402
 from hooks.lib.protected_paths import detect_protected_mutation  # noqa: E402
@@ -205,6 +201,42 @@ class ContractTests(unittest.TestCase):
         outside.mkdir()
         self.assertEqual(self.gate(outside, "git add -A\ngit commit -m x").returncode, 0)
 
+    def test_wrapped_and_quoted_commit_forms_reach_the_gate(self) -> None:
+        # Every form below runs a real commit in bash. Each was verified to exit
+        # 0 before this regression existed: the shell prefilter dropped quoted
+        # spellings, and the classifier ignored transparent wrappers, a leading
+        # IO number, and repository-routing options.
+        repo = self.make_repo(indexed=True)
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 5\n", encoding="utf-8")
+        git(repo, "add", "src/app.py")
+        verb = "com" + "mit"
+        forms = (
+            f"g''it {verb} -m t",
+            f"exec git {verb} -m t",
+            f"sudo git {verb} -m t",
+            f"sudo -n git {verb} -m t",
+            f"command -p git {verb} -m t",
+            f"/usr/bin/env git {verb} -m t",
+            f"bash --norc -c 'git {verb} -m t'",
+            f"2>{shlex.quote(str(repo / 'q.log'))} git {verb} -m t",
+            f"git --git-dir={shlex.quote(str(repo / '.git'))} --work-tree={shlex.quote(str(repo))} {verb} -m t",
+        )
+        for command in forms:
+            result = self.gate(repo, command)
+            self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+
+    def test_empty_index_commit_modes_that_create_or_rewrite_require_evidence(self) -> None:
+        # An empty index is only a no-op for a plain commit. --allow-empty
+        # creates a revision and --amend rewrites one, so neither may take the
+        # empty-index shortcut past evidence validation.
+        repo = self.make_repo(indexed=True)
+        self.packet_and_pass(repo, "empty-index")
+        verb = "com" + "mit"
+        self.assertEqual(self.gate(repo, f"git {verb} -m t").returncode, 0)
+        for command in (f"git {verb} --allow-empty -m t", f"git {verb} --amend --no-edit"):
+            result = self.gate(repo, command)
+            self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+
     def test_routine_git_verbs_have_an_ordinary_no_state_path(self) -> None:
         repo = self.make_repo(indexed=False)
         for command in (
@@ -285,9 +317,28 @@ class ContractTests(unittest.TestCase):
             "D=$HOME/.claude\ntouch $D/hooks/pwned",
             "find ~/.claude/state -type f -delete",
             "cd ~/.claude && rm -rf state",
+            # Command-local assignments do not apply to the command's own
+            # ordinary arguments; bash expands $D from the previous value.
+            "D=$HOME/.claude; D=/tmp touch $D/hooks/pwned",
+            # A subshell assignment must not escape its parentheses.
+            'D=$HOME/.claude; (D=/tmp; true); touch "$D/hooks/pwned"',
+            # A subshell cd must not persist to later commands.
+            "cd ~/.claude && (cd /tmp); touch hooks/pwned",
+            # -- ends options; what follows is a filename, not a flag.
+            "cd ~/.claude/hooks && touch -- -pwned",
+            # Wrapper options must not hide the wrapped mutator.
+            "sudo -n touch ~/.claude/hooks/pwned",
+            "env touch ~/.claude/hooks/pwned",
+            "D=$HOME/.claude sh -c 'touch $D/hooks/pwned'",
         )
         for command in blocked:
             self.assertIsNotNone(detect_protected_mutation(command, home, cwd=cwd), command)
+        # The mirror image of the subshell case must stay allowed, or the rule
+        # is just "block anything with parentheses".
+        self.assertIsNone(
+            detect_protected_mutation('D=/tmp; (D=$HOME/.claude; true); touch "$D/safe"', home, cwd=cwd),
+            "subshell-scoped protected assignment must not leak outward",
+        )
         malformed = self.gate(self.make_repo(indexed=False), "touch '$CLAUDE_HOME/hooks/pwned")
         self.assertEqual(malformed.returncode, 2, malformed.stderr)
 
@@ -347,10 +398,10 @@ class ContractTests(unittest.TestCase):
         repo = self.make_repo(indexed=True)
         identity, packet, context = self.packet_and_pass(repo, "tdd-order")
         tdd = ROOT / "skills/tdd/scripts/tdd-run"
-        red = run([str(tdd), "--cwd", str(repo), "--slug", "tdd-order", "--phase", "red", "--behavior", "value changes", "--expected-failure", "assertion", "--", sys.executable, "-c", "raise SystemExit(1)"], cwd=repo, env=self.env)
+        red = run([str(tdd), "--cwd", str(repo), "--slug", "tdd-order", "--phase", "red", "--behavior", "value changes", "--seam", "value() public interface", "--expected-failure", "AssertionError", "--", sys.executable, "-c", "assert False, 'value() must return 2'"], cwd=repo, env=self.env)
         self.assertEqual(red.returncode, 0, red.stderr)
         (repo / "src/app.py").write_text("def value() -> int:\n    return 2\n", encoding="utf-8")
-        green = run([str(tdd), "--cwd", str(repo), "--slug", "tdd-order", "--phase", "green", "--behavior", "value changes", "--", sys.executable, "-c", "raise SystemExit(0)"], cwd=repo, env=self.env)
+        green = run([str(tdd), "--cwd", str(repo), "--slug", "tdd-order", "--phase", "green", "--behavior", "value changes", "--seam", "value() public interface", "--", sys.executable, "-c", "raise SystemExit(0)"], cwd=repo, env=self.env)
         self.assertEqual(green.returncode, 0, green.stderr)
         git(repo, "add", "src/app.py")
         self.assertEqual(validate_tdd_requirement(identity, "tdd-order")[0], "evidence")
@@ -370,6 +421,47 @@ class ContractTests(unittest.TestCase):
         recorded = self.advisor_round(missing, "missing-tdd", "precommit-challenge", missing_packet, missing_context, "Verdict: commit-ready\n")
         self.assertEqual(recorded.returncode, 2)
         self.assertIn("TDD evidence or an explicit", recorded.stderr)
+
+    def test_red_evidence_must_observe_the_declared_failure(self) -> None:
+        repo = self.make_repo(indexed=False)
+        identity = resolve_repo_identity(repo)
+        start_pass(identity, "red-proof", claude_session_id="s")
+        tdd = ROOT / "skills/tdd/scripts/tdd-run"
+
+        def red(expected: str, *command: str) -> subprocess.CompletedProcess[str]:
+            return run([str(tdd), "--cwd", str(repo), "--slug", "red-proof", "--phase", "red",
+                        "--behavior", "value changes", "--seam", "value() public interface",
+                        "--expected-failure", expected, "--", *command], cwd=repo, env=self.env)
+
+        # A nonzero exit that never printed the declared failure is not RED.
+        silent = red("AssertionError", sys.executable, "-c", "raise SystemExit(1)")
+        self.assertEqual(silent.returncode, 2, silent.stdout)
+        # A timeout is an infrastructure failure, not the declared product failure.
+        timed_out = run([str(tdd), "--cwd", str(repo), "--slug", "red-proof", "--phase", "red",
+                         "--behavior", "value changes", "--seam", "value() public interface",
+                         "--expected-failure", "AssertionError", "--timeout", "1",
+                         "--", sys.executable, "-c", "import time; print('AssertionError'); time.sleep(30)"],
+                        cwd=repo, env=self.env)
+        self.assertEqual(timed_out.returncode, 2, timed_out.stdout)
+        # The real failing assertion is accepted.
+        genuine = red("AssertionError", sys.executable, "-c", "assert False, 'value() must return 2'")
+        self.assertEqual(genuine.returncode, 0, genuine.stderr)
+
+        # GREEN must answer the RED at the same seam, not merely the same label.
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 2\n", encoding="utf-8")
+        other_seam = run([str(tdd), "--cwd", str(repo), "--slug", "red-proof", "--phase", "green",
+                          "--behavior", "value changes", "--seam", "a different interface",
+                          "--", sys.executable, "-c", "raise SystemExit(0)"], cwd=repo, env=self.env)
+        self.assertEqual(other_seam.returncode, 2, other_seam.stdout)
+        same_seam = run([str(tdd), "--cwd", str(repo), "--slug", "red-proof", "--phase", "green",
+                         "--behavior", "value changes", "--seam", "value() public interface",
+                         "--", sys.executable, "-c", "raise SystemExit(0)"], cwd=repo, env=self.env)
+        self.assertEqual(same_seam.returncode, 0, same_seam.stderr)
+
+        # Captured evidence cannot be downgraded to a not-required decision.
+        downgrade = run([str(tdd), "--cwd", str(repo), "--slug", "red-proof",
+                         "--not-required", "changed my mind"], cwd=repo, env=self.env)
+        self.assertEqual(downgrade.returncode, 2, downgrade.stdout)
 
     def test_explicit_tdd_not_required_decision_survives_staging(self) -> None:
         repo = self.make_repo(indexed=False)
@@ -437,10 +529,10 @@ class ContractTests(unittest.TestCase):
                 repo = self.make_repo(indexed=True)
                 identity, packet, context = self.packet_and_pass(repo, slug)
                 tdd = ROOT / "skills/tdd/scripts/tdd-run"
-                red = run([str(tdd), "--cwd", str(repo), "--slug", slug, "--phase", "red", "--behavior", "value changes", "--expected-failure", "assertion", "--", sys.executable, "-c", "raise SystemExit(1)"], cwd=repo, env=self.env)
+                red = run([str(tdd), "--cwd", str(repo), "--slug", slug, "--phase", "red", "--behavior", "value changes", "--seam", "value() public interface", "--expected-failure", "AssertionError", "--", sys.executable, "-c", "assert False, 'value() must return 2'"], cwd=repo, env=self.env)
                 self.assertEqual(red.returncode, 0, red.stderr)
                 (repo / "src/app.py").write_text("def value() -> int:\n    return 7\n", encoding="utf-8")
-                green = run([str(tdd), "--cwd", str(repo), "--slug", slug, "--phase", "green", "--behavior", "value changes", "--", sys.executable, "-c", "raise SystemExit(0)"], cwd=repo, env=self.env)
+                green = run([str(tdd), "--cwd", str(repo), "--slug", slug, "--phase", "green", "--behavior", "value changes", "--seam", "value() public interface", "--", sys.executable, "-c", "raise SystemExit(0)"], cwd=repo, env=self.env)
                 self.assertEqual(green.returncode, 0, green.stderr)
                 git(repo, "add", "src/app.py")
                 quality, _, _ = run_quality(identity, scope="index", base_ref="HEAD", packet_path=str(packet), gitnexus_context_path=str(context))

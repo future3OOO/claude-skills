@@ -1,0 +1,32 @@
+name: gate suite
+
+# The offline suite must be enforced by the repository, not asserted in a
+# document. The live-transcript corpus stage is operator-machine only, so CI
+# runs the fixture corpus, the lifecycle contracts, and the quality gate.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Configure git identity for harness repositories
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Gate Suite"
+      - name: Captured command corpus regression
+        run: python3 hooks/tests/corpus_regression.py
+      - name: Lifecycle and evidence contracts
+        run: python3 -u hooks/tests/test_contracts.py
+      - name: Production quality-gate suite
+        run: python3 -u skills/production-code/scripts/test_code_quality_gate.py
+      - name: Advisor wrapper contract suite
+        run: CLAUDE_HOME="$PWD" bash skills/codex-advisor/tests/test-ask-codex-advisor.sh
+      - name: Package gate on its own tree
+        run: python3 skills/production-code/scripts/code_quality_gate.py check --repo .

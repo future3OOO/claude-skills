@@ -26,7 +26,7 @@ GENERAL_ESCAPE_RULES = [
     # E402 is module-import-not-at-top, which a standalone entry point cannot
     # avoid: it must extend sys.path before importing shared code. A bare
     # suppression, or any other code, stays banned.
-    re.compile(r"#\s*noqa\b(?!\s*:\s*E402\b)", re.I),
+    re.compile(r"#\s*noqa\b(?!\s*:\s*E402\b(?!\s*,))", re.I),
     re.compile(r"\|\|\s*true\b"),
 ]
 

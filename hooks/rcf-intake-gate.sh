@@ -19,7 +19,7 @@ try:
     )
     from hooks.lib.hook_input import HookInputError, read_hook_input  # noqa: E402
     from hooks.lib.repo_identity import NotGitRepository, RepoIdentity, resolve_repo_identity  # noqa: E402
-    from hooks.lib.state_store import is_code_path  # noqa: E402
+    from hooks.lib.state_store import is_reviewable_path  # noqa: E402
 except Exception as exc:
     print(f"rcf-intake-gate.sh import failure: {type(exc).__name__}: {exc}", file=sys.stderr)
     raise SystemExit(2)
@@ -91,7 +91,7 @@ def _run() -> int:
     target = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(target, str) or not target:
         return _deny("Edit tool input has no valid target path.")
-    if not is_code_path(target):
+    if not is_reviewable_path(target):
         return 0
     try:
         identity = resolve_repo_identity(_nearest_existing(target))

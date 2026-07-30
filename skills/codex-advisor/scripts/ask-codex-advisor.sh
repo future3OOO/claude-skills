@@ -130,8 +130,8 @@ output_file=$(mktemp "$state_dir/output.XXXXXX"); chmod 600 "$output_file"
 set +e
 printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 REPO_PRODUCTION_ADVISOR_TRANSPORT=wrapper-only ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
   claude -p "${session_args[@]}" --model "$model" --output-format text --append-system-prompt "$role" \
-    --allowed-tools "Read Grep Glob Skill mcp__gitnexus mcp__fff" \
-    --disallowed-tools "Edit Write NotebookEdit Task" --disallowed-tools "Agent Bash" >"$output_file"
+    --tools "Read,Grep,Glob,Skill" --strict-mcp-config \
+    --disallowed-tools "Edit Write NotebookEdit Task Agent Bash mcp__*" >"$output_file"
 status=$?
 set -e
 if [[ "$status" -ne 0 ]]; then

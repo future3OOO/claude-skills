@@ -12,6 +12,20 @@ from pathlib import Path
 
 COMMIT_VERBS = {"commit", "cherry-pick", "revert", "merge", "rebase"}
 SHELLS = {"sh", "bash", "dash", "zsh"}
+# Wrappers that execute the following command transparently. `exec` and `sudo`
+# were absent, so `exec git commit` and `sudo git commit` produced no invocation.
+TRANSPARENT_WRAPPERS = {"command", "builtin", "nohup", "exec", "sudo", "doas", "stdbuf", "setsid", "time", "ionice", "nice"}
+# Shell-wrapper semantics live here and are consumed by protected_paths too.
+# Value-taking options differ per wrapper: `sudo -n` is a flag while
+# `nice -n 19` consumes its argument. Guessing either way hides the command.
+WRAPPER_VALUE_OPTIONS = {
+    "sudo": {"-u", "--user", "-g", "--group", "-C", "--close-from", "-p", "--prompt", "-r", "--role", "-t", "--type"},
+    "doas": {"-u", "-C"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "--class", "--classdata"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+}
 PREFIXES = {"!", "if", "then", "elif", "else", "while", "until", "do", "time", "coproc"}
 OPERATORS = {"&&", "||", ";", "|", "&", "\n", "(", ")", "{", "}"}
 REDIRECTS = {">", ">>", "<", "<<", "<<<", "<>"}
@@ -80,6 +94,10 @@ def _events(command: str) -> list[list[str] | str]:
         if skip_target:
             skip_target = False
         elif token in REDIRECTS:
+            # `2>file cmd` carries an IO number bound to the redirect. Leaving
+            # it behind made the number the executable and hid the command.
+            if segment and segment[-1].isdigit():
+                segment.pop()
             skip_target = True
         elif token in OPERATORS:
             if segment:
@@ -102,7 +120,9 @@ def _shell_c(argv: list[str]) -> tuple[str | None, bool]:
     for index, token in enumerate(argv[1:], 1):
         if token == "--":
             continue
-        if token == "-c" or token.startswith("-") and "c" in token[1:]:
+        # Only a short-option cluster carries -c. `--norc` is a long option and
+        # its "c" must not swallow the following command string.
+        if token == "-c" or (token.startswith("-") and not token.startswith("--") and "c" in token[1:]):
             return (argv[index + 1], False) if index + 1 < len(argv) else (None, True)
         if not token.startswith("-"):
             break
@@ -110,7 +130,7 @@ def _shell_c(argv: list[str]) -> tuple[str | None, bool]:
 
 
 def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> GitInvocation:
-    index, effective, ambiguous = 1, cwd, False
+    index, effective, ambiguous, routed = 1, cwd, False, False
     while index < len(argv):
         token = argv[index]
         if token == "--":
@@ -127,15 +147,20 @@ def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> Git
         name = token.split("=", 1)[0]
         if name in GLOBAL_VALUES:
             if "=" in token:
-                value = token.split("=", 1)[1]
-                effective = _path(value, effective) if name == "-C" else effective
-                index += 1
+                value, step = token.split("=", 1)[1], 1
             elif index + 1 < len(argv):
-                effective = _path(argv[index + 1], effective) if name == "-C" else effective
-                index += 2
+                value, step = argv[index + 1], 2
             else:
                 ambiguous = True
                 break
+            # Routing options select which repository the commit lands in. -C
+            # and --work-tree name that worktree; a bare --git-dir does not, so
+            # the invocation cannot be attributed and must fail closed.
+            if name in {"-C", "--work-tree"}:
+                effective = _path(value, effective)
+            elif name == "--git-dir":
+                routed = True
+            index += step
         else:
             index += 1
     verb = argv[index] if index < len(argv) else ""
@@ -145,9 +170,20 @@ def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> Git
         or arg.startswith("-") and not arg.startswith("--") and "i" in arg[1:]
         for arg in verb_args
     )
-    creating = verb in {"commit", "cherry-pick", "revert", "merge"} or rebase_creating
-    possible = ambiguous and any(arg in COMMIT_VERBS for arg in argv[index:])
+    # --abort/--quit/--skip finish or unwind an interrupted operation; they
+    # author no revision and must stay runnable for recovery.
+    recovering = any(arg in {"--abort", "--quit", "--skip"} for arg in verb_args)
+    creating = (verb in {"commit", "cherry-pick", "revert", "merge"} and not recovering) or rebase_creating
+    possible = (ambiguous or (routed and creating)) and any(arg in COMMIT_VERBS for arg in argv[index:])
     return GitInvocation(verb, tuple(argv), effective, dict(env), creating, possible)
+
+
+def consume_wrapper_options(segment: list[str], index: int, wrapper: str) -> int:
+    """Skip a transparent wrapper's own options, consuming values it takes."""
+    takes_value = WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset())
+    while index < len(segment) and segment[index].startswith("-"):
+        index += 2 if segment[index] in takes_value and index + 1 < len(segment) else 1
+    return index
 
 
 def _consume_assignments(segment: list[str], index: int, env: dict[str, str]) -> int:
@@ -186,13 +222,19 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
         while index < len(segment) and segment[index] in PREFIXES:
             index += 1
         index = _consume_assignments(segment, index, env)
-        if index < len(segment) and segment[index] == "env":
-            index += 1
-            while index < len(segment) and segment[index].startswith("-"):
-                index += 2 if segment[index] in {"-u", "--unset"} and index + 1 < len(segment) else 1
-            index = _consume_assignments(segment, index, env)
-        while index < len(segment) and segment[index] in {"command", "builtin", "nohup"}:
-            index += 1
+        # Transparent wrappers run the command that follows them, so the gate
+        # must see through every one — with its own options — before deciding
+        # what the executable is.
+        while index < len(segment):
+            name = Path(segment[index]).name
+            if name == "env":
+                index = _consume_assignments(segment, consume_wrapper_options(segment, index + 1, "env"), env)
+                continue
+            if name in TRANSPARENT_WRAPPERS:
+                index = consume_wrapper_options(segment, index + 1, name)
+                index = _consume_assignments(segment, index, env)
+                continue
+            break
         if index >= len(segment):
             previous = None
             continue

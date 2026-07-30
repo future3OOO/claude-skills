@@ -16,11 +16,10 @@ if str(ROOT) not in sys.path:
 from hooks.lib.evidence_lifecycle import (  # noqa: E402
     EvidenceError,
     PassUpdate,
-    record_challenge_skip,
-    record_preflight_skip,
     require_active_pass,
     update_pass,
 )
+from hooks.lib.skip_lifecycle import record_challenge_skip, record_preflight_skip  # noqa: E402
 from hooks.lib.evidence_validation import validate_repoforge  # noqa: E402
 from hooks.lib.git_cmd import classify, invocation_fingerprint  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
@@ -62,6 +61,13 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.command or not args.command.strip():
             raise EvidenceError("precommit-challenge skip requires --command")
+        # Shell assignment prefixes bind to the FIRST simple command only, so
+        # `cd repo && git commit` would run the commit without the nonce and be
+        # blocked. Only a single simple command can carry this prefix.
+        if len(classify(args.command, str(identity.root)).invocations) != 1 or any(
+            token in args.command for token in ("&&", "||", ";", "|", "\n")
+        ):
+            raise EvidenceError("--command must be a single simple command; compound commands cannot carry the skip prefix")
         classified = classify(args.command, str(identity.root))
         commits = classified.commit_invocations
         if classified.parse_error or classified.possible_commit and len(commits) != 1 or len(commits) != 1:
