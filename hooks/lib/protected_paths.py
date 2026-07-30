@@ -9,7 +9,7 @@ from pathlib import Path
 MUTATORS = {"touch", "rm", "unlink", "rmdir", "mkdir", "truncate", "chmod", "chown", "tee"}
 TARGET_ONLY = {"cp", "install", "rsync"}
 BOTH = {"mv", "ln"}
-from .git_cmd import PREFIXES, TRANSPARENT_WRAPPERS, consume_wrappers, split_substitutions
+from .git_cmd import PREFIXES, TRANSPARENT_WRAPPERS, consume_wrappers, split_substitutions, without_option_values
 
 SHELLS = {"sh", "bash", "dash", "zsh"}
 WRAPPERS = TRANSPARENT_WRAPPERS | {"env"}
@@ -83,25 +83,67 @@ def _operands(args: list[str]) -> list[str]:
 
 # Only cp and install spell a destination as an option. rsync's -t is
 # --times, so reading it as a target directory would take its SOURCE for the
-# destination and miss the write.
-DESTINATION_OPTIONS = {"cp": {"-t", "--target-directory"}, "install": {"-t", "--target-directory"}}
+# destination and miss the write. Short options are modelled as a grammar, not
+# by substring: `install -gdaemon src dst` passes a group, and the "d" in
+# "daemon" is a value character, not the directory flag.
+LONG_VALUE_OPTIONS = {
+    "cp": {"--target-directory", "--suffix"},
+    "install": {"--target-directory", "--group", "--mode", "--owner", "--suffix", "--strip-program"},
+}
+SHORT_VALUE_OPTIONS = {"cp": set("tS"), "install": set("tgmoS")}
+DESTINATION_LONG = "--target-directory"
+DIRECTORY_LONG = {"install": "--directory"}
+DIRECTORY_SHORT = {"install": "d"}
 
 
-def _destination_option(name: str, args: list[str]) -> str | None:
-    """The destination named by an option, which outranks the last operand."""
-    options = DESTINATION_OPTIONS.get(name)
-    if not options:
-        return None
-    for position, arg in enumerate(args):
+def _write_destinations(name: str, args: list[str]) -> list[str] | None:
+    """Every path a copy-style command writes to, or None for every operand.
+
+    An empty list means the ordinary rule applies and the last operand is the
+    destination. `install -d` creates each operand instead, so it returns None.
+    """
+    long_values = LONG_VALUE_OPTIONS.get(name, set())
+    short_values = SHORT_VALUE_OPTIONS.get(name, set())
+    directory_long = DIRECTORY_LONG.get(name)
+    directory_short = DIRECTORY_SHORT.get(name)
+    named: list[str] = []
+    directory_mode = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
         if arg == "--":
             break
-        option = arg.split("=", 1)[0]
-        if option in options:
-            if "=" in arg:
-                return arg.split("=", 1)[1]
-            if position + 1 < len(args):
-                return args[position + 1]
-    return None
+        if arg.startswith("--"):
+            option, _, attached = arg.partition("=")
+            if option == directory_long:
+                directory_mode = True
+            elif option in long_values:
+                value = attached if attached else (args[index] if index < len(args) else "")
+                if not attached and index < len(args):
+                    index += 1
+                if option == DESTINATION_LONG and value:
+                    named.append(value)
+            continue
+        if arg.startswith("-") and len(arg) > 1:
+            letters = arg[1:]
+            for position, letter in enumerate(letters):
+                if letter in short_values:
+                    # The rest of the cluster is this option's value; if the
+                    # cluster ends here the value is the next argument.
+                    value = letters[position + 1:]
+                    if not value and index < len(args):
+                        value = args[index]
+                        index += 1
+                    if letter == "t" and value:
+                        named.append(value)
+                    break
+                if letter == directory_short:
+                    directory_mode = True
+            continue
+    if named:
+        return named
+    return None if directory_mode else []
 
 
 def _paths(args: list[str], env: dict[str, str], cwd: Path) -> list[Path]:
@@ -199,10 +241,22 @@ def detect_protected_mutation(command: str, home: Path, *, cwd: str | os.PathLik
         if name == "find" and any(flag in args for flag in {"-delete", "-exec", "-execdir", "-ok", "-okdir"}) and any(_protected(path, home) for path in paths):
             return "mutation of protected workflow state via find"
         if name in TARGET_ONLY:
-            # `cp -t DIR src` writes into DIR; the last operand is a SOURCE.
-            option_destination = _destination_option(name, args)
-            destination = _expand(option_destination, argument_env, current) if option_destination else (paths[-1] if paths else None)
-            if destination is not None and _protected(destination, home):
+            # `cp -t DIR src` writes into DIR and the last operand is a SOURCE;
+            # `install -d A B` creates every operand instead of copying. The
+            # operand list must come from the same grammar, or a trailing
+            # `-S suffix` leaves its VALUE looking like the destination.
+            named = _write_destinations(name, args)
+            operands = _paths(
+                without_option_values(args, LONG_VALUE_OPTIONS.get(name, set()), SHORT_VALUE_OPTIONS.get(name, set())),
+                argument_env, current,
+            )
+            if named is None:
+                destinations = operands
+            elif named:
+                destinations = [_expand(value, argument_env, current) for value in named]
+            else:
+                destinations = operands[-1:]
+            if any(_protected(destination, home) for destination in destinations):
                 return f"mutation of protected workflow state via {name}"
         if name in BOTH | MUTATORS and any(_protected(path, home) for path in paths):
             return f"mutation of protected workflow state via {name}"

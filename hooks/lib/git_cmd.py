@@ -12,6 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 COMMIT_VERBS = {"commit", "cherry-pick", "revert", "merge", "rebase"}
+# Options whose VALUE is a separate token. Without them a message such as
+# `-m --abort` reads as a recovery flag and suppresses the commit.
+COMMIT_VALUE_OPTIONS = {"-m", "--message", "-F", "--file", "-C", "--reuse-message",
+                        "-c", "--reedit-message", "--author", "--date", "--squash",
+                        "--fixup", "-S", "--gpg-sign", "-t", "--template", "--cleanup",
+                        "--strategy", "-s", "--strategy-option", "-X", "--onto"}
+COMMIT_VALUE_LETTERS = set("mFCcStsX")
 SHELLS = {"sh", "bash", "dash", "zsh"}
 # Wrappers that execute the following command transparently. `exec` and `sudo`
 # were absent, so `exec git commit` and `sudo git commit` produced no invocation.
@@ -151,16 +158,26 @@ def split_substitutions(command: str) -> tuple[str, list[str]]:
         closing, depth = ")" if char == "$" else "`", 0
         cursor = index + (2 if char == "$" else 1)
         start = cursor
+        # The delimiter must be found under the payload's own quoting: a ")"
+        # inside 'a)b' does not close the substitution, and mis-splitting there
+        # leaves the real command outside anything this parser inspects.
+        inner_single = inner_double = False
         while cursor < len(command):
-            if command[cursor] == "\\":
+            here = command[cursor]
+            if here == "\\":
                 cursor += 2
                 continue
-            if char == "$" and command.startswith("$(", cursor):
-                depth += 1
-            elif command[cursor] == closing:
-                if depth == 0:
-                    break
-                depth -= 1
+            if here == "'" and not inner_double:
+                inner_single = not inner_single
+            elif here == '"' and not inner_single:
+                inner_double = not inner_double
+            elif not inner_single and not inner_double:
+                if char == "$" and command.startswith("$(", cursor):
+                    depth += 1
+                elif here == closing:
+                    if depth == 0:
+                        break
+                    depth -= 1
             cursor += 1
         if cursor >= len(command):
             unbalanced.append(command[start:])
@@ -258,6 +275,38 @@ def _shell_c(argv: list[str]) -> tuple[str | None, bool]:
     return None, False
 
 
+def without_option_values(
+    args: list[str], value_options: set[str], value_letters: set[str]
+) -> list[str]:
+    """Args with option VALUES removed; flags and operands are kept.
+
+    A short cluster ends at its first value letter: `-qm x` passes x to -m, and
+    `-m755` carries its value attached. Without this, `-qm --abort` makes the
+    commit message look like a recovery flag, and `cp src dst -S suffix` makes
+    the suffix look like the destination.
+    """
+    kept: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            kept.extend(args[index:])
+            break
+        kept.append(arg)
+        if arg.startswith("--"):
+            option, sep, _ = arg.partition("=")
+            if option in value_options and not sep and index < len(args):
+                index += 1
+        elif arg.startswith("-") and len(arg) > 1:
+            for position, letter in enumerate(arg[1:]):
+                if letter in value_letters:
+                    if position + 2 == len(arg) and index < len(args):
+                        index += 1
+                    break
+    return kept
+
+
 def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> GitInvocation:
     index, effective, ambiguous, routed = 1, cwd, False, False
     while index < len(argv):
@@ -308,10 +357,24 @@ def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> Git
         for arg in verb_args
     )
     # --abort/--quit/--skip finish or unwind an interrupted operation; they
-    # author no revision and must stay runnable for recovery.
-    recovering = any(arg in {"--abort", "--quit", "--skip"} for arg in verb_args)
+    # author no revision and must stay runnable for recovery. An option VALUE
+    # that happens to read `--abort` is a commit message, not a recovery flag.
+    recovering = any(
+        arg in {"--abort", "--quit", "--skip"}
+        for arg in without_option_values(verb_args, COMMIT_VALUE_OPTIONS, COMMIT_VALUE_LETTERS)
+    )
     creating = (verb in {"commit", "cherry-pick", "revert", "merge"} and not recovering) or rebase_creating
-    possible = (ambiguous or (routed and creating)) and any(arg in COMMIT_VERBS for arg in argv[index:])
+    # A verb assembled by a substitution is unknown until the shell runs it.
+    # Only the templates that could still spell a commit verb are refused, so
+    # `git com$(printf mit)` blocks while `git lo$(printf g)` keeps working.
+    fragments = verb.split(SUBSTITUTION_RESULT)
+    template = re.compile("^" + ".*".join(re.escape(part) for part in fragments) + "$")
+    synthesised_verb = len(fragments) > 1 and not recovering and any(
+        template.match(candidate) for candidate in COMMIT_VERBS
+    )
+    possible = synthesised_verb or (
+        (ambiguous or (routed and creating)) and any(arg in COMMIT_VERBS for arg in argv[index:])
+    )
     return GitInvocation(verb, tuple(argv), effective, dict(env), creating, possible)
 
 
@@ -484,11 +547,17 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
         env, index = dict(inherited), 0
         while index < len(segment) and segment[index] in PREFIXES:
             index += 1
+        after_prefixes = index
         index = _consume_assignments(segment, index, env)
+        assignments_consumed = index > after_prefixes
         # Transparent wrappers run the command that follows them, so the gate
         # must see through every one — with its own options — before deciding
         # what the executable is.
         index, unknown_wrapper_option, nested = consume_wrappers(segment, index, env)
+        # `env X=1` sets a variable and runs nothing. The wrapper walk consumes
+        # that assignment itself, so look at everything consumed so far rather
+        # than only at what `_consume_assignments` took.
+        assignments_consumed = any(ASSIGNMENT.match(token) for token in segment[after_prefixes:index])
         argv = segment[index:]
         executable = Path(argv[0]).name if argv else ""
         if executable in SHELLS:
@@ -503,6 +572,12 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
             previous = None
             continue
         if not argv:
+            # `X=1` is a command of its own, so a caller counting commands must
+            # see it; otherwise `X=1; git commit` reads as one command. Only an
+            # assignment counts: terminal wrapper modes and shell keywords reach
+            # an empty argv too, and they are not commands of their own.
+            if assignments_consumed:
+                leaves.append("")
             previous = None
             continue
         if SUBSTITUTION_RESULT in argv[0] and any(arg in COMMIT_VERBS for arg in argv[1:]):

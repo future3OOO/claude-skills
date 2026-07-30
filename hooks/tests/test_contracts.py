@@ -31,7 +31,7 @@ from hooks.lib.evidence_lifecycle import (  # noqa: E402
 )
 from hooks.lib.skip_lifecycle import record_challenge_skip  # noqa: E402
 from hooks.lib.evidence_validation import validate_preflight_advice, validate_tdd_requirement  # noqa: E402
-from hooks.lib.git_cmd import classify  # noqa: E402
+from hooks.lib.git_cmd import classify, split_substitutions  # noqa: E402
 from hooks.lib.protected_paths import detect_protected_mutation  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import (  # noqa: E402
@@ -277,23 +277,86 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(inert.commit_invocations, inert.invocations)
         self.assertFalse(inert.possible_commit)
 
-    def test_repository_routing_binds_or_blocks(self) -> None:
+    def test_a_substitution_may_only_synthesise_a_non_commit_verb(self) -> None:
+        # `git com$(printf mit)` runs a commit, so the verb template decides:
+        # refuse the templates that could still spell a commit verb, and leave
+        # read-only and recovery verbs working.
         repo = self.make_repo(indexed=True)
-        other = self.make_repo(indexed=False)
-        (repo / "src/app.py").write_text("def value() -> int:\n    return 7\n", encoding="utf-8")
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 9\n", encoding="utf-8")
         git(repo, "add", "src/app.py")
-        # Staged content in the TARGET proves the gate evaluated that repository
-        # rather than the harness one.
-        (other / "src/app.py").write_text("def value() -> int:\n    return 8\n", encoding="utf-8")
-        git(other, "add", "src/app.py")
         verb = "com" + "mit"
         for command in (
-            f"GIT_DIR={shlex.quote(str(other / '.git'))} GIT_WORK_TREE={shlex.quote(str(other))} git {verb} -m t",
-            f"git --git-dir={shlex.quote(str(other / '.git'))} {verb} -m t",
-            f"git --git-dir={shlex.quote(str(other / '.git'))} --work-tree={shlex.quote(str(other))} {verb} -m t",
+            f"git {verb[:3]}$(printf {verb[3:]}) -m t",
+            "git $(printf status) -m t",
+            # Several markers assemble one verb just as well as one does.
+            f"git $(printf {verb[:3]})$(printf {verb[3:]}) -m t",
+            # `--abort` here is the commit MESSAGE, not a recovery flag —
+            # including when the option arrives inside a short cluster.
+            f"git {verb[:3]}$(printf {verb[3:]}) -m --abort",
+            f"git {verb[:3]}$(printf {verb[3:]}) -qm --abort",
         ):
-            result = self.gate(repo, command)
-            self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+            blocked = self.gate(repo, command)
+            self.assertEqual(blocked.returncode, 2, f"{command!r} was allowed: {blocked.stdout}{blocked.stderr}")
+        for control in ("git lo$(printf g) --oneline", "git re$(printf base) --abort",
+                        "git me$(printf rge) --abort", "git diff $(git merge-base a b)"):
+            allowed = classify(control, repo)
+            self.assertFalse(allowed.commit_invocations, f"{control!r}: {allowed.invocations}")
+            self.assertFalse(allowed.possible_commit, control)
+
+    def test_substitution_payloads_are_split_under_their_own_quoting(self) -> None:
+        # A ")" inside 'a)b' does not close the substitution. Splitting there
+        # left the real command in the outer text where nothing inspected it.
+        verb = "com" + "mit"
+        outer, inner = split_substitutions(f"""echo "$(printf 'a)b' ; git {verb} -m x)\"""")
+        self.assertEqual(inner, [f"printf 'a)b' ; git {verb} -m x"])
+        self.assertNotIn(verb, outer)
+        # Single quotes keep a substitution inert; double quotes do not.
+        self.assertEqual(split_substitutions(f"printf '%s' '$(git {verb} -m x)'")[1], [])
+        self.assertEqual(split_substitutions(f'echo "$(git {verb} -m x)"')[1], [f"git {verb} -m x"])
+        # An escaped dollar never opens a substitution.
+        self.assertEqual(split_substitutions(r'echo "\$(git status)"')[1], [])
+        # Nested $() inside double quotes is still one balanced span.
+        self.assertEqual(split_substitutions('echo "$(echo "$(printf x)")"')[1], ['echo "$(printf x)"'])
+
+    def test_repository_routing_evaluates_the_routed_repository(self) -> None:
+        # Asserting only "blocked" cannot tell routing apart from any other
+        # fail-closed denial. Authorise the ROUTED target and leave the harness
+        # repository unauthorised: the routed command can then only be allowed
+        # if the gate actually evaluated the target.
+        harness = self.make_repo(indexed=True)
+        target = self.make_repo(indexed=True)
+        identity, packet, context = self.packet_and_pass(target, "routed-target")
+        (target / "src/app.py").write_text("def value() -> int:\n    return 8\n", encoding="utf-8")
+        git(target, "add", "src/app.py")
+        status, _, _ = run_quality(identity, scope="index", base_ref="HEAD", packet_path=str(packet), gitnexus_context_path=str(context))
+        self.assertEqual(status, 0)
+        (harness / "src/app.py").write_text("def value() -> int:\n    return 7\n", encoding="utf-8")
+        git(harness, "add", "src/app.py")
+        verb = "com" + "mit"
+        # Control: the harness repository itself is NOT authorised.
+        self.assertEqual(self.gate(harness, f"git {verb} -m t").returncode, 2)
+        # Resolvable routing must reach the authorised target and be allowed.
+        # The skip nonce is minted against the TARGET, so the command can only
+        # succeed if the gate resolved that repository rather than the harness.
+        routed = f"git -C {shlex.quote(str(target))} {verb} -m t"
+        helper = ROOT / "skills/codex-advisor/scripts/record-advisor-skip.py"
+        issued = run([
+            sys.executable, str(helper), "--cwd", str(target), "--slug", "routed-target",
+            "--phase", "precommit-challenge", "--reason", "advisor outage", "--command", routed,
+        ], cwd=target, env=self.env)
+        self.assertEqual(issued.returncode, 0, issued.stderr)
+        result = self.gate(harness, issued.stdout.strip())
+        self.assertEqual(result.returncode, 0, f"routing was not followed: {result.stdout}{result.stderr}")
+        self.assertEqual(classify(routed, harness).commit_invocations[0].effective_cwd, str(target))
+        # Unresolved routing is a different contract: it blocks before any
+        # repository is evaluated, with its own diagnostic.
+        for command in (
+            f"GIT_DIR={shlex.quote(str(target / '.git'))} git {verb} -m t",
+            f"git --git-dir={shlex.quote(str(target / '.git'))} {verb} -m t",
+        ):
+            unresolved = self.gate(harness, command)
+            self.assertEqual(unresolved.returncode, 2, command)
+            self.assertIn("ambiguous or unresolved commit invocation", unresolved.stdout + unresolved.stderr)
 
     def test_numeric_pathspec_survives_a_spaced_redirection(self) -> None:
         repo = self.make_repo(indexed=False)
@@ -470,6 +533,17 @@ class ContractTests(unittest.TestCase):
             # rsync spells -t as --times, so its destination is still the last
             # operand; reading -t as a target directory hides this write.
             "rsync -t payload ~/.claude/hooks/",
+            # GNU cp and install accept the destination attached to the flag.
+            "cp -t~/.claude/hooks payload",
+            "install -t~/.claude/hooks payload",
+            # `install -d` creates every operand rather than copying into one.
+            "install -d ~/.claude/hooks /tmp/ordinary",
+            "install -d /tmp/ordinary ~/.claude/hooks",
+            "install -Dd ~/.claude/hooks",
+            # A trailing option VALUE must not be read as the destination.
+            "cp payload ~/.claude/hooks -S suffix",
+            "install payload ~/.claude/hooks -g daemon",
+            "install payload ~/.claude/hooks --strip-program=/bin/true",
             'echo "$(cp payload ~/.claude/hooks/pwned)"',
             "/usr/bin/time -po /dev/null sh -c 'touch ~/.claude/hooks/pwned'",
             # A brace group nested in a compound statement still runs.

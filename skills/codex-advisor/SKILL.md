@@ -40,8 +40,25 @@ SEPARATE files, and never wrap it in `timeout`:
   -- "Question: ..." > /tmp/scratch/advisor.out 2> /tmp/scratch/advisor.err
 ```
 
+Let the Bash tool do the backgrounding. Do NOT add `nohup`, `&`, or any other
+detach: the completion signal then reports the launcher exiting, not the
+consult, and a buffering run becomes indistinguishable from a dead one.
+
 A consult typically runs 2-15 minutes and **buffers**: an in-flight run writes
 zero bytes. Zero output is not failure — judge only after the process exits.
+Size alone never decides: a buffering run and a dead one both show zero bytes,
+so read the stderr marker. On failure the wrapper discards the delegate's
+stdout, so the diagnosis is the stderr `error:` line, not the output file.
+
+A resumed session that has accumulated earlier rounds can exhaust the model's
+context window; the wrapper reports it as a nonzero status. Carry that consult
+on `codex exec`, which compacts where the wrapper's session cannot — the one
+sanctioned exception in `PLUGIN-DECISION.md`, and operator-invoked only. Pass
+`-o/--output-last-message FILE` or the final answer never reaches stdout, then
+record the result with `advisor-state.py record --output FILE` so the round is
+attested. `--fresh` also clears the overflow but discards the session
+continuity that reusing one slug exists to preserve. The plugin and Agent tool
+stay banned, and the wrapper never chains to another transport itself.
 
 The model is pinned by the claudex alias (`gpt-5.6-sol`) and echoed in the
 session marker. Reasoning depth is NOT settable per consult: `claude -p`

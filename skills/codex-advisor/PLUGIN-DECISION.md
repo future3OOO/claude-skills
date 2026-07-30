@@ -7,10 +7,16 @@ disable it.
 
 ## Production no-fallback contract
 
-- `ask-codex-advisor.sh` is the sole production advisor transport.
+- `ask-codex-advisor.sh` is the default production advisor transport.
 - It exports and validates `REPO_PRODUCTION_ADVISOR_TRANSPORT=wrapper-only`.
-- A wrapper failure exits; it never invokes the plugin, Agent tool, Codex CLI,
-  or another transport.
+- A wrapper failure exits; the wrapper itself never chains to another
+  transport, and the plugin and Agent tool remain banned outright.
+- One operator-invoked exception: when a resumed session exhausts the model's
+  context window, `codex exec` may carry that consult, because it compacts
+  where the wrapper's session cannot. The wrapper does not invoke it; the
+  operator does, and the resulting advice is attested only by recording it
+  through `advisor-state.py record`. An unrecorded exec consult is advice,
+  not evidence, and satisfies no checkpoint.
 - The integrated mutation/no-fallback test scans the wrapper and runs a failed
   transport fixture to ensure no fallback path executes.
 
