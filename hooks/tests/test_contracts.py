@@ -232,10 +232,21 @@ class ContractTests(unittest.TestCase):
             # A wrapper's real value option must be consumed so recursion reaches the shell.
             f"sudo -D /tmp sh -c 'git {verb} -m t'",
             f"sudo --chdir=/tmp sh -c 'git {verb} -m t'",
+            # A short-option cluster hides a value-taking option inside it.
+            f"/usr/bin/time -po /dev/null sh -c 'git {verb} -m t'",
         )
         for command in forms:
             result = self.gate(repo, command)
             self.assertEqual(result.returncode, 2, f"{command!r} was allowed: {result.stdout}{result.stderr}")
+
+    def test_query_mode_wrappers_execute_nothing(self) -> None:
+        # `command -v git commit` prints a path; classifying it as a commit
+        # blocks an ordinary lookup.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        result = classify(f"command -v git {verb}", repo)
+        self.assertFalse(result.commit_invocations, result.invocations)
+        self.assertFalse(result.possible_commit)
 
     def test_ordinary_redirections_do_not_read_as_commit_pathspecs(self) -> None:
         # `2>&1` duplicates a descriptor; leaving the digit in argv made an
@@ -351,6 +362,8 @@ class ContractTests(unittest.TestCase):
             "grep -r commit .",
             # A wrapper's own documented flag is not an unmodelled option.
             "command -p echo touch ~/.claude/hooks/pwned",
+            # `command -v` reports where a command lives; it runs nothing.
+            "command -v touch ~/.claude/hooks/pwned",
         )
         for command in allowed:
             self.assertIsNone(detect_protected_mutation(command, home, cwd=cwd), command)
@@ -382,6 +395,7 @@ class ContractTests(unittest.TestCase):
             "{ touch ~/.claude/hooks/pwned; }",
             "sudo --unknown-option touch ~/.claude/hooks/pwned",
             "sudo -D /tmp sh -c 'touch ~/.claude/hooks/pwned'",
+            "/usr/bin/time -po /dev/null sh -c 'touch ~/.claude/hooks/pwned'",
             # A brace group nested in a compound statement still runs.
             "if true; then { touch ~/.claude/hooks/pwned; }; fi",
         )

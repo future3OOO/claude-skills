@@ -30,12 +30,15 @@ WRAPPER_VALUE_OPTIONS = {
     "time": {"-o", "--output", "-f", "--format"},
     "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
 }
+# Options that make the wrapper report something instead of executing the
+# command that follows: `command -v git commit` prints a path and runs nothing.
+WRAPPER_TERMINAL_OPTIONS = {"command": {"-v", "-V"}}
 WRAPPER_FLAGS = {
     "sudo": {"-n", "--non-interactive", "-b", "--background", "-E", "--preserve-env", "-H", "--set-home",
              "-i", "--login", "-k", "--reset-timestamp", "-K", "--remove-timestamp", "-l", "--list",
              "-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell", "-v", "--validate", "-A", "--askpass"},
     "doas": {"-n", "-s", "-L"},
-    "command": {"-p", "-v", "-V"},
+    "command": {"-p"},
     "builtin": set(),
     "nohup": set(),
     "exec": {"-c", "-l"},
@@ -221,7 +224,7 @@ def embedded_command(segment: list[str], index: int, wrapper: str) -> str | None
     return None
 
 
-def consume_wrapper_options(segment: list[str], index: int, wrapper: str, unknown: bool = False) -> tuple[int, bool]:
+def consume_wrapper_options(segment: list[str], index: int, wrapper: str, unknown: bool = False) -> tuple[int, bool, bool]:
     """Skip a wrapper's options, consuming values it takes.
 
     Also reports whether an option we do not model was seen: an unregistered
@@ -230,16 +233,51 @@ def consume_wrapper_options(segment: list[str], index: int, wrapper: str, unknow
     """
     takes_value = WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset())
     flags = WRAPPER_FLAGS.get(wrapper, frozenset())
-    while index < len(segment) and segment[index].startswith("-"):
+    terminal_options = WRAPPER_TERMINAL_OPTIONS.get(wrapper, frozenset())
+    terminal = False
+    while index < len(segment) and segment[index].startswith("-") and segment[index] != "-":
         token = segment[index]
         name = token.split("=", 1)[0]
         if name in takes_value:
             index += 1 if "=" in token else (2 if index + 1 < len(segment) else 1)
             continue
-        if name not in flags:
-            unknown = True
+        if name in terminal_options:
+            terminal = True
+            index += 1
+            continue
+        if name in flags:
+            index += 1
+            continue
+        if not token.startswith("--") and len(token) > 2:
+            # A short-option cluster: `-po` is `-p` then `-o`, and a
+            # value-taking letter consumes the rest of the cluster or the
+            # following token. Treating the cluster as one opaque option let
+            # `time -po FILE sh -c '…'` hide the wrapped command.
+            index, unknown, terminal = _consume_short_cluster(
+                segment, index, token, takes_value, flags, terminal_options, unknown, terminal
+            )
+            continue
+        unknown = True
         index += 1
-    return index, unknown
+    return index, unknown, terminal
+
+
+def _consume_short_cluster(
+    segment: list[str], index: int, token: str, takes_value: frozenset[str] | set[str],
+    flags: frozenset[str] | set[str], terminal_options: frozenset[str] | set[str],
+    unknown: bool, terminal: bool,
+) -> tuple[int, bool, bool]:
+    for position, letter in enumerate(token[1:], 1):
+        option = f"-{letter}"
+        if option in takes_value:
+            # Value is the cluster remainder, else the next token.
+            return (index + 1 if position + 1 < len(token) else index + 2), unknown, terminal
+        if option in terminal_options:
+            terminal = True
+            continue
+        if option not in flags:
+            unknown = True
+    return index + 1, unknown, terminal
 
 
 def consume_wrappers(segment: list[str], index: int, env: dict[str, str]) -> tuple[int, bool, str | None]:
@@ -258,7 +296,10 @@ def consume_wrappers(segment: list[str], index: int, env: dict[str, str]) -> tup
         nested = embedded_command(segment, index + 1, name)
         if nested is not None:
             return len(segment), unknown, nested
-        index, unknown = consume_wrapper_options(segment, index + 1, name, unknown)
+        index, unknown, terminal = consume_wrapper_options(segment, index + 1, name, unknown)
+        if terminal:
+            # The wrapper reports instead of executing; nothing runs.
+            return len(segment), unknown, None
         index = _consume_assignments(segment, index, env)
     return index, unknown, None
 
