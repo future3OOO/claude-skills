@@ -67,9 +67,7 @@ These remain adoption gates and must not be reported as complete:
 - Advisor wrapper transport is proved live (2026-07-31): both checkpoint
   phases completed with the terminal `codex_advisor_complete status=0` marker.
   The earlier 408 entry was a caller error, not a proxy fault.
-- `risk-calibrated-bloat` fails and is correct: `added=4569 deleted=748`
-  against `added > deleted * 6`. Accepted for this branch only, because the
-  gate binaries, `hooks/lib`, and the recording skills land as one contract.
-  The rule is untouched; the budget binds the next change.
+- `risk-calibrated-bloat` fails: `added=4569 deleted=748` against
+  `added > deleted * 6`. See `DECISIONS.md`.
 
 See `ADOPTION.md` for install, verification, and rollback steps.
