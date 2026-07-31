@@ -146,7 +146,7 @@ All 14 returned `exit=0`.
 | `R22` | Docs-only `--amend`/`--allow-empty` skips RepoForge but demands evidence | accepted | W3 | — | 1 | [122](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3686334126) |
 | `R23` | The canary never reconciles a changed digest against the before snapshot | accepted | W3 | — | 1 | [219](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3688291177) |
 | `R24` | The altered-command assertion runs only after the nonce is consumed | accepted | W3 | — | 1 | [209](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3688290643) |
-| `R25` | The pre-commit hook hard-fails on any unpinned Claude Code version | accepted | W3 | — | 1 | [65](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3681422629) |
+| `R25` | The Git pre-commit hook turns the suite's Claude Code version-pin failure into a commit refusal | fixed | W3 | `.githooks/pre-commit` removed; standalone suite check retained | 1 | [65](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3681422629) |
 | `R26` | Rollback relies on an unrecorded backup directory | accepted | W3 | — | 1 | [172](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3687971021) |
 | `R27` | Edit-gate path exemptions were narrowed without a documented decision | accepted | W3 | — | 1 | [188](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3688098825) |
 | `R28` | The kill switch named by settings.json permissions no longer exists | accepted | W3 | — | 1 | [187](https://github.com/future3OOO/claude-skills/pull/2#discussion_r3688098762) |

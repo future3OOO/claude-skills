@@ -20,16 +20,12 @@ rsync -a --delete ~/.claude/hooks/ hooks/
 cp ~/.claude/CLAUDE.md CLAUDE.md
 cp ~/.claude/settings.json settings.json
 git add skills hooks CLAUDE.md settings.json
-# separate calls: the gate refuses one command that both stages and creates a revision
 git commit
 git push
 ```
 
 Stage those paths explicitly rather than `git add -A`: a blanket add publishes
-whatever else happens to be in the working tree without review. Staging and
-committing must also be separate Bash calls: the PreToolUse gate binds evidence
-to the already-staged `git write-tree`, so it refuses a single command that both
-stages and creates a revision, the `-a`/`--all` forms, and pathspec arguments.
+whatever else happens to be in the working tree without review.
 
 ## Restore
 
