@@ -39,20 +39,7 @@ else
   printf 'RUNTIME-GATED: claude executable unavailable; verify installed version is %s before adoption.\n' "$expected_version" >&2
 fi
 
-printf '== captured command corpus regression ==\n'
-python3 "$ROOT/hooks/tests/corpus_regression.py"
-live_corpus="${CLAUDE_TRANSCRIPT_ROOT:-$HOME/.claude/projects}"
-if [[ -d "$live_corpus" ]]; then
-  printf '\n== live transcript corpus regression ==\n'
-  python3 "$ROOT/hooks/tests/corpus_regression.py" --transcripts "$live_corpus"
-elif [[ -n "${CLAUDE_TRANSCRIPT_ROOT:-}" || "${REQUIRE_RUNTIME:-0}" == 1 ]]; then
-  printf 'FAIL: required live transcript corpus directory does not exist: %s\n' "$live_corpus" >&2
-  exit 1
-else
-  printf 'RUNTIME-GATED: live transcript corpus unavailable; target machine must prove zero classifier misses and zero core-verb false positives over its own captured commands.\n' >&2
-fi
-
-printf '\n== existing Codex advisor wrapper suite (19 tests) ==\n'
+printf '== existing Codex advisor wrapper suite (19 tests) ==\n'
 CLAUDE_HOME="$ROOT" bash "$ROOT/skills/codex-advisor/tests/test-ask-codex-advisor.sh"
 
 printf '\n== integrated lifecycle and evidence contracts ==\n'

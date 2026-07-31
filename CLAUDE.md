@@ -216,4 +216,14 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 
 ### Hooks
 
-Hook configuration lives in `~/.claude/settings.json`. One Bash `PreToolUse` process preserves a shell-level non-Git fast bail, then runs the shared Git classifier once and applies separate RepoForge and challenge policies. Ambiguous plausible commits, malformed commit-bearing payloads, unresolved repository identity, internal gate errors, and missing or mismatched required artifacts block with exit 2; docs-only and non-repo commands remain exempt. Exact-tree binding uses design (a): stage in one Bash call, record evidence for the resulting `git write-tree`, then run plain `git commit` in a separate call. Combined stage-and-commit commands, `commit -a`/`--all`, and commit pathspecs are blocked. The edit gate additionally requires current packet/GitNexus evidence and pass-bound preflight advice or its audited exception. `PostToolUse` runs non-authorizing quality checks; the exact staged tree receives commit-authorizing evidence only from the controlled recorder. `PreCompact` flushes existing pass state, `SessionStart` re-arms the complete chain and bounded state summary, and the non-blocking `Stop` hook returns structured changed-file and caller/callee context with unavailable checks reported as unknown. Native MCP calls are not covered by Bash hooks; rely on the search flow above for those.
+Hook configuration lives in `~/.claude/settings.json`. The Bash `PreToolUse`
+hook blocks demonstrated accidental mutations of protected workflow state; it
+does not parse or authorize Git commands. The edit gate requires current
+packet/GitNexus evidence and pass-bound preflight advice or its audited
+exception. `PostToolUse` runs non-authorizing quality checks, and the controlled
+recorder binds candidate evidence to the exact staged tree reviewed by the
+precommit advisor checkpoint. `PreCompact` flushes existing pass state,
+`SessionStart` re-arms the complete chain and bounded state summary, and the
+non-blocking `Stop` hook returns structured changed-file and caller/callee
+context with unavailable checks reported as unknown. Native MCP calls are not
+covered by Bash hooks; rely on the search flow above for those.

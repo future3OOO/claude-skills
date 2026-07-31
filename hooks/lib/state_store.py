@@ -216,11 +216,6 @@ def code_paths(paths: Iterable[str]) -> list[str]:
     return sorted({path for path in paths if is_code_path(path)})
 
 
-def docs_only(paths: Iterable[str]) -> bool:
-    values = list(paths)
-    return bool(values) and all(is_docs_or_scratch(path) for path in values)
-
-
 def changed_line_count(identity: RepoIdentity, *, cached: bool = True) -> int:
     args = ["diff", "--numstat"]
     if cached:

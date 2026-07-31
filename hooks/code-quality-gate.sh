@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse quality gate for code edits; commit evidence is recorded separately."""
+"""PostToolUse quality gate for code edits; exact-tree evidence is recorded separately."""
 from __future__ import annotations
 
 import sys

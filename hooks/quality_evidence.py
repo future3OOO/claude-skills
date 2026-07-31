@@ -32,7 +32,7 @@ def _gate_path() -> Path:
     """Resolve the vendored gate only.
 
     An environment override let a caller name any program whose JSON would
-    become commit-authorising evidence; hashing the substitute proves only
+    become staged-candidate evidence; hashing the substitute proves only
     that the substitute did not change mid-run.
     """
     return ROOT / "skills/production-code/scripts/code_quality_gate.py"
@@ -107,7 +107,7 @@ def run_quality(
 
     # The gate inspected one candidate; evidence must describe that same tree.
     # Without this, a stage during the run turns a pass for one tree into
-    # commit-authorising evidence for another.
+    # staged-candidate evidence for another.
     if scope == "index":
         # The record must describe exactly the tree the gate inspected.
         if index_tree(identity) != tree_before or gate_result.get("candidateTree") != tree_before:

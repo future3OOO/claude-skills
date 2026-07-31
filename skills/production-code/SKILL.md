@@ -8,7 +8,7 @@ description: Enforce production-only implementation standards for this repo. Use
 Apply this skill before writing any repository code or file content change, keep it active while implementing, and run its bundled gate before finalizing.
 Use the production-preflight skill first on before-edit turns that require explicit preflight. `code-quality` owns the seven quality principles and wins on conflict; this skill extends them with implementation procedure.
 
-Before editing, use the standards below to choose the smallest production-safe implementation path. The bundled gate remains non-mutating. For ordinary feedback run it directly; after staging the exact commit candidate, use the evidence recorder so commit authorization is bound to `git write-tree`:
+Before editing, use the standards below to choose the smallest production-safe implementation path. The bundled gate remains non-mutating. For ordinary feedback run it directly; after staging the exact candidate, use the evidence recorder so quality evidence is bound to `git write-tree`:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" check --repo "$PWD"

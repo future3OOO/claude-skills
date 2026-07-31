@@ -161,29 +161,16 @@ Disposition every advisor finding against code and proof. Any change requires
 restaging and repeating steps 7 through 9.
 
 A challenge exception is permitted only for a narrowly identified already-
-reviewed fix-only commit or a genuinely unavailable advisor. Create a one-use,
-reasoned nonce with the owned helper, which prints the only accepted command:
-
-```bash
-python3 "$HOME/.claude/skills/codex-advisor/scripts/record-advisor-skip.py" \
-  --cwd "$PWD" --slug "<task>" --phase precommit-challenge \
-  --reason "<specific exception>" --command 'git commit -m "<message>"'
-```
-
-Run the emitted environment-prefixed Git command unchanged. The gate parses
-invocation environment metadata, binds the nonce to repo, slug, HEAD, and index
-tree, logs its consumption, and rejects reuse. A commit-message substring or
-hand-written file never skips the gate.
+reviewed fix-only commit or a terminally unavailable advisor under the
+orchestrator's advisor-unavailable policy. Record that disposition in the
+handoff; no Git command or nonce represents the exception.
 
 ### 10. Commit, push, and PR
 
 Commit only the staged tree that owns current quality, review, TDD decision, and
-challenge evidence. Exact-tree binding uses design (a): staging and committing
-are separate Bash calls. After the evidence recorder and advisor bind to the
-current `git write-tree`, run plain `git commit`. The merged gate blocks commands
-that both stage and commit, `commit -a`/`--all`, and commit pathspec forms because
-PreToolUse cannot know their future tree. Ambiguous plausible commit syntax and
-internal gate errors fail closed with exit 2.
+challenge evidence. The workflow keeps staging, evidence capture, and commit as
+separate steps so the recorded candidate remains reviewable. Git command forms
+are not parsed or authorized by a Bash hook.
 
 Push and open or update the PR when the work is intended for integration and a
 remote exists, unless the user or repository workflow explicitly says not to.
@@ -196,16 +183,13 @@ named production pass at step 1.
 
 ## Failure Semantics
 
-Failure-open paths are limited to documentation/scratch-only operations,
-non-repository operations, non-commit Bash, and unavailable non-authoritative
-Stop feedback reported as unknown.
+Failure-open paths are limited to documentation/scratch-only operations and
+unavailable non-authoritative Stop feedback reported as unknown.
 
-Failure-closed paths include a plausible commit whose syntax cannot be safely
-classified, malformed commit-bearing hook input, unresolved canonical
-repository identity for a detected commit, stale RepoForge/GitNexus evidence,
-missing/malformed/stale/mismatched required attestations, malformed or unaudited
-skips, and protected workflow-state mutation attempts. Policy blocks use exit 2;
-other exits are not treated as blocks by Claude Code.
+Failure-closed paths include stale RepoForge/GitNexus evidence,
+missing/malformed/stale/mismatched required workflow attestations, malformed or
+unaudited preflight skips, and protected workflow-state mutation attempts.
+Policy blocks use exit 2; other exits are not treated as blocks by Claude Code.
 
 ## Final response
 

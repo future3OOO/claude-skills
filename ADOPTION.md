@@ -43,7 +43,7 @@ cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
 chmod +x ~/.claude/hooks/*.sh
 chmod +x ~/.claude/hooks/*.py
-chmod +x ~/.claude/hooks/tests/run.sh ~/.claude/hooks/tests/corpus_regression.py
+chmod +x ~/.claude/hooks/tests/run.sh
 chmod +x ~/.claude/skills/tdd/scripts/tdd-run
 chmod +x ~/.claude/skills/codex-advisor/scripts/*.py ~/.claude/skills/codex-advisor/scripts/*.sh
 chmod +x ~/.claude/skills/code-review/scripts/*.py
@@ -60,14 +60,13 @@ The executable checks below are therefore adoption requirements, not tidying.
 ```bash
 claude --version                         # must report 2.1.220
 required_executables=(
-  ~/.claude/hooks/git-policy-gate.sh
+  ~/.claude/hooks/protected-path-gate.py
   ~/.claude/hooks/code-quality-gate.sh
   ~/.claude/hooks/rcf-intake-gate.sh
   ~/.claude/hooks/skill-discipline-rearm.sh
   ~/.claude/hooks/pre-compact-flush.sh
   ~/.claude/hooks/post-edit-blast-radius.sh
   ~/.claude/hooks/tests/run.sh
-  ~/.claude/hooks/tests/corpus_regression.py
   ~/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh
   ~/.claude/skills/codex-advisor/scripts/advisor-state.py
   ~/.claude/skills/codex-advisor/scripts/record-advisor-skip.py
@@ -88,19 +87,7 @@ The final command must report:
 - advisor wrapper: 19/19;
 - production quality gate: 28/28;
 - lifecycle contracts: all passing;
-- live corpus: zero classifier misses and zero core-verb false positives over
-  every captured command. Corpus totals are reported, not asserted; the
-  transcript set grows with every session.
-
-Then run these acceptance probes in a clean, non-GitNexus throwaway repository:
-
-```bash
-# Feed each command through the installed PreToolUse harness or a real Claude
-# Bash call. They must not be blocked for lack of workflow state.
-git pull
-git merge origin/main
-git rebase origin/main
-```
+- the protected-path contract cases and all lifecycle contracts passing.
 
 Run the README sync/restore commands through the installed protected-path gate.
 They must pass. Run the live advisor mutation canary only after reviewing its
@@ -112,8 +99,8 @@ RUNTIME=1 ~/.claude/hooks/tests/run.sh
 
 ## Commit procedure
 
-The package deliberately chooses exact-tree design **(a)**. PreToolUse cannot
-bind evidence to a tree created later in the same shell command. Therefore:
+The advisor challenge remains a cooperative workflow checkpoint. Git commands
+are not parsed or automatically authorized by a Bash hook:
 
 ```bash
 git add <reviewed paths>
@@ -122,9 +109,6 @@ python3 ~/.claude/skills/production-code/scripts/record_quality_evidence.py \
 # complete review and precommit advisor round for this same index tree
 git commit
 ```
-
-Do not combine staging and commit. Do not use `git commit -a`, `--all`,
-`--include`, `--only`, or commit pathspecs. The gate blocks those forms.
 
 ## Roll back
 

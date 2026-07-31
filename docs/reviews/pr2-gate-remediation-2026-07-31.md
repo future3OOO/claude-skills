@@ -1,5 +1,13 @@
 # PR #2 gate remediation
 
+> **Superseded surface:** the W1 Git-command classifier, Bash commit gate, and
+> command-bound challenge nonce documented below were removed after direct
+> script/interpreter/build-tool probes demonstrated that a Bash PreToolUse hook
+> cannot enforce commit authorization. The advisor challenge remains a
+> workflow checkpoint, and every non-commit workflow/skill improvement plus
+> protected-path accident prevention remains in force. The remainder is kept
+> as historical review evidence.
+
 ## Objective
 
 Close the 18 hard merge blockers and 12 same-PR fixes on

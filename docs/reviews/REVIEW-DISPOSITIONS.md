@@ -1,5 +1,10 @@
 # PR #2 review dispositions
 
+> Historical record: dispositions concerning Git-command classification and
+> Bash commit authorization describe the superseded implementation. They are
+> retained for audit provenance, not as current runtime requirements. All
+> non-commit workflow and skill dispositions remain current.
+
 Every open review thread on PR #2, adjudicated. This is the W0 deliverable of
 [`pr2-gate-remediation-2026-07-31.md`](pr2-gate-remediation-2026-07-31.md) and
 stays current as each wave lands: a row moves to `fixed` only after the fix is

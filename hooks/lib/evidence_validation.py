@@ -1,7 +1,6 @@
 """Single-dispatch validation registry for managed evidence records."""
 from __future__ import annotations
 
-import hashlib
 import time
 from pathlib import Path
 from typing import Callable
@@ -30,17 +29,14 @@ from .evidence_lifecycle import (
     _tdd_evidence_path,
     validate_reference,
 )
-from .evidence_lifecycle import _challenge_skip_path, _preflight_skip_path  # noqa: E402
+from .evidence_lifecycle import _preflight_skip_path
 from .repo_identity import RepoIdentity
 from .state_store import (
     change_fingerprint,
-    changed_line_count,
-    code_paths,
     head_sha,
     index_tree,
     read_json,
     relevant_untracked,
-    staged_paths,
 )
 
 
@@ -105,11 +101,9 @@ def _validate_attestation(identity: RepoIdentity, request: ValidationRequest) ->
     tree = request.tree or (index_tree(identity) if request.phase == "precommit-challenge" else "")
     path = _advisor_attestation_path(identity, request.phase, slug, tree or None)
     record = _load(path, f"{request.phase} attestation")
-    # Past this point the attestation record exists. EvidenceMissing must keep
-    # meaning "the attestation itself is absent" — the commit gate falls back
-    # to the audited-skip path on that category — so a referenced artifact
-    # that vanished after attestation is remapped to staleness, never a
-    # license to skip.
+    # Past this point the attestation record exists. A referenced artifact
+    # that vanished after attestation is stale rather than absent; callers must
+    # not mistake a broken attestation for a missing one.
     try:
         expected: JsonObject = {
             "kind": "advisor-attestation",
@@ -166,47 +160,27 @@ def _expiry(record: JsonObject, label: str) -> None:
 
 def _validate_skip(identity: RepoIdentity, request: ValidationRequest) -> JsonObject:
     state = require_active_pass(identity)
-    if request.phase == "preflight-advice":
-        path = _preflight_skip_path(identity, str(state["slug"]))
-        record = _load(path, "preflight-advice audited skip")
-        _expect(record, {
-            "kind": "advisor-skip",
-            "phase": "preflight-advice",
-            **_pass_fields(identity, state, str(state["slug"])),
-            "artifactPath": str(path),
-            "createdBy": "record-advisor-skip.py",
-        }, "preflight-advice skip")
-        if not str(record.get("reason") or "").strip():
-            raise EvidenceMalformed("preflight-advice skip reason is empty")
-        repoforge = _validate_repoforge(identity, ValidationRequest())
-        packet = validate_reference(record.get("packetInput"), "preflight-advice skip packet input")
-        current_packet = repoforge.get("packet")
-        if not isinstance(current_packet, dict) or packet["sha256"] != current_packet.get("sha256"):
-            raise EvidenceStale("preflight-advice skip packet input is not current")
-        if record.get("gitnexusHead") != repoforge.get("gitnexusHead"):
-            raise EvidenceStale("preflight-advice skip GitNexus head is not current")
-        _expiry(record, "preflight-advice skip")
-        return record
-    path = Path(request.source) if request.source else _challenge_skip_path(identity, request.nonce)
-    record = _load(path, "challenge skip nonce")
-    _expiry(record, "challenge skip nonce")
+    if request.phase != "preflight-advice":
+        raise EvidenceMismatch("advisor skip validation is limited to preflight-advice")
+    path = _preflight_skip_path(identity, str(state["slug"]))
+    record = _load(path, "preflight-advice audited skip")
     _expect(record, {
         "kind": "advisor-skip",
-        "phase": "precommit-challenge",
-        "nonce": request.nonce,
-        "reason": request.reason,
-        **_pass_fields(identity, state, str(state["slug"]), claude=True),
-        "indexTree": index_tree(identity),
-        "commandFingerprint": request.command_fingerprint,
-        "changedCodeFiles": len(code_paths(staged_paths(identity))),
-        "changedLines": changed_line_count(identity),
-        "consumedAt": None,
-    }, "challenge skip")
-    if record.get("createdBy") != "record-advisor-skip.py":
-        raise EvidenceMismatch("challenge skip lacks helper provenance")
-    command = record.get("command")
-    if not isinstance(command, str) or record.get("commandSha256") != hashlib.sha256(command.encode()).hexdigest():
-        raise EvidenceMismatch("challenge skip command hash mismatch")
+        "phase": "preflight-advice",
+        **_pass_fields(identity, state, str(state["slug"])),
+        "artifactPath": str(path),
+        "createdBy": "record-advisor-skip.py",
+    }, "preflight-advice skip")
+    if not str(record.get("reason") or "").strip():
+        raise EvidenceMalformed("preflight-advice skip reason is empty")
+    repoforge = _validate_repoforge(identity, ValidationRequest())
+    packet = validate_reference(record.get("packetInput"), "preflight-advice skip packet input")
+    current_packet = repoforge.get("packet")
+    if not isinstance(current_packet, dict) or packet["sha256"] != current_packet.get("sha256"):
+        raise EvidenceStale("preflight-advice skip packet input is not current")
+    if record.get("gitnexusHead") != repoforge.get("gitnexusHead"):
+        raise EvidenceStale("preflight-advice skip GitNexus head is not current")
+    _expiry(record, "preflight-advice skip")
     return record
 
 
@@ -223,7 +197,7 @@ def _validate_quality(identity: RepoIdentity, request: ValidationRequest) -> Jso
         "artifactPath": str(path),
     }, "quality evidence")
     if record.get("scope") != "index":
-        raise EvidenceMismatch("commit-authorising quality evidence is not index-scoped")
+        raise EvidenceMismatch("candidate quality evidence is not index-scoped")
     if record.get("relevantUntracked") != relevant_untracked(identity):
         raise EvidenceStale("quality evidence relevant-untracked identity no longer matches")
     # The referenced files must still exist AND still be the canonical inputs.

@@ -1,5 +1,20 @@
 # Decisions
 
+## 2026-07-31 — remove Git-command interception
+
+A Bash PreToolUse hook sees only the submitted command string and cannot cover
+commands launched through script files, interpreters, or build tools. Git
+command classification and commit authorization are therefore removed rather
+than hardened further.
+
+The codex-advisor precommit challenge remains a required cooperative workflow
+checkpoint with tree-bound evidence. Protected-path accident prevention also
+remains, through its own Bash hook. Quality, TDD, code-review, Repo Context
+Forge, pass-state, rearm, compact, and stop enforcement are unchanged.
+
+The cherry-pick/revert and command-classifier decisions below are retained as
+historical W1 evidence and are superseded operationally by this decision.
+
 ## 2026-07-31 — accept the review-budget overrun for the gate vendoring
 
 `risk-calibrated-bloat` fails on `feat/workflow-gate-overhaul`. The rule is

@@ -53,9 +53,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/git-policy-gate.sh",
+            "command": "/home/prop_/.claude/hooks/protected-path-gate.py",
             "timeout": 30,
-            "statusMessage": "Checking production commit and protected-state policies"
+            "statusMessage": "Checking protected workflow-state paths"
           }
         ]
       },

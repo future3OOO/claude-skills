@@ -182,8 +182,9 @@ workflow evidence, not tamper-proof security objects.
 For `preflight-advice` only, an actual nonzero wrapper exit may create the
 pass-bound audited exception when the caller supplied
 `--skip-reason-on-unavailable`. Empty output, a missing terminal marker, a
-caller quoting error, or a hand-written state file is not an accepted skip. A
-precommit exception uses the one-use nonce helper owned by the workflow.
+caller quoting error, or a hand-written state file is not an accepted skip.
+Precommit challenge availability is reported explicitly under the production
+workflow's advisor-unavailable policy; it is not converted into a Git command.
 
 On `context-mismatch`, fix `--cwd`, `--base-ref`, or branch state and re-ask.
 Do not act on the prior answer.

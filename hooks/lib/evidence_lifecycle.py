@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
-import secrets
 import time
 import uuid
 from dataclasses import dataclass
@@ -110,10 +108,6 @@ def _advisor_preparation_path(identity: RepoIdentity, phase: str, slug: str, tre
 
 def _preflight_skip_path(identity: RepoIdentity, slug: str) -> Path:
     return _dir(identity, "skips") / f"preflight-advice-{safe_slug(slug)}.json"
-
-
-def _challenge_skip_path(identity: RepoIdentity, nonce: str) -> Path:
-    return _dir(identity, "skips") / f"challenge-{nonce}.json"
 
 
 def _quality_evidence_path(identity: RepoIdentity, tree: str) -> Path:
@@ -483,7 +477,7 @@ def record_quality_observation(
     path = _quality_observation_path(identity, tree)
     record: JsonObject = {
         **_base("quality-observation"),
-        "label": "post-edit observation; not commit-authorizing evidence",
+        "label": "post-edit observation; not staged-candidate evidence",
         "status": status,
         "repo": identity.as_dict(),
         "indexTree": tree,
@@ -683,12 +677,6 @@ class ValidationRequest:
     slug: str = ""
     tree: str = ""
     required_fresh: bool = False
-    nonce: str = ""
-    reason: str = ""
-    command_fingerprint: str = ""
-    # Set when the record has already been claimed away from its canonical
-    # path, so validation reads the claim the caller now owns exclusively.
-    source: str = ""
 
 
 def _pass_for_slug(identity: RepoIdentity, slug: str) -> JsonObject:
@@ -734,5 +722,3 @@ def _tdd_base_fields(identity: RepoIdentity, state: JsonObject, slug: str, path:
         **_pass_fields(identity, state, slug),
         "artifactPath": str(path),
     }
-
-

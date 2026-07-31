@@ -14,7 +14,7 @@ BOTH = {"mv", "ln"}
 # any either. `mv` destroys only its sources, so its destination is excluded.
 TREE_DESTROYERS = {"rm", "rmdir", "mv"}
 DESTRUCTIVE_FIND = {"-delete", "-exec", "-execdir", "-ok", "-okdir"}
-from .git_cmd import PREFIXES, TRANSPARENT_WRAPPERS, consume_wrappers, split_substitutions, without_option_values
+from .shell_cmd import PREFIXES, TRANSPARENT_WRAPPERS, consume_wrappers, split_substitutions, without_option_values
 
 SHELLS = {"sh", "bash", "dash", "zsh"}
 WRAPPERS = TRANSPARENT_WRAPPERS | {"env"}
