@@ -202,8 +202,8 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
             return None
         if reviewable:
             state["phase"] = "implementation"
-            state["nextAction"] = "verification"
             state["implementation"] = "in-progress"
+        state["nextAction"] = "verification"
         state["verification"] = "pending"
         state["codeReview"] = {"status": "pending", "findings": "pending"}
         state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}

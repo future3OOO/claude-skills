@@ -64,7 +64,9 @@ production Edit/Write/NotebookEdit
 ```
 
 Invalidation occurs before quality feedback, so a failing quality check cannot
-leave stale readiness behind. Documentation and scratch edits are exempt.
+leave stale readiness behind. Ordinary documentation and scratch edits are
+exempt; governance docs reset verification, code review, and final review, and
+set `nextAction` to `verification`.
 
 ## Hook roles
 

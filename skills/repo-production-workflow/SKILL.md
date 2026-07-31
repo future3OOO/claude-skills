@@ -84,8 +84,9 @@ TDD state; it is not proof by itself. For genuinely non-behavioral work record
 
 Invoke `production-code`, implement the smallest direct change, and remove
 obsolete code created by the change. PostToolUse marks implementation
-in-progress and resets downstream readiness after every production edit. When
-implementation is ready for verification:
+in-progress and resets downstream readiness after every production edit;
+governance edits reset the downstream review steps without reopening production
+editing. When implementation is ready for verification:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
@@ -145,8 +146,9 @@ round begins a new production pass; pushing is not completion.
 
 Missing or corrupt workflow state is pending, never success. Preflight advisor
 transport may be recorded `unavailable` only with the measured reason; final
-review has no unavailable exception. Documentation/scratch/non-repository work
-keeps the lightweight exception. Stop feedback is non-blocking and reports
+review has no unavailable exception. Ordinary documentation, scratch, and
+non-repository work keeps the lightweight exception; governance docs still
+reset downstream review readiness. Stop feedback is non-blocking and reports
 unavailable impact as `unknown`.
 
 ## Final response

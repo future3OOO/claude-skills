@@ -169,6 +169,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(docs.returncode, 0, docs.stdout + docs.stderr)
         state = json.loads(self.state("status").stdout)
         self.assertEqual(state["phase"], "complete")
+        self.assertEqual(state["nextAction"], "delivery-and-reviewer-completion")
 
     def test_governance_doc_edit_is_admitted_then_invalidates_review_readiness(self) -> None:
         self.complete_workflow()
@@ -184,6 +185,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
         state = json.loads(self.state("status").stdout)
         self.assertEqual(state["phase"], "complete")
+        self.assertEqual(state["nextAction"], "verification")
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 
