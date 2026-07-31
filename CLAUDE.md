@@ -21,9 +21,22 @@ Minimum code that solves the problem. Nothing speculative.
 - No abstractions for single-use code.
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
-- No engineering for theoretical risks: a theoretical risk with no demonstrated failure is a report line, not a system.
+- Apply the canonical imaginary-risk ban below; do not turn an unobserved failure mode into code.
 - If you write 200 lines and it could be 50, rewrite it.
 - Ask yourself: "would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 2A. Hard Production Invariants
+
+These are the canonical lead-context statements. Skills may point here and add
+procedure, but may not weaken or duplicate them. The isolated advisor delegate
+receives one necessary copy because it does not inherit this context.
+
+<!-- HARD_INVARIANT_REAL_SEAM -->
+- **Mock ban.** Tests, smokes, and verification must cross the real production Interface/Seam. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. If the real seam cannot be driven, report the proof gap instead of manufacturing green evidence.
+<!-- HARD_INVARIANT_DEMONSTRATED_RISK -->
+- **Imaginary-risk ban.** An undemonstrated theoretical failure may be reported, but it cannot justify guards, fallbacks, retries, configuration, abstractions, or code. Require a verified mechanism and demonstrated occurrence before changing production behavior.
+<!-- HARD_INVARIANT_ROOT_CAUSE -->
+- **Root-cause-first gate.** For a bug, regression, flaky failure, or performance regression, no production fix begins until the symptom is reproduced, the source trigger is traced, and the proposed cause is stated as a falsifiable hypothesis. Fix the source, not the visible symptom.
 
 ## 3. Surgical Changes
 
@@ -103,13 +116,13 @@ Use the `repo-production-workflow` skill as the default first skill for producti
 
 The full chain, in order — every named skill is INVOKED with the Skill tool by exact name (reading its `SKILL.md` does not satisfy the step):
 
-`repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → `codex-advisor` scope check (phase `preflight-advice`; its `ask-codex-advisor.sh` wrapper ONLY — never the codex plugin/companion forwarder or the Agent tool) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` through final verification → `code-review` → `codex-advisor` challenge round (phase `precommit-challenge`, same `--slug`) → commit/push/PR → reviewer completion gate.
+`repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` through final verification → fresh `code-review` when non-trivial → final Codex Agent or Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
 
 Invocation policy:
 
 - Escalate to `repo-large-implementation` for large planned work: anything likely to span multiple PRs, need a tracked governing artifact, or exceed the review budget. It pairs `delivery-governance` with `execution-planning`, then returns to `repo-production-workflow` for each execution pass.
-- Use `diagnose` before fixing bugs, failures, flaky behavior, or performance regressions; no fix until root cause is reproduced, traced, and stated as a testable hypothesis.
-- Use `tdd` for behavior changes where a public-Interface failing test is practical; tests and smokes must consume the REAL seam — fabricating a mock gateway, frame, or interface so a test passes is fake-green and forbidden. If the real seam cannot be driven, surface that as a finding.
+- Use `diagnose` before fixing bugs, failures, flaky behavior, or performance regressions; the canonical root-cause-first gate above governs entry to a fix.
+- Use `tdd` for behavior changes where a public-Interface failing test is practical; name the real production Seam and apply the canonical mock ban above without exception.
 - Skill invocation is per execution pass, not per session: every new PR slice, bug fix, or review-fix round re-invokes the `repo-production-workflow` cycle. Compaction or resume notes never waive re-invocation for a new pass.
 - Do not bypass `repo-production-workflow` by jumping from Repo Context Forge straight to edits.
 - Do not re-invoke `execution-planning` for an execution-only pass when a governing artifact exists; execute against it and keep its checklist current.
@@ -153,17 +166,18 @@ Governance docs that change agent behavior, such as `CLAUDE.md`,
 `AGENTS.md`, or `docs/agents/`, should also run `code-review` before handoff;
 trivial docs edits can stay on the lightweight path.
 
-Use the installed bootstrap wrapper via the `Bash` tool:
+Choose one stable task slug, begin its workflow state, then run the installed
+bootstrap wrapper with the same slug:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD"
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" begin \
+  --repo "$PWD" --slug "<stable-task-slug>" --intent "<user request>"
+python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
+  --repo "$PWD" --workflow-slug "<stable-task-slug>" --intent "<user request>"
 ```
 
-If the user describes planned work before files have changed, include the task intent:
-
-```bash
-python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD" --intent "<user request>"
-```
+The state file is workflow continuity only. It is not an attestation,
+permission object, or Git authorization boundary.
 
 The output must begin with `REPO_CONTEXT_FORGE_REQUIRED_INTAKE`. Treat that intake and the following packet as the initial repository context. If the packet emits a blocker, stop normal repo analysis and surface the blocker; do not continue with empty target context.
 
@@ -202,8 +216,8 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
   higher-risk one.
 - Consuming an internal seam from a NEW file (tests, smokes, harnesses, scripts) requires `mcp__gitnexus__context` on that seam BEFORE writing the consumer — a new file has no indexed symbols, so the edit-time impact rule alone never fires for it. Import the existing tested owner of the behavior instead of writing a second parsing/lifecycle client.
 - Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
-- Reindex after structural changes or git mutations when staleness is detected. For indexed repos this is enforced: the edit gate blocks code edits whenever `.gitnexus/meta.json.lastCommit` differs from HEAD — run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status` so graph evidence always matches the current PR head.
+- Reindex after structural changes or Git mutations when staleness is detected. Run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status`; workflow state records that the check ran but does not certify a HEAD or tree.
 
 ### Hooks
 
-Hook configuration lives in `~/.claude/settings.json`. The `PostToolUse` hook runs `code-quality-gate.sh` after `Edit`, `Write`, and `NotebookEdit` calls. The `PreToolUse` `rcf-intake-gate.sh` hook BLOCKS code edits inside git repos on three tiers: no Repo Context Forge intake in the session transcript; for GitNexus-indexed repos, no `mcp__gitnexus__*` call yet in the session; and a stale index (`.gitnexus/meta.json.lastCommit` != HEAD). Docs `*.md`, scratch, and non-repo paths are exempt; kill switch: `~/.claude/hooks/rcf-gate-disabled`. `SessionStart` hooks re-inject per-pass skill discipline after compaction/resume and surface an active `CLAUDE_CODE_SUBAGENT_MODEL` override at startup. Native MCP tool calls (such as `fff`) are not covered by Bash hooks; rely on the search flow above for those.
+Hook configuration lives in `~/.claude/settings.json`. `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded before-edit sequence through production preflight; docs, scratch, and non-repository paths are exempt. `PostToolUse` resets downstream review readiness for production and governance edits before returning quality feedback. `PreCompact` flushes only existing state, `SessionStart(compact|resume)` restores the full chain and current next action, and `Stop` returns non-blocking changed-file and caller/callee context. No hook parses Bash or authorizes Git.

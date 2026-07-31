@@ -84,18 +84,11 @@ Block if the public test surface cannot be named, or if a new module is proposed
 
 ## Affected Transaction System Rule
 
-When the change touches claim tokens, leases, compare-and-set/version fields, transition helpers, or replay/finalize/recovery semantics, the preflight must re-walk the full affected transaction system before edits.
-
-At minimum, name:
-
-- authoritative records mutated together
-- the real mutation boundary where state must be revalidated
-- adjacent interleavings that can cross the boundary after prepare but before finalize
-- projection, replay, recovery, and no-op paths that share the same helpers or state fields
-- the authoritative contract and invariants that govern those paths
-- one combined workflow proof plus focused invariant checks
-
-If the preflight cannot name those surfaces, block in `openQuestions`.
+For transaction-sensitive work, load and apply the mandatory [canonical
+transaction doctrine](../production-code/references/transaction-doctrine.md).
+Preflight owns the before-edit map and must place any unnamed authoritative
+record, mutation boundary, interleaving, shared projection/recovery path,
+contract, invariant, or proof surface in blocking `openQuestions`.
 
 ## What To Produce
 
@@ -205,9 +198,18 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 
 ### `openQuestions`
 
-- Put unresolved facts here instead of bluffing.
-- Mark the preflight blocked if any open question is required to make a safe edit.
-- Keep questions concrete enough that the user can answer them directly.
+Use a three-way decision for every material unknown:
+
+1. **Resolve from evidence.** Inspect the packet, repository, runtime,
+   governing artifact, or verified source and record the answer.
+2. **Interactive architecture interview.** When the unknown can change Module
+   shape, public Interface, Seam placement, data contract, or irreversible
+   scope, invoke `/grilling` and ask one question at a time.
+3. **Block honestly.** If the fact cannot be resolved, the session is
+   non-interactive, or safe implementation depends on it, keep the named
+   question here and mark preflight blocked.
+
+Do not pause for ceremonial approval after evidence has resolved the decision.
 
 ## Review-Comment Doctrine
 

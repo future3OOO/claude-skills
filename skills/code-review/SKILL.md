@@ -1,114 +1,94 @@
 ---
 name: code-review
-description: Review a diff since a fixed point along Standards and Spec axes. Use when the user asks to review a branch, PR, WIP changes, or work since a ref.
+description: Review a diff since a fixed point along independent Standards and Spec axes. Use for PRs, branches, WIP changes, or governed completion review.
 ---
 
-# Code Review
+# Code review
 
-Review the diff between `HEAD` and a fixed point along two separate axes:
+Review the live changed surface against two independent axes. The reviewer is
+read-only; the lead verifies and dispositions every finding.
 
-- **Standards** — does the change follow this repo's documented standards?
-- **Spec** — does the change implement the originating issue, PRD, or spec?
+## 1. Fix the review target
 
-This skill is advisory. Claude Code remains responsible for validating findings
-against the repo, tests, PRD, reviewers, and production gates. Do not resolve
-review threads, commit, push, or mark PR work complete from this skill; its
-findings and their dispositions are evidence for the production loop, the
-pre-commit review path, and the PR Reviewer Completion Gate, never gate state.
+Record repository, branch, base ref/SHA, head SHA, dirty/staged state, task
+contract, and acceptance criteria. Review the actual diff and current files,
+not a prose summary. If the target changes, the review is stale.
 
-## Process
+For a non-trivial diff, use a fresh independent context. Record the actual
+resolved model and a fresh context identifier; do not infer model identity from
+the caller's label.
 
-### 1. Pin the fixed point
+## 2. Read the affected surface
 
-Use the fixed point the user supplied: commit SHA, branch, tag, `main`,
-`origin/main`, or another ref. If none was supplied, default to the PR base
-branch when a PR exists, otherwise the merge-base with the branch's upstream or
-`origin/main`.
+Use the Repo Context Forge packet and GitNexus evidence already gathered by the
+lead. Inspect changed files, direct callers/callees, governing artifacts, and
+named no-change surfaces. Do not rerun the production workflow or mutate state.
 
-Verify it before reviewing:
+## 3. Apply the owned rubrics
+
+Use `code-quality` for the seven quality principles and `codebase-design` for
+Module/Interface/Seam judgement. Apply the canonical mock, imaginary-risk, and
+root-cause invariants from `CLAUDE.md`.
+
+Carry this smell baseline as judgement calls: Mysterious Name, Duplicated Code,
+Feature Envy, Data Clumps, Primitive Obsession, Repeated Switches, Shotgun
+Surgery, Divergent Change, Speculative Generality, Message Chains, Middle Man,
+and Refused Bequest.
+
+## 4. Review both axes
+
+Run **Standards** and **Spec** independently:
+
+- Standards: documented-standard violations, smell judgements, hard-invariant
+  violations, and tooling issues only when the tool was unavailable or skipped.
+- Spec: missing/partial requirements, unauthorized behavior, incorrect
+  implementation, and acceptance criteria without proof.
+
+Do not promote a possibility to a defect without verifying premise and
+occurrence. Every finding states severity, whether it is material, evidence,
+consequence, and the smallest correction.
+
+## 5. Return structured output
+
+Return a human-readable Standards/Spec review followed by one JSON object:
+
+```json
+{
+  "findings": [
+    {
+      "id": "SPEC-1",
+      "axis": "Spec",
+      "severity": "high",
+      "material": true,
+      "location": "path:line",
+      "claim": "...",
+      "evidence": "...",
+      "smallest_action": "..."
+    }
+  ],
+  "dispositions": [
+    {
+      "finding_id": "SPEC-1",
+      "status": "fixed | rejected-with-evidence | accepted-follow-up",
+      "evidence": "required for rejection"
+    }
+  ]
+}
+```
+
+The delegate proposes findings. The lead verifies them and owns dispositions.
+If there are no findings, use empty arrays and name remaining proof gaps.
+
+## Optional continuity summary
+
+After lead disposition, record the ordinary workflow summary:
 
 ```bash
-git rev-parse <fixed-point>
-git diff --stat <fixed-point>...HEAD
-git log --oneline <fixed-point>..HEAD
+python3 "$HOME/.claude/skills/code-review/scripts/record-review.py" \
+  --repo "$PWD" --slug "<task>" --resolved-model "<actual-model>" \
+  --review-context-id "<fresh-context-id>" --input /tmp/scratch/code-review.json
 ```
 
-Use three-dot diff form so the comparison is against the merge-base. If the
-ref does not resolve or the diff is empty, stop and report that instead of
-reviewing.
-
-### 2. Identify the spec source
-
-Look for the originating spec in this order:
-
-1. Issue references in commit messages or branch names; fetch them using
-   `docs/agents/issue-tracker.md` for the target checkout.
-2. A path or issue the user supplied.
-3. A PRD/spec file under `docs/`, `specs/`, or `.scratch/`.
-4. If nothing exists, report that the Spec axis has no governing source.
-
-### 3. Identify standards sources
-
-Authority order: `~/.claude/CLAUDE.md` and the nearest repo `CLAUDE.md` are
-the live Claude contracts; local standards skills such as `code-quality`,
-`production-code`, `production-preflight`, and the repo workflow skills are
-authoritative where relevant; repo docs such as `AGENTS.md`,
-`CONTRIBUTING.md`, `CODING_STANDARDS.md`, `CONTEXT.md`, and relevant ADRs
-supplement but never weaken stricter global or production workflow rules.
-Repo-local standards override generic smells.
-
-Always carry this smell baseline as judgement calls, not hard violations:
-
-- **Mysterious Name** — a name that hides purpose.
-- **Duplicated Code** — same logic shape repeated in the change.
-- **Feature Envy** — code reaches into another module's data more than its own.
-- **Data Clumps** — fields or params travel together repeatedly.
-- **Primitive Obsession** — strings or primitives stand in for domain concepts.
-- **Repeated Switches** — repeated conditionals over the same type.
-- **Shotgun Surgery** — one logical change forces scattered edits.
-- **Divergent Change** — one module changes for unrelated reasons.
-- **Speculative Generality** — abstractions for needs the spec does not have.
-- **Message Chains** — callers depend on long navigation chains.
-- **Middle Man** — a module mostly delegates onward.
-- **Refused Bequest** — inheritance or implementation contract mostly ignored.
-- **Fake Test** — a test that mocks, stubs, or fixture-substitutes a collaborator instead of crossing a real production seam. Hard violation in this setup, not a judgement call.
-- **Imaginary Risk** — code guarding a theoretical failure nobody demonstrated: speculative fallbacks, defensive layers, or configuration for scenarios with no observed occurrence.
-
-### 4. Review both axes
-
-Run Standards and Spec as independent reviews, serially by default (Standards,
-then Spec); use parallel delegates only where local delegation rules explicitly
-allow more than one. Keep findings separate so one axis cannot mask the other.
-
-For **Standards**, report:
-
-- documented-standard violations with file/line evidence
-- smell-baseline judgement calls with hunk evidence
-- tooling-enforced issues only when the tool is unavailable or skipped
-
-For **Spec**, report:
-
-- requirements missing or partial
-- behavior added that the spec did not ask for
-- requirements that appear implemented incorrectly
-
-### 5. Aggregate
-
-Lead with findings, ordered by severity within each axis. Do not merge the axes
-or pick one overall winner.
-
-Use:
-
-```md
-## Standards
-- finding...
-
-## Spec
-- finding...
-
-## Summary
-Standards: N findings. Spec: N findings. Worst Standards issue: ...
-Worst Spec issue: ...
-```
-
-If there are no findings, say so plainly and name any remaining proof gap.
+The summary is agent-writable continuity state. It is not a certificate, Git
+authorization, or substitute for the live review. Material unresolved findings
+leave code review pending.

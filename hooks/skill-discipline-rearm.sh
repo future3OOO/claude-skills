@@ -2,32 +2,26 @@
 """SessionStart(compact|resume): restore workflow rules and bounded pass state."""
 from __future__ import annotations
 
-import json
-import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from hooks.lib.evidence_lifecycle import bounded_summary  # noqa: E402
+from hooks.lib.hook_input import read_hook_payload, working_directory  # noqa: E402
 from hooks.lib.repo_identity import try_resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_state import summary  # noqa: E402
 
-DISCIPLINE = """Discipline re-arm (post-compact/resume): any "skills were invoked EARLIER — do not re-execute" note covers one-time setup only; it never waives re-invocation for NEW work. For every new execution pass (PR slice, bug fix, review-fix round) invoke the repo-production-workflow cycle via the Skill tool: repo-context-forge intake → packet GitNexus checks → production-preflight → production-code (+ bundled gate) → code-review before commit. Bugs, regressions, or flaky failures: invoke diagnose before any fix. Behavior changes: TDD — a failing test through the PUBLIC Interface first. Tests and smokes must consume the REAL seam: run mcp__gitnexus__context on any seam a new file consumes BEFORE writing the consumer, and never fabricate a mock gateway/frame/interface to make a test pass — if the real seam cannot be driven, surface that as a finding. Module shape: deepen existing modules; new public seams require preflight justification."""
+DISCIPLINE = """Discipline re-arm: each production pass runs Repo Context Forge, diagnosis when applicable, packet-scoped GitNexus, advisor preflight, production preflight, real-seam TDD when required, implementation and verification, fresh code review for non-trivial work, final Codex Agent or Codex Advisor review, then workflow completion and delivery. A production edit after review makes code review and final review pending again. The mock ban, demonstrated-risk rule, and root-cause-first rule remain hard. Compacted state is continuity context, never Git authorization or proof that an unrecorded step passed."""
 
 
 def main() -> int:
-    try:
-        payload = json.load(sys.stdin)
-    except Exception as exc:
-        print(f"SessionStart pass-state input unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
-        payload = {}
-    identity = try_resolve_repo_identity(str(payload.get("cwd") or os.getcwd()))
+    identity = try_resolve_repo_identity(working_directory(read_hook_payload()))
     print(DISCIPLINE)
     if identity is None:
-        print("Pass state unavailable; do not infer that any workflow gate passed.")
+        print("Workflow state unavailable; do not infer that any workflow step passed.")
     else:
-        print(bounded_summary(identity, 1200))
+        print(summary(identity, 1200))
     return 0
 
 

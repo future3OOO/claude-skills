@@ -1,33 +1,95 @@
-#!/usr/bin/env bash
-# Stop hook: post-edit blast radius via gitnexus impact (CLI).
-# At turn end, runs `gitnexus impact <file> --direction upstream` for each
-# changed code file in the working tree. Skips if no code changes or repo
-# isn't indexed. Cheap (no re-analyze); index may be slightly stale.
+#!/usr/bin/env python3
+"""Non-blocking Stop context for changed code and pending blast-radius work."""
+from __future__ import annotations
 
-set -uo pipefail
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-[ -d "$repo_root/.gitnexus" ] || exit 0
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-cd "$repo_root" || exit 0
-repo_name=$(basename "$repo_root")
+from hooks.lib.hook_input import read_hook_payload, working_directory  # noqa: E402
+from hooks.lib.repo_identity import try_resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import (  # noqa: E402
+    atomic_write_json,
+    code_paths,
+    read_json,
+    repo_state_dir,
+    state_lock,
+    untracked_paths,
+)
+from hooks.lib.workflow_state import safe_slug  # noqa: E402
 
-changed=$(git diff --name-only HEAD 2>/dev/null \
-  | grep -E '\.(py|ts|tsx|js|jsx|mjs|cjs|sh|bash|go|rs|rb|java|kt|swift|c|cc|cpp|h|hpp)$' \
-  | head -10)
-[ -z "$changed" ] && exit 0
 
-report=""
-while IFS= read -r file; do
-    [ -z "$file" ] && continue
-    impact=$(gitnexus impact "$file" --direction upstream --repo "$repo_name" 2>/dev/null) || continue
-    case "$impact" in
-        ''|*'"error"'*|*'not found'*) continue ;;
-    esac
-    report+=$'\n--- '"$file"$' ---\n'"$impact"$'\n'
-done <<< "$changed"
+def _tracked(root: Path) -> list[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "diff", "--name-only", "-z", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    return sorted(os.fsdecode(path) for path in result.stdout.split(b"\0") if path)
 
-[ -z "$report" ] && exit 0
 
-printf 'post-edit blast radius (gitnexus impact, upstream; index may be stale — re-run gitnexus analyze for current-state proof):\n%s\n' "$report" >&2
-exit 0
+def main() -> int:
+    payload = read_hook_payload()
+    if payload.get("stop_hook_active") is True:
+        return 0
+    identity = try_resolve_repo_identity(working_directory(payload))
+    if identity is None:
+        return 0
+
+    tracked = _tracked(identity.root)
+    try:
+        untracked = untracked_paths(identity)
+    except RuntimeError:
+        untracked = None
+    if tracked is not None and untracked is not None:
+        changed = code_paths([*tracked, *untracked])
+        if not changed:
+            return 0
+        labels = [
+            f"{path} ({'untracked' if path in untracked else 'tracked/modified'})"
+            for path in changed[:8]
+        ]
+        changed_line = "changed code: " + ", ".join(labels)
+        if len(changed) > len(labels):
+            changed_line += f"; plus {len(changed) - len(labels)} more"
+        change_state = {"tracked": tracked, "untracked": untracked}
+    else:
+        changed_line = "changed code: unknown (Git status unavailable)"
+        change_state = {"tracked": tracked, "untracked": untracked}
+
+    session = safe_slug(str(payload.get("session_id") or "unknown"))[:40]
+    try:
+        dedupe = repo_state_dir(identity) / "stop" / f"{session}.json"
+        with state_lock(identity):
+            previous = read_json(dedupe)
+            if previous and previous.get("changeState") == change_state:
+                return 0
+            atomic_write_json(dedupe, {"schemaVersion": 1, "changeState": change_state})
+    except OSError as exc:
+        print(f"Stop feedback dedupe unavailable: {exc}", file=sys.stderr)
+
+    context = (
+        "Non-blocking completion feedback. Unknown is not green.\n"
+        + changed_line
+        + "\nblast radius: callers=unknown; callees=unknown until packet-scoped GitNexus analysis runs"
+        + "\nAny production edit after review makes code review and final review pending."
+    )[:3600]
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": context}}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

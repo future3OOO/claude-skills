@@ -290,6 +290,36 @@ def test_reimplemented_dedupe_loop_fails() -> None:
     with_repo(body)
 
 
+def test_deleted_helper_is_not_reported_as_reuse_candidate() -> None:
+    def body(repo: Path) -> None:
+        helper = repo / "src" / "collections.py"
+        write(
+            helper,
+            "def dedupe_items(items: list[str]) -> list[str]:\n"
+            "    seen = set()\n"
+            "    return [item for item in items if item not in seen and not seen.add(item)]\n",
+        )
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "dedupe helper")
+        helper.unlink()
+        write(
+            repo / "src" / "importer.py",
+            "def import_items(items: list[str]) -> list[str]:\n"
+            "    seen = set()\n"
+            "    result = []\n"
+            "    for item in items:\n"
+            "        if item not in seen:\n"
+            "            seen.add(item)\n"
+            "            result.append(item)\n"
+            "    return result\n",
+        )
+        code, payload, _ = run_gate(repo)
+        assert code == 0, json.dumps(payload, indent=2)
+        assert payload["reuseFindings"] == []
+
+    with_repo(body)
+
+
 def test_single_token_cross_domain_reuse_warning_is_suppressed() -> None:
     def body(repo: Path) -> None:
         write(repo / "api" / "contracts.py", "def _parse_limit(value: str) -> int:\n    return int(value)\n")
@@ -622,6 +652,7 @@ def main() -> int:
         test_fixtures_excluded_from_bloat,
         test_reimplemented_existing_helper_fails,
         test_reimplemented_dedupe_loop_fails,
+        test_deleted_helper_is_not_reported_as_reuse_candidate,
         test_single_token_cross_domain_reuse_warning_is_suppressed,
         test_generic_serializer_method_name_is_not_reuse_evidence,
         test_pytest_named_module_is_test_source,
