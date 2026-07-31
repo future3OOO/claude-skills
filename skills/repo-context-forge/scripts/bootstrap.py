@@ -1,59 +1,63 @@
 #!/usr/bin/env python3
 """Claude Code bootstrap wrapper for Repo Context Forge.
 
-Delegates to the canonical bootstrap script in the source repo at
-/home/prop_/projects/repo-context-forge so the Codex plugin install at
-~/.codex/plugins/cache/local-codex-plugins/repo-context-forge/ is unaffected.
-
-On a successful run, records the resolved repo's HEAD SHA at
-/tmp/repoforge-head-<sha1-of-repo-path>.txt so the pre-commit hook
-(repoforge-commit-gate.sh) can verify the packet is fresh for the HEAD
-the agent is about to commit against.
+Delegates to the canonical source bootstrap and records its exact rendered
+packet through the shared production-pass lifecycle.
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from hooks.lib.evidence_lifecycle import EvidenceError, record_repoforge  # noqa: E402
+from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 
 SOURCE_ROOT = Path("/home/prop_/projects/repo-context-forge")
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
 
 
-def _extract_repo_arg(argv: list[str]) -> str | None:
-    for i, arg in enumerate(argv):
-        if arg == "--repo" and i + 1 < len(argv):
-            return argv[i + 1]
-        if arg.startswith("--repo="):
+def _extract_option(argv: list[str], name: str) -> str | None:
+    for index, arg in enumerate(argv):
+        if arg == name and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith(name + "="):
             return arg.split("=", 1)[1]
     return None
 
 
-def _record_packet_head(repo_arg: str | None) -> None:
-    target = repo_arg or os.getcwd()
-    try:
-        repo_root = subprocess.check_output(
-            ["git", "-C", target, "rev-parse", "--show-toplevel"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        head = subprocess.check_output(
-            ["git", "-C", repo_root, "rev-parse", "HEAD"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return
-    repo_hash = hashlib.sha1(repo_root.encode()).hexdigest()[:12]
-    state_file = Path(f"/tmp/repoforge-head-{repo_hash}.txt")
-    try:
-        state_file.write_text(head)
-    except OSError:
-        return
+def _remove_option(argv: list[str], name: str) -> tuple[list[str], str | None]:
+    output: list[str] = []
+    value: str | None = None
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == name:
+            if index + 1 >= len(argv):
+                raise ValueError(f"{name} requires a value")
+            value = argv[index + 1]
+            index += 2
+            continue
+        if arg.startswith(name + "="):
+            value = arg.split("=", 1)[1]
+            index += 1
+            continue
+        output.append(arg)
+        index += 1
+    return output, value
+
+
+def _packet_bytes(args: list[str], stdout: bytes) -> bytes:
+    output = _extract_option(args, "--out")
+    if not output:
+        return stdout
+    path = Path(output).expanduser()
+    return (path if path.is_absolute() else Path.cwd() / path).read_bytes()
 
 
 def main(argv: list[str]) -> int:
@@ -62,13 +66,35 @@ def main(argv: list[str]) -> int:
             f"<blocker>repo-context-forge source bootstrap not found at {BOOTSTRAP}</blocker>\n"
         )
         return 2
-    args = list(argv)
+    try:
+        args, workflow_slug = _remove_option(list(argv), "--workflow-slug")
+    except ValueError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 2
     if "--enforce-intake" not in args:
         args.append("--enforce-intake")
-    rc = subprocess.call([sys.executable, str(BOOTSTRAP), *args])
-    if rc == 0:
-        _record_packet_head(_extract_repo_arg(args))
-    return rc
+    result = subprocess.run(
+        [sys.executable, str(BOOTSTRAP), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    sys.stdout.buffer.write(result.stdout)
+    sys.stderr.buffer.write(result.stderr)
+    if result.returncode != 0:
+        return result.returncode
+    try:
+        identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
+        record_repoforge(
+            identity,
+            _packet_bytes(args, result.stdout),
+            slug=workflow_slug,
+            intent=_extract_option(args, "--intent"),
+        )
+    except (EvidenceError, RepoIdentityError, OSError, ValueError) as exc:
+        sys.stderr.write(f"<blocker>cannot record canonical Repo Context Forge packet: {exc}</blocker>\n")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

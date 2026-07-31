@@ -10,6 +10,7 @@ from typing import Literal
 
 from .repo_identity import RepoIdentity
 from .state_store import (
+    atomic_write_bytes,
     atomic_write_json,
     change_fingerprint,
     head_sha,
@@ -21,7 +22,7 @@ from .state_store import (
 )
 
 JsonObject = dict[str, object]
-EvidenceKind = Literal["production-pass", "tdd-decision", "tdd-evidence"]
+EvidenceKind = Literal["production-pass", "repo-context-packet", "tdd-decision", "tdd-evidence"]
 
 
 class EvidenceError(RuntimeError):
@@ -55,6 +56,10 @@ def _pass_path(identity: RepoIdentity, slug: str) -> Path:
 
 def _pointer_path(identity: RepoIdentity) -> Path:
     return repo_state_dir(identity) / "active-pass.json"
+
+
+def _repoforge_path(identity: RepoIdentity) -> Path:
+    return _dir(identity, "repoforge") / "context.json"
 
 
 def _tdd_evidence_path(identity: RepoIdentity, slug: str) -> Path:
@@ -181,6 +186,54 @@ def bounded_summary(identity: RepoIdentity, limit: int = 1200) -> str:
         "Only recorded state counts; missing or corrupt state is unknown, never success."
     )
     return text[:limit]
+
+
+def record_repoforge(
+    identity: RepoIdentity,
+    packet: bytes,
+    *,
+    slug: str | None,
+    intent: str | None,
+) -> JsonObject:
+    """Persist one canonical rendered packet and advance its matching pass."""
+    if not packet:
+        raise EvidenceMissing("Repo Context Forge returned an empty packet")
+    state = require_active_pass(identity) if slug else None
+    if state is not None:
+        if state.get("slug") != safe_slug(slug or ""):
+            raise EvidenceMismatch("Repo Context Forge slug does not match the active pass")
+        if str(state.get("intent") or "").strip() != str(intent or "").strip():
+            raise EvidenceMismatch("Repo Context Forge intent does not match the active pass")
+
+    digest = hashlib.sha256(packet).hexdigest()
+    packet_path = _dir(identity, "packets") / f"packet-{head_sha(identity)[:12]}-{digest[:12]}.txt"
+    atomic_write_bytes(packet_path, packet)
+    path = _repoforge_path(identity)
+    record: JsonObject = {
+        **_base("repo-context-packet"),
+        "status": "succeeded",
+        "repo": identity.as_dict(),
+        "head": head_sha(identity),
+        "packet": {"path": str(packet_path), "sha256": digest, "bytes": len(packet)},
+        "artifactPath": str(path),
+        "recordedAt": utc_timestamp(),
+    }
+    atomic_write_json(path, record)
+    if state is not None:
+        update_pass(
+            identity,
+            PassUpdate(
+                phase="repo-context-forge",
+                next_action="gitnexus-context",
+                gates={"repoContextForge": "passed"},
+                artifacts={
+                    "repo-context-packet": str(packet_path),
+                    "repo-context-packet-sha256": digest,
+                    "repo-context-state": str(path),
+                },
+            ),
+        )
+    return record
 
 
 def record_tdd_decision(identity: RepoIdentity, slug: str, reason: str) -> Path:
