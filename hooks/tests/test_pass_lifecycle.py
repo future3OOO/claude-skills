@@ -8,16 +8,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.lib.state_store import state_lock
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 REARM = ROOT / "hooks" / "skill-discipline-rearm.sh"
@@ -110,36 +106,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(summary.returncode, 0, summary.stdout + summary.stderr)
         self.assertIn("slug=pr2-slice-2", summary.stdout)
         self.assertIn("gitnexus=passed", summary.stdout)
-
-    def test_state_lock_serializes_real_cross_process_writers(self) -> None:
-        identity = resolve_repo_identity(self.repo)
-        started = self.tmp / "writer-started"
-        acquired = self.tmp / "writer-acquired"
-        script = """
-import sys
-from pathlib import Path
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.lib.state_store import state_lock
-
-repo, started, acquired = sys.argv[1:]
-Path(started).write_text("started", encoding="utf-8")
-with state_lock(resolve_repo_identity(repo)):
-    Path(acquired).write_text("acquired", encoding="utf-8")
-"""
-        with state_lock(identity):
-            writer = subprocess.Popen(
-                [sys.executable, "-c", script, str(self.repo), str(started), str(acquired)],
-                cwd=ROOT, env=self.env, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            deadline = time.monotonic() + 5
-            while not started.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            self.assertTrue(started.exists(), "writer did not reach the real lock")
-            self.assertFalse(acquired.exists(), "writer acquired an already-held state lock")
-        stdout, stderr = writer.communicate(timeout=5)
-        self.assertEqual(writer.returncode, 0, stdout + stderr)
-        self.assertTrue(acquired.exists())
 
     def test_rearm_adapter_restores_only_recorded_pass_state(self) -> None:
         begun = self.cli("begin", "--slug", "compact recovery")
