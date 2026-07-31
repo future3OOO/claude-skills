@@ -75,6 +75,11 @@ half-enforced gate on the branch. If W1 passes 1,000 net lines, split it at the
 
 **Order:** W0 → W1 → W2a → W2b → W3 → W4 → Wave 5 → PR #2 to `main`.
 
+**Execution:** each wave is one `repo-production-workflow` pass — intake,
+packet GitNexus checks, `preflight-advice` consult, preflight, TDD, code,
+verification, `code-review`, `precommit-challenge`, commit/push, reviewer
+gate. This document is the governing artifact; do not re-plan.
+
 **Commit structure:** one commit per blocker or per tightly coupled pair, each
 carrying its own regression. No mixed-concern commits.
 
