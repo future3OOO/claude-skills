@@ -624,6 +624,8 @@ def main() -> int:
         test_reimplemented_dedupe_loop_fails,
         test_single_token_cross_domain_reuse_warning_is_suppressed,
         test_generic_serializer_method_name_is_not_reuse_evidence,
+        test_pytest_named_module_is_test_source,
+        test_comment_prose_is_not_a_risky_block,
         test_action_only_wait_helper_overlap_is_suppressed,
         test_calling_existing_helper_passes,
         test_helper_move_refactor_passes,

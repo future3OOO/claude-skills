@@ -8,10 +8,10 @@ skill, evidence, TDD, review, quality, state, and protected-path improvements.
 The trusted base is `origin/main`; this file governs delivery order when it
 conflicts with the superseded PR #2 remediation wave plan.
 
-The current PR is functionally green but its full delta fails the production
-quality gate at `added=3815 deleted=416`. Changing that gate or accepting a
-blanket exception is out of scope. Delivery is a sequential split with no more
-than one dependent PR active at a time.
+The aggregate PR #2 production-source delta is `added=3815 deleted=416`, which
+fails the production quality gate. This first slice is `added=541 deleted=41`.
+Changing that gate or accepting a blanket exception is out of scope. Delivery
+is a sequential split with no more than one dependent PR active at a time.
 
 ## Scope
 
@@ -49,8 +49,9 @@ The affected boundary is delivery structure, not runtime semantics. Direct
 consumers include the Repo Context Forge bootstrap, production pass state,
 quality and review recorders, advisor wrapper, configured Claude hooks, and
 protected-path adapter. No-change surfaces are the advisor wrapper suite,
-production quality suite, lifecycle/protected-path contracts, installed hook
-configuration, and documentation describing the operator workflow.
+pre-existing quality-gate behavior outside the named corrections,
+lifecycle/protected-path contracts, installed hook configuration, and
+documentation describing the operator workflow.
 
 Invariants:
 
@@ -58,8 +59,9 @@ Invariants:
    exercised through the real CLI/hook/module seam.
 2. Every slice passes the production gate against its actual PR base.
 3. Git command interception and commit authorization remain absent.
-4. The final merged source equals `fe2ee59` except for this plan and any
-   delivery-only metadata needed to keep intermediate states truthful.
+4. The final merged source equals `fe2ee59` except for this plan and the
+   review-verified quality-gate corrections recorded in this slice. Temporary
+   delivery-only files must be removed before the comparison.
 5. Review threads are resolved only on pushed heads; stale findings are not
    reintroduced as work.
 
@@ -68,12 +70,15 @@ Invariants:
 - run the targeted owned contract tests first;
 - run `bash hooks/tests/run.sh` when that integrated runner exists in the
   slice, otherwise run every constituent suite owned by that slice;
-- run `python3 skills/production-code/scripts/code_quality_gate.py check
-  --repo . --base-ref origin/main` against the slice's real base;
+- capture the immutable PR base with `base_sha="$(gh pr view --json baseRefOid
+  --jq .baseRefOid)"`, then run `python3
+  skills/production-code/scripts/code_quality_gate.py check --repo . --base-ref
+  "$base_sha"`;
 - inspect source additions/deletions and verify they stay under 1,000 net;
 - wait for current-head CI and reviewer signals before merge;
-- after the fifth merge, compare the resulting tree with `fe2ee59`, excluding
-  this plan, then rerun the full integrated suite.
+- after the fifth merge, remove temporary delivery-only files, compare the
+  resulting tree with `fe2ee59`, account explicitly for this plan and the
+  recorded quality-gate corrections, then rerun the full integrated suite.
 
 ## Execution checklist
 
