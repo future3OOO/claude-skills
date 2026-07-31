@@ -22,6 +22,10 @@ as one estate.
 **Out:** the four deferred items (non-UTF-8 paths, `/dev/zero` symlinks,
 prompt-injection delimiters, unreproduced pass-replacement races). Each needs a
 durable issue with its probe, not code, until an occurrence is reproduced.
+Filed as issues [#3](https://github.com/future3OOO/claude-skills/issues/3),
+[#4](https://github.com/future3OOO/claude-skills/issues/4),
+[#5](https://github.com/future3OOO/claude-skills/issues/5) and
+[#6](https://github.com/future3OOO/claude-skills/issues/6).
 
 **Rejected, do not implement:** separate `Write(path)`/`NotebookEdit(path)` deny
 rules; "`/grilling` does not exist"; challenge-gating plain
@@ -33,20 +37,27 @@ rules; "`/grilling` does not exist"; challenge-gating plain
 
 Probed against `hooks/git-policy-gate.sh` at `1a37315` on 2026-07-31.
 
+Re-measured at head `3e5d6c8` on 2026-07-31 with a **staged** index; see the
+dispositions artifact for why an unstaged harness reports exit 0 for everything.
+
 | Confirmed bypass (exit 0) | Confirmed correct already (exit 2) |
 |---|---|
-| B1 `eval 'git commit -m x'` | B2 quoted `<<EOF` then commit |
-| B3 `true;2>/tmp/x git commit -m x` | B5 `git commit --allow-empty -m --abort` |
-| B4 `env -iS 'git commit -m x'` | B6 `git commit -m one && git commit -m two` |
+| B1 `eval 'git commit -m x'` | B2 `cat <<'EOF' … EOF` then commit |
+| B2 `echo '<<EOF'` then commit | B5 `git commit --allow-empty -m --abort` |
+| B3 `true;2>/tmp/x git commit -m x` | B6 `git commit -m one && git commit -m two` |
+| B4 `env -iS 'git commit -m x'` | |
 | B4 `env -S 'touch' $H/hooks/pwned` | |
 | B5 `git commit -- --abort` | |
 | B7 `cp --tar=$H/hooks payload` | |
 | B7 `install --dir $H/hooks /tmp/source` | |
+| N1 `rm -rf $H` and `find $H -delete` | |
 | R10 `sudo --validate git commit` blocks a query (false positive) | |
 
-B8–B16, B18 and R1–R12 are taken from the review and **must be reproduced
-before they are fixed**. B2, B5(`-m --abort`) and B6 are already closed —
-re-verify, then mark `[-]` rather than re-implementing.
+B8–B16, B18 and the W3 cleanup set are taken from the review and **must be
+reproduced before they are fixed**. Only B5(`-m --abort`) and B6 are closed —
+re-verify, then mark `[-]` rather than re-implementing. B2 was listed as closed
+in the first draft; the probe that closed it tested a genuine quoted heredoc,
+not the reported defect, and B2 remains open.
 
 ## Delivery map
 
@@ -157,15 +168,17 @@ threads; `REVIEW-DISPOSITIONS.md` complete.
 
 ## Execution checklist
 
-- [ ] W0 `REVIEW-DISPOSITIONS.md`, every open thread adjudicated
+- [x] W0 `REVIEW-DISPOSITIONS.md`, every open thread adjudicated
 - [ ] W1 B1 eval payloads classified recursively
-- [ ] W1 B2 quote-aware heredoc scan — re-verify first, may be `[-]`
+- [ ] W1 B2 quote-aware heredoc scan — re-verified OPEN: `echo '<<EOF'` then commit exits 0
 - [ ] W1 B3 IO-number adjacency at command boundaries
 - [ ] W1 B4 `env -S` clusters and trailing argv
-- [ ] W1 B5 verb-specific recovery grammar stopping at `--`
-- [ ] W1 B6 reject multiple commit-producing invocations — re-verify, may be `[-]`
+- [ ] W1 B5 verb-specific recovery grammar stopping at `--` — `git commit -- --abort` exits 0
+- [-] W1 B6 reject multiple commit-producing invocations — re-verified CLOSED at `3e5d6c8` (exit 2)
 - [ ] W1 B7 long-option abbreviations for cp/install
 - [ ] W1 B15 restore challenge scope for cherry-pick and revert
+- [ ] W1 N1 protect the tree's ancestor: `rm -rf ~/.claude` and `find ~/.claude -delete` exit 0
+- [ ] W1 R10 model `sudo` query/auth modes as terminal, not transparent
 - [ ] W2a B11 immutable base/candidate/index binding
 - [ ] W2a B12 stable gate/runner/packet references across execution
 - [ ] W2a B13 same-command RED/GREEN identity
@@ -174,7 +187,9 @@ threads; `REVIEW-DISPOSITIONS.md` complete.
 - [ ] W2b B10 advisor session keyed by repo identity plus slug
 - [ ] W2b B14 independent quote-aware corpus oracle
 - [ ] W2b B16 failure-atomic skip lifecycle, narrow auto-skip
-- [ ] W3 R1–R12
+- [ ] W2b N2 classify advisor transport failures instead of calling every exit unavailability
+- [ ] W2b N3 remove the fake `claude`-on-PATH advisor test; the real transport proof is Wave 5
+- [ ] W3 R1–R33 (sparse; grown past R1–R12 by the 2026-07-31 05:38 review wave — see the dispositions artifact)
 - [ ] W3 B18 `settings.json` advisor path under `skills/`
 - [ ] W4 B17 digest-bound atomic-vendoring exception, gate unchanged
 - [ ] Wave 5 full adoption proof on the final head
