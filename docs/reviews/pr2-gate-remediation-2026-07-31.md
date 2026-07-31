@@ -13,7 +13,10 @@ as one estate.
 - Checkout the execution agent must edit: `/home/prop_/projects/claude-skills`.
 - Conflict rule: repo `CLAUDE.md` wins over review wording. A finding whose
   premise fails a live measurement is rejected with that measurement.
-- `DECISIONS.md` holds the accepted review-budget exception.
+- `DECISIONS.md` holds accepted exceptions: the review-budget overrun, the
+  governed `run.sh` exception on the W1 head, and the `cherry-pick`/`revert`
+  refusal decision. A verification command may only be red where an entry
+  there authorizes it with its measurement.
 
 ## Scope
 
@@ -69,7 +72,7 @@ feature branch before the next opens.
 | PR | Class | Owns | Net budget |
 |---|---|---|---|
 | W0 | proof/docs | `REVIEW-DISPOSITIONS.md`; every open thread → fixed-at-SHA / rejected-with-evidence / accepted-follow-up / duplicate-of | docs, excluded |
-| W1 | runtime | B1–B7, B15 | ~500 |
+| W1 | runtime | B1–B7, B15, N1, R10 | ~500 |
 | W2a | foundation | B11, B12, B13 | ~450 |
 | W2b | foundation | B8, B9, B10, B14, B16 | ~500 |
 | W3 | cleanup + operator UX | R1–R12, B18 | ~300 |
@@ -176,7 +179,7 @@ threads; `REVIEW-DISPOSITIONS.md` complete.
 - [ ] W1 B5 verb-specific recovery grammar stopping at `--` — `git commit -- --abort` exits 0
 - [-] W1 B6 reject multiple commit-producing invocations — re-verified CLOSED at `3e5d6c8` (exit 2)
 - [ ] W1 B7 long-option abbreviations for cp/install
-- [ ] W1 B15 restore challenge scope for cherry-pick and revert
+- [x] W1 B15 cherry-pick and revert refused outright — see `DECISIONS.md`
 - [ ] W1 N1 protect the tree's ancestor: `rm -rf ~/.claude` and `find ~/.claude -delete` exit 0
 - [ ] W1 R10 model `sudo` query/auth modes as terminal, not transparent
 - [ ] W2a B11 immutable base/candidate/index binding

@@ -412,9 +412,12 @@ class ContractTests(unittest.TestCase):
 
     def test_routine_git_verbs_have_an_ordinary_no_state_path(self) -> None:
         repo = self.make_repo(indexed=False)
+        # cherry-pick and revert are deliberately absent: they author a
+        # revision from an existing commit, so they carry the acknowledgment
+        # requirement in every repository. See the revision-verb test.
         for command in (
             "git pull", "git pull --rebase", "git am patch.mbox", "git merge origin/main",
-            "git rebase origin/main", "git cherry-pick abc", "git revert abc", "git rebase --abort",
+            "git rebase origin/main", "git rebase --abort",
             "git status", "git log", "git push",
         ):
             result = self.gate(repo, command)
@@ -559,6 +562,240 @@ class ContractTests(unittest.TestCase):
         )
         malformed = self.gate(self.make_repo(indexed=False), "touch '$CLAUDE_HOME/hooks/pwned")
         self.assertEqual(malformed.returncode, 2, malformed.stderr)
+
+    def test_eval_payload_is_classified_recursively(self) -> None:
+        # `eval` runs the string it is given. Treating it as an ordinary
+        # executable left a direct one-word bypass of the whole policy.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        result = classify(f"eval 'git {verb} -m x'", repo)
+        self.assertTrue(result.commit_invocations, result.invocations)
+        # The skip recorder mints state for exactly one command, so an
+        # eval-carried command must still count as one, not two.
+        self.assertEqual(result.command_count, 1, result)
+
+    def test_a_quoted_heredoc_opener_hides_nothing(self) -> None:
+        # `<<EOF` inside quotes is inert text. Reading it as syntax made the
+        # scanner swallow every later line, including a real commit.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        for command in (
+            f"echo '<<EOF'\ngit {verb} -m real",
+            f'echo "<<EOF"\ngit {verb} -m real',
+        ):
+            self.assertTrue(classify(command, repo).commit_invocations, command)
+        # A genuine heredoc still has its body removed, and a here-string is
+        # not a heredoc at all.
+        self.assertFalse(classify(f"cat <<'EOF'\ngit {verb} -m x\nEOF\n", repo).commit_invocations)
+        self.assertTrue(classify(f"cat <<<'text'\ngit {verb} -m real", repo).commit_invocations)
+
+    def test_a_descriptor_after_an_operator_is_not_the_executable(self) -> None:
+        # `;2>file git commit` is valid shell: the 2 belongs to the
+        # redirection, so leaving it in argv made `2` look like the command.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        # Every prefix here is valid Bash, checked with `bash -n`. `(true)2>`
+        # is deliberately absent: it is a syntax error, so a gate denial there
+        # would prove nothing about a command that can never run.
+        for prefix in ("true;", "true&&", "false||", "true|", "true&", "("):
+            command = f"{prefix}2>/tmp/x git {verb} -m x"
+            self.assertTrue(classify(command, repo).commit_invocations, command)
+        # A SPACED digit is still an operand, not redirection syntax.
+        invocation = classify(f"git {verb} -m x 2 >/tmp/x", repo).commit_invocations[0]
+        self.assertIsNotNone(_future_index_reason(invocation))
+
+    def test_env_split_string_is_found_in_a_cluster_and_keeps_its_argv(self) -> None:
+        # GNU env allows `-iS`, and appends any trailing operands to the
+        # split string. Both were dropped, hiding the command and its target.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        self.assertTrue(classify(f"env -iS 'git {verb} -m x'", repo).commit_invocations)
+        home = Path("/home/prop_/.claude")
+        cwd = self.tmp / "claude-skills-env"
+        cwd.mkdir()
+        self.assertIsNotNone(
+            detect_protected_mutation("env -S 'touch' ~/.claude/hooks/pwned", home, cwd=cwd),
+        )
+        # A value-taking letter earlier in the cluster consumes the rest, so
+        # the S in `-uS` is that option's VALUE and opens nothing.
+        self.assertIsNone(detect_protected_mutation("env -uS touch /tmp/ordinary", home, cwd=cwd))
+
+    def test_recovery_options_stop_at_the_option_terminator(self) -> None:
+        # After `--` every token is a pathspec. `git commit -- --abort` is a
+        # commit naming a file, not a recovery verb.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        self.assertTrue(classify(f"git {verb} -- --abort", repo).commit_invocations)
+        # Real recovery must stay runnable.
+        for command in ("git rebase --abort", "git merge --abort", "git cherry-pick --abort"):
+            self.assertFalse(classify(command, repo).commit_invocations, command)
+
+    def test_sudo_query_modes_execute_nothing(self) -> None:
+        # `sudo -v` updates a timestamp and `sudo -l` lists privileges; neither
+        # runs the command that follows, so demanding evidence blocks a query.
+        repo = self.make_repo(indexed=False)
+        verb = "com" + "mit"
+        for command in (f"sudo --validate git {verb}", f"sudo -v git {verb}", f"sudo -l git {verb}"):
+            self.assertFalse(classify(command, repo).commit_invocations, command)
+        # `sudo -k` WITH a command still runs it.
+        self.assertTrue(classify(f"sudo -k git {verb} -m x", repo).commit_invocations)
+
+    def test_abbreviated_long_options_reach_the_destination_grammar(self) -> None:
+        # GNU accepts any unambiguous abbreviation, so matching only the exact
+        # spelling let the destination be written under another name.
+        home = Path("/home/prop_/.claude")
+        cwd = self.tmp / "claude-skills-abbrev"
+        cwd.mkdir()
+        for command in (
+            "cp --tar=~/.claude/hooks payload",
+            "cp --target-dir ~/.claude/hooks payload",
+            "install --dir ~/.claude/hooks /tmp/source",
+        ):
+            self.assertIsNotNone(detect_protected_mutation(command, home, cwd=cwd), command)
+        # rsync spells -t as --times and has no target-directory option, so
+        # its destination stays the last operand.
+        self.assertIsNone(detect_protected_mutation("rsync -t ~/.claude/hooks/x /tmp/dest", home, cwd=cwd))
+
+    def test_destructive_commands_at_a_protected_ancestor_are_refused(self) -> None:
+        # Removing or moving a PARENT of the protected tree destroys it just
+        # as surely as naming it; only the descendant case was covered.
+        home = Path("/home/prop_/.claude")
+        cwd = self.tmp / "claude-skills-ancestor"
+        cwd.mkdir()
+        for command in (
+            "rm -rf ~/.claude",
+            "rm -r ~/.claude",
+            "rm --recursive ~/.claude",
+            "rmdir ~/.claude",
+            "mv ~/.claude /tmp/x",
+            # An explicit target directory makes EVERY operand a source, so the
+            # last one is no longer the destination.
+            "mv -t /tmp ~/.claude",
+            "mv --target-directory=/tmp ~/.claude",
+            "mv --targ=/tmp ~/.claude",
+            "find ~/.claude -delete",
+            "find ~/.claude -exec rm -rf {} +",
+        ):
+            self.assertIsNotNone(detect_protected_mutation(command, home, cwd=cwd), command)
+        # Writing INTO an ancestor destroys nothing, so ordinary work in the
+        # home directory must stay allowed.
+        for command in (
+            "cp /tmp/foo ~/",
+            "touch ~/notes.txt",
+            "mkdir ~/newdir",
+            "rm -rf /tmp/unrelated",
+            "install -t ~/ payload",
+            # Moving something INTO the parent takes nothing away from it.
+            "mv /tmp/foo ~/",
+            "mv -t ~/ /tmp/foo",
+        ):
+            self.assertIsNone(detect_protected_mutation(command, home, cwd=cwd), command)
+
+    def test_revision_creating_verbs_are_refused_not_certified(self) -> None:
+        # cherry-pick and revert materialise a commit from someone else's
+        # diff, so the tree they write is not the index tree and no evidence
+        # recorded beforehand describes it. Refusing is the truthful answer:
+        # certifying the index tree would attest the wrong object, and
+        # spending the audited skip nonce would make the documented exception
+        # the only route.
+        repo = self.make_repo(indexed=False)
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 2\n", encoding="utf-8")
+        git(repo, "add", "src/app.py")
+        for verb in ("cherry-pick", "revert"):
+            result = self.gate(repo, f"git {verb} HEAD")
+            self.assertEqual(result.returncode, 2, f"{verb}: {result.stdout}{result.stderr}")
+            self.assertIn("cannot be certified before it runs", result.stderr, verb)
+        # The audited skip is an exception for commits, not a route for these.
+        # Asserting the MESSAGE is what distinguishes a refusal from a skip
+        # that merely failed to validate; the return code alone would pass
+        # under either design.
+        skipped = self.gate(
+            repo,
+            "CHALLENGE_GATE_SKIP=1 CHALLENGE_GATE_SKIP_REASON=override "
+            "CHALLENGE_GATE_SKIP_NONCE=whatever git cherry-pick HEAD",
+        )
+        self.assertEqual(skipped.returncode, 2, skipped.stderr)
+        self.assertIn("cannot be certified before it runs", skipped.stderr)
+        # Recovery from an interrupted operation must stay runnable.
+        for verb in ("cherry-pick", "revert"):
+            for option in ("--abort", "--quit"):
+                self.assertEqual(self.gate(repo, f"git {verb} {option}").returncode, 0, f"{verb} {option}")
+        # --no-commit authors NO revision: it populates the index so the change
+        # can be committed normally afterwards, which is exactly the workflow
+        # the refusal message recommends. Refusing it blocks the remedy.
+        for verb in ("cherry-pick", "revert"):
+            for option in ("-n", "--no-commit"):
+                self.assertEqual(self.gate(repo, f"git {verb} {option} HEAD").returncode, 0, f"{verb} {option}")
+
+    def test_w1_bypass_matrix_at_the_gate_binary(self) -> None:
+        # The classifier tests above cross an internal Interface. This one
+        # drives the real PreToolUse entrypoint, because that is the seam an
+        # operator actually hits. An EMPTY index makes every probe exit 0
+        # through the empty-index no-op, so the index is staged first and the
+        # control is asserted — without it this matrix proves nothing.
+        repo = self.make_repo(indexed=False)
+        (repo / "src/app.py").write_text("def value() -> int:\n    return 3\n", encoding="utf-8")
+        git(repo, "add", "src/app.py")
+        verb = "com" + "mit"
+        home = self.tmp / "protected-home"
+        (home / "hooks").mkdir(parents=True)
+        env = dict(self.env, CLAUDE_HOME=str(home))
+
+        def gate_with_home(command: str) -> subprocess.CompletedProcess[str]:
+            payload = json.dumps({"tool_input": {"command": command}})
+            return run([str(HOOKS / "git-policy-gate.sh")], cwd=repo, env=dict(env, HARNESS_PWD=str(repo)), stdin=payload)
+
+        self.assertEqual(gate_with_home(f"git {verb} -m x").returncode, 2, "control: a plain commit must block")
+        refused = (
+            f"eval 'git {verb} -m x'",
+            f"echo '<<EOF'\ngit {verb} -m real",
+            f"true;2>/tmp/x git {verb} -m x",
+            f"true&&2>/tmp/x git {verb} -m x",
+            f"(2>/tmp/x git {verb} -m x)",
+            f"env -iS 'git {verb} -m x'",
+            f"git {verb} -- --abort",
+            f"env -S 'touch' {home}/hooks/pwned",
+            f"cp --tar={home}/hooks payload",
+            f"install --dir {home}/hooks /tmp/source",
+            f"rm -rf {home}",
+            f"find {home} -delete",
+            f"mv {home} /tmp/moved",
+            # An explicit target directory makes every operand a source, so the
+            # protected tree is still what moves.
+            f"mv -t /tmp {home}",
+            f"mv --target-directory=/tmp {home}",
+            "git cherry-pick HEAD",
+            # A strategy option takes the rest of its cluster as a VALUE, so
+            # the n inside `renormalize` is not `-n`.
+            "git cherry-pick -Xrenormalize HEAD",
+            "git revert -Xrenormalize HEAD",
+        )
+        for command in refused:
+            self.assertEqual(gate_with_home(command).returncode, 2, command)
+        permitted = (
+            f"sudo --validate git {verb}",
+            f"sudo -l git {verb}",
+            "git status",
+            f"command -v git {verb}",
+            f"echo 'git {verb} -m x'",
+            f"cat <<'EOF'\ngit {verb} -m x\nEOF",
+            f"cp /tmp/foo {home}/",
+            f"touch {home}/notes.txt",
+            f"mkdir {home}/fresh",
+            "rm -rf /tmp/unrelated-tree",
+            f"cp -t /tmp {home}/hooks/x",
+            f"rsync -t {home}/hooks/x /tmp/dest",
+            # Moving INTO the ancestor takes nothing away from it — the mirror
+            # of the refused direction above, at the real entrypoint.
+            f"mv -t {home} /tmp/source",
+            f"mv /tmp/source {home}/",
+            "git cherry-pick -n HEAD",
+            "git revert --no-commit HEAD",
+            "git rebase origin/main",
+            "git rebase --abort",
+        )
+        for command in permitted:
+            self.assertEqual(gate_with_home(command).returncode, 0, command)
 
     def test_repo_identity_is_stable_and_only_cksum_owner(self) -> None:
         repo = self.make_repo(indexed=False)

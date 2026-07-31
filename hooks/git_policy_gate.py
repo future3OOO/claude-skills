@@ -36,6 +36,10 @@ from hooks.lib.state_store import (  # noqa: E402
 INDEX_MUTATING_VERBS = {
     "add", "apply", "mv", "read-tree", "reset", "restore", "rm", "update-index",
 }
+# Verbs that materialise a revision from an existing commit rather than from
+# the index. The gate this replaced covered them; narrowing to `commit` alone
+# let them create commits with no challenge evidence at all.
+REVISION_VERBS = {"cherry-pick", "revert"}
 FUTURE_INDEX_LONG = {"--all", "--include", "--interactive", "--only", "--patch", "--pathspec-from-file"}
 LONG_VALUE_OPTIONS = {
     "--author", "--cleanup", "--date", "--file", "--fixup", "--message",
@@ -250,6 +254,19 @@ def _run(raw: str, harness_cwd: str) -> int:
         if identity is None:
             continue
         if invocation.verb != "commit":
+            if invocation.verb in REVISION_VERBS:
+                # These author a revision from an existing commit, so the tree
+                # they write is not the index tree, and no evidence recorded
+                # before they run can describe it. Refusing states that
+                # truthfully. Certifying the index tree would attest the wrong
+                # object, and spending the audited skip nonce would turn the
+                # documented exception into the only route.
+                return _block(
+                    f"BLOCKED: git {invocation.verb} authors a revision whose tree cannot be "
+                    f"certified before it runs. Apply the change as a staged commit, which "
+                    f"exact-tree evidence can certify. git {invocation.verb} --abort, --quit "
+                    "and --skip remain available."
+                )
             if (identity.root / ".gitnexus").is_dir():
                 validate_repoforge(identity)
             continue

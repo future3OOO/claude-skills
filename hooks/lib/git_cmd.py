@@ -40,11 +40,18 @@ WRAPPER_VALUE_OPTIONS = {
 }
 # Options that make the wrapper report something instead of executing the
 # command that follows: `command -v git commit` prints a path and runs nothing.
-WRAPPER_TERMINAL_OPTIONS = {"command": {"-v", "-V"}}
+WRAPPER_TERMINAL_OPTIONS = {
+    "command": {"-v", "-V"},
+    # `sudo -v` refreshes a timestamp, `-l` lists privileges and `-K` removes
+    # the timestamp file; none runs the command that follows, so demanding
+    # commit evidence for one blocked an ordinary query. `-k` is NOT here:
+    # with a command it still runs it.
+    "sudo": {"-v", "--validate", "-l", "--list", "-K", "--remove-timestamp"},
+}
 WRAPPER_FLAGS = {
     "sudo": {"-n", "--non-interactive", "-b", "--background", "-E", "--preserve-env", "-H", "--set-home",
-             "-i", "--login", "-k", "--reset-timestamp", "-K", "--remove-timestamp", "-l", "--list",
-             "-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell", "-v", "--validate", "-A", "--askpass"},
+             "-i", "--login", "-k", "--reset-timestamp",
+             "-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell", "-A", "--askpass"},
     "doas": {"-n", "-s", "-L"},
     "command": {"-p"},
     "builtin": set(),
@@ -63,6 +70,11 @@ OPERATORS = {"&&", "||", ";", "|", "&", "\n", "(", ")", "{", "}"}
 # path, and leaving it in argv made an ordinary commit look like it named
 # a file to stage.
 REDIRECTS = {">", ">>", "<", "<<", "<<<", "<>", ">&", ">>&", "<&"}
+# Where a command may begin, verified with `bash -n`. `{` is absent because a
+# brace group needs the space in `{ cmd; }`, so `{2>` is one word. `)` is
+# absent because `(true)2>file cmd` is a SYNTAX ERROR, not a bypass — a gate
+# denial there would have proved nothing about a command that cannot run.
+COMMAND_BOUNDARY = frozenset(" \t\n;&|(")
 GLOBAL_VALUES = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.S)
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
@@ -198,16 +210,43 @@ def split_substitutions(command: str) -> tuple[str, list[str]]:
     return rewritten, inner
 
 
+def _heredoc_openers(command: str) -> dict[int, list[str]]:
+    """Delimiters opened on each line, under shell quoting rules.
+
+    Scanning the whole command at once is what makes this correct: quote state
+    carries across lines, so a per-line regex cannot tell an opener from the
+    inert text in `echo '<<EOF'` — and reading that as syntax erased every
+    later line, including a real commit, from inspection.
+    """
+    openers: dict[int, list[str]] = {}
+
+    def claim(index: int, char: str, single: bool, double: bool, previous: str) -> tuple[int, str] | None:
+        if single or double or not command.startswith("<<", index):
+            return None
+        # `<<<` is a here-string: it takes a word, not a delimited body.
+        if command.startswith("<<<", index) or previous.endswith("<"):
+            return None
+        match = HEREDOC.match(command, index)
+        if match is None:
+            return None
+        openers.setdefault(command.count("\n", 0, index), []).append(match.group(2))
+        return match.end(), match.group(0)
+
+    _scan_quoted(command, claim)
+    return openers
+
+
 def _without_heredoc_bodies(command: str) -> str:
+    openers = _heredoc_openers(command)
     output: list[str] = []
     pending: list[str] = []
-    for line in command.splitlines(keepends=True):
+    for number, line in enumerate(command.splitlines(keepends=True)):
         if pending:
             if line.strip() == pending[0]:
                 pending.pop(0)
             continue
         output.append(line)
-        pending.extend(match.group(2) for match in HEREDOC.finditer(line))
+        pending.extend(openers.get(number, ()))
     return "".join(output)
 
 
@@ -216,6 +255,9 @@ def strip_attached_io_numbers(command: str) -> str:
 
     `2>file` is pure redirection syntax, but `2 >file` passes 2 as an argument.
     Deleting the digits only when they are attached keeps a numeric pathspec.
+    A descriptor may open a command anywhere a command may start, not only
+    after whitespace: `true;2>/tmp/x git commit` is valid shell, and leaving
+    the digit in argv made `2` the parsed executable.
     """
     def claim(index: int, char: str, single: bool, double: bool, previous: str) -> tuple[int, str] | None:
         if single or double or not char.isdigit():
@@ -223,7 +265,7 @@ def strip_attached_io_numbers(command: str) -> str:
         end = index
         while end < len(command) and command[end].isdigit():
             end += 1
-        if end < len(command) and command[end] in "<>" and previous in (" ", "\t", "\n", ""):
+        if end < len(command) and command[end] in "<>" and (not previous or previous[-1] in COMMAND_BOUNDARY):
             return end, ""
         return None
 
@@ -307,6 +349,24 @@ def without_option_values(
     return kept
 
 
+def _short_flag_present(token: str, letter: str, value_letters: set[str]) -> bool:
+    """True when `letter` is a FLAG in a short-option cluster.
+
+    A cluster ends at its first value-taking letter, which swallows the rest as
+    its value. Searching the whole token instead read the `n` inside
+    `-Xrenormalize` as `-n`, and a strategy option silently suppressed the
+    revision-creating classification.
+    """
+    if not token.startswith("-") or token.startswith("--") or len(token) < 2:
+        return False
+    for character in token[1:]:
+        if character == letter:
+            return True
+        if character in value_letters:
+            return False
+    return False
+
+
 def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> GitInvocation:
     index, effective, ambiguous, routed = 1, cwd, False, False
     while index < len(argv):
@@ -359,11 +419,25 @@ def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> Git
     # --abort/--quit/--skip finish or unwind an interrupted operation; they
     # author no revision and must stay runnable for recovery. An option VALUE
     # that happens to read `--abort` is a commit message, not a recovery flag.
+    # Everything after `--` is a pathspec, so a file named `--abort` is an
+    # operand of a real commit, not a recovery flag.
+    option_args = verb_args[: verb_args.index("--")] if "--" in verb_args else verb_args
     recovering = any(
         arg in {"--abort", "--quit", "--skip"}
-        for arg in without_option_values(verb_args, COMMIT_VALUE_OPTIONS, COMMIT_VALUE_LETTERS)
+        for arg in without_option_values(option_args, COMMIT_VALUE_OPTIONS, COMMIT_VALUE_LETTERS)
     )
-    creating = (verb in {"commit", "cherry-pick", "revert", "merge"} and not recovering) or rebase_creating
+    # `cherry-pick -n` and `revert -n` apply the change to the index and stop.
+    # They author no revision, and they are precisely how an operator stages
+    # such a change for an ordinary commit the gate CAN certify — so refusing
+    # them would block the remedy. `-n` means --no-stat for merge, hence the
+    # verb restriction.
+    staging_only = verb in {"cherry-pick", "revert"} and any(
+        arg == "--no-commit" or _short_flag_present(arg, "n", COMMIT_VALUE_LETTERS)
+        for arg in without_option_values(option_args, COMMIT_VALUE_OPTIONS, COMMIT_VALUE_LETTERS)
+    )
+    creating = (
+        verb in {"commit", "cherry-pick", "revert", "merge"} and not recovering and not staging_only
+    ) or rebase_creating
     # A verb assembled by a substitution is unknown until the shell runs it.
     # Only the templates that could still spell a commit verb are refused, so
     # `git com$(printf mit)` blocks while `git lo$(printf g)` keeps working.
@@ -378,23 +452,35 @@ def _build_git_invocation(argv: list[str], env: dict[str, str], cwd: str) -> Git
     return GitInvocation(verb, tuple(argv), effective, dict(env), creating, possible)
 
 
-def embedded_command(segment: list[str], index: int, wrapper: str) -> str | None:
-    """Return a command string a wrapper option carries, as `env -S` does.
+def embedded_command(segment: list[str], index: int, wrapper: str) -> tuple[str, int] | None:
+    """A command string a wrapper option carries, and where argv resumes.
 
-    Treating that string as an opaque option value hid the command inside it.
+    `env -S` splits the string into words and appends whatever follows, so the
+    command that runs is both parts. Treating the string as an opaque option
+    value hid the command inside it, and discarding the tail hid its operands.
     """
     if wrapper != "env":
         return None
+    values = WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset())
     cursor = index
     while cursor < len(segment) and segment[cursor].startswith("-"):
         token = segment[cursor]
-        if token in {"-S", "--split-string"} and cursor + 1 < len(segment):
-            return segment[cursor + 1]
+        if token in {"-S", "--split-string"}:
+            return (segment[cursor + 1], cursor + 2) if cursor + 1 < len(segment) else None
         if token.startswith("--split-string="):
-            return token.split("=", 1)[1]
-        if token.startswith("-S") and token != "-S":
-            return token[2:]
-        cursor += 2 if token in WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset()) and cursor + 1 < len(segment) else 1
+            return token.split("=", 1)[1], cursor + 1
+        if not token.startswith("--"):
+            # A short cluster ends at its first value-taking letter, so the S
+            # in `-uS` is that option's VALUE while `-iS` really does split.
+            for position, letter in enumerate(token[1:], 1):
+                if letter == "S":
+                    attached = token[position + 1:]
+                    if attached:
+                        return attached, cursor + 1
+                    return (segment[cursor + 1], cursor + 2) if cursor + 1 < len(segment) else None
+                if f"-{letter}" in values:
+                    break
+        cursor += 2 if token in values and cursor + 1 < len(segment) else 1
     return None
 
 
@@ -467,9 +553,11 @@ def consume_wrappers(segment: list[str], index: int, env: dict[str, str]) -> tup
         name = Path(segment[index]).name
         if name not in TRANSPARENT_WRAPPERS and name != "env":
             break
-        nested = embedded_command(segment, index + 1, name)
-        if nested is not None:
-            return len(segment), unknown, nested
+        carried = embedded_command(segment, index + 1, name)
+        if carried is not None:
+            text, resume = carried
+            operands = " ".join(shlex.quote(token) for token in segment[resume:])
+            return len(segment), unknown, f"{text} {operands}" if operands else text
         index, unknown, terminal = consume_wrapper_options(segment, index + 1, name, unknown)
         if terminal:
             # The wrapper reports instead of executing; nothing runs.
@@ -564,6 +652,11 @@ def _classify(command: str, cwd: str, depth: int, max_depth: int, inherited: dic
             nested, missing = _shell_c(argv)
             if missing:
                 return found, "shell -c command argument missing"
+        elif executable == "eval" and len(argv) > 1:
+            # eval joins its arguments and runs the result, so the payload is
+            # a command like any other. Counting `eval` as an ordinary
+            # executable left the whole policy one word away from a bypass.
+            nested = " ".join(argv[1:])
         # One dispatch for every command carried inside another command.
         if nested is not None:
             error = _classify_nested(nested, segment_cwd, depth, max_depth, env, found, counter)

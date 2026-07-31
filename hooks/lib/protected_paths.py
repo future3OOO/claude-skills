@@ -9,6 +9,11 @@ from pathlib import Path
 MUTATORS = {"touch", "rm", "unlink", "rmdir", "mkdir", "truncate", "chmod", "chown", "tee"}
 TARGET_ONLY = {"cp", "install", "rsync"}
 BOTH = {"mv", "ln"}
+# Commands that remove or relocate the operand itself, taking everything under
+# it. For these the operand may not merely BE protected state; it may not hold
+# any either. `mv` destroys only its sources, so its destination is excluded.
+TREE_DESTROYERS = {"rm", "rmdir", "mv"}
+DESTRUCTIVE_FIND = {"-delete", "-exec", "-execdir", "-ok", "-okdir"}
 from .git_cmd import PREFIXES, TRANSPARENT_WRAPPERS, consume_wrappers, split_substitutions, without_option_values
 
 SHELLS = {"sh", "bash", "dash", "zsh"}
@@ -28,10 +33,24 @@ def _expand(value: str, env: dict[str, str], cwd: Path) -> Path:
     return (path if path.is_absolute() else cwd / path).resolve(strict=False)
 
 
+def _roots(home: Path) -> tuple[Path, ...]:
+    return tuple(item.resolve(strict=False) for item in (
+        home / "hooks", home / "settings.json", home / "state", home / "codex-advisor",
+        home / "skills" / "codex-advisor"))
+
+
 def _protected(path: Path, home: Path) -> bool:
-    roots = (home / "hooks", home / "settings.json", home / "state", home / "codex-advisor",
-             home / "skills" / "codex-advisor")
-    return any(path == root or root in path.parents for root in map(lambda item: item.resolve(strict=False), roots))
+    return any(path == root or root in path.parents for root in _roots(home))
+
+
+def _holds_protected(path: Path, home: Path) -> bool:
+    """True when `path` CONTAINS protected state.
+
+    Removing or relocating a parent destroys the tree as surely as naming it,
+    and only the descendant case was covered. Writing INTO a parent destroys
+    nothing, so this is asked only of the commands in `TREE_DESTROYERS`.
+    """
+    return any(path in root.parents for root in _roots(home))
 
 
 def _segments(command: str) -> list[list[str] | str]:
@@ -89,11 +108,54 @@ def _operands(args: list[str]) -> list[str]:
 LONG_VALUE_OPTIONS = {
     "cp": {"--target-directory", "--suffix"},
     "install": {"--target-directory", "--group", "--mode", "--owner", "--suffix", "--strip-program"},
+    # mv is not a TARGET_ONLY command, but it spells a destination the same
+    # way. Without its grammar, `mv -t DIR SRC` reads SRC as the destination:
+    # that both hid a move of the protected tree and blocked a move INTO it.
+    "mv": {"--target-directory", "--suffix"},
 }
-SHORT_VALUE_OPTIONS = {"cp": set("tS"), "install": set("tgmoS")}
+SHORT_VALUE_OPTIONS = {"cp": set("tS"), "install": set("tgmoS"), "mv": set("tS")}
 DESTINATION_LONG = "--target-directory"
 DIRECTORY_LONG = {"install": "--directory"}
 DIRECTORY_SHORT = {"install": "d"}
+
+
+# The abbreviated spellings actually observed bypassing the destination
+# grammar. An exact table, not prefix resolution: resolving against only the
+# options modelled here would invent an answer for spellings GNU itself calls
+# ambiguous, such as `install --d` (--debug or --directory).
+def _prefix_aliases(option: str, shortest: int) -> dict[str, str]:
+    return {option[:length]: option for length in range(shortest, len(option))}
+
+
+# `--tar` is the shortest prefix GNU accepts for cp/mv (`--ta` collides with
+# nothing here but GNU rejects it); `--dir` likewise for install, where
+# `--d` really is ambiguous with `--debug`.
+_TARGET_DIRECTORY = _prefix_aliases("--target-directory", len("--tar"))
+LONG_OPTION_ALIASES = {
+    "cp": _TARGET_DIRECTORY,
+    "mv": _TARGET_DIRECTORY,
+    "install": _prefix_aliases("--directory", len("--dir")),
+}
+
+
+def _expand_abbreviations(name: str, args: list[str]) -> list[str]:
+    """Rewrite observed GNU long-option abbreviations to their full spelling.
+
+    GNU accepts an unambiguous prefix, so `cp --tar=DIR` names the same
+    destination as `--target-directory=DIR`, and matching only the exact
+    spelling let the write happen under another name. Applied once, before
+    BOTH destination grammars, or the two disagree about which token is the
+    destination.
+    """
+    aliases = LONG_OPTION_ALIASES.get(name)
+    if not aliases:
+        return args
+    expanded: list[str] = []
+    for arg in args:
+        option, separator, value = arg.partition("=")
+        option = aliases.get(option, option)
+        expanded.append(f"{option}={value}" if separator else option)
+    return expanded
 
 
 def _write_destinations(name: str, args: list[str]) -> list[str] | None:
@@ -238,16 +300,21 @@ def detect_protected_mutation(command: str, home: Path, *, cwd: str | os.PathLik
         if name in MUTATORS | TARGET_ONLY | BOTH and _unresolved(args, argument_env):
             return f"unmodelable expansion in protected-path check for {name}"
         paths = _paths(args, argument_env, current)
-        if name == "find" and any(flag in args for flag in {"-delete", "-exec", "-execdir", "-ok", "-okdir"}) and any(_protected(path, home) for path in paths):
+        # find's operands are search roots and a destructive action reaches
+        # everything beneath them, so holding protected state is enough.
+        if name == "find" and any(flag in args for flag in DESTRUCTIVE_FIND) and any(
+            _protected(path, home) or _holds_protected(path, home) for path in paths
+        ):
             return "mutation of protected workflow state via find"
         if name in TARGET_ONLY:
+            spelled = _expand_abbreviations(name, args)
             # `cp -t DIR src` writes into DIR and the last operand is a SOURCE;
             # `install -d A B` creates every operand instead of copying. The
             # operand list must come from the same grammar, or a trailing
             # `-S suffix` leaves its VALUE looking like the destination.
-            named = _write_destinations(name, args)
+            named = _write_destinations(name, spelled)
             operands = _paths(
-                without_option_values(args, LONG_VALUE_OPTIONS.get(name, set()), SHORT_VALUE_OPTIONS.get(name, set())),
+                without_option_values(spelled, LONG_VALUE_OPTIONS.get(name, set()), SHORT_VALUE_OPTIONS.get(name, set())),
                 argument_env, current,
             )
             if named is None:
@@ -258,7 +325,22 @@ def detect_protected_mutation(command: str, home: Path, *, cwd: str | os.PathLik
                 destinations = operands[-1:]
             if any(_protected(destination, home) for destination in destinations):
                 return f"mutation of protected workflow state via {name}"
-        if name in BOTH | MUTATORS and any(_protected(path, home) for path in paths):
+        # `mv` relocates its SOURCES; the destination only receives. With an
+        # explicit target directory every operand is a source, so the last one
+        # is not the destination and must still be checked.
+        if name == "mv":
+            spelled = _expand_abbreviations(name, args)
+            operands = _paths(
+                without_option_values(spelled, LONG_VALUE_OPTIONS["mv"], SHORT_VALUE_OPTIONS["mv"]),
+                argument_env, current,
+            )
+            removed = operands if _write_destinations(name, spelled) else operands[:-1]
+        else:
+            removed = paths if name in TREE_DESTROYERS else []
+        if name in BOTH | MUTATORS and (
+            any(_protected(path, home) for path in paths)
+            or any(_holds_protected(path, home) for path in removed)
+        ):
             return f"mutation of protected workflow state via {name}"
         if name == "sed" and any(arg == "-i" or arg.startswith("-i") for arg in args) and any(_protected(path, home) for path in paths):
             return "mutation of protected workflow state via sed -i"

@@ -121,6 +121,46 @@
       "id": "attached-global-config",
       "commit": true,
       "command": "git -cuser.name=x commit -m x"
+    },
+    {
+      "id": "eval-carried-commit",
+      "commit": true,
+      "command": "eval 'git commit -m x'"
+    },
+    {
+      "id": "quoted-heredoc-opener-then-commit",
+      "commit": true,
+      "command": "echo '<<EOF'\ngit commit -m real"
+    },
+    {
+      "id": "genuine-quoted-heredoc-body-is-inert",
+      "commit": false,
+      "command": "cat <<'EOF'\ngit commit -m x\nEOF"
+    },
+    {
+      "id": "descriptor-attached-after-operator",
+      "commit": true,
+      "command": "true;2>/tmp/x git commit -m x"
+    },
+    {
+      "id": "env-split-string-in-cluster",
+      "commit": true,
+      "command": "env -iS 'git commit -m x'"
+    },
+    {
+      "id": "pathspec-named-like-recovery",
+      "commit": true,
+      "command": "git commit -- --abort"
+    },
+    {
+      "id": "sudo-validate-runs-nothing",
+      "commit": false,
+      "command": "sudo --validate git commit"
+    },
+    {
+      "id": "quoted-commit-in-harness-argument",
+      "commit": false,
+      "command": "probe \"case\" \"git commit -m x\""
     }
   ]
 }
