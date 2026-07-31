@@ -8,7 +8,7 @@ from .path_policy import language_for_path, normalize_path
 
 GENERIC_SYMBOLS = {
     "app", "config", "create", "delete", "get", "handler", "index", "init", "load", "main",
-    "post", "put", "render", "run", "save", "setup", "start", "stop", "update",
+    "as_dict", "post", "put", "render", "run", "save", "setup", "start", "stop", "update",
 }
 
 REUSE_ACTION_TOKENS = {

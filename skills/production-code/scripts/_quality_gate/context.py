@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .diff_utils import collect_added_lines
-from .git_scope import read_file
+from .git_scope import read_file, read_git_file, read_index_file
 from .models import Numstat
 from .path_policy import is_production_source_path, is_source_path
 
@@ -19,6 +19,8 @@ class GateContext:
     base_for_file: str
     numstats: list[Numstat]
     added_lines: dict[str, list[tuple[int, str]]]
+    candidate_source: str
+    candidate_tree: str
 
     @classmethod
     def from_scope(cls, repo: Path, scope: dict[str, object]) -> "GateContext":
@@ -32,12 +34,26 @@ class GateContext:
             base_for_file=str(scope["base_for_file"]),
             numstats=list(scope["numstats"]),
             added_lines=collect_added_lines(raw_diff),
+            candidate_source=str(scope.get("candidate_source") or "worktree"),
+            candidate_tree=str(scope.get("candidate_tree") or ""),
         )
+
+    def read_current(self, rel_path: str) -> str | None:
+        if self.candidate_source == "index":
+            # Read from the captured tree so every check sees one immutable
+            # candidate, even if the index moves during the run.
+            if self.candidate_tree:
+                return read_git_file(self.repo, self.candidate_tree, rel_path)
+            return read_index_file(self.repo, rel_path)
+        return read_file(self.repo / rel_path)
+
+    def read_base(self, rel_path: str) -> str | None:
+        return read_git_file(self.repo, self.base_for_file, rel_path)
 
     def added_lines_with_untracked(self, *, production_only: bool) -> dict[str, list[tuple[int, str]]]:
         out = {path: list(lines) for path, lines in self.added_lines.items()}
         predicate = is_production_source_path if production_only else is_source_path
         for rel_path in sorted(self.untracked):
-            if predicate(rel_path) and (text := read_file(self.repo / rel_path)) is not None:
+            if predicate(rel_path) and (text := self.read_current(rel_path)) is not None:
                 out.setdefault(rel_path, []).extend((idx, line) for idx, line in enumerate(text.splitlines(), 1))
         return out

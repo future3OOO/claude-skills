@@ -74,9 +74,15 @@ def test_clean_pass() -> None:
             "noDuplication",
             "shortestPath",
             "cleanup",
-            "anticipateConsequences",
-            "simplicity",
+            "noMergeConflictMarkers",
+            "consequenceCoverage",
         }
+        hard_rules = payload["hardRules"]
+        evaluated = [tuple(item["checks"]) for item in hard_rules.values() if item["status"] == "evaluated"]
+        assert len(evaluated) == len(set(evaluated))
+        assert hard_rules["noMergeConflictMarkers"]["checks"] == ["no-merge-conflict-markers"]
+        assert hard_rules["consequenceCoverage"]["status"] == "not_evaluated"
+        assert hard_rules["consequenceCoverage"]["passed"] is None
 
     with_repo(body)
 
@@ -92,13 +98,53 @@ def test_temp_artifact_fails_cleanup() -> None:
     with_repo(body)
 
 
+def test_standalone_entrypoint_import_bootstrap_passes() -> None:
+    # Hook entry points are invoked by absolute path, so each must put the repo
+    # root on sys.path before importing shared code, and E402 is unavoidable.
+    # The bootstrap is entrypoint mechanics, not duplicated behaviour.
+    bootstrap = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "ROOT = Path(__file__).resolve().parents[1]\n"
+        "if str(ROOT) not in sys.path:\n"
+        "    sys.path.insert(0, str(ROOT))\n"
+        "from lib.shared import helper  # noqa: E402\n"
+    )
+
+    def body(repo: Path) -> None:
+        for name in ("gate_one", "gate_two", "gate_three"):
+            write(repo / "hooks" / f"{name}.py", bootstrap + f"\n\ndef {name}() -> int:\n    return helper()\n")
+        code, payload, _ = run_gate(repo)
+        assert code == 0, json.dumps(payload, indent=2)
+        assert payload["ok"] is True
+
+    with_repo(body)
+
+
+def test_bare_noqa_is_still_a_quality_escape() -> None:
+    def body(repo: Path) -> None:
+        bare = "# no" + "qa"  # assembled so this file is not itself flagged
+        write(repo / "src" / "sloppy.py", f"import os  {bare}\n\n\ndef sloppy() -> str:\n    return os.sep\n")
+        code, payload, _ = run_gate(repo)
+        assert code != 0
+        assert payload["ok"] is False
+
+    with_repo(body)
+
+
 def test_gate_creates_no_repo_artifacts() -> None:
     def body(repo: Path) -> None:
+        write(repo / "src" / "candidate.py", "def candidate() -> int:\n    return 2\n")
+        git(repo, "add", "src/candidate.py")
+        worktree_only = "# TO" + "DO worktree-only text must not enter index evidence\n"
+        write(repo / "src" / "candidate.py", worktree_only + "def candidate() -> int:\n    return 3\n")
         before = snapshot_paths(repo)
-        code, payload, _ = run_gate(repo)
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
         after = snapshot_paths(repo)
         assert code == 0
         assert payload["ok"] is True
+        assert payload["candidateSource"] == "index"
+        assert payload["candidateTree"] == run(["git", "write-tree"], repo).stdout.strip()
         assert after == before
 
     with_repo(body)
@@ -254,6 +300,74 @@ def test_single_token_cross_domain_reuse_warning_is_suppressed() -> None:
         assert code == 0
         assert payload["ok"] is True
         assert payload["reuseFindings"] == []
+
+    with_repo(body)
+
+
+def test_generic_serializer_method_name_is_not_reuse_evidence() -> None:
+    def body(repo: Path) -> None:
+        write(
+            repo / "src" / "existing.py",
+            "class Existing:\n"
+            "    def as_dict(self) -> dict[str, object]:\n"
+            "        return {'existing': True}\n",
+        )
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "existing serializer")
+        write(
+            repo / "src" / "candidate.py",
+            "class Candidate:\n"
+            "    def as_dict(self) -> dict[str, object]:\n"
+            "        return {'candidate': self.__class__.__name__}\n",
+        )
+        code, payload, _ = run_gate(repo)
+        assert code == 0, json.dumps(payload, indent=2)
+        assert payload["reuseFindings"] == []
+
+    with_repo(body)
+
+
+def test_pytest_named_module_is_test_source() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "pkg" / "loader.py", "def read_current(path: str) -> str:\n    return open(path).read()\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "reader")
+        # pytest discovers test_*.py with no tests/ directory involved, so the
+        # fixtures inside one are not a second implementation of the reader.
+        write(
+            repo / "pkg" / "test_loader.py",
+            "def test_reads(tmp_path) -> None:\n"
+            "    write(tmp_path / 'a.py', 'def read_current(p): return open(p).read()')\n"
+            "    assert True\n",
+        )
+        code, payload, _ = run_gate(repo)
+        assert payload["reuseFindings"] == [], payload["reuseFindings"]
+        assert payload["ok"] is True
+        assert code == 0
+
+    with_repo(body)
+
+
+def test_comment_prose_is_not_a_risky_block() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "skills" / "gate" / "scripts" / "context.py", "def read_current(path: str) -> str:\n    return open(path).read()\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "reader")
+        # A comment explaining a change is prose, not a second implementation,
+        # even when it sits in the same subtree as a real reader.
+        write(
+            repo / "skills" / "advisor" / "scripts" / "ask.sh",
+            "#!/usr/bin/env bash\n"
+            "# Run from the canonical root: the delegate must resolve and read there.\n"
+            "exec \"$@\"\n",
+        )
+        # A Python change in the same diff is what puts the Python reader into
+        # the existing-symbol index, which is when the comment can match it.
+        write(repo / "skills" / "advisor" / "scripts" / "state.py", "def slug() -> str:\n    return 'x'\n")
+        code, payload, _ = run_gate(repo)
+        assert payload["reuseFindings"] == [], payload["reuseFindings"]
+        assert payload["ok"] is True
+        assert code == 0
 
     with_repo(body)
 
@@ -461,7 +575,9 @@ def test_gate_implementation_budget() -> None:
         "function_lines": 90,
         "total_lines": 1200,
     }
-    justified: dict[str, str] = {}
+    justified: dict[str, str] = {
+        "TOTAL": "exact staged-index evaluation adds a separate candidate-tree source contract",
+    }
     production_files = [SCRIPT, *sorted((SCRIPT_DIR / "_quality_gate").glob("*.py"))]
     line_counts = {str(path.relative_to(SCRIPT_DIR)): len(path.read_text(encoding="utf-8").splitlines()) for path in production_files}
 
@@ -493,6 +609,8 @@ def main() -> int:
     tests = [
         test_clean_pass,
         test_temp_artifact_fails_cleanup,
+        test_standalone_entrypoint_import_bootstrap_passes,
+        test_bare_noqa_is_still_a_quality_escape,
         test_gate_creates_no_repo_artifacts,
         test_duplicate_added_block_fails,
         test_js_ts_escapes_fail,
@@ -505,6 +623,7 @@ def main() -> int:
         test_reimplemented_existing_helper_fails,
         test_reimplemented_dedupe_loop_fails,
         test_single_token_cross_domain_reuse_warning_is_suppressed,
+        test_generic_serializer_method_name_is_not_reuse_evidence,
         test_action_only_wait_helper_overlap_is_suppressed,
         test_calling_existing_helper_passes,
         test_helper_move_refactor_passes,

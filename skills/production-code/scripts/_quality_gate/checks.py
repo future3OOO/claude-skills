@@ -5,10 +5,17 @@ import re
 from pathlib import Path
 
 from .context import GateContext
-from .git_scope import read_file, read_git_file
+from .git_scope import read_file
 from .models import Numstat
 from .path_policy import is_production_source_path, is_source_path, physical_lines
 
+
+# Import statements and the sys.path bootstrap a standalone entry point needs
+# before it can import shared code are module preamble, not behaviour. Files
+# legitimately share them, so they never count toward a duplicate window.
+_IMPORT_PREAMBLE = re.compile(
+    r"^(?:import\s|from\s+\S+\s+import\s|ROOT\s*=|if\s+str\(ROOT\)|sys\.path\.insert)"
+)
 
 GENERAL_ESCAPE_RULES = [
     re.compile(r"\b(?:TODO|FIXME|HACK)\b", re.I),
@@ -16,7 +23,10 @@ GENERAL_ESCAPE_RULES = [
     re.compile(r"@ts-expect-error\b"),
     re.compile(r"eslint-disable\b"),
     re.compile(r"#\s*type:\s*ignore\b", re.I),
-    re.compile(r"#\s*noqa\b", re.I),
+    # E402 is module-import-not-at-top, which a standalone entry point cannot
+    # avoid: it must extend sys.path before importing shared code. A bare
+    # suppression, or any other code, stays banned.
+    re.compile(r"#\s*noqa\b(?!\s*:\s*E402\b(?!\s*,))", re.I),
     re.compile(r"\|\|\s*true\b"),
 ]
 
@@ -51,7 +61,7 @@ def scan_quality_escapes(ctx: GateContext) -> list[str]:
         if is_source_path(rel_path):
             hits.extend(_line_hits(rel_path, lines, rules_for_path(rel_path)))
     for rel_path in sorted(ctx.untracked):
-        if not is_source_path(rel_path) or (text := read_file(ctx.repo / rel_path)) is None:
+        if not is_source_path(rel_path) or (text := ctx.read_current(rel_path)) is None:
             continue
         hits.extend(_line_hits(rel_path, list(enumerate(text.splitlines(), 1)), rules_for_path(rel_path)))
         hits.extend(_multiline_hits(rel_path, text))
@@ -94,12 +104,7 @@ def duplicate_added_blocks(ctx: GateContext) -> list[dict[str, object]]:
 def evaluate_bloat(ctx: GateContext) -> tuple[list[str], list[str], dict[str, object]]:
     errors: list[str] = []
     warnings: list[str] = []
-    details, total_added, total_deleted, shrink_by_dir = _bloat_file_details(
-        ctx.repo,
-        ctx.changed_files,
-        ctx.numstats,
-        ctx.base_for_file,
-    )
+    details, total_added, total_deleted, shrink_by_dir = _bloat_file_details(ctx, ctx.numstats)
     for detail in details:
         errors.extend(_bloat_errors_for_file(detail, shrink_by_dir))
         warnings.extend(_bloat_warnings_for_file(detail))
@@ -139,7 +144,9 @@ def _duplicate_candidate_lines(lines: list[tuple[int, str]]) -> list[str]:
     return [
         line
         for line in normalized
-        if line not in {"{", "}"} and not re.match(r"^(?:export\s+)?(?:async\s+)?function\s+\w+\(", line)
+        if line not in {"{", "}"}
+        and not re.match(r"^(?:export\s+)?(?:async\s+)?function\s+\w+\(", line)
+        and not _IMPORT_PREAMBLE.match(line)
     ]
 
 
@@ -176,21 +183,16 @@ def _same_duplicate_family(left: dict[str, object], right: dict[str, object]) ->
     return len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens)) >= 0.6
 
 
-def _bloat_file_details(
-    repo: Path,
-    changed_files: set[str],
-    records: list[Numstat],
-    base_for_file: str,
-) -> tuple[list[dict[str, object]], int, int, dict[str, int]]:
+def _bloat_file_details(ctx: GateContext, records: list[Numstat]) -> tuple[list[dict[str, object]], int, int, dict[str, int]]:
     numstat = _merge_numstats(records)
     details: list[dict[str, object]] = []
     total_added = 0
     total_deleted = 0
     shrink_by_dir: dict[str, int] = {}
-    for rel_path in sorted(changed_files):
-        if not is_production_source_path(rel_path) or (current_text := read_file(repo / rel_path)) is None:
+    for rel_path in sorted(ctx.changed_files):
+        if not is_production_source_path(rel_path) or (current_text := ctx.read_current(rel_path)) is None:
             continue
-        base_text = read_git_file(repo, base_for_file, rel_path)
+        base_text = ctx.read_base(rel_path)
         baseline_lines = physical_lines(base_text) if base_text is not None else None
         current_lines = physical_lines(current_text)
         record = numstat.get(rel_path)
