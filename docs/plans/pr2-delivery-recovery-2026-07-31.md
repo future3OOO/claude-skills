@@ -36,14 +36,17 @@ Out of scope:
 | 1 | `feat/workflow-state-foundation` | repository identity, atomic state primitives, production quality-gate corrections and CI | 500 | one behavior-and-proof commit |
 | 2 | `feat/workflow-pass-lifecycle` | production-pass lifecycle, pass-state CLI, re-arm adapter | ~270 | one lifecycle-and-proof commit |
 | 3 | `feat/workflow-tdd-evidence` | TDD evidence recording and its real `tdd-run` CLI | ~350 | one vertical behavior-and-proof commit |
-| 4 | `feat/workflow-context-quality-evidence` | Repo Context Forge and quality record/validate paths, their production callers, shared CLI, and post-edit evidence | ~700 | one vertical evidence-and-proof commit |
-| 5 | `feat/workflow-advisor-review-integration` | review/advisor and TDD validation paths, production consumers, audited skip, intake/compact hooks, and operator workflow contract | ~800 | one vertical integration-and-proof commit |
-| 6 | existing `feat/workflow-gate-overhaul` / PR #2 | protected-path accident prevention, settings/adoption, deletion of Git gates, final integrated proof | ~296 | one final reconciliation commit if needed |
+| 4 | `feat/workflow-repoforge-evidence` | Repo Context Forge packet persistence through the real bootstrap adapter | ~250 | one vertical behavior-and-proof commit |
+| 5 | `feat/workflow-quality-evidence` | quality evidence recording, exact-index CLI, and post-edit hook | ~500 | one vertical behavior-and-proof commit |
+| 6 | `feat/workflow-review-evidence` | review evidence recording and its production CLI | ~400 | one vertical behavior-and-proof commit |
+| 7 | `feat/workflow-advisor-evidence` | advisor evidence/transport, validation consumers, and audited exception | ~600 | one vertical integration-and-proof commit |
+| 8 | `feat/workflow-orchestration-hooks` | intake/compact hooks and the operator workflow contract | ~400 | one orchestration-and-proof commit |
+| 9 | existing `feat/workflow-gate-overhaul` / PR #2 | protected-path accident prevention, settings/adoption, deletion of Git gates, final integrated proof | ~300 | one final reconciliation commit if needed |
 
 Preflight rejected an all-evidence slice: pairing every writer with every
 validator still left dead Interfaces until later adapters arrived, and the
 preserved advisor recorder introduced a lifecycle/validation dependency cycle.
-Slices 3-5 therefore run vertically by live Interface. The TDD writer lands
+The remaining slices therefore run vertically by live Interface. The TDD writer lands
 with its real recorder CLI; its staged-tree validator waits for the advisor
 integration that actually consumes it. Other validators likewise land with
 their first production consumer rather than as dead registry entries. The

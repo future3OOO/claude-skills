@@ -47,6 +47,7 @@ Users may also type these as `/repo-context-forge`, `/diagnose`, `/tdd`,
 
 1. Run the [repo-context-forge](../repo-context-forge/SKILL.md) skill before choosing files, GitNexus queries, review findings, or edits.
    - If the user described planned work before files changed, pass the request as `--intent`.
+   - Pass the active production-pass slug as `--workflow-slug <task>` so the rendered packet is recorded against the same pass.
    - If Repo Context Forge emits blockers, stop and surface them.
    - Use packet targets and coverage plan as the first-pass surface.
    - When the packet lists `delegation_tasks`, spawn the consolidated specialist via the Agent tool before GitNexus calls or edits.
