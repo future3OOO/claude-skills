@@ -1,10 +1,12 @@
-"""Typed lifecycle for one production-workflow pass."""
+"""Typed lifecycle for production-pass and TDD evidence records."""
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .repo_identity import RepoIdentity
 from .state_store import (
@@ -19,6 +21,23 @@ from .state_store import (
 )
 
 JsonObject = dict[str, object]
+EvidenceKind = Literal["production-pass", "tdd-decision", "tdd-evidence"]
+
+
+class EvidenceError(RuntimeError):
+    """Base class for evidence failures; callers must fail closed."""
+
+
+class EvidenceMissing(EvidenceError):
+    """A required record or referenced artifact is absent."""
+
+
+class EvidenceStale(EvidenceError):
+    """A record was valid for an earlier repository state."""
+
+
+class EvidenceMismatch(EvidenceError):
+    """A record does not describe the requested workflow operation."""
 
 
 def safe_slug(value: str) -> str:
@@ -38,6 +57,18 @@ def _pointer_path(identity: RepoIdentity) -> Path:
     return repo_state_dir(identity) / "active-pass.json"
 
 
+def _tdd_evidence_path(identity: RepoIdentity, slug: str) -> Path:
+    return _dir(identity, "tdd") / f"tdd-{safe_slug(slug)}.json"
+
+
+def _tdd_decision_path(identity: RepoIdentity, slug: str) -> Path:
+    return _dir(identity, "tdd") / f"tdd-{safe_slug(slug)}-decision.json"
+
+
+def _base(kind: EvidenceKind) -> JsonObject:
+    return {"schemaVersion": 1, "kind": kind}
+
+
 def read_active_pass(identity: RepoIdentity) -> JsonObject | None:
     pointer = read_json(_pointer_path(identity))
     if not pointer or not isinstance(pointer.get("slug"), str):
@@ -50,14 +81,22 @@ def read_active_pass(identity: RepoIdentity) -> JsonObject | None:
     return state
 
 
+def require_active_pass(identity: RepoIdentity) -> JsonObject:
+    state = read_active_pass(identity)
+    if state is None:
+        raise EvidenceMissing("no active production pass")
+    if state.get("startingHead") != head_sha(identity):
+        raise EvidenceStale("active pass starting HEAD no longer matches current HEAD")
+    return state
+
+
 def _persist_pass(identity: RepoIdentity, state: JsonObject) -> JsonObject:
     slug = safe_slug(str(state.get("slug") or ""))
     if slug == "unnamed-pass":
         raise ValueError("production pass requires a non-empty slug")
     now = utc_timestamp()
     state.update({
-        "schemaVersion": 1,
-        "kind": "production-pass",
+        **_base("production-pass"),
         "repo": identity.as_dict(),
         "repoKey": identity.key,
         "canonicalRoot": str(identity.root),
@@ -91,6 +130,7 @@ def start_pass(
         "nextAction": "repo-context-forge",
         "gates": {},
         "artifacts": {},
+        "tddDecision": None,
         "createdAt": now,
         "startingChangeFingerprint": change_fingerprint(identity, "worktree"),
     }
@@ -103,6 +143,7 @@ class PassUpdate:
     next_action: str | None = None
     gates: dict[str, str] | None = None
     artifacts: dict[str, str] | None = None
+    tdd_decision: JsonObject | None = None
 
 
 def update_pass(identity: RepoIdentity, update: PassUpdate) -> JsonObject | None:
@@ -121,6 +162,8 @@ def update_pass(identity: RepoIdentity, update: PassUpdate) -> JsonObject | None
             current = state.setdefault(key, {})
             if values and isinstance(current, dict):
                 current.update(values)
+        if update.tdd_decision is not None:
+            state["tddDecision"] = update.tdd_decision
         return _persist_pass(identity, state)
 
 
@@ -138,3 +181,113 @@ def bounded_summary(identity: RepoIdentity, limit: int = 1200) -> str:
         "Only recorded state counts; missing or corrupt state is unknown, never success."
     )
     return text[:limit]
+
+
+def record_tdd_decision(identity: RepoIdentity, slug: str, reason: str) -> Path:
+    state = _pass_for_slug(identity, slug)
+    path = _tdd_decision_path(identity, slug)
+    existing = read_json(_tdd_evidence_path(identity, slug))
+    prior = existing.get("entries") if isinstance(existing, dict) else None
+    if isinstance(prior, list) and any(isinstance(item, dict) and item.get("valid") is True for item in prior):
+        raise EvidenceMismatch("captured TDD evidence exists; a not-required decision cannot replace it")
+    _tdd_evidence_path(identity, slug).unlink(missing_ok=True)
+    record: JsonObject = {
+        **_base("tdd-decision"),
+        "status": "not-required",
+        **_pass_fields(identity, state, slug),
+        "reason": reason,
+        "candidateChangeFingerprint": change_fingerprint(identity, "worktree"),
+        "artifactPath": str(path),
+        "recordedAt": utc_timestamp(),
+    }
+    atomic_write_json(path, record)
+    return path
+
+
+@dataclass(frozen=True)
+class TddRun:
+    phase: str
+    behavior: str
+    seam: str
+    expected_failure: str
+    command: str
+    exit_code: int
+    timed_out: bool
+    output: bytes
+
+
+def record_tdd_run(identity: RepoIdentity, slug: str, run: TddRun) -> tuple[Path, bool]:
+    state = _pass_for_slug(identity, slug)
+    _tdd_decision_path(identity, slug).unlink(missing_ok=True)
+    candidate = change_fingerprint(identity, "worktree")
+    path = _tdd_evidence_path(identity, slug)
+    base = _tdd_base_fields(identity, state, slug, path)
+    artifact = read_json(path)
+    if not artifact or any(artifact.get(key) != value for key, value in base.items()):
+        artifact = {**base, "entries": []}
+    entries = artifact.get("entries") if isinstance(artifact.get("entries"), list) else []
+    command_sha256 = hashlib.sha256(run.command.encode()).hexdigest()
+    prior_red = any(
+        isinstance(item, dict)
+        and item.get("phase") == "red"
+        and item.get("valid") is True
+        and item.get("behavior") == run.behavior
+        and item.get("seam") == run.seam
+        and item.get("commandSha256") == command_sha256
+        for item in entries
+    )
+    changed_surface = candidate != state.get("startingChangeFingerprint")
+    observed = bool(run.expected_failure) and run.expected_failure in run.output.decode("utf-8", errors="replace")
+    valid = (
+        not run.timed_out and run.exit_code != 0 and observed
+        if run.phase == "red"
+        else not run.timed_out and run.exit_code == 0 and changed_surface and prior_red
+    )
+    entries.append({
+        "phase": run.phase,
+        "behavior": run.behavior,
+        "seam": run.seam,
+        "expectedFailure": run.expected_failure or None,
+        "command": run.command,
+        "commandSha256": command_sha256,
+        "exitCode": run.exit_code,
+        "timedOut": run.timed_out,
+        "outputSha256": hashlib.sha256(run.output).hexdigest(),
+        "outputTail": run.output[-16000:].decode("utf-8", errors="replace"),
+        "outputTruncated": len(run.output) > 16000,
+        "candidateChangeFingerprint": candidate,
+        "changedSurfaceFromPassStart": changed_surface,
+        "valid": valid,
+        "capturedAt": utc_timestamp(),
+    })
+    artifact.update({"head": head_sha(identity), "entries": entries, "updatedAt": utc_timestamp()})
+    if run.phase == "green" and valid:
+        artifact["candidateChangeFingerprint"] = candidate
+    atomic_write_json(path, artifact)
+    return path, valid
+
+
+def _pass_for_slug(identity: RepoIdentity, slug: str) -> JsonObject:
+    state = require_active_pass(identity)
+    if state.get("slug") != safe_slug(slug):
+        raise EvidenceMismatch("active production pass does not match slug")
+    return state
+
+
+def _pass_fields(identity: RepoIdentity, state: JsonObject, slug: str) -> JsonObject:
+    return {
+        "repo": identity.as_dict(),
+        "slug": safe_slug(slug),
+        "workflowSessionId": state["workflowSessionId"],
+        "startingHead": state["startingHead"],
+        "head": head_sha(identity),
+    }
+
+
+def _tdd_base_fields(identity: RepoIdentity, state: JsonObject, slug: str, path: Path) -> JsonObject:
+    return {
+        **_base("tdd-evidence"),
+        "label": "captured evidence; not proof of causal intent or chronology",
+        **_pass_fields(identity, state, slug),
+        "artifactPath": str(path),
+    }
