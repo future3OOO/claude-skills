@@ -1,202 +1,90 @@
 ---
 name: codex-advisor
-description: Consult Codex (GPT-5.6 through the local CLIProxyAPI) as a read-only advisor from Claude Code. Mandatory at repo-production-workflow steps 4 (scope check, after Repo Context Forge and packet-scoped GitNexus, before production-preflight) and 9 (challenge round, after proof, before commit or push). Also use when the user asks Claude to ask Codex, or when architecture, migration, correctness, security, concurrency, idempotency, or non-obvious PR risk needs independent pressure.
+description: Consult the read-only Codex advisor at the workflow preflight and final-review checkpoints through the sole local wrapper.
 ---
 
-# Codex Advisor
+# Codex advisor
 
-Codex Advisor is a challenge Interface around Claude's work. Claude owns the
-decision, implementation, tests, and final report. The advisor supplies
-independent pressure against the evidence Claude provides. It is the mirror of
-`~/.codex/skills/claude-advisor`, which Codex uses to consult Claude.
+Use `scripts/ask-codex-advisor.sh` as the sole production transport. Do not use
+the plugin forwarder, Agent tool, or a second wrapper as a fallback.
 
-The delegate is the **Claude Code harness running a Codex model** (`claude -p
---model gpt-5.6-sol` through the local proxy) — not the Codex CLI. So it uses
-Claude Code skill invocation (the Skill tool, `/name`), not Codex's `$name`
-form; `$name` is inert here. Model diversity is the point, not harness
-diversity: an independent model reviews the same evidence. For a true Codex-CLI
-second opinion, use `codex exec` directly instead.
+Choose one short stable slug per production pass. Reuse it for both checkpoints;
+phase belongs in `--phase`, not in the slug.
 
-Use the wrapper. Never hand-build the consult:
+## Checkpoints
 
-```bash
-~/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh \
-  --slug "<stable-task>" \
-  --phase preflight-advice \
-  --cwd "$PWD" \
-  -- "Question: <one focused question>"
-```
+### `preflight-advice`
 
-The wrapper streams the composed prompt over stdin, so large diffs never hit
-argument-length limits. Advice goes to stdout; markers go to stderr.
+Run after Repo Context Forge and packet-scoped GitNexus, before production
+preflight and before edits. Supply the task contract, packet/coverage summary,
+caller/callee impact, intended Module/Interface/Seam, first real-seam RED, and
+no-change surfaces. The advisor challenges scope and design; it does not create
+the preflight artifact or approve implementation.
 
-## Required Claude Execution
+### `final-review`
 
-Run every consult as a **background** Bash task with stdout and stderr to
-SEPARATE files, and never wrap it in `timeout`:
+Run after implementation, verification, and fresh code review when required.
+The wrapper attaches the live diff. The advisor reconciles the governed slice,
+real-seam proof, module shape, minimality, and regression coverage, ending with
+exactly one terminal line:
 
-```bash
-~/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh --slug x --phase preflight-advice --cwd "$PWD" \
-  -- "Question: ..." > /tmp/scratch/advisor.out 2> /tmp/scratch/advisor.err
-```
+- `Verdict: commit-ready`
+- `Verdict: fix-before-commit`
+- `Verdict: context-mismatch`
 
-A consult typically runs 2-15 minutes and **buffers**: an in-flight run writes
-zero bytes. Zero output is not failure — judge only after the process exits.
+The wrapper records every final verdict with findings pending. After reading
+the output, the lead validates and dispositions every finding, then explicitly
+records the same verdict with `--findings none` or `--findings addressed`.
+Only `commit-ready` with that lead-owned disposition allows workflow
+`complete`. This is workflow state, not permission to run Git.
 
-The model is pinned by the claudex alias (`gpt-5.6-sol`) and echoed in the
-session marker. Reasoning depth is NOT settable per consult: `claude -p`
-stamps `effortLevel` from `~/.claude/settings.json` into every request
-(currently `xhigh`) and ignores `CLAUDE_EFFORT` — proven at the proxy wire on
-2026-07-25, where a caller setting high, xhigh, or nothing all produced
-`level=xhigh`. Change depth in `settings.json` if you must; do not add a
-per-consult override, it will be decorative. Service tier is standard: the
-proxied path does not engage fast/priority, and advisor latency is background
-work that never blocks the operator.
+## Invocation
 
-Success requires all three: `exit_code=0`, non-empty stdout, and the terminal
-stderr marker `codex_advisor_complete status=0 provider=codex`. A missing
-marker means the consult did not complete; do not accept the advice, advance
-the checkpoint, or classify the advisor as unavailable. Startup session lines
-are metadata, not completion.
-
-Before any relaunch, LIST first with `pgrep -af "claude -p --model"`, identify
-strays by age and session, then kill those explicit PIDs. Do NOT `pkill -f` —
-the pattern matches your own shell (its command line contains the string), so
-it self-kills with exit 143/144 and leaves the real stray running. Blind
-retries duplicate consults and burn tokens in parallel.
-
-## No Recursion
-
-The advisor is a full agent. Unguarded it reads the repo, invokes
-`repo-production-workflow`, reaches step 4, and consults another advisor —
-five concurrent generations on 2026-07-25, each re-summarizing the same WIP,
-one of them killing its own siblings. Two layers prevent it now:
-
-1. `CODEX_ADVISOR_ACTIVE=1` **and the shared `ADVISOR_ACTIVE=1`** are exported
-   into the delegate; either marker makes a nested consult fail closed with
-   exit 3. The Codex-side `claude-advisor` wrapper honours the same shared
-   marker, so the loop cannot cross tools either (a codex exec delegate was
-   observed attempting its own claude-advisor consult).
-2. The wrapper's appended role tells the delegate it IS the delegate.
-
-This blocks ACCIDENTAL recursion through descendant shells; it is not a
-security sandbox, since a capable delegate could unset both variables. The
-role prompt and the read-only tool policy remain necessary layers.
-
-The advisor is DIRECTED to load a per-checkpoint rubric read-only — before
-code: `/codebase-design` + `/tdd` + `/code-quality` (reuse-before-new is a
-before-code question — dropping it in a 2026-07-25 A/B measurably lost the
-"this duplicates existing delta logic" finding); before commit: `/code-review` (its smell
-baseline makes Fake Test and Imaginary Risk hard violations) +
-`/codebase-design` + `/tdd` + `/code-quality` — and told not to load unrelated
-skills (permissive wording let an irrelevant skill hijack a consult). Two
-criteria are stated as hard rules in the role itself, not left to the rubric:
-a mock/stub/fixture-substitute collaborator is never proof, and an
-undemonstrated risk is at most a report line, never a required change. It
-must NOT invoke heavyweight execution skills or substitute workflows
-(`repo-production-workflow`, Repo Context Forge bootstrap,
-`production-preflight`, `production-code`), spawn subagents, or delegate
-onward. It reports missing preflight or Module-shape evidence rather than
-generating substitute preflight artifacts.
-
-## Production Checkpoints
-
-Consult twice per production pass — once before code, once before commit.
-(These are steps 4 and 9 of `repo-production-workflow`; that skill owns the
-surrounding sequence, this one owns the consults.)
-
-### 1. Before Code: Scope Challenge
-
-After Repo Context Forge and packet-scoped GitNexus, before
-`production-preflight` — preflight does not start until this consult has
-returned and its scope findings are dispositioned. The advisor critiques the
-graph evidence you supply; it does not re-run the graph.
-
-Supply (the consult is only as good as this — a bare question makes the
-advisor redo the lead's work at several times the cost): task contract and
-slice outcomes; packet targets, coverage plan, and skipped high-ranked
-targets; the GitNexus impact/context output you already ran —
-callers/callees/blast radius; intended
-Module, public Interface, hidden Implementation complexity; existing reuse
-path; new Seam justification or why to deepen the existing Module; touched
-shallow Module debt; TDD hypothesis or planned first failing test; test surface
-and named no-change surfaces; ordering/idempotency/data-loss/security risks;
-Claude's implementation hypothesis.
+Run the wrapper in a dedicated/background chat pane so the calling agent can
+keep transport output separate. Capture stdout and stderr independently and
+wait for the process rather than polling with repeated sleeps.
 
 ```bash
-ask-codex-advisor.sh --slug "<task>" --phase preflight-advice --cwd "$PWD" \
-  -- "Question: Does the packet cover the slice, correct Seams, and correct surface area before preflight?"
+ask-codex-advisor.sh --slug "<task>" --phase preflight-advice \
+  --cwd "$PWD" --budget 350 --fresh -- "<focused scope question>"
+
+ask-codex-advisor.sh --slug "<task>" --phase final-review \
+  --cwd "$PWD" --base-ref "<base>" --budget 350 --fresh -- \
+  "<focused completion question>"
 ```
 
-### 2. After Code: Diff Challenge
+A successful transport requires exit 0, non-empty stdout, and
+`codex_advisor_complete status=0 provider=codex` on stderr. A missing terminal
+marker, empty output, or quoting error is not a completed consult.
 
-After proof, before commit or push, for non-trivial diffs.
+## Read-only and recursion contract
 
-The wrapper attaches the live unstaged, staged, and base/branch diffs from
-`--cwd`. Do not paste a prose summary as evidence — the advisor critiques the
-attached diff directly. Pass `--base-ref` when committed branch changes are the
-evidence.
+The delegate may read and search the repository and load the named rubric
+skills. Bash, Edit, Write, NotebookEdit, Task/subagents, Git mutation, and
+external mutation are unavailable. `CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE`
+prevent nested consultation.
 
-Supply: exact PRD/issue/reviewer finding; branch, base, head SHA; TDD RED and
-GREEN commands and outcomes; verification outcomes and any skipped or weak
-proof; `code-review` findings and dispositions; changed Module/Interface/
-Implementation; reuse path and shallow Module debt; named no-change surfaces;
-Claude's commit-readiness hypothesis.
+The wrapper carries the canonical mock and imaginary-risk rules because the
+isolated delegate does not inherit the lead context. A fake CLI or fixture
+output may test parsing but never proves the live transport.
+
+## Failure and disposition
+
+If transport is genuinely unavailable, record the preflight result as
+`unavailable` with the measured reason and continue only under the workflow's
+documented preflight rule. There is no unavailable exception for the final
+review. No nonce, skip file, stamp, attestation, or audited exception authorizes
+completion.
+
+The lead validates every advisor finding against current code and proof, then
+records it as fixed, rejected-with-evidence, or accepted follow-up. Any
+production edit after final review resets code review and final review to
+pending.
+
+After that validation, record the final disposition explicitly:
 
 ```bash
-ask-codex-advisor.sh --slug "<task>" --phase precommit-challenge --cwd "$PWD" \
-  --base-ref origin/main --budget 700 \
-  -- "Question: Does the live diff satisfy the slice and production contract without extra behavior or no-change drift?"
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+  advisor-result --repo "$PWD" --stage final --source codex-advisor \
+  --verdict commit-ready --findings none
 ```
-
-Expected challenge shape: Verdict (commit-ready | fix-before-commit |
-context-mismatch); slice reconciliation; TDD check; Module shape;
-minimality/bloat; regression risk; one exact next Action.
-
-On `context-mismatch`, fix `--cwd`, `--base-ref`, or branch state and re-ask.
-Do not act on the prior answer.
-
-## Session Discipline
-
-One short stable slug per task (`issue354`, `telemetry`), reused across the
-before-code → before-commit pair so the challenge retains the original scope. Session ids
-live in `~/.claude/codex-advisor/<cwd-key>-<slug>.sid`.
-
-Do not put phase words in the slug (`pre-commit`, `review`, `challenge`,
-`final`, `preflight`) — phase belongs in `--phase`. The wrapper warns.
-
-Use `--fresh` only when the stored session is stale or intentionally reset.
-
-## When To Ask
-
-- both production checkpoints above (mandatory for non-trivial diffs)
-- architecture, migration, correctness, security, concurrency, idempotency,
-  data-loss, or non-obvious PR risk
-- when the user asks for Codex, advisor mode, or a second opinion
-- when Claude is stuck after two focused attempts
-
-Skip for mechanical edits, formatting, obvious single-file fixes, and questions
-the test suite answers directly. Fix-only commits whose every change addresses
-an already-confirmed finding may skip the before-commit challenge; state the
-skipped round.
-
-## Prompt Contract
-
-One focused question per call. Include Role, Question (bounded), Evidence
-(packet, graph result, diff, error, file:line), Hypothesis (what Claude
-believes), Budget (default 300 words; raise for real diff reconciliation).
-
-Avoid "what do you think?", whole-repo dumps, and asking the advisor to run
-Claude's workflow for it.
-
-## Reporting
-
-Advisor output is evidence, not authority. Validate against code, tests,
-reviewers, GitNexus, and the production gates before adopting. Report:
-
-- `Advisor said`: concise summary
-- `Claude judgment`: accepted, rejected-with-evidence, or needs verification
-- `Action`: exact next step or no change
-
-A degraded, skipped, or unavailable round is never silent — state it in the
-final response with its reason.

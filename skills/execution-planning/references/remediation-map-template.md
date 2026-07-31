@@ -46,7 +46,7 @@
 
 ## Affected Transaction System
 
-Use only for transaction-sensitive work.
+Use only for transaction-sensitive work. Apply `../../production-code/references/transaction-doctrine.md`; these fields record its result rather than redefining it.
 
 - authoritative records:
 - mutation boundary:

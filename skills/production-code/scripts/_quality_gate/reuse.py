@@ -135,7 +135,7 @@ def _score_reuse_candidates(
     for new_item in candidates:
         if new_item.name in moved_or_deleted or new_item.name.lower() in moved_or_deleted:
             continue
-        best = _best_existing_match(new_item, existing, added_by_file)
+        best = _best_existing_match(new_item, existing, added_by_file, moved_or_deleted)
         if best is None:
             continue
         score, reason, existing_item = best
@@ -152,9 +152,12 @@ def _best_existing_match(
     new_item: SymbolDef,
     existing: list[SymbolDef],
     added_by_file: dict[str, list[tuple[int, str]]],
+    moved_or_deleted: set[str],
 ) -> tuple[int, str, SymbolDef] | None:
     best: tuple[int, str, SymbolDef] | None = None
     for existing_item in existing:
+        if existing_item.name in moved_or_deleted or existing_item.name.lower() in moved_or_deleted:
+            continue
         if existing_item.path == new_item.path and existing_item.name == new_item.name:
             continue
         if existing_item.language != new_item.language and new_item.kind != "block":

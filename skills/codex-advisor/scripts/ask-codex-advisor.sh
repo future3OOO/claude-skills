@@ -1,53 +1,19 @@
 #!/usr/bin/env bash
-# Codex advisor consult for Claude Code, mirroring ~/.codex/skills/claude-advisor.
-# Claude owns the decision, implementation, tests, and final report; this wrapper
-# supplies independent Codex pressure against the evidence Claude provides.
-#
-# The claudex alias block in ~/.bashrc is the env authority for the proxy
-# endpoint, auth token, and advisor model — nothing is pinned here.
-#
-# Usage:
-#   ask-codex-advisor.sh --slug <task> --phase preflight-advice --cwd "$PWD" \
-#     -- "Question: <one focused question>"
-#   ask-codex-advisor.sh --slug <task> --phase precommit-challenge --cwd "$PWD" \
-#     --base-ref origin/main -- "Question: <one focused question>"
-#
-# Question may also arrive on stdin when no trailing question is given.
-# Advice goes to stdout. Session and completion markers go to stderr:
-#   codex_advisor_session   raw_slug=... normalized_slug=... mode=... phase=...
-#   codex_advisor_complete  status=0 provider=codex
-# A missing terminal marker means the consult did NOT complete.
+# Sole production advisor transport: read-only delegate, no plugin/Agent fallback.
 set -euo pipefail
+umask 077
 
 usage() {
-  printf 'Usage: %s --slug <name> [--phase preflight-advice|precommit-challenge] [--cwd path] [--base-ref ref] [--budget words] [--fresh] -- "question"\n' "$0" >&2
+  printf 'Usage: %s --slug <name> [--phase preflight-advice|final-review] [--cwd path] [--base-ref ref] [--budget words] [--fresh] -- "question"\n' "$0" >&2
   exit 2
 }
 
-new_session_id() {
-  if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/kernel/random/uuid; else uuidgen; fi
-}
-
-# Recursion guard (2026-07-25 incident): the advisor is a full agent. Unguarded,
-# it read the repo, invoked repo-production-workflow, reached step 4, and
-# consulted ANOTHER advisor — five concurrent generations re-summarizing the
-# same WIP. The env marker is inherited by the delegate's shells, so a nested
-# call fails closed here. ADVISOR_ACTIVE is the SHARED marker the Codex-side
-# claude-advisor wrapper also honours, so the loop cannot cross tools either
-# (Codex -> claude-advisor -> Claude -> codex-advisor -> ...).
 if [[ -n "${CODEX_ADVISOR_ACTIVE:-}${ADVISOR_ACTIVE:-}" ]]; then
-  printf 'error: refusing nested consult — you ARE the advisor delegate. Answer from the payload and your own reads; do not delegate.\n' >&2
+  printf 'error: refusing nested consult — you ARE the advisor delegate. Answer from the supplied evidence; do not delegate.\n' >&2
   exit 3
 fi
 
-slug=""
-phase=""
-cwd="$PWD"
-base_ref=""
-budget=300
-fresh=0
-question=""
-
+slug=""; phase=""; cwd="$PWD"; base_ref=""; budget=300; fresh=0; question=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slug) slug="${2:?missing --slug value}"; shift 2 ;;
@@ -64,116 +30,75 @@ done
 
 [[ -n "$slug" ]] || { printf 'error: --slug is required (stable per task, no phase words)\n' >&2; usage; }
 [[ -d "$cwd" ]] || { printf 'error: --cwd is not a directory: %s\n' "$cwd" >&2; exit 2; }
-if [[ -z "$question" ]]; then
-  question="$(cat)"
+case "$phase" in ""|preflight-advice|final-review) ;; *) printf 'error: unsupported phase: %s\n' "$phase" >&2; exit 2 ;; esac
+if [[ -n "$base_ref" ]] && ! git -C "$cwd" rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
+  printf 'error: --base-ref cannot be resolved in %s: %s\n' "$cwd" "$base_ref" >&2
+  exit 2
 fi
+[[ -n "$question" ]] || question="$(cat)"
 [[ -n "${question//[[:space:]]/}" ]] || { printf 'error: empty question\n' >&2; exit 2; }
 
-block=$(sed -n '/^alias claudex=/,/^claude --model/p' "$HOME/.bashrc")
+normalized_slug="$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//')"
+case "$normalized_slug" in
+  *pre-edit*|*pre-commit*|*review*|*challenge*|*final*|*preflight*)
+    printf 'warning: slug contains a phase word; phase belongs in --phase, not identity\n' >&2 ;;
+esac
+
+block=$(sed -n '/^alias claudex=/,/^claude --model/p' "$HOME/.bashrc" 2>/dev/null || :)
 val() { printf '%s\n' "$block" | grep -o "$1=[^ '\\\\]*" | head -1 | cut -d= -f2-; }
-base_url=$(val ANTHROPIC_BASE_URL)
-token=$(val ANTHROPIC_AUTH_TOKEN)
-model=$(val CLAUDE_CODE_SUBAGENT_MODEL)
+base_url=$(val ANTHROPIC_BASE_URL); token=$(val ANTHROPIC_AUTH_TOKEN); model=$(val CLAUDE_CODE_SUBAGENT_MODEL)
 if [[ -z "$base_url" || -z "$token" || -z "$model" ]]; then
   printf 'error: could not parse the claudex alias env from ~/.bashrc\n' >&2
   exit 2
 fi
 
-# Reasoning depth is NOT settable here. Proven 2026-07-25 at the proxy wire:
-# claude -p stamps `effortLevel` from ~/.claude/settings.json into every
-# request (currently xhigh) and ignores CLAUDE_EFFORT, so any per-consult
-# override would be decorative. Change depth in settings.json if you must.
-
-warnings="none"
-normalized_slug="$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//')"
-case "$normalized_slug" in
-  *pre-edit*|*pre-commit*|*review*|*challenge*|*final*|*preflight*)
-    warnings="phase-word-in-slug"
-    printf 'warning: slug contains a phase word; phase belongs in --phase, not identity\n' >&2 ;;
-esac
-
-state_dir="$HOME/.claude/codex-advisor"
-mkdir -p "$state_dir"
-cwd_key="$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)"
+state_dir="${CLAUDE_HOME:-$HOME/.claude}/state/_advisor-sessions"
+mkdir -p "$state_dir"; chmod 700 "$state_dir"
+cwd_key=$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)
 sid_file="$state_dir/${cwd_key}-${normalized_slug}.sid"
-
+new_session_id() { if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/kernel/random/uuid; else python3 -c 'import uuid; print(uuid.uuid4())'; fi; }
 if [[ "$fresh" -eq 1 || ! -s "$sid_file" ]]; then
-  sid="$(new_session_id)"
-  printf '%s\n' "$sid" > "$sid_file"
-  session_args=(--session-id "$sid")
-  mode="create"
+  sid=$(new_session_id); temporary="$sid_file.tmp.$$"; printf '%s\n' "$sid" >"$temporary"; chmod 600 "$temporary"; mv "$temporary" "$sid_file"
+  session_args=(--session-id "$sid"); mode=create
 else
-  sid="$(cat "$sid_file")"
-  session_args=(--resume "$sid")
-  mode="resume"
+  sid=$(cat "$sid_file"); session_args=(--resume "$sid"); mode=resume
 fi
 
 phase_prompt=""
 case "$phase" in
-  "") ;;
   preflight-advice)
-    phase_prompt="
-Checkpoint Interface: preflight-advice
-Rubric: LOAD /codebase-design (Module/Interface/Seam judgement), /tdd (is the planned first failing test at a REAL seam?), and /code-quality (reuse-before-new: is this about to duplicate logic that already exists? — a before-code question, not only a diff question).
-
-Post-Repo Context Forge / post-GitNexus / pre-production-preflight checkpoint, before edits. Challenge whether the packet covers the task slice, correct Seams, and correct surface area:
-- task contract and slice outcomes
-- Repo Context Forge packet targets, coverage plan, and skipped high-ranked targets
-- packet-scoped GitNexus findings: callers, callees, blast radius, contracts
-- intended Module, public Interface, hidden Implementation complexity
-- existing reuse path; new Seam justification or why to deepen the existing Module
-- touched shallow Module debt
-- TDD hypothesis or planned first failing behavior test
-- test surface and named no-change surfaces
-- ordering, idempotency, data-loss, security, or regression risks
-
-Answer shape: highest-risk missing surface first, then missed seams/callers/contracts, then one concrete next action before editing."
-    ;;
-  precommit-challenge)
-    phase_prompt="
-Checkpoint Interface: precommit-challenge
-Rubric: LOAD /code-review (Standards vs Spec axes and its smell baseline — Fake Test and Imaginary Risk are hard violations there), /codebase-design, /tdd, and /code-quality.
-
-Post-edit / post-proof / pre-commit checkpoint. Challenge whether the live diff satisfies the slice and production contract without extra behavior or no-change surface drift. Critique the wrapper-provided diff directly, never a prose summary of it.
-
-Answer shape:
-- Verdict: commit-ready, fix-before-commit, or context-mismatch
-- Slice reconciliation: implemented, missing, extra, unproven
-- TDD check: was a real red-green loop shown against a REAL production seam (any mock/stub/fixture-substitute collaborator = hard violation, state it plainly)
-- Module shape: public Interface, test surface, shallow helper/wrapper split risk
-- Minimality/bloat: unnecessary code, duplication, speculative options, and guards for undemonstrated failures (imaginary risk)
-- Regression risk: no-change surfaces needing more proof
-- Action: one exact next step before commit or push"
-    ;;
-  *) printf 'error: unsupported phase: %s\n' "$phase" >&2; exit 2 ;;
+    phase_prompt='Checkpoint Interface: preflight-advice
+Load /codebase-design, /tdd, and /code-quality. Challenge task scope, packet and GitNexus caller/callee coverage, Module/Interface/Seam choice, reuse, first real-seam RED, no-change surfaces, and demonstrated risks. Give the highest-risk finding first and one exact next action before editing.' ;;
+  final-review)
+    phase_prompt='Checkpoint Interface: final-review
+Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. End with exactly one of: Verdict: commit-ready, Verdict: fix-before-commit, Verdict: context-mismatch.' ;;
 esac
 
 evidence=""
 if [[ -n "$phase" ]]; then
-  dirty="$(git -C "$cwd" diff 2>/dev/null || true)"
-  staged="$(git -C "$cwd" diff --cached 2>/dev/null || true)"
+  dirty=$(git -C "$cwd" diff) || { printf 'error: cannot capture unstaged diff\n' >&2; exit 2; }
+  staged=$(git -C "$cwd" diff --cached) || { printf 'error: cannot capture staged diff\n' >&2; exit 2; }
+  untracked=""
+  while IFS= read -r -d '' path; do
+    patch=$(git -C "$cwd" diff --no-index -- /dev/null "$path" || [[ $? -eq 1 ]])
+    untracked+=$'\n'"$patch"
+  done < <(git -C "$cwd" ls-files --others --exclude-standard -z)
   branch_diff=""
-  if [[ -n "$base_ref" ]]; then
-    branch_diff="$(git -C "$cwd" diff "$base_ref"...HEAD 2>/dev/null || true)"
-  elif [[ "$phase" == "precommit-challenge" ]]; then
-    upstream="$(git -C "$cwd" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
-    [[ -n "$upstream" ]] && branch_diff="$(git -C "$cwd" diff "$upstream"...HEAD 2>/dev/null || true)"
-  fi
-  head_sha="$(git -C "$cwd" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  branch_name="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  [[ -n "$base_ref" ]] && branch_diff=$(git -C "$cwd" diff "$base_ref"...HEAD)
   evidence="
-=== Live repository evidence collected by this wrapper (cwd: $cwd)
-branch: $branch_name    head: $head_sha    base-ref: ${base_ref:-<none>}
+=== Live repository evidence
+cwd: $cwd  branch: $(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)  head: $(git -C "$cwd" rev-parse --short HEAD 2>/dev/null || echo unknown)  base-ref: ${base_ref:-<none>}
 --- unstaged diff ---
 ${dirty:-<empty>}
 --- staged diff ---
 ${staged:-<empty>}
+--- untracked diff ---
+${untracked:-<empty>}
 --- base/branch diff ---
 ${branch_diff:-<empty>}"
 fi
 
-role="Codex advisor mode, read-only. You are the advisor DELEGATE for a single consult: answer from the payload and your own repository reads. Load ONLY the rubric skills named in the checkpoint below (or /codebase-design for a bare shape question) and apply their exact vocabulary; do not load unrelated skills — a skill whose trigger merely matches a word in this prompt is not relevant to a scope or diff review. HARD CRITERIA: a test that mocks, stubs, or fixture-substitutes a collaborator instead of crossing a real production seam is NOT proof — call it out as a hard violation, never a judgement call; and never demand a guard, fallback, retry, or config for a theoretical failure nobody has demonstrated — an undemonstrated risk is at most one report line, never a required change. Be terse: no restating the question, no speculative tangents, no hedging padding. You must NOT invoke heavyweight repo EXECUTION skills or substitute workflows (repo-production-workflow, repo-context-forge bootstrap, production-preflight, production-code), must NOT spawn subagents, and must NOT run any advisor script or delegate this consult onward — you are the delegate, and the calling agent owns the workflow. Report missing preflight or Module-shape evidence instead of generating substitute preflight artifacts. Do not create, edit, or write files; do not commit, push, or deploy; do not mutate any external system. Critique the Repo Context Forge packet and GitNexus impact/context summary the CALLER supplied: is the surface complete, are the named seams right, which callers or contracts does it omit? Do NOT re-run the graph yourself — that duplicates the lead agent's work and is the lead's responsibility. If the caller supplied no packet or no impact summary, say so as your first finding and treat the scope as unproven rather than doing the analysis for them. Read INTERIOR behavior with targeted line ranges (sed -n '120,180p', Read with offset, rg -n -A/-B) rather than whole-file skims — the sharpest findings come from the exact lines around a function, not from file summaries. Cite file:line when using repo evidence, flag uncertainty plainly, and give findings, not orders. Stdout only. Answer in <=${budget} words."
-
+role="Codex advisor mode, read-only. You are the independent advisor delegate for one consult. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. An undemonstrated theoretical failure is at most a report line and cannot require code. For bugs, require a reproduced symptom and falsifiable root-cause hypothesis. Apply only the named rubric skills. Do not invoke execution workflows, spawn agents, run an advisor, mutate files or Git, or call external systems. Use targeted repository reads and cite file:line. Give findings, not orders, in <=${budget} words."
 prompt="${role}
 ${phase_prompt}
 ${evidence}
@@ -181,30 +106,42 @@ ${evidence}
 === Consult
 ${question}"
 
-printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s model=%s warnings=%s provider=codex\n' \
-  "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" "$warnings" >&2
+printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s model=%s provider=codex\n' \
+  "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" >&2
 
+output_file=$(mktemp)
+trap 'rm -f "$output_file"' EXIT
 set +e
 printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
-  claude -p "${session_args[@]}" \
-    --model "$model" \
-    --output-format text \
+  claude -p "${session_args[@]}" --model "$model" --output-format text \
     --append-system-prompt "$role" \
-    --allowed-tools "Read Grep Glob Skill mcp__gitnexus mcp__fff Bash(gitnexus:*) Bash(git diff:*) Bash(git status:*) Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git branch:*) Bash(git rev-parse:*) Bash(git ls-files:*) Bash(git grep:*) Bash(gh issue view:*) Bash(gh pr view:*) Bash(gh run view:*) Bash(rg:*) Bash(grep:*) Bash(ls:*) Bash(find:*) Bash(sed:*) Bash(awk:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(cut:*) Bash(sort:*) Bash(uniq:*) Bash(tr:*) Bash(comm:*) Bash(diff:*) Bash(jq:*) Bash(basename:*) Bash(dirname:*) Bash(realpath:*) Bash(du:*) Bash(python3:*)" \
-    --disallowed-tools "Edit Write NotebookEdit Task"
+    --allowed-tools "Read Grep Glob Skill" \
+    --disallowed-tools "Edit Write NotebookEdit Task Bash" >"$output_file"
 status=$?
 set -e
-
 if [[ "$status" -ne 0 ]]; then
   printf 'error: codex advisor returned status %s\n' "$status" >&2
   exit "$status"
 fi
-
-# Record the successful consult so the commit gate can prove a challenge round ran
-# against the CURRENT diff. Keyed by repo + phase; the gate compares its mtime to the
-# newest tracked-file mtime, so any edit after the consult invalidates it.
-if [[ -n "$phase" ]]; then
-  printf '%s\n' "$(date +%s)" > "$state_dir/${cwd_key}-${phase}.stamp"
+if [[ ! -s "$output_file" ]] || [[ -z "$(tr -d '[:space:]' <"$output_file")" ]]; then
+  printf 'error: codex advisor returned empty output\n' >&2
+  exit 2
 fi
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+pass_state="$script_dir/../../repo-production-workflow/scripts/pass-state.py"
+if [[ "$phase" == "preflight-advice" ]]; then
+  python3 "$pass_state" advisor-result --repo "$cwd" --stage preflight --source codex-advisor --verdict completed >/dev/null
+elif [[ "$phase" == "final-review" ]]; then
+  last_line=$(awk 'NF {line=$0} END {print line}' "$output_file")
+  case "$last_line" in
+    "Verdict: commit-ready") verdict=commit-ready; findings=pending ;;
+    "Verdict: fix-before-commit") verdict=fix-before-commit; findings=pending ;;
+    "Verdict: context-mismatch") verdict=context-mismatch; findings=pending ;;
+    *) printf 'error: final-review output lacks an exact terminal Verdict line\n' >&2; exit 2 ;;
+  esac
+  python3 "$pass_state" advisor-result --repo "$cwd" --stage final --source codex-advisor --verdict "$verdict" --findings "$findings" >/dev/null
+fi
+
+cat "$output_file"
 printf 'codex_advisor_complete status=0 provider=codex\n' >&2

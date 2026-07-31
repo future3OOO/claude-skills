@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Public CLI contracts for production-pass lifecycle state."""
+"""Public CLI contracts for production workflow state."""
 from __future__ import annotations
 
 import json
@@ -64,53 +64,56 @@ class PassLifecycleTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
-    def test_cli_drives_the_real_pass_lifecycle(self) -> None:
+    def test_workflow_completion_survives_an_ordinary_commit(self) -> None:
         missing = self.cli("status")
         self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
-        self.assertIn("no active pass", missing.stderr)
+        self.assertIn("no active workflow", missing.stderr)
 
-        begun = self.cli("begin", "--slug", "PR2 Slice 2", "--intent", "preserve workflow state")
+        begun = self.cli("begin", "--slug", "PR2 Replacement", "--intent", "enforce workflow completion")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         state = json.loads(begun.stdout)
-        self.assertEqual(state["slug"], "pr2-slice-2")
+        self.assertEqual(state["slug"], "pr2-replacement")
         self.assertEqual(state["phase"], "intake")
         self.assertEqual(state["nextAction"], "repo-context-forge")
-        self.assertEqual(state["startingHead"], self.git("rev-parse", "HEAD"))
 
-        commands = [
-            [sys.executable, str(PASS_STATE), "update", "--repo", str(self.repo), "--gate", "repoContextForge=passed"],
-            [sys.executable, str(PASS_STATE), "update", "--repo", str(self.repo), "--gate", "gitnexus=passed"],
-        ]
-        processes = [
-            subprocess.Popen(command, cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            for command in commands
-        ]
-        for process in processes:
-            stdout, stderr = process.communicate(timeout=10)
-            self.assertEqual(process.returncode, 0, stdout + stderr)
+        wrong_source = self.cli(
+            "advisor-result", "--stage", "preflight", "--source", "codex-agent", "--verdict", "completed",
+        )
+        self.assertEqual(wrong_source.returncode, 2, wrong_source.stdout + wrong_source.stderr)
 
-        current = self.cli("status")
-        self.assertEqual(current.returncode, 0, current.stdout + current.stderr)
-        self.assertEqual(json.loads(current.stdout)["gates"], {
-            "gitnexus": "passed",
-            "repoContextForge": "passed",
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.git("add", "app.py")
+        self.git("commit", "-q", "-m", "ordinary commit during workflow")
+
+        transitions = (
+            ("set-phase", "--phase", "repo-context-forge", "--status", "passed"),
+            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("set-phase", "--phase", "preflight", "--status", "passed"),
+            ("set-phase", "--phase", "tdd", "--status", "not-required"),
+            ("set-phase", "--phase", "implementation", "--status", "passed"),
+            ("set-phase", "--phase", "verification", "--status", "passed"),
+            ("set-phase", "--phase", "code-review", "--status", "passed", "--findings", "none"),
+            ("advisor-result", "--stage", "final", "--source", "codex-agent", "--verdict", "commit-ready", "--findings", "none"),
+        )
+        for transition in transitions:
+            result = self.cli(*transition)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        completed = self.cli("complete")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        state = json.loads(completed.stdout)
+        self.assertEqual(state["phase"], "complete")
+        self.assertEqual(state["finalReview"], {
+            "findings": "none",
+            "source": "codex-agent",
+            "status": "commit-ready",
         })
-
-        artifact = self.cli("update", "--artifact", "packet=/tmp/context-packet.json")
-        self.assertEqual(artifact.returncode, 0, artifact.stdout + artifact.stderr)
-        self.assertEqual(json.loads(artifact.stdout)["artifacts"], {
-            "packet": "/tmp/context-packet.json",
-        })
-
-        summary = self.cli("summary")
-        self.assertEqual(summary.returncode, 0, summary.stdout + summary.stderr)
-        self.assertIn("slug=pr2-slice-2", summary.stdout)
-        self.assertIn("gitnexus=passed", summary.stdout)
 
     def test_rearm_adapter_restores_only_recorded_pass_state(self) -> None:
         begun = self.cli("begin", "--slug", "compact recovery")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        updated = self.cli("update", "--gate", "repoContextForge=passed")
+        updated = self.cli("set-phase", "--phase", "repo-context-forge", "--status", "passed")
         self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
 
         rearmed = subprocess.run(
@@ -121,7 +124,46 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(rearmed.returncode, 0, rearmed.stdout + rearmed.stderr)
         self.assertIn("Discipline re-arm", rearmed.stdout)
         self.assertIn("slug=compact-recovery", rearmed.stdout)
-        self.assertIn("repoContextForge=passed", rearmed.stdout)
+        self.assertIn("repo-context-forge=passed", rearmed.stdout)
+        self.assertIn("advisor preflight", rearmed.stdout)
+        self.assertIn("final review", rearmed.stdout)
+
+    def test_completion_requires_a_ready_final_review_and_resolved_findings(self) -> None:
+        transitions = (
+            ("begin", "--slug", "completion-contract"),
+            ("set-phase", "--phase", "repo-context-forge", "--status", "passed"),
+            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("set-phase", "--phase", "preflight", "--status", "passed"),
+            ("set-phase", "--phase", "tdd", "--status", "not-required"),
+            ("set-phase", "--phase", "implementation", "--status", "passed"),
+            ("set-phase", "--phase", "verification", "--status", "passed"),
+            ("set-phase", "--phase", "code-review", "--status", "passed", "--findings", "none"),
+        )
+        for transition in transitions:
+            result = self.cli(*transition)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        missing = self.cli("complete")
+        self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
+        self.assertIn("finalReview", missing.stderr)
+
+        rejected = self.cli(
+            "advisor-result", "--stage", "final", "--source", "codex-advisor",
+            "--verdict", "fix-before-commit", "--findings", "pending",
+        )
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        blocked = self.cli("complete")
+        self.assertEqual(blocked.returncode, 2, blocked.stdout + blocked.stderr)
+        self.assertIn("finalReview", blocked.stderr)
+
+        ready = self.cli(
+            "advisor-result", "--stage", "final", "--source", "codex-advisor",
+            "--verdict", "commit-ready", "--findings", "addressed",
+        )
+        self.assertEqual(ready.returncode, 0, ready.stdout + ready.stderr)
+        completed = self.cli("complete")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code bootstrap wrapper for Repo Context Forge.
-
-Delegates to the canonical source bootstrap and records its exact rendered
-packet through the shared production-pass lifecycle.
-"""
+"""Run the canonical Repo Context Forge bootstrap and advance workflow state."""
 
 from __future__ import annotations
 
@@ -15,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from hooks.lib.evidence_lifecycle import EvidenceError, record_repoforge  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, read_workflow, safe_slug, set_phase  # noqa: E402
 
 SOURCE_ROOT = Path("/home/prop_/projects/repo-context-forge")
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
@@ -52,14 +48,6 @@ def _remove_option(argv: list[str], name: str) -> tuple[list[str], str | None]:
     return output, value
 
 
-def _packet_bytes(args: list[str], stdout: bytes) -> bytes:
-    output = _extract_option(args, "--out")
-    if not output:
-        return stdout
-    path = Path(output).expanduser()
-    return (path if path.is_absolute() else Path.cwd() / path).read_bytes()
-
-
 def main(argv: list[str]) -> int:
     if not BOOTSTRAP.exists():
         sys.stderr.write(
@@ -84,15 +72,14 @@ def main(argv: list[str]) -> int:
     if result.returncode != 0:
         return result.returncode
     try:
-        identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
-        record_repoforge(
-            identity,
-            _packet_bytes(args, result.stdout),
-            slug=workflow_slug,
-            intent=_extract_option(args, "--intent"),
-        )
-    except (EvidenceError, RepoIdentityError, OSError, ValueError) as exc:
-        sys.stderr.write(f"<blocker>cannot record canonical Repo Context Forge packet: {exc}</blocker>\n")
+        if workflow_slug:
+            identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
+            state = read_workflow(identity)
+            if state is None or state.get("slug") != safe_slug(workflow_slug):
+                raise WorkflowError("Repo Context Forge slug does not match the active workflow")
+            set_phase(identity, "repo-context-forge", "passed")
+    except (WorkflowError, RepoIdentityError, ValueError) as exc:
+        sys.stderr.write(f"<blocker>cannot advance workflow after Repo Context Forge: {exc}</blocker>\n")
         return 2
     return 0
 

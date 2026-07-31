@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Capture RED/GREEN evidence or record why TDD is not required.
-
-The artifact is captured evidence, not proof of causal intent or chronology.
-Its change fingerprint is stable when the same worktree content is staged.
-"""
+"""Run a real RED/GREEN command and keep a bounded workflow summary."""
 from __future__ import annotations
 
 import argparse
@@ -18,30 +14,37 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.lib.evidence_lifecycle import (  # noqa: E402
-    PassUpdate,
-    TddRun,
-    record_tdd_decision,
-    record_tdd_run,
-    require_active_pass,
-    safe_slug,
-    update_pass,
-)
-from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import atomic_write_json, read_json, repo_state_dir, state_lock, utc_timestamp  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, read_workflow, safe_slug, set_phase  # noqa: E402
+
 MAX_CAPTURE = 16000
 
 
-def _record_not_required(identity, slug: str, reason: str) -> int:
-    path = record_tdd_decision(identity, slug, reason)
-    update_pass(
-        identity,
-        PassUpdate(
-            gates={"tdd": "not-required"},
-            artifacts={"tddDecision": str(path)},
-            tdd_decision={"status": "not-required", "reason": reason, "artifactPath": str(path)},
-        ),
-    )
-    print(json.dumps({"artifactPath": str(path), "status": "not-required"}, sort_keys=True))
+def _path(identity: RepoIdentity, slug: str) -> Path:
+    return repo_state_dir(identity) / f"tdd-{slug}.json"
+
+
+def _active_slug(identity: RepoIdentity, value: str) -> str:
+    slug = safe_slug(value)
+    state = read_workflow(identity)
+    if state is None or state.get("slug") != slug:
+        raise WorkflowError("--slug does not match the active workflow")
+    return slug
+
+
+def _not_required(identity: RepoIdentity, slug: str, reason: str) -> int:
+    path = _path(identity, slug)
+    with state_lock(identity):
+        atomic_write_json(path, {
+            "schemaVersion": 1,
+            "slug": slug,
+            "status": "not-required",
+            "reason": reason,
+            "updatedAt": utc_timestamp(),
+        })
+    set_phase(identity, "tdd", "not-required")
+    print(json.dumps({"summaryPath": str(path), "status": "not-required"}, sort_keys=True))
     return 0
 
 
@@ -61,27 +64,25 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         identity = resolve_repo_identity(args.cwd)
-        state = require_active_pass(identity)
-        slug = safe_slug(args.slug)
-        if state.get("slug") != slug:
-            raise ValueError("--slug does not match the active pass")
+        slug = _active_slug(identity, args.slug)
         if args.not_required is not None:
             reason = args.not_required.strip()
             if not reason:
                 raise ValueError("--not-required requires a non-empty reason")
             if args.command:
                 raise ValueError("--not-required does not accept a command")
-            return _record_not_required(identity, slug, reason)
+            return _not_required(identity, slug, reason)
 
         behavior = str(args.behavior or "").strip()
-        if not behavior:
-            raise ValueError("--behavior is required for RED/GREEN evidence")
+        seam = args.seam.strip()
         command = args.command[1:] if args.command and args.command[0] == "--" else args.command
+        if not behavior:
+            raise ValueError("--behavior is required for RED/GREEN")
+        if not seam:
+            raise ValueError("--seam is required: name the real production Interface")
         if not command:
             raise ValueError("a command is required after --")
-        seam = args.seam.strip()
-        if not seam:
-            raise ValueError("--seam is required for RED/GREEN evidence: name the real production interface")
+
         try:
             result = subprocess.run(
                 command,
@@ -96,39 +97,57 @@ def main(argv: list[str] | None = None) -> int:
             raw = (exc.stdout or b"") + (exc.stderr or b"")
             exit_code, timed_out = 124, True
 
+        path = _path(identity, slug)
         command_text = shlex.join(command)
-        path, valid = record_tdd_run(
-            identity,
-            slug,
-            TddRun(
-                phase=args.phase,
-                behavior=behavior,
-                seam=seam,
-                expected_failure=args.expected_failure.strip(),
-                command=command_text,
-                exit_code=exit_code,
-                timed_out=timed_out,
-                output=raw,
-            ),
-        )
-        update_pass(
-            identity,
-            PassUpdate(
-                gates={f"tdd-{args.phase}": "passed" if valid else "failed", "tdd": "passed" if args.phase == "green" and valid else "pending"},
-                artifacts={"tdd": str(path)},
-                tdd_decision={"status": "completed" if args.phase == "green" and valid else "pending", "artifactPath": str(path)},
-            ),
-        )
-        text = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
-        if text:
-            print(text, end="" if text.endswith("\n") else "\n")
-        print(json.dumps({"artifactPath": str(path), "phase": args.phase, "valid": valid, "exitCode": exit_code}, sort_keys=True))
+        expected = args.expected_failure.strip()
+        observed = bool(expected) and expected in raw.decode("utf-8", errors="replace")
+        with state_lock(identity):
+            existing = read_json(path)
+            matches = bool(existing) and all(existing.get(key) == value for key, value in {
+                "slug": slug,
+                "behavior": behavior,
+                "seam": seam,
+                "command": command_text,
+            }.items())
+            prior_runs = existing.get("runs") if matches and isinstance(existing.get("runs"), list) else []
+            prior_red = any(isinstance(run, dict) and run.get("phase") == "red" and run.get("valid") is True for run in prior_runs)
+            valid = (
+                not timed_out and exit_code != 0 and observed
+                if args.phase == "red"
+                else not timed_out and exit_code == 0 and prior_red
+            )
+            run = {
+                "phase": args.phase,
+                "expectedFailure": expected or None,
+                "exitCode": exit_code,
+                "timedOut": timed_out,
+                "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
+                "valid": valid,
+            }
+            if args.phase == "red" or matches:
+                runs = [*prior_runs, run] if matches else [run]
+                atomic_write_json(path, {
+                    "schemaVersion": 1,
+                    "slug": slug,
+                    "status": "passed" if args.phase == "green" and valid else "pending",
+                    "behavior": behavior,
+                    "seam": seam,
+                    "command": command_text,
+                    "runs": runs,
+                    "updatedAt": utc_timestamp(),
+                })
+
+        set_phase(identity, "tdd", "passed" if args.phase == "green" and valid else "in-progress" if valid else "pending")
+        output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n")
+        print(json.dumps({"summaryPath": str(path), "phase": args.phase, "valid": valid, "exitCode": exit_code}, sort_keys=True))
         if not valid:
-            message = "RED evidence must fail for the expected reason." if args.phase == "red" else "GREEN evidence must pass after a changed production surface and a valid RED for the same behavior."
+            message = "RED must fail for the expected reason." if args.phase == "red" else "GREEN must pass after a valid RED for the same command, behavior, and Seam."
             print(message, file=sys.stderr)
             return 2
         return 0
-    except (RepoIdentityError, ValueError, OSError, RuntimeError) as exc:
+    except (RepoIdentityError, WorkflowError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

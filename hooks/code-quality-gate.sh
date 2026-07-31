@@ -1,35 +1,49 @@
-#!/usr/bin/env bash
-# PostToolUse hook for Edit/Write/NotebookEdit.
-# Runs the production-code quality gate when a code file is touched; skips docs/config.
+#!/usr/bin/env python3
+"""PostToolUse: invalidate review readiness, then return quality feedback."""
+from __future__ import annotations
 
-set -uo pipefail
+import subprocess
+import sys
+from pathlib import Path
 
-GATE="$HOME/.claude/skills/production-code/scripts/code_quality_gate.py"
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-file_path=$(python3 -c '
-import json, sys
-try:
-    p = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-ti = p.get("tool_input") or {}
-print(ti.get("file_path") or ti.get("notebook_path") or "")
-' 2>/dev/null)
+from hooks.lib.hook_input import edited_path, read_hook_payload  # noqa: E402
+from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import is_code_path  # noqa: E402
+from hooks.lib.workflow_state import invalidate_after_edit  # noqa: E402
 
-[ -z "$file_path" ] && exit 0
+GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
-case "$file_path" in
-    *.py|*.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.sh|*.bash|*.go|*.rs|*.rb|*.java|*.kt|*.swift|*.c|*.cc|*.cpp|*.h|*.hpp) ;;
-    *) exit 0 ;;
-esac
 
-repo_root=$(git -C "$(dirname "$file_path")" rev-parse --show-toplevel 2>/dev/null) || exit 0
+def main() -> int:
+    path = edited_path(read_hook_payload())
+    if path is None:
+        return 0
+    try:
+        identity = resolve_repo_identity(path.parent)
+        relative = path.relative_to(identity.root).as_posix()
+    except (RepoIdentityError, ValueError):
+        return 0
 
-out=$(PYTHONDONTWRITEBYTECODE=1 python3 "$GATE" check --repo "$repo_root" 2>&1)
-status=$?
+    invalidate_after_edit(identity, relative)
+    if not is_code_path(relative):
+        return 0
 
-if [ $status -ne 0 ]; then
-    printf 'production-code gate FAILED for %s\n%s\n' "$file_path" "$out" >&2
-    exit 2
-fi
-exit 0
+    result = subprocess.run(
+        [sys.executable, str(GATE), "check", "--repo", str(identity.root)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        print(f"production-code gate FAILED for {path}\n{result.stdout}", file=sys.stderr, end="")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -5,91 +5,69 @@ description: Compact quality rubric: the seven principles for judging a change. 
 
 # Code Quality Rubric
 
-This skill owns the seven quality principles below and wins on conflict about
-that vocabulary. `production-code` extends the same principles with execution
-procedure; it does not redefine them.
+This skill owns the seven quality principles below. `production-code` extends
+them with execution procedure; it does not redefine them.
 
-Judge the changed surface, not unrelated legacy debt. Cite the diff, the
-applicable contract, and concrete proof. The hard production invariants remain
-owned by `~/.claude/CLAUDE.md`; this rubric applies them and creates no
-exceptions.
+Judge the changed surface, not unrelated legacy debt. Cite the diff, contract,
+and concrete proof. The hard invariants remain owned by `CLAUDE.md`.
 
-## Seven Principles
+## Seven principles
 
 ### 1. Minimal code
 
 - Is this the smallest correct change?
-- Did the change remove code it made obsolete rather than hiding it?
+- Did it remove code it made obsolete?
 - Did it avoid one-off wrappers, pass-through modules, and speculative options?
 
 ### 2. No duplicated behavior
 
-- Does equivalent behavior already have an owner that should be reused or
-  narrowly extended?
+- Does equivalent behavior already have an owner to reuse or extend?
 - Is each behavior implemented once?
-- Is any apparent consolidation genuinely shared rather than merely similar?
+- Is apparent consolidation genuinely shared rather than merely similar?
 
 ### 3. Direct data and control flow
 
 - Are I/O, state transitions, and control flow explicit and traceable?
 - Did the change add avoidable hops, transforms, retries, or orchestration?
-- Are inputs validated once at their trust boundary before becoming internal
-  typed values?
+- Are inputs validated once at their trust boundary?
 
 ### 4. No fake-green escape
 
 - Does every claimed proof satisfy the canonical mock ban?
 - Did the change suppress, swallow, disable, or bypass a real failure?
-- Are failures corrected at their source rather than muted by tooling or code?
+- Are failures corrected at their source rather than muted?
 
 ### 5. Cleanup discipline
 
-- Are temporary artifacts, leaked state, obsolete branches, and change-created
-  dead code removed?
-- Are startup, rollback, and completion cleanup deterministic where the change
-  creates external or temporary state?
-- Are no placeholders, broad catch/pass paths, or blanket suppressions left in
-  shippable code?
+- Are temporary artifacts, leaked state, obsolete branches, and
+  change-created dead code removed?
+- Is cleanup deterministic where the change creates external or temporary state?
+- Are no placeholders, broad catch/pass paths, or blanket suppressions left?
 
 ### 6. Consequence coverage
 
 - Were callers, callees, adjacent consumers, no-change surfaces, and persisted
   contracts traced where the change affects them?
-- For stateful or transaction-sensitive edits, does proof cross the combined
-  behavior surface rather than only the edited branch?
-- Are all required coupled updates included in the same change?
+- For stateful edits, does proof cross the combined behavior surface?
+- Are required coupled updates included in the same change?
 
 ### 7. Simple implementation
 
-- Is the code readable and direct rather than generated-looking or ceremonial?
+- Is the code readable and direct rather than ceremonial?
 - Are comments limited to non-obvious contracts and decisions?
-- Does the proof use a high-signal workflow check plus sharp invariant checks
-  instead of a large pile of low-signal tests?
+- Does proof use a high-signal workflow check plus sharp invariant checks?
 
-## Language Checks
+## Language checks
 
-### Python
+For Python, retain useful public-boundary types, validate external input at the
+boundary, and report broad exception swallowing or unjustified type ignores.
 
-- Public boundaries retain useful type hints.
-- External inputs are validated at trust boundaries.
-- Broad exception swallowing and unjustified `# type: ignore` are findings.
+For TypeScript/JavaScript, narrow untrusted values, reject unsafe `any`, broad
+casts and suppressions, and make exhaustive state handling fail closed.
 
-### TypeScript and JavaScript
+## Review output
 
-- Untrusted values are narrowed before use.
-- Unsafe `any`, assertion chains, broad casts, and unjustified suppression are
-  findings.
-- Exhaustive state handling fails closed.
-
-## Review Output
-
-For each finding report:
-
-- principle and severity
-- file and line or diff hunk
-- violated contract or demonstrated consequence
-- smallest corrective action
-- proof required after correction
-
-If no finding exists, say so and name any evidence surface that was unavailable
-or not evaluated. Do not claim consequence coverage from syntax-only checks.
+For each finding report the principle and severity, location, violated contract
+or demonstrated consequence, smallest correction, and proof required. If there
+are no findings, name any evidence surface that was unavailable. Syntax-only
+checks do not prove consequence coverage.

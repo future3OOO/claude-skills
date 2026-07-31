@@ -1,113 +1,98 @@
-# PR #2 delivery recovery
+# PR #2 minimal workflow recovery
 
 ## Objective and authority
 
-Deliver the working tree at `fe2ee592991b76dbca17d50e6e7c2ae54a9dee1b`
-without its removed Git-command enforcement, while preserving the workflow,
-skill, evidence, TDD, review, quality, state, and protected-path improvements.
-The trusted base is `origin/main`; this file governs delivery order when it
-conflicts with the superseded PR #2 remediation wave plan.
+Replace PR #2 from `origin/main` with one deletion-heavy PR that preserves the
+useful production-workflow and skill improvements while removing Git command
+enforcement, shell-command policing, and commit/evidence authorization.
 
-The aggregate PR #2 production-source delta is `added=3815 deleted=416`, which
-fails the production quality gate. This first slice is `added=541 deleted=41`.
-Changing that gate or accepting a blanket exception is out of scope. Delivery
-is a sequential split with no more than one dependent PR active at a time.
+The governing scope is
+`/mnt/c/Users/Property Partner/Downloads/PR2_RECOVERY_SCOPE.md` plus the
+operator's later completion-state correction. This file supersedes the prior
+nine-slice delivery plan and the Git-gate remediation documents.
 
-## Scope
+Trusted base: `origin/main` at `89ea1dcb806bc42b0b15bb544828515159421c46`.
+Implementation branch: `fix/pr2-minimal-workflow-recovery`.
 
-In scope:
+## Contract
 
-- preserve the final `fe2ee59` behavior and tests;
-- split by dependency and integration boundary;
-- merge each prerequisite before opening the next;
-- finish by shrinking and merging PR #2.
+The maintained boundary is the production workflow, not Git:
 
-Out of scope:
+1. Repo Context Forge;
+2. diagnosis when applicable;
+3. packet-scoped GitNexus;
+4. advisor preflight;
+5. production preflight;
+6. TDD when required and implementation;
+7. verification and quality feedback;
+8. fresh code review for non-trivial changes;
+9. final Codex Agent or Codex Advisor review;
+10. workflow completion, delivery, and reviewer completion.
 
-- restoring Git command parsing or commit authorization;
-- redesigning working production modules during the split;
-- weakening quality checks or manufacturing green with exclusions;
-- absorbing historical or outdated review findings.
+Workflow state is agent-writable continuity state, not an attestation,
+permission object, or security boundary. `complete` refuses while the final
+review is not `commit-ready` or material findings remain pending. A later
+production edit resets code-review and final-review readiness. No workflow
+state operation intercepts or authorizes Git.
 
-## Delivery map
+## Module and delivery shape
 
-| Order | Branch / PR owner | Integration boundary | Estimated net source | Commit shape |
-|---|---|---|---:|---|
-| 1 | `feat/workflow-state-foundation` | repository identity, atomic state primitives, production quality-gate corrections and CI | 500 | one behavior-and-proof commit |
-| 2 | `feat/workflow-pass-lifecycle` | production-pass lifecycle, pass-state CLI, re-arm adapter | ~270 | one lifecycle-and-proof commit |
-| 3 | `feat/workflow-tdd-evidence` | TDD evidence recording and its real `tdd-run` CLI | ~350 | one vertical behavior-and-proof commit |
-| 4 | `feat/workflow-repoforge-evidence` | Repo Context Forge packet persistence through the real bootstrap adapter | ~250 | one vertical behavior-and-proof commit |
-| 5 | `feat/workflow-quality-evidence` | quality evidence recording, exact-index CLI, and post-edit hook | ~500 | one vertical behavior-and-proof commit |
-| 6 | `feat/workflow-review-evidence` | review evidence recording and its production CLI | ~400 | one vertical behavior-and-proof commit |
-| 7 | `feat/workflow-advisor-evidence` | advisor evidence/transport, validation consumers, and audited exception | ~600 | one vertical integration-and-proof commit |
-| 8 | `feat/workflow-orchestration-hooks` | intake/compact hooks and the operator workflow contract | ~400 | one orchestration-and-proof commit |
-| 9 | existing `feat/workflow-gate-overhaul` / PR #2 | protected-path accident prevention, settings/adoption, deletion of Git gates, final integrated proof | ~300 | one final reconciliation commit if needed |
+One `workflow_state` module owns the repository-scoped state file, lock,
+transitions, edit invalidation, completion rule, flush, and bounded summary.
+Its CLI exposes `begin`, `set-phase`, `advisor-result`, `complete`, and
+`summary`. Repo Context Forge, TDD, review, advisor, and hook adapters consume
+that owner instead of writing parallel evidence records.
 
-Preflight rejected an all-evidence slice: pairing every writer with every
-validator still left dead Interfaces until later adapters arrived, and the
-preserved advisor recorder introduced a lifecycle/validation dependency cycle.
-The remaining slices therefore run vertically by live Interface. The TDD writer lands
-with its real recorder CLI; its staged-tree validator waits for the advisor
-integration that actually consumes it. Other validators likewise land with
-their first production consumer rather than as dead registry entries. The
-original five-slice allocation was reduced before editing when preflight
-showed slice 2 would expose later-only writers and a missing validation callee.
+The replacement is one PR with coherent commits:
 
-## Affected surface and invariants
+1. remove Git/Bash enforcement and obsolete authorization language;
+2. replace the evidence lifecycle with minimal workflow state and real-seam
+   hook/CLI tests;
+3. restore and simplify the useful workflow, review, TDD, advisor, compaction,
+   and operator guidance.
 
-The affected boundary is delivery structure, not runtime semantics. Direct
-consumers include the Repo Context Forge bootstrap, production pass state,
-quality and review recorders, advisor wrapper, configured Claude hooks, and
-protected-path adapter. No-change surfaces are the advisor wrapper suite,
-pre-existing quality-gate behavior outside the named corrections,
-lifecycle/protected-path contracts, installed hook configuration, and
-documentation describing the operator workflow.
+Target: approximately 500 net human-authored source lines. Stop and shrink if
+the replacement reaches 1,000 net lines; there is no blanket exception.
 
-Invariants:
+## Proof and no-change surfaces
 
-1. Every slice is independently importable and its owned public behavior is
-   exercised through the real CLI/hook/module seam.
-2. Every slice passes the production gate against its actual PR base.
-3. Git command interception and commit authorization remain absent.
-4. The final merged source equals `fe2ee59` except for this plan and the
-   review-verified quality-gate and pass-transition corrections recorded in
-   the delivery slices. Temporary delivery-only files must be removed before
-   the comparison.
-5. Review threads are resolved only on pushed heads; stale findings are not
-   reintroduced as work.
+Required proof crosses real production Interfaces:
 
-## Verification per slice
+- a real repository commit between `begin` and later phases does not stale the
+  pass;
+- `complete` blocks missing/non-ready final review and pending findings, and
+  accepts `commit-ready` from either supported reviewer source;
+- the real Edit/PostToolUse hooks enforce preflight sequencing and reset review
+  readiness before quality feedback, including when the real quality gate
+  fails;
+- TDD RED/GREEN remains same-command/same-seam and no longer depends on a Git
+  fingerprint;
+- compact/resume restores the full chain and current next action;
+- settings contain no Bash `PreToolUse` command matcher and ordinary Git
+  operations remain untouched;
+- the full workflow, advisor-wrapper, TDD, quality, and CI contract suites pass.
 
-- run the targeted owned contract tests first;
-- run `bash hooks/tests/run.sh` when that integrated runner exists in the
-  slice, otherwise run every constituent suite owned by that slice;
-- capture the immutable PR base with `base_sha="$(gh pr view --json baseRefOid
-  --jq .baseRefOid)"`, then run `python3
-  skills/production-code/scripts/code_quality_gate.py check --repo . --base-ref
-  "$base_sha"`;
-- inspect source additions/deletions and verify they stay under 1,000 net;
-- wait for current-head CI and reviewer signals before merge;
-- after the ninth merge, remove temporary delivery-only files, compare the
-  resulting tree with `fe2ee59`, account explicitly for this plan and the
-  recorded quality-gate and pass-transition corrections, then rerun the full
-  integrated suite.
+No-change surfaces: the production quality engine, Repo Context Forge packet
+generation, packet-scoped GitNexus, docs/scratch exemptions, read-only advisor
+transport, structured Stop feedback, and the PR reviewer completion loop.
+
+Mocks, stubs, fake collaborators, fixture-substituted transports, and static
+source assertions do not prove these runtime contracts. The live advisor
+transport must be exercised in a dedicated pane.
 
 ## Execution checklist
 
-- [x] Record the recovery plan and freeze `fe2ee59` as the behavior reference.
-- [x] Build, verify, publish, review, and merge slice 1.
-- [x] Build, verify, publish, review, and merge slice 2.
-- [x] Build, verify, publish, review, and merge slice 3.
-- [ ] Build, verify, publish, review, and merge slice 4 (in progress).
-- [ ] Build, verify, publish, review, and merge slice 5.
-- [ ] Build, verify, publish, review, and merge slice 6.
-- [ ] Build, verify, publish, review, and merge slice 7.
-- [ ] Build, verify, publish, review, and merge slice 8.
-- [ ] Rebase PR #2 onto the merged prerequisites, reduce it to slice 9, prove
-  the final tree, close the current-head reviewer loop, and merge PR #2.
-
-## Regroup rule
-
-Stop and consolidate rather than stacking if a slice exceeds 1,000 net source
-lines, needs a second significant rewrite, or makes an intermediate operator
-contract false. Keep deploy/adoption frozen until all nine slices are merged.
+- [x] Create a clean replacement worktree and branch from current
+  `origin/main`.
+- [x] Run Repo Context Forge, packet-scoped GitNexus caller/callee checks, a
+  fresh live advisor scope consult, and production preflight before code edits.
+- [x] Write the real-CLI and real-hook RED tests.
+- [x] Implement minimal workflow state and remove Git/Bash enforcement.
+- [x] Restore only the governed workflow and skill improvements; remove
+  superseded remediation debris.
+- [x] Run focused and integrated verification, cleanup, net-line measurement,
+  GitNexus reanalysis, code review, and a fresh final advisor challenge.
+- [ ] Commit and push coherent changes, open the replacement PR, and finish its
+  current-head reviewer loop.
+- [ ] Close PR #2 only after the replacement PR is pushed and reviewable, with
+  a pointer to the replacement and no claim that PR #2 was merged.

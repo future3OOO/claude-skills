@@ -154,9 +154,12 @@ After all tests pass, look for refactor candidates through `/codebase-design`:
 [ ] No speculative features added
 ```
 
-## Captured Evidence and Proof Gates
+## Bounded Workflow Summary
 
-Run RED and GREEN through the controlled recorder. It captures command, exit status, bounded output, hashes, repository identity, HEAD, and index-tree state. This is **captured evidence, not proof of intent or causal order**:
+When a bounded continuity summary is useful, run RED and GREEN through the
+optional recorder. It keeps the command, exit status, bounded output, declared
+behavior, and real Seam. It records what the command observed; it is not an
+authorization credential or a substitute for inspecting the test:
 
 ```bash
 python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --phase red \
@@ -168,16 +171,12 @@ python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --phase green \
   --seam "<same real public Interface/Seam>" -- <targeted-command>
 ```
 
-For a genuinely non-behavioral change, record the decision explicitly rather
-than omitting TDD evidence:
+For a genuinely non-behavioral change, record the decision explicitly:
 
 ```bash
 python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --repo "$PWD" \
   --slug "<task>" --not-required "<specific non-behavioral reason>"
 ```
-
-Record RED/GREEN or the not-required decision before staging. Staging the same
-content must not invalidate the captured change fingerprint.
 
 Before completion, report:
 
@@ -185,4 +184,4 @@ Before completion, report:
 - GREEN: the same behavior command passed after the smallest production change
 - REGRESSION: broader relevant suite passed, or strongest practical substitute with reason
 - REFACTOR: only performed while tests were green
-- EVIDENCE LIMIT: chronology and intent remain claims to verify against the diff and review record
+- LIMIT: chronology and intent remain claims to verify against the diff and review record

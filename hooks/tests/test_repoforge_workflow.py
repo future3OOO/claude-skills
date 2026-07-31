@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Real bootstrap contracts for Repo Context Forge packet persistence."""
+"""Real Repo Context Forge bootstrap integration with workflow state."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -19,13 +18,13 @@ CANONICAL_BOOTSTRAP = Path("/home/prop_/projects/repo-context-forge/scripts/code
 
 
 @unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
-class RepoForgeEvidenceTests(unittest.TestCase):
+class RepoForgeWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="workflow-repoforge-evidence-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="workflow-repoforge-"))
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
         self.intent = "record the real rendered intake packet"
-        self.slug = "repoforge-evidence"
+        self.slug = "repoforge-workflow"
         self.env = os.environ.copy()
         self.env.update({
             "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
@@ -78,34 +77,22 @@ class RepoForgeEvidenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
-    def test_real_bootstrap_records_stdout_and_out_packets(self) -> None:
+    def test_real_bootstrap_advances_workflow_without_extra_persisted_records(self) -> None:
         direct = self.bootstrap()
         self.assertEqual(direct.returncode, 0, direct.stdout + direct.stderr)
         self.assertIn("REPO_CONTEXT_FORGE_REQUIRED_INTAKE", direct.stdout)
         state = self.status()
-        artifacts = state["artifacts"]
-        self.assertEqual(state["gates"]["repoContextForge"], "passed")
-        self.assertEqual(
-            artifacts["repo-context-packet-sha256"],
-            hashlib.sha256(direct.stdout.encode()).hexdigest(),
-        )
-        self.assertEqual(Path(artifacts["repo-context-packet"]).read_text(encoding="utf-8"), direct.stdout)
+        self.assertEqual(state["repoContextForge"], "passed")
+        self.assertEqual(state["phase"], "repo-context-forge")
+        state_dir = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
+        self.assertFalse(any(path.name in {"packets", "repoforge"} for path in state_dir.rglob("*")))
 
         output = self.tmp / "packet.txt"
         redirected = self.bootstrap(out=output)
         self.assertEqual(redirected.returncode, 0, redirected.stdout + redirected.stderr)
         self.assertEqual(redirected.stdout, "")
-        refreshed = self.status()["artifacts"]
-        self.assertEqual(refreshed["repo-context-packet-sha256"], hashlib.sha256(output.read_bytes()).hexdigest())
-        self.assertEqual(Path(refreshed["repo-context-packet"]).read_bytes(), output.read_bytes())
-
-    def test_pass_intent_mismatch_is_not_recorded(self) -> None:
-        result = self.bootstrap(intent="a different task")
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("intent", result.stderr)
-        state = self.status()
-        self.assertNotIn("repoContextForge", state["gates"])
-        self.assertEqual(state["artifacts"], {})
+        self.assertIn("REPO_CONTEXT_FORGE_REQUIRED_INTAKE", output.read_text(encoding="utf-8"))
+        self.assertEqual(self.status()["repoContextForge"], "passed")
 
 
 if __name__ == "__main__":
