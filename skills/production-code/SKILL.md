@@ -8,15 +8,17 @@ description: Enforce production-only implementation standards for this repo. Use
 Apply this skill before writing any repository code or file content change, keep it active while implementing, and run its bundled gate before finalizing.
 Use the production-preflight skill first on before-edit turns that require explicit preflight. `code-quality` owns the seven quality principles and wins on conflict; this skill extends them with implementation procedure.
 
-Before editing, use the standards below to choose the smallest production-safe implementation path. The bundled gate remains non-mutating. For ordinary feedback run it directly; after staging the exact candidate, use the evidence recorder so quality evidence is bound to `git write-tree`:
+Before editing, use the standards below to choose the smallest production-safe implementation path. Run the bundled non-mutating gate from the target repository before finalizing:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" check --repo "$PWD"
-python3 "$HOME/.claude/skills/production-code/scripts/record_quality_evidence.py" \
-  --repo "$PWD" --base-ref <ref> --mode commit
 ```
 
-The recorder automatically consumes the active pass's Repo Context Forge packet and GitNexus evidence when present. Load [references/gate-policy.md](references/gate-policy.md) when interpreting its JSON contract.
+Use `--base-ref <ref>` when a review base is known. Existing Repo Context Forge
+or GitNexus evidence can be supplied with `--repo-context-packet <path-or->`
+and `--gitnexus-context-json <path-or->`. Load
+[references/gate-policy.md](references/gate-policy.md) when interpreting the
+gate's JSON contract.
 
 ## Core Standard
 
@@ -139,4 +141,4 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
 
 ## Bundled Gate Policy
 
-Load [references/gate-policy.md](references/gate-policy.md) when running or interpreting the bundled gate. The gate is non-mutating; tree-bound persistence belongs to `record_quality_evidence.py`.
+Load [references/gate-policy.md](references/gate-policy.md) when running or interpreting the bundled gate. The gate is non-mutating.

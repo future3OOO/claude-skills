@@ -83,7 +83,7 @@ Invariants:
 ## Execution checklist
 
 - [x] Record the recovery plan and freeze `fe2ee59` as the behavior reference.
-- [~] Build, verify, publish, review, and merge slice 1.
+- [ ] Build, verify, publish, review, and merge slice 1 (in progress).
 - [ ] Build, verify, publish, review, and merge slice 2.
 - [ ] Build, verify, publish, review, and merge slice 3.
 - [ ] Build, verify, publish, review, and merge slice 4.
