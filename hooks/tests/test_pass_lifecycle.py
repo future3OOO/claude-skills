@@ -111,10 +111,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertIn("slug=pr2-slice-2", summary.stdout)
         self.assertIn("gitnexus=passed", summary.stdout)
 
-        flushed = self.cli("flush")
-        self.assertEqual(flushed.returncode, 0, flushed.stdout + flushed.stderr)
-        self.assertIn("lastPreCompactFlush", json.loads(flushed.stdout))
-
     def test_state_lock_serializes_real_cross_process_writers(self) -> None:
         identity = resolve_repo_identity(self.repo)
         started = self.tmp / "writer-started"

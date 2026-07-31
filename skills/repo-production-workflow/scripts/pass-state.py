@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Begin, update, flush, or summarize the current production pass."""
+"""Begin, update, or summarize the current production pass."""
 from __future__ import annotations
 
 import argparse
@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from hooks.lib.evidence_lifecycle import PassUpdate, bounded_summary, flush_pass, read_active_pass, safe_slug, start_pass, update_pass  # noqa: E402
+from hooks.lib.evidence_lifecycle import PassUpdate, bounded_summary, read_active_pass, safe_slug, start_pass, update_pass  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 
 
@@ -27,7 +27,7 @@ def _pairs(values: list[str]) -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("begin", "update", "flush", "summary", "status"))
+    parser.add_argument("action", choices=("begin", "update", "summary", "status"))
     parser.add_argument("--repo", "--cwd", dest="repo", default=os.getcwd())
     parser.add_argument("--slug")
     parser.add_argument("--intent", default="")
@@ -42,10 +42,6 @@ def main() -> int:
             if not args.slug:
                 parser.error("begin requires --slug")
             state = start_pass(identity, args.slug, claude_session_id=os.environ.get("CLAUDE_SESSION_ID", ""), intent=args.intent)
-        elif args.action == "flush":
-            state = flush_pass(identity)
-            if state is None:
-                raise RuntimeError("no active pass")
         elif args.action in {"summary", "status"}:
             state = read_active_pass(identity)
             if args.action == "summary":

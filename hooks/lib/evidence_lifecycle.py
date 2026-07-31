@@ -124,14 +124,6 @@ def update_pass(identity: RepoIdentity, update: PassUpdate) -> JsonObject | None
         return _persist_pass(identity, state)
 
 
-def flush_pass(identity: RepoIdentity) -> JsonObject | None:
-    state = read_active_pass(identity)
-    if state is None:
-        return None
-    state["lastPreCompactFlush"] = utc_timestamp()
-    return _persist_pass(identity, state)
-
-
 def bounded_summary(identity: RepoIdentity, limit: int = 1200) -> str:
     state = read_active_pass(identity)
     if not state:
