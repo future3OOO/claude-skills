@@ -9,15 +9,11 @@ description: Test-driven development with red-green-refactor loop. Use when user
 
 Production behavior changes require one failing behavior test before production code changes.
 
-The test must fail for the expected product/code reason. If it passes immediately, errors because of invalid setup, or only proves implementation shape, it is not a valid RED gate. A tautological test — one that asserts a mock you configured or restates the implementation — can never go RED for a product reason; rewrite it at a real Seam.
+The test must fail for the expected product/code reason. If it passes immediately, errors because of invalid setup, or only proves implementation shape, it is not a valid RED gate. Rewrite it at the public production Seam.
 
-## Real Seams Only — No Mocks
+## Canonical Proof Constraint
 
-Every test crosses a real production seam. Do not mock, stub, fake, or
-fixture-substitute any collaborator — internal or boundary. A test that cannot
-drive the real seam is not written; surface the proof gap as a finding instead
-(see [mocking.md](mocking.md) for what to do at each boundary type). An absent
-test is a visible gap; a fake test is a hidden one.
+The mock ban in `~/.claude/CLAUDE.md` is the single governing statement and applies without exception. This skill defines how to find and exercise a real production Seam; [mocking.md](mocking.md) lists honest boundary alternatives without creating a test-only proof path.
 
 ## Over-Testing Rules
 
@@ -36,10 +32,9 @@ Module / Interface / Seam vocabulary from `/codebase-design`.
 
 **Good tests** are integration-style: they exercise real code paths through public APIs. They describe _what_ the system does, not _how_ it does it. A good test reads like a specification - "user can checkout with valid cart" tells you exactly what capability exists. These tests survive refactors because they don't care about internal structure.
 
-**Bad tests** are coupled to Implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the Interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing Implementation, not behavior.
+**Bad tests** are coupled to Implementation. They test private methods, replace the production path with programmed answers, or verify through an interior side channel instead of the Interface. The warning sign: your test breaks when you refactor, but behavior has not changed.
 
-See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for why
-mocks are banned and what to do instead.
+See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for honest boundary strategies under the canonical proof constraint.
 
 ## Seams — where tests go
 
@@ -84,8 +79,8 @@ When exploring the codebase, use the project's domain glossary so that test name
 Before production edits:
 
 - [ ] Inspect existing test style and test commands
-- [ ] Confirm with user what Interface changes are needed
-- [ ] Confirm with user which behaviors to test (prioritize)
+- [ ] State the proposed Interface change and behavior priorities as a visible checkpoint
+- [ ] Incorporate user corrections when available; otherwise proceed unless a concrete ambiguity blocks safe implementation
 - [ ] Identify the public Interface or observable workflow being changed
 - [ ] Identify whether the current Module/Interface is testable
 - [ ] Identify opportunities for deep Modules using `/codebase-design`
@@ -93,22 +88,22 @@ Before production edits:
 - [ ] List the behaviors to test (not implementation steps)
 - [ ] Name the first behavior slice to prove
 - [ ] For non-trivial work, list remaining behavior slices
-- [ ] Get user approval on the plan
+- [ ] Show the plan before implementation; do not block on ceremonial approval when no material unknown remains
 
-Ask: "What should the public Interface look like? Which behaviors are most important to test?"
+Present the proposed public Interface, first behavior slice, and priorities. Pause only for a real blocker; otherwise proceed and leave the checkpoint available for correction.
 
-**You can't test everything.** Confirm with the user exactly which behaviors matter most. Focus testing effort on critical paths and complex logic, not every possible edge case.
+**You cannot test everything.** Focus on critical paths and complex logic, and record any deliberately omitted behavior surface.
 
 ### Architecture/Testability Gate
 
-If a behavior cannot be tested cleanly through a public Interface, requires mocking internal collaborators, or coordinates several shallow Modules, do not force a bad test.
+If a behavior cannot be tested cleanly through a public Interface, would require a test-only replacement path, or coordinates several shallow Modules, do not force a bad test.
 
 Stop and use `/codebase-design` to inspect the Module, Interface, Seam, and
 deepening opportunity. Use `/improve-codebase-architecture` when the decision
 requires a repo scan or multiple candidate refactors. TDD should prove behavior
 through a good Interface; it should not normalize shallow Modules.
 
-When `/diagnose` ran first, consume its surface map. The failing test should cross the mapped Interface at a real Seam; do not regenerate the diagnose map here. If no real Seam exists, escalate to `/improve-codebase-architecture` instead of mocking the Module under test.
+When `/diagnose` ran first, consume its surface map. The failing test should cross the mapped Interface at a real Seam; do not regenerate the diagnose map here. If no real Seam exists, surface the proof gap and escalate to `/improve-codebase-architecture`.
 
 ### 2. Tracer Bullet
 
@@ -159,11 +154,35 @@ After all tests pass, look for refactor candidates through `/codebase-design`:
 [ ] No speculative features added
 ```
 
-## Proof Gates
+## Captured Evidence and Proof Gates
+
+Run RED and GREEN through the controlled recorder. It captures command, exit status, bounded output, hashes, repository identity, HEAD, and index-tree state. This is **captured evidence, not proof of intent or causal order**:
+
+```bash
+python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --phase red \
+  --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
+  --seam "<real public Interface/Seam>" --expected-failure "<expected product failure>" \
+  -- <targeted-command>
+python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --phase green \
+  --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
+  --seam "<same real public Interface/Seam>" -- <targeted-command>
+```
+
+For a genuinely non-behavioral change, record the decision explicitly rather
+than omitting TDD evidence:
+
+```bash
+python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --repo "$PWD" \
+  --slug "<task>" --not-required "<specific non-behavioral reason>"
+```
+
+Record RED/GREEN or the not-required decision before staging. Staging the same
+content must not invalidate the captured change fingerprint.
 
 Before completion, report:
 
-- RED: targeted command and expected failure observed
-- GREEN: targeted command passed after the smallest production change
+- RED: targeted command and expected product failure observed
+- GREEN: the same behavior command passed after the smallest production change
 - REGRESSION: broader relevant suite passed, or strongest practical substitute with reason
 - REFACTOR: only performed while tests were green
+- EVIDENCE LIMIT: chronology and intent remain claims to verify against the diff and review record
