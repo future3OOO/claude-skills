@@ -8,6 +8,20 @@ description: Orchestrate production repo changes — Repo Context Forge, packet-
 Use this skill for production code changes inside a git repository.
 It is an orchestration skill; it does not replace the referenced skills.
 
+## Pass Identity
+
+Choose one stable slug for the execution pass and record it before Repo Context
+Forge intake:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" begin \
+  --repo "$PWD" --slug "<task>" --intent "<user request>"
+```
+
+Update that same pass as gates and artifacts change. State is repository-scoped
+and atomically persisted; a missing or malformed record is unknown, never a
+passed gate.
+
 ## How To Invoke The Chain
 
 Every referenced skill is INVOKED with the Skill tool by its exact name — not

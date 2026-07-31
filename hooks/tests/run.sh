@@ -9,4 +9,5 @@ trap 'rm -rf "$scratch"' EXIT
 export CLAUDE_HOME="${CLAUDE_HOME:-$scratch}"
 
 python3 -u "$ROOT/hooks/tests/test_state_foundation.py"
+python3 -u "$ROOT/hooks/tests/test_pass_lifecycle.py"
 python3 -u "$ROOT/skills/production-code/scripts/test_code_quality_gate.py"

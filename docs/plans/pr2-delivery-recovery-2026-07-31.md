@@ -34,14 +34,17 @@ Out of scope:
 | Order | Branch / PR owner | Integration boundary | Estimated net source | Commit shape |
 |---|---|---|---:|---|
 | 1 | `feat/workflow-state-foundation` | repository identity, atomic state primitives, production quality-gate corrections and CI | 500 | one behavior-and-proof commit |
-| 2 | `feat/workflow-pass-lifecycle` | evidence lifecycle, audited skip primitive, pass-state CLI, compact/re-arm hooks | 917 | one lifecycle-and-proof commit |
-| 3 | `feat/workflow-evidence-recording` | validation registry, shared CLI, quality/review recorders, quality hook, post-edit evidence updates | 927 | one evidence-and-proof commit |
-| 4 | `feat/workflow-advisor-integration` | hook-input seam, advisor state/transport, Repo Context Forge recording, intake gate, operator workflow contract | 419 | one integration-and-proof commit |
-| 5 | existing `feat/workflow-gate-overhaul` / PR #2 | protected-path accident prevention, settings/adoption, deletion of Git gates, final integrated proof | 296 | one final reconciliation commit if needed |
+| 2 | `feat/workflow-pass-lifecycle` | production-pass lifecycle, pass-state CLI, re-arm adapter | ~270 | one lifecycle-and-proof commit |
+| 3 | `feat/workflow-evidence-core` | remaining evidence writers and their validation registry | ~840 | one evidence-core-and-proof commit |
+| 4 | `feat/workflow-evidence-recording` | shared CLI, quality/review recorders, quality hook, post-edit evidence updates | ~560 | one adapter-and-proof commit |
+| 5 | `feat/workflow-advisor-integration` | advisor state/transport, audited skip, Repo Context Forge recording, intake/compact hooks, operator workflow contract | ~500 | one integration-and-proof commit |
+| 6 | existing `feat/workflow-gate-overhaul` / PR #2 | protected-path accident prevention, settings/adoption, deletion of Git gates, final integrated proof | ~296 | one final reconciliation commit if needed |
 
-Slices 2 and 3 exceed the 500-line target because splitting their respective
-record/write/validate contracts would create untestable half-interfaces. Both
-remain below the mandatory 1,000-line split threshold.
+Slice 3 exceeds the 500-line target because splitting its record/validate
+contract would create a half-interface. It remains below the mandatory
+1,000-line split threshold. The original five-slice allocation was reduced
+before editing when preflight showed slice 2 would expose later-only writers
+and a missing validation callee.
 
 ## Affected surface and invariants
 
@@ -60,8 +63,9 @@ Invariants:
 2. Every slice passes the production gate against its actual PR base.
 3. Git command interception and commit authorization remain absent.
 4. The final merged source equals `fe2ee59` except for this plan and the
-   review-verified quality-gate corrections recorded in this slice. Temporary
-   delivery-only files must be removed before the comparison.
+   review-verified quality-gate and pass-transition corrections recorded in
+   the delivery slices. Temporary delivery-only files must be removed before
+   the comparison.
 5. Review threads are resolved only on pushed heads; stale findings are not
    reintroduced as work.
 
@@ -76,18 +80,20 @@ Invariants:
   "$base_sha"`;
 - inspect source additions/deletions and verify they stay under 1,000 net;
 - wait for current-head CI and reviewer signals before merge;
-- after the fifth merge, remove temporary delivery-only files, compare the
+- after the sixth merge, remove temporary delivery-only files, compare the
   resulting tree with `fe2ee59`, account explicitly for this plan and the
-  recorded quality-gate corrections, then rerun the full integrated suite.
+  recorded quality-gate and pass-transition corrections, then rerun the full
+  integrated suite.
 
 ## Execution checklist
 
 - [x] Record the recovery plan and freeze `fe2ee59` as the behavior reference.
-- [ ] Build, verify, publish, review, and merge slice 1 (in progress).
-- [ ] Build, verify, publish, review, and merge slice 2.
+- [x] Build, verify, publish, review, and merge slice 1.
+- [ ] Build, verify, publish, review, and merge slice 2 (in progress).
 - [ ] Build, verify, publish, review, and merge slice 3.
 - [ ] Build, verify, publish, review, and merge slice 4.
-- [ ] Rebase PR #2 onto the merged prerequisites and reduce it to slice 5.
+- [ ] Build, verify, publish, review, and merge slice 5.
+- [ ] Rebase PR #2 onto the merged prerequisites and reduce it to slice 6.
 - [ ] Prove the final tree, close the current-head reviewer loop, and merge
   PR #2.
 
@@ -95,4 +101,4 @@ Invariants:
 
 Stop and consolidate rather than stacking if a slice exceeds 1,000 net source
 lines, needs a second significant rewrite, or makes an intermediate operator
-contract false. Keep deploy/adoption frozen until all five slices are merged.
+contract false. Keep deploy/adoption frozen until all six slices are merged.
