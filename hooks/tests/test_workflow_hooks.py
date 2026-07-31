@@ -128,6 +128,16 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
         self.assertEqual(allowed.stdout, "")
 
+    def test_completed_workflow_does_not_authorize_the_next_production_edit(self) -> None:
+        self.complete_workflow()
+
+        blocked = self.intake("app.py")
+        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertTrue(blocked.stdout, "completed workflow authorized a new production edit")
+        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("new active workflow", decision["permissionDecisionReason"])
+
     def test_review_readiness_is_reset_before_failed_quality_feedback(self) -> None:
         self.complete_workflow()
         escape = "TO" + "DO"
@@ -159,6 +169,29 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(docs.returncode, 0, docs.stdout + docs.stderr)
         state = json.loads(self.state("status").stdout)
         self.assertEqual(state["phase"], "complete")
+
+    def test_governance_doc_edit_is_admitted_then_invalidates_review_readiness(self) -> None:
+        self.complete_workflow()
+        governance = self.repo / "skills" / "diagnose" / "SKILL.md"
+        governance.parent.mkdir(parents=True)
+
+        admitted = self.intake("skills/diagnose/SKILL.md")
+        self.assertEqual(admitted.returncode, 0, admitted.stdout + admitted.stderr)
+        self.assertEqual(admitted.stdout, "")
+
+        governance.write_text("updated agent behavior\n", encoding="utf-8")
+        changed = self.post_edit("skills/diagnose/SKILL.md")
+        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        state = json.loads(self.state("status").stdout)
+        self.assertEqual(state["phase"], "complete")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
+
+        blocked = self.intake("app.py")
+        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("new active workflow", decision["permissionDecisionReason"])
 
     def test_shipped_hooks_do_not_intercept_bash_or_git(self) -> None:
         settings = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))

@@ -5,7 +5,15 @@ import re
 from pathlib import Path
 
 from .repo_identity import RepoIdentity
-from .state_store import atomic_write_json, is_reviewable_path, read_json, repo_state_dir, state_lock, utc_timestamp
+from .state_store import (
+    atomic_write_json,
+    is_governance_path,
+    is_reviewable_path,
+    read_json,
+    repo_state_dir,
+    state_lock,
+    utc_timestamp,
+)
 
 JsonObject = dict[str, object]
 STEP_FIELDS = {
@@ -185,15 +193,17 @@ def complete(identity: RepoIdentity) -> JsonObject:
 
 
 def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | None:
-    if not is_reviewable_path(path):
+    reviewable = is_reviewable_path(path)
+    if not reviewable and not is_governance_path(path):
         return read_workflow(identity)
     with state_lock(identity):
         state = read_workflow(identity)
         if state is None:
             return None
-        state["phase"] = "implementation"
-        state["nextAction"] = "verification"
-        state["implementation"] = "in-progress"
+        if reviewable:
+            state["phase"] = "implementation"
+            state["nextAction"] = "verification"
+            state["implementation"] = "in-progress"
         state["verification"] = "pending"
         state["codeReview"] = {"status": "pending", "findings": "pending"}
         state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
@@ -204,6 +214,8 @@ def ready_for_edit(identity: RepoIdentity) -> tuple[bool, list[str]]:
     state = read_workflow(identity)
     if state is None:
         return False, ["active workflow"]
+    if state.get("phase") == "complete":
+        return False, ["new active workflow"]
     missing = [
         name for name, ready in (
             ("Repo Context Forge", state.get("repoContextForge") == "passed"),

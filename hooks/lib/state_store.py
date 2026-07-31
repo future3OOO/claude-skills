@@ -123,6 +123,15 @@ def is_reviewable_path(path: str) -> bool:
     return not is_docs_or_scratch(path.replace("\\", "/"))
 
 
+def is_governance_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return (
+        Path(normalized).name in {"AGENTS.md", "CLAUDE.md"}
+        or normalized.startswith("skills/")
+        or normalized.startswith("docs/agents/")
+    )
+
+
 def reviewable_paths(paths: Iterable[str]) -> list[str]:
     return sorted({path for path in paths if is_reviewable_path(path)})
 

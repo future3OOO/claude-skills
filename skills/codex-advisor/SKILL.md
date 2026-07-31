@@ -45,11 +45,13 @@ keep transport output separate. Capture stdout and stderr independently and
 wait for the process rather than polling with repeated sleeps.
 
 ```bash
-ask-codex-advisor.sh --slug "<task>" --phase preflight-advice \
-  --cwd "$PWD" --budget 350 --fresh -- "<focused scope question>"
+"$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
+  --slug "<task>" --phase preflight-advice \
+  --cwd "$PWD" --budget 350 -- "<focused scope question>"
 
-ask-codex-advisor.sh --slug "<task>" --phase final-review \
-  --cwd "$PWD" --base-ref "<base>" --budget 350 --fresh -- \
+"$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
+  --slug "<task>" --phase final-review \
+  --cwd "$PWD" --base-ref "<base>" --budget 350 -- \
   "<focused completion question>"
 ```
 

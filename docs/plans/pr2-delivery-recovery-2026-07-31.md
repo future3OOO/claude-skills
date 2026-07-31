@@ -6,10 +6,9 @@ Replace PR #2 from `origin/main` with one deletion-heavy PR that preserves the
 useful production-workflow and skill improvements while removing Git command
 enforcement, shell-command policing, and commit/evidence authorization.
 
-The governing scope is
-`/mnt/c/Users/Property Partner/Downloads/PR2_RECOVERY_SCOPE.md` plus the
-operator's later completion-state correction. This file supersedes the prior
-nine-slice delivery plan and the Git-gate remediation documents.
+This plan records the governing scope, including the operator's later
+completion-state correction. It supersedes the prior nine-slice delivery plan
+and the Git-gate remediation documents.
 
 Trusted base: `origin/main` at `89ea1dcb806bc42b0b15bb544828515159421c46`.
 Implementation branch: `fix/pr2-minimal-workflow-recovery`.
@@ -92,7 +91,7 @@ transport must be exercised in a dedicated pane.
   superseded remediation debris.
 - [x] Run focused and integrated verification, cleanup, net-line measurement,
   GitNexus reanalysis, code review, and a fresh final advisor challenge.
-- [ ] Commit and push coherent changes, open the replacement PR, and finish its
-  current-head reviewer loop.
-- [ ] Close PR #2 only after the replacement PR is pushed and reviewable, with
+- [x] Commit and push coherent changes and open replacement PR #11.
+- [ ] Finish the current-head reviewer loop for PR #11.
+- [x] Close PR #2 only after the replacement PR is pushed and reviewable, with
   a pointer to the replacement and no claim that PR #2 was merged.
