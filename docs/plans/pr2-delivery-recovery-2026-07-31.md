@@ -67,7 +67,7 @@ Invariants:
 
 - run the targeted owned contract tests first;
 - run `bash hooks/tests/run.sh` when that integrated runner exists in the
-  slice, otherwise run every available constituent suite;
+  slice, otherwise run every constituent suite owned by that slice;
 - run `python3 skills/production-code/scripts/code_quality_gate.py check
   --repo . --base-ref origin/main` against the slice's real base;
 - inspect source additions/deletions and verify they stay under 1,000 net;
