@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Begin, update, or summarize the current production pass."""
+"""Begin, update, summarize, or report status for the current production pass."""
 from __future__ import annotations
 
 import argparse
