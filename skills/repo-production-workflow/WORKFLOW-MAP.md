@@ -70,10 +70,10 @@ leave stale readiness behind. Documentation and scratch edits are exempt.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit|Write|NotebookEdit)` | Require the recorded before-edit sequence through production preflight |
-| `PostToolUse(Edit|Write|NotebookEdit)` | Invalidate downstream readiness, then return quality feedback |
-| `PreCompact(manual|auto)` | Atomically flush existing state without advancing it |
-| `SessionStart(compact|resume)` | Restore the full workflow chain and bounded current summary |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require the recorded before-edit sequence through production preflight |
+| `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, then return quality feedback |
+| `PreCompact(manual\|auto)` | Atomically flush existing state without advancing it |
+| `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary |
 | `Stop` | Return non-blocking changed-file and caller/callee context; unavailable checks are `unknown` |
 
 There is no Bash command matcher, Git hook, command classifier, protected-path

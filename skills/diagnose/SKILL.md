@@ -88,10 +88,10 @@ Fix at the source, not where the error merely appears.
 
 If the trace is unclear, add targeted instrumentation before the dangerous operation or state transition. Include the relevant value, cwd/environment/config when relevant, and a stack trace or caller context. Tag temporary logs with a unique `[DEBUG-...]` marker.
 
-If tracing requires bouncing through scattered helpers/services/managers, proof
-can reach the behavior only by replacing internal collaborators, or no clean
-Seam owns the behavior, record that as a module-shape risk using the vocabulary
-`codebase-design` owns. After the immediate bug is understood, escalate to
+If tracing requires scattered helpers or replacing internal collaborators to
+reach the behavior, or no Module exposes the behavior through a clean Seam,
+record a module-shape risk using the vocabulary owned by `codebase-design`.
+After the immediate bug is understood, escalate to
 `improve-codebase-architecture` rather than normalizing the shallow path.
 
 ### Targeted GitNexus Check
