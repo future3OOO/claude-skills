@@ -1,95 +1,74 @@
 ---
 name: code-quality
-description: Compact quality rubric: the seven principles for judging a change. Use when reviewing or challenging a diff, as an advisor or review rubric, or when another skill needs the quality-rule vocabulary; for implementing production changes use production-code.
+description: Enforce production code quality before finalizing any code change. Use for implementation, refactors, bug fixes, and review tasks to prevent code bloat, duplicated logic, fake-green bypasses, and missing cleanup.
 ---
 
-# Code Quality Rubric
+# Code Quality
 
-This skill owns the seven quality principles below and wins on conflict about
-that vocabulary. `production-code` extends the same principles with execution
-procedure; it does not redefine them.
+Apply these rules before returning work as complete. Use the Edit tool to remove
+unnecessary additions and the Bash tool to run repo gates from the project root.
 
-Judge the changed surface, not unrelated legacy debt. Cite the diff, the
-applicable contract, and concrete proof. The hard production invariants remain
-owned by `~/.claude/CLAUDE.md`; this rubric applies them and creates no
-exceptions.
+## Non-negotiable Rules
 
-## Seven Principles
+1. Keep code minimal.
+- Make the smallest correct change.
+- Remove dead code instead of hiding it.
+- Avoid one-off wrappers and premature abstractions.
 
-### 1. Minimal code
+2. Eliminate duplication.
+- Reuse existing utilities when behavior is equivalent.
+- Consolidate repeated logic into one path only when it is truly shared.
 
-- Is this the smallest correct change?
-- Did the change remove code it made obsolete rather than hiding it?
-- Did it avoid one-off wrappers, pass-through modules, and speculative options?
+3. Preserve direct data flow.
+- Remove unnecessary hops, transforms, and retries.
+- Keep I/O and control flow explicit and traceable.
 
-### 2. No duplicated behavior
+4. Ban fake-green shortcuts.
+- Do not suppress failures to make checks pass (`ignore`, blanket disables, swallowed exits).
+- Fix root causes instead of muting tools.
 
-- Does equivalent behavior already have an owner that should be reused or
-  narrowly extended?
-- Is each behavior implemented once?
-- Is any apparent consolidation genuinely shared rather than merely similar?
+5. Enforce cleanup discipline.
+- Clean temporary artifacts on startup, before new work, and after completion.
+- Treat orphaned files, leftover branches, and leaked state as failures.
 
-### 3. Direct data and control flow
+6. Keep changes consequence-aware.
+- Trace downstream consumers when changing data shapes, limits, or contracts.
+- Update all affected paths in the same change.
+- For stateful or contract-sensitive edits, define the contract, map the adjacent perimeter, and prove at least one full-surface behavior.
 
-- Are I/O, state transitions, and control flow explicit and traceable?
-- Did the change add avoidable hops, transforms, retries, or orchestration?
-- Are inputs validated once at their trust boundary before becoming internal
-  typed values?
+7. Keep implementation simple.
+- Prefer readable, direct code over verbose generated patterns.
+- Avoid redundant comments and obvious boilerplate.
+- Prefer one combined workflow proof plus a few sharp invariant checks over a large pile of tiny low-signal tests.
 
-### 4. No fake-green escape
-
-- Does every claimed proof satisfy the canonical mock ban?
-- Did the change suppress, swallow, disable, or bypass a real failure?
-- Are failures corrected at their source rather than muted by tooling or code?
-
-### 5. Cleanup discipline
-
-- Are temporary artifacts, leaked state, obsolete branches, and change-created
-  dead code removed?
-- Are startup, rollback, and completion cleanup deterministic where the change
-  creates external or temporary state?
-- Are no placeholders, broad catch/pass paths, or blanket suppressions left in
-  shippable code?
-
-### 6. Consequence coverage
-
-- Were callers, callees, adjacent consumers, no-change surfaces, and persisted
-  contracts traced where the change affects them?
-- For stateful or transaction-sensitive edits, does proof cross the combined
-  behavior surface rather than only the edited branch?
-- Are all required coupled updates included in the same change?
-
-### 7. Simple implementation
-
-- Is the code readable and direct rather than generated-looking or ceremonial?
-- Are comments limited to non-obvious contracts and decisions?
-- Does the proof use a high-signal workflow check plus sharp invariant checks
-  instead of a large pile of low-signal tests?
-
-## Language Checks
+## Language Rules
 
 ### Python
+- Avoid `# type: ignore` unless unavoidable and explicitly justified.
+- Avoid broad exception swallowing (`except:`, `except Exception: pass`).
+- Keep type hints on public function boundaries.
+- Validate external inputs at trust boundaries.
 
-- Public boundaries retain useful type hints.
-- External inputs are validated at trust boundaries.
-- Broad exception swallowing and unjustified `# type: ignore` are findings.
+### TypeScript/JavaScript
+- Avoid `any`/unsafe casts as a shortcut.
+- Validate untrusted external data at boundaries before use.
+- Prefer explicit types and narrowing over assertion chains.
 
-### TypeScript and JavaScript
+## Execution Checklist
 
-- Untrusted values are narrowed before use.
-- Unsafe `any`, assertion chains, broad casts, and unjustified suppression are
-  findings.
-- Exhaustive state handling fails closed.
+1. Inspect the delta and remove unnecessary additions.
+- `git diff --stat`
+- `git diff`
 
-## Review Output
+2. Scan for common quality escapes.
+- `rg -n "TODO|FIXME|type: ignore|eslint-disable|@ts-ignore|\\bAny\\b|except\\s*:\\s*$|except\\s+Exception\\s*:\\s*pass" <paths>`
 
-For each finding report:
+3. Run relevant project gates (lint/typecheck/tests/build) for touched areas.
 
-- principle and severity
-- file and line or diff hunk
-- violated contract or demonstrated consequence
-- smallest corrective action
-- proof required after correction
+4. For stateful or contract-sensitive changes, check that proof is not only local:
+- require at least one higher-signal workflow or surface proof
+- treat low-signal tests that only prove the edited branch shape as weak evidence
+- use focused invariant tests only as supplements
+5. Confirm cleanup and rollback are explicit for any risky operation.
 
-If no finding exists, say so and name any evidence surface that was unavailable
-or not evaluated. Do not claim consequence coverage from syntax-only checks.
+6. Do not mark done until checks pass and no quality rule is violated.

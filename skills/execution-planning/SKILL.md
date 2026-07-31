@@ -136,7 +136,18 @@ Keep this proportional for ordinary work.
 
 ### 4b. Map the affected transaction system when the work is transaction-sensitive
 
-Load and apply the [canonical transaction doctrine](../production-code/references/transaction-doctrine.md). The artifact must expose its authoritative records, mutation boundary, adjacent interleavings, shared projection/recovery/no-op paths, helper semantic splits, `authoritativeContract`, `invariants`, and `proofPlan`; planning does not redefine those requirements.
+When the work changes claim tokens, leases, compare-and-set/version fields, transition helpers, or replay/finalize/recovery semantics, the artifact must define:
+
+- authoritative records mutated together
+- the real mutation boundary or transaction entrypoint
+- adjacent interleavings that can cross that boundary after prepare but before finalize
+- projection, replay, recovery, and no-op paths that share helpers or state fields
+- helper semantic splits where one helper would otherwise serve two different contracts
+- `authoritativeContract` that states the rule or rules that must remain true
+- `invariants` that prove the contract across adjacent no-change paths
+- `proofPlan` that names the combined workflow proof and the focused invariant checks
+
+Do not let the artifact stop at the cited review comment, the local edited file, or a surface map without an explicit contract and proof model.
 
 ### 5. Add tracked execution state
 

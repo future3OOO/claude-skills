@@ -58,10 +58,6 @@ def is_test_like_path(path: str) -> bool:
     if any(marker in lowered for marker in TEST_MARKERS):
         return True
     name = Path(path).name.lower()
-    # pytest discovers test_*.py and *_test.py with no tests/ directory in the
-    # path, so name alone decides those; .test./.spec. cover the JS convention.
-    if re.fullmatch(r"(?:test_.+|.+_test)\.py", name):
-        return True
     return bool(re.search(r"\.(?:test|spec)\.", name)) or name.endswith(".schema.json")
 
 

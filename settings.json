@@ -27,9 +27,7 @@
       "Bash(*wa_chat_history.js*--manage-gateway*)",
       "Bash(*rcf-gate-disabled*)",
       "Edit(~/.claude/hooks/**)",
-      "Edit(~/.claude/settings.json)",
-      "Edit(~/.claude/state/**)",
-      "Edit(~/.claude/codex-advisor/**)"
+      "Edit(~/.claude/settings.json)"
     ],
     "defaultMode": "bypassPermissions"
   },
@@ -41,10 +39,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/code-quality-gate.sh",
-            "timeout": 120
+            "command": "/home/prop_/.claude/hooks/code-quality-gate.sh"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": []
       }
     ],
     "PreToolUse": [
@@ -53,9 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/git-policy-gate.sh",
-            "timeout": 30,
-            "statusMessage": "Checking production commit and protected-state policies"
+            "command": "/home/prop_/.claude/hooks/protected-path-gate.py"
           }
         ]
       },
@@ -66,9 +65,13 @@
             "type": "command",
             "command": "/home/prop_/.claude/hooks/rcf-intake-gate.sh",
             "timeout": 30,
-            "statusMessage": "Checking Repo Context Forge and preflight advice"
+            "statusMessage": "Checking Repo Context Forge intake gate"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": []
       }
     ],
     "SessionStart": [
@@ -83,25 +86,12 @@
         ]
       }
     ],
-    "PreCompact": [
-      {
-        "matcher": "manual|auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/prop_/.claude/hooks/pre-compact-flush.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/post-edit-blast-radius.sh",
-            "timeout": 30
+            "command": "/home/prop_/.claude/hooks/post-edit-blast-radius.sh"
           }
         ]
       }
@@ -124,8 +114,5 @@
   "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
-  "theme": "light-daltonized",
-  "env": {
-    "REPO_PRODUCTION_ADVISOR_TRANSPORT": "wrapper-only"
-  }
+  "theme": "light-daltonized"
 }

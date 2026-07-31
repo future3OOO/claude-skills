@@ -42,12 +42,6 @@ def read_git_file(repo: Path, ref: str, rel_path: str) -> str | None:
     return res.stdout if res.returncode == 0 else None
 
 
-def read_index_file(repo: Path, rel_path: str) -> str | None:
-    """Read the exact blob currently staged for *rel_path*."""
-    res = run_git(repo, ["show", f":{rel_path}"])
-    return res.stdout if res.returncode == 0 else None
-
-
 def parse_status_paths(raw: str) -> tuple[set[str], set[str]]:
     changed: set[str] = set()
     untracked: set[str] = set()
@@ -89,9 +83,7 @@ def parse_numstat(raw: str) -> list[Numstat]:
     return records
 
 
-def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False) -> dict[str, object]:
-    if staged_only:
-        return _collect_index_scope(repo, base_ref)
+def collect_scope(repo: Path, base_ref: str | None) -> dict[str, object]:
     status_changed, untracked = parse_status_paths(
         git_text(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
     )
@@ -122,48 +114,7 @@ def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False
             base_for_file = "HEAD~1"
 
     changed |= untracked
-    return _scope(
-        base_ref or "",
-        base_for_file,
-        changed_scope,
-        changed,
-        untracked,
-        "\n".join(raw_diffs),
-        numstats,
-        [],
-        candidate_source="worktree",
-        candidate_tree="",
-    )
-
-
-def _collect_index_scope(repo: Path, base_ref: str | None) -> dict[str, object]:
-    """Collect a scope whose diff and file contents come only from the Git index."""
-    if not base_ref:
-        return _scope("", "", "index-tree:unresolved", set(), set(), "", [], ["staged-only mode requires --base-ref"], candidate_source="index", candidate_tree="")
-    if not git_ok(repo, ["rev-parse", "--verify", f"{base_ref}^{{commit}}"]):
-        return _scope(base_ref, base_ref, f"index-tree:{base_ref}...unresolved", set(), set(), "", [], [f"base-ref not found: {base_ref}"], candidate_source="index", candidate_tree="")
-    tree = git_text(repo, ["write-tree"]).strip()
-    if not tree:
-        return _scope(base_ref, base_ref, f"index-tree:{base_ref}...unresolved", set(), set(), "", [], ["git write-tree failed"], candidate_source="index", candidate_tree="")
-    # Diff the captured tree, not the live index: `--cached` re-reads whatever
-    # is staged now, so a concurrent stage could be evaluated as if it were the
-    # candidate that gets authorised.
-    diff_args = ["diff", "--no-color", base_ref, tree]
-    changed = parse_name_only(git_text(repo, [*diff_args, "--name-only"]))
-    raw_diff = git_text(repo, [*diff_args, "--unified=0"])
-    numstats = parse_numstat(git_text(repo, [*diff_args, "--numstat"]))
-    return _scope(
-        base_ref,
-        base_ref,
-        f"index-tree:{base_ref}...{tree}",
-        changed,
-        set(),
-        raw_diff,
-        numstats,
-        [],
-        candidate_source="index",
-        candidate_tree=tree,
-    )
+    return _scope(base_ref or "", base_for_file, changed_scope, changed, untracked, "\n".join(raw_diffs), numstats, [])
 
 
 def _scope(
@@ -175,9 +126,6 @@ def _scope(
     raw_diff: str,
     numstats: list[Numstat],
     errors: list[str],
-    *,
-    candidate_source: str = "worktree",
-    candidate_tree: str = "",
 ) -> dict[str, object]:
     return {
         "base_ref": base_ref,
@@ -188,6 +136,4 @@ def _scope(
         "raw_diff": raw_diff,
         "numstats": numstats,
         "errors": errors,
-        "candidate_source": candidate_source,
-        "candidate_tree": candidate_tree,
     }

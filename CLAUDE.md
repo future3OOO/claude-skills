@@ -21,20 +21,9 @@ Minimum code that solves the problem. Nothing speculative.
 - No abstractions for single-use code.
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
-- Apply the canonical imaginary-risk ban below; do not turn an unobserved failure mode into code.
+- No engineering for theoretical risks: a theoretical risk with no demonstrated failure is a report line, not a system.
 - If you write 200 lines and it could be 50, rewrite it.
 - Ask yourself: "would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 2A. Hard Production Invariants
-
-These are the canonical lead-context statements. Skills may point here and add local procedure, but may not weaken, reinterpret, or duplicate these contracts. The isolated advisor delegate receives one necessary copy from its wrapper because it does not inherit this context.
-
-<!-- HARD_INVARIANT_REAL_SEAM -->
-- **Mock ban.** Tests, smokes, and verification must cross the real production Interface/Seam. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. If the real seam cannot be driven, report the proof gap instead of manufacturing green evidence.
-<!-- HARD_INVARIANT_DEMONSTRATED_RISK -->
-- **Imaginary-risk ban.** An undemonstrated theoretical failure may be reported, but it cannot justify guards, fallbacks, retries, configuration, abstractions, or code. Require a verified mechanism and demonstrated occurrence before changing production behavior.
-<!-- HARD_INVARIANT_ROOT_CAUSE -->
-- **Root-cause-first gate.** For a bug, regression, flaky failure, or performance regression, no production fix begins until the symptom is reproduced, the source trigger is traced, and the proposed cause is stated as a falsifiable hypothesis. Fix the source, not the visible symptom.
 
 ## 3. Surgical Changes
 
@@ -119,8 +108,8 @@ The full chain, in order — every named skill is INVOKED with the Skill tool by
 Invocation policy:
 
 - Escalate to `repo-large-implementation` for large planned work: anything likely to span multiple PRs, need a tracked governing artifact, or exceed the review budget. It pairs `delivery-governance` with `execution-planning`, then returns to `repo-production-workflow` for each execution pass.
-- Use `diagnose` before fixing bugs, failures, flaky behavior, or performance regressions; the canonical root-cause-first gate above governs the pass.
-- Use `tdd` for behavior changes where a public-Interface failing test is practical; name the real production Seam and apply the canonical mock ban above without exception.
+- Use `diagnose` before fixing bugs, failures, flaky behavior, or performance regressions; no fix until root cause is reproduced, traced, and stated as a testable hypothesis.
+- Use `tdd` for behavior changes where a public-Interface failing test is practical; tests and smokes must consume the REAL seam — fabricating a mock gateway, frame, or interface so a test passes is fake-green and forbidden. If the real seam cannot be driven, surface that as a finding.
 - Skill invocation is per execution pass, not per session: every new PR slice, bug fix, or review-fix round re-invokes the `repo-production-workflow` cycle. Compaction or resume notes never waive re-invocation for a new pass.
 - Do not bypass `repo-production-workflow` by jumping from Repo Context Forge straight to edits.
 - Do not re-invoke `execution-planning` for an execution-only pass when a governing artifact exists; execute against it and keep its checklist current.
@@ -164,16 +153,17 @@ Governance docs that change agent behavior, such as `CLAUDE.md`,
 `AGENTS.md`, or `docs/agents/`, should also run `code-review` before handoff;
 trivial docs edits can stay on the lightweight path.
 
-Use one stable task slug for the full pass. Begin its continuously written state, then run the installed bootstrap wrapper with the same slug:
+Use the installed bootstrap wrapper via the `Bash` tool:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" begin \
-  --repo "$PWD" --slug "<stable-task-slug>" --intent "<user request>"
-python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
-  --repo "$PWD" --workflow-slug "<stable-task-slug>" --intent "<user request>"
+python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD"
 ```
 
-Every owned workflow helper updates this pass atomically as gates and artifacts change. `PreCompact` only flushes existing state; it never invents a passed gate.
+If the user describes planned work before files have changed, include the task intent:
+
+```bash
+python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD" --intent "<user request>"
+```
 
 The output must begin with `REPO_CONTEXT_FORGE_REQUIRED_INTAKE`. Treat that intake and the following packet as the initial repository context. If the packet emits a blocker, stop normal repo analysis and surface the blocker; do not continue with empty target context.
 
@@ -216,4 +206,4 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 
 ### Hooks
 
-Hook configuration lives in `~/.claude/settings.json`. One Bash `PreToolUse` process preserves a shell-level non-Git fast bail, then runs the shared Git classifier once and applies separate RepoForge and challenge policies. Ambiguous plausible commits, malformed commit-bearing payloads, unresolved repository identity, internal gate errors, and missing or mismatched required artifacts block with exit 2; docs-only and non-repo commands remain exempt. Exact-tree binding uses design (a): stage in one Bash call, record evidence for the resulting `git write-tree`, then run plain `git commit` in a separate call. Combined stage-and-commit commands, `commit -a`/`--all`, and commit pathspecs are blocked. The edit gate additionally requires current packet/GitNexus evidence and pass-bound preflight advice or its audited exception. `PostToolUse` runs non-authorizing quality checks; the exact staged tree receives commit-authorizing evidence only from the controlled recorder. `PreCompact` flushes existing pass state, `SessionStart` re-arms the complete chain and bounded state summary, and the non-blocking `Stop` hook returns structured changed-file and caller/callee context with unavailable checks reported as unknown. Native MCP calls are not covered by Bash hooks; rely on the search flow above for those.
+Hook configuration lives in `~/.claude/settings.json`. The `PostToolUse` hook runs `code-quality-gate.sh` after `Edit`, `Write`, and `NotebookEdit` calls. The `PreToolUse` `rcf-intake-gate.sh` hook BLOCKS code edits inside git repos on three tiers: no Repo Context Forge intake in the session transcript; for GitNexus-indexed repos, no `mcp__gitnexus__*` call yet in the session; and a stale index (`.gitnexus/meta.json.lastCommit` != HEAD). Docs `*.md`, scratch, and non-repo paths are exempt; kill switch: `~/.claude/hooks/rcf-gate-disabled`. `SessionStart` hooks re-inject per-pass skill discipline after compaction/resume and surface an active `CLAUDE_CODE_SUBAGENT_MODEL` override at startup. Native MCP tool calls (such as `fff`) are not covered by Bash hooks; rely on the search flow above for those.

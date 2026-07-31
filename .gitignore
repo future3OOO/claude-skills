@@ -14,6 +14,3 @@ __pycache__/
 .claude/
 .gitnexus/
 .soulforge/
-
-# Delivery artifacts, not estate content.
-*.zip

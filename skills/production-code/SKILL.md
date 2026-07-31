@@ -6,17 +6,20 @@ description: Enforce production-only implementation standards for this repo. Use
 # Production Code
 
 Apply this skill before writing any repository code or file content change, keep it active while implementing, and run its bundled gate before finalizing.
-Use the production-preflight skill first on before-edit turns that require explicit preflight. `code-quality` owns the seven quality principles and wins on conflict; this skill extends them with implementation procedure.
+Use the production-preflight skill first on before-edit turns that require explicit preflight.
 
-Before editing, use the standards below to choose the smallest production-safe implementation path. The bundled gate remains non-mutating. For ordinary feedback run it directly; after staging the exact commit candidate, use the evidence recorder so commit authorization is bound to `git write-tree`:
+Before editing, use the standards below to choose the smallest production-safe implementation path. After editing, run the bundled generic gate from the target repo before finalizing (via the Bash tool):
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" check --repo "$PWD"
-python3 "$HOME/.claude/skills/production-code/scripts/record_quality_evidence.py" \
-  --repo "$PWD" --base-ref <ref> --mode commit
 ```
 
-The recorder automatically consumes the active pass's Repo Context Forge packet and GitNexus evidence when present. Load [references/gate-policy.md](references/gate-policy.md) when interpreting its JSON contract.
+Use `--base-ref <ref>` for PR or branch work when a review base is known.
+When Repo Context Forge or GitNexus evidence is already available, pass it into the gate instead of forcing a new artifact:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" check --repo "$PWD" --repo-context-packet <path-or-> --gitnexus-context-json <path-or->
+```
 
 ## Core Standard
 
@@ -43,14 +46,14 @@ The recorder automatically consumes the active pass's Repo Context Forge packet 
 - Keep private helpers behind the existing module interface unless preflight justifies a new public seam.
 - Preserve direct data flow.
 - Keep I/O and control flow explicit and traceable.
-- Apply the canonical mock ban and fake-green rules in `~/.claude/CLAUDE.md`; no local procedure creates an exception.
+- Never fake green.
 - Never use `|| true`, swallow-and-continue flows, blanket catch/pass, or suppression that hides a real failure.
 - Never leave `TODO`, `FIXME`, `HACK`, placeholder stubs, dummy implementations, fake adapters, or temporary bypasses in shippable code.
 - Treat uncertainty as a stop-and-verify condition, not a reason to guess.
 - Treat review comments as evidence to verify against the code and contract, not authority to obey blindly.
-- Apply the canonical imaginary-risk ban in `~/.claude/CLAUDE.md` before adding any guard, fallback, retry, configuration, abstraction, or code.
+- Do not engineer for theoretical risks: a theoretical risk with no demonstrated failure is a report line, not a system. No guards, fallbacks, retries, or configuration for failures nobody has demonstrated.
 - Stay on task: if the cumulative diff grows past roughly 3× what the task implies, stop and justify the overrun before continuing.
-- For behavior proof invoke `tdd`; the canonical mock ban governs every claimed RED/GREEN result.
+- Tests in the changed surface must cross real production seams; never add mock, stub, fake-collaborator, or fixture-only tests (the tdd skill owns the full rules).
 
 ## Data, Types, and Boundaries
 
@@ -61,9 +64,17 @@ The recorder automatically consumes the active pass's Repo Context Forge packet 
 - Do not pass raw provider payloads deeper into the system.
 - Do not silently default required fields.
 
-## Stack-Specific Rules
+## TypeScript Rules
 
-For TypeScript or JavaScript changes, load and apply [references/typescript.md](references/typescript.md). Do not load that reference for unrelated stacks.
+- Keep strict TypeScript enabled.
+- Require `strict: true`, `noImplicitAny: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, and `useUnknownInCatchVariables: true`.
+- Do not use `any`.
+- Do not use `// @ts-ignore`, `// @ts-expect-error`, or `eslint-disable` unless explicitly documented in `DECISIONS.md`.
+- Do not use broad `unknown as X` casts as a shortcut.
+- Do not use non-null assertions on external or persisted data.
+- Prefer explicit narrowing and exhaustiveness over assertion chains.
+- Use exhaustive `switch` statements for state machines and discriminated unions.
+- Make unreachable defaults fail closed.
 
 ## State Mutation Discipline
 
@@ -88,7 +99,21 @@ Keep this proportional for ordinary work, but do not skip it.
 
 ## Transaction-System Rewalk Rule
 
-For transaction-sensitive work, load and apply [references/transaction-doctrine.md](references/transaction-doctrine.md). Production-code owns the second rewalk against the implemented tree and must not call the change complete until every canonical proof requirement matches the preflight map.
+When a change touches claim tokens, leases, compare-and-set/version fields, transition helpers, or replay/finalize/recovery semantics:
+
+- re-walk the full affected transaction system before treating the fix as complete
+- do not model the issue as only the local file or record named in the review comment
+- re-check adjacent interleavings that can cross the mutation boundary after prepare but before finalize
+- re-check projection, replay, recovery, and no-op paths that share helpers or state fields
+- do not reuse one helper for real mutation and projection/recovery semantics when their invariants differ
+- do not treat resolved review threads as proof
+
+Required proof for transaction-sensitive work:
+
+- one combined workflow proof over the affected surface
+- focused invariant checks for adjacent no-change surfaces
+- focused invariant checks should usually cross at least one adjacent dependency or state boundary unless the change is a genuinely pure helper
+- at least one proof that stale or secondary execution cannot reach the real external mutation boundary
 
 ## Retries, Cleanup, and Dependencies
 
@@ -132,11 +157,22 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
 - Add explicit tests for critical control loops even if coverage already passes.
 - For every code change, proof must cover the real affected surface rather than only the local branch or helper.
 - For transaction-sensitive work, add one combined workflow proof plus sharp invariant checks; local branch-only tests are not enough on their own.
-- For bugs and regressions, compare the implementation to the canonical root-cause-first gate and the `/diagnose` trace.
+- Fix root causes, not symptoms.
 - Do not mark work done while blockers, follow-ups, dead-letter gaps, retry gaps, or state-regression risks remain.
 - Do not present PR remediation as complete while the fix exists only locally or while review threads were resolved ahead of the pushed fix.
 - Closure notes must include: summary, commands run, key outcomes, test classes exercised, and blockers or follow-ups.
 
 ## Bundled Gate Policy
 
-Load [references/gate-policy.md](references/gate-policy.md) when running or interpreting the bundled gate. The gate is non-mutating; tree-bound persistence belongs to `record_quality_evidence.py`.
+The script is generic and risk-calibrated across JavaScript, TypeScript, Python, shell, and common source files.
+
+- Hard failures include merge conflict markers, temporary artifacts, duplicate added blocks, high-confidence reimplementation of existing helpers or loops, fake-green suppressions, empty or broad catch/pass patterns, unsafe `any`/cast shortcuts, TODO/FIXME/HACK in changed source, and high-confidence bloat.
+- Quality escape checks are path-aware: production source stays strict on `Any`/`any`, casts, suppressions, broad catch/pass, TODO/FIXME/HACK, and fake-green patterns; test source may use ordinary `Any` annotations for fakes but still fails fake-green suppressions, broad catch/pass, TODO/FIXME/HACK, and `|| true`.
+- Reuse detection is candidate-first and indexes only relevant tracked production source. It skips tests/fixtures/generated paths, suppresses likely moves/refactors, and treats generic names such as `handler`, `main`, and `run` as insufficient by themselves.
+- Reuse warnings must be actionable. Weak single-token, cross-domain, or action-only name overlaps are suppressed rather than reported as speculative work.
+- Duplicate and bloat reporting is de-noised: repeated rolling-window matches are grouped, and each bloated file reports the most specific growth error instead of overlapping generic errors.
+- Optional `--repo-context-packet <path|->` and `--gitnexus-context-json <path|->` inputs can raise confidence for already-identified affected files or caller-backed symbols. The gate still remains non-mutating and writes no reports, caches, or repository artifacts.
+- The gate includes benchmark-calibrated implementation budget tests. They hard-fail clear outliers and require explicit justification for future module, function, or total implementation growth above review-trigger thresholds.
+- Bloat checks apply to changed production source only. They warn before hard-failing moderate growth, hard-fail very large new files, and force already-large files to avoid further growth.
+- The gate emits six hard-rule results: `codeVolume`, `noDuplication`, `shortestPath`, `cleanup`, `anticipateConsequences`, and `simplicity`.
+- Legacy debt outside the changed scope should not block this gate; touched debt should be fixed unless it is clearly outside the requested change and safer to report as a blocker.
