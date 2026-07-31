@@ -87,7 +87,7 @@ Invariants:
   "$base_sha"`;
 - inspect source additions/deletions and verify they stay under 1,000 net;
 - wait for current-head CI and reviewer signals before merge;
-- after the sixth merge, remove temporary delivery-only files, compare the
+- after the ninth merge, remove temporary delivery-only files, compare the
   resulting tree with `fe2ee59`, account explicitly for this plan and the
   recorded quality-gate and pass-transition corrections, then rerun the full
   integrated suite.
@@ -96,16 +96,18 @@ Invariants:
 
 - [x] Record the recovery plan and freeze `fe2ee59` as the behavior reference.
 - [x] Build, verify, publish, review, and merge slice 1.
-- [ ] Build, verify, publish, review, and merge slice 2 (in progress).
-- [ ] Build, verify, publish, review, and merge slice 3.
-- [ ] Build, verify, publish, review, and merge slice 4.
+- [x] Build, verify, publish, review, and merge slice 2.
+- [x] Build, verify, publish, review, and merge slice 3.
+- [ ] Build, verify, publish, review, and merge slice 4 (in progress).
 - [ ] Build, verify, publish, review, and merge slice 5.
-- [ ] Rebase PR #2 onto the merged prerequisites and reduce it to slice 6.
-- [ ] Prove the final tree, close the current-head reviewer loop, and merge
-  PR #2.
+- [ ] Build, verify, publish, review, and merge slice 6.
+- [ ] Build, verify, publish, review, and merge slice 7.
+- [ ] Build, verify, publish, review, and merge slice 8.
+- [ ] Rebase PR #2 onto the merged prerequisites, reduce it to slice 9, prove
+  the final tree, close the current-head reviewer loop, and merge PR #2.
 
 ## Regroup rule
 
 Stop and consolidate rather than stacking if a slice exceeds 1,000 net source
 lines, needs a second significant rewrite, or makes an intermediate operator
-contract false. Keep deploy/adoption frozen until all six slices are merged.
+contract false. Keep deploy/adoption frozen until all nine slices are merged.
