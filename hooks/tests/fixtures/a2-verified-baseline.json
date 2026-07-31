@@ -1,0 +1,9 @@
+{
+  "description": "Verified pre-change A2 writer/reader key observations.",
+  "cases": [
+    {"cwd": "absolute-root", "result": "MATCH"},
+    {"cwd": "absolute-subdirectory", "result": "MISMATCH"},
+    {"cwd": "relative-path", "result": "MISMATCH"},
+    {"cwd": "symlink-path", "result": "MISMATCH"}
+  ]
+}

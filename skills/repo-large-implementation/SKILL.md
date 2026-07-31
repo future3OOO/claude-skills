@@ -50,22 +50,7 @@ For stateful or control-loop work, use the full transaction-sensitive form below
 
 ## Transaction-Sensitive Work
 
-Treat the work as transaction-sensitive when it changes any mutation boundary such as:
-
-- claim or lease fields
-- compare-and-set or version preconditions
-- transition helpers or transaction entrypoints
-- replay, finalize, recovery, or projection behavior that reuses mutation helpers
-
-For transaction-sensitive work, the governing artifact must define:
-
-- authoritative records mutated together
-- the real mutation boundary, not just the cited file
-- adjacent interleavings that must be re-walked
-- projection, replay, recovery, and no-op paths that share the same helpers or fields
-- one combined workflow proof plus focused invariant checks
-
-Do not accept a review-local remediation plan that only mirrors the named comment.
+Load and apply the [canonical transaction doctrine](../production-code/references/transaction-doctrine.md) whenever the work changes a mutation boundary or shared replay/projection/recovery behavior. This skill owns only the governing-artifact consequence: each PR slice must name the canonical transaction fields and proof it owns, and no review-local plan may narrow that surrounding surface.
 
 ## Repo-Specific Rules
 

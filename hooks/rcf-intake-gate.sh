@@ -1,128 +1,181 @@
 #!/usr/bin/env python3
-# PreToolUse(Edit|Write|NotebookEdit) gate for code edits inside git repos.
-# Enforces, in order:
-#   1. A Repo Context Forge intake exists in this session's transcript.
-#   2. For GitNexus-indexed repos (.gitnexus/meta.json at repo root):
-#      a. at least one mcp__gitnexus__* tool call exists in the transcript
-#         (seam/impact anchoring before code edits);
-#      b. the index is at the current HEAD (lastCommit == git rev-parse HEAD),
-#         so edits never proceed against a stale graph.
-# Docs (*.md etc), scratch/tmp, .claude, and non-repo paths are exempt — the
-# docs-only path in CLAUDE.md does not require the intake.
-# Kill switch: touch ~/.claude/hooks/rcf-gate-disabled
+"""PreToolUse(Edit|Write|NotebookEdit) production-intake gate."""
+from __future__ import annotations
+
 import json
-import os
-import subprocess
 import sys
+from pathlib import Path
 
-if os.path.isfile(os.path.expanduser("~/.claude/hooks/rcf-gate-disabled")):
-    sys.exit(0)
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 try:
-    payload = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-
-tool_input = payload.get("tool_input") or {}
-path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
-if not path:
-    sys.exit(0)
-
-norm = path.replace("\\", "/")
-exempt_suffixes = (".md", ".markdown", ".txt", ".rst")
-exempt_parts = ("/.claude/", "/scratchpad/", "/.scratch/", "/memory/", "/.gitnexus/")
-if (norm.lower().endswith(exempt_suffixes)
-        or any(part in norm for part in exempt_parts)
-        or norm.startswith("/tmp")):
-    sys.exit(0)
-
-probe = os.path.dirname(norm) or "/"
-while probe and probe != "/" and not os.path.isdir(probe):
-    probe = os.path.dirname(probe)
+    from hooks.lib.evidence_lifecycle import EvidenceError, EvidenceMissing, PassUpdate, update_pass  # noqa: E402
+    from hooks.lib.evidence_validation import (  # noqa: E402
+        validate_preflight_advice,
+        validate_preflight_skip,
+        validate_repoforge,
+    )
+    from hooks.lib.hook_input import HookInputError, read_hook_input  # noqa: E402
+    from hooks.lib.repo_identity import NotGitRepository, RepoIdentity, resolve_repo_identity  # noqa: E402
+    from hooks.lib.state_store import is_reviewable_path  # noqa: E402
+except Exception as exc:
+    print(f"rcf-intake-gate.sh import failure: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(2)
 
 
-def git(*args):
+def _deny(reason: str) -> int:
+    print(reason, file=sys.stderr)
+    return 2
+
+
+def _nearest_existing(path: str) -> Path:
+    candidate = Path(path).expanduser()
+    probe = candidate if candidate.is_dir() else candidate.parent
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe
+
+
+INTAKE_MARKER = "REPO_CONTEXT_FORGE_REQUIRED_INTAKE"
+
+
+def _command_output_text(event: object) -> list[str]:
+    """Text this transcript event received as real command output.
+
+    The marker leaks into a transcript whenever a file containing it is edited
+    or quoted, so only genuine output counts: Bash stdout and tool_result
+    blocks. Tool INPUTS, patch echoes and typed prompts prove nothing.
+    """
+    texts: list[str] = []
+    stack: list[object] = [event]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            result = value.get("toolUseResult")
+            if isinstance(result, dict) and isinstance(result.get("stdout"), str):
+                texts.append(result["stdout"])
+            if value.get("type") == "tool_result":
+                content = value.get("content")
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    texts.extend(item.get("text", "") for item in content if isinstance(item, dict))
+            for key, child in value.items():
+                if key not in {"toolUseResult", "input"}:
+                    stack.append(child)
+        elif isinstance(value, list):
+            stack.extend(value)
+    return texts
+
+
+def _gitnexus_call_targets_repo(line: str, targets: frozenset[str]) -> bool:
+    # A gitnexus call only counts when a parsed tool_use event targets THIS
+    # repository; substring pairs are spoofable by lines that merely mention
+    # both tokens, sibling result echoes can replicate name/input without
+    # being a call, and calls against another repo (for example a cache-owned
+    # analysis worktree) satisfied the old name-only scan while resolving
+    # nothing here. Unparseable lines never count.
     try:
-        return subprocess.run(
-            ["git", "-C", probe or "/", *args],
-            capture_output=True, text=True, timeout=10,
-        ).stdout.strip()
-    except Exception:
-        return ""
+        event = json.loads(line)
+    except ValueError:
+        return False
+    stack: list[object] = [event]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            name = value.get("name")
+            if value.get("type") == "tool_use" and isinstance(name, str) and name.startswith("mcp__gitnexus__"):
+                payload = value.get("input")
+                if isinstance(payload, dict) and payload.get("repo") in targets:
+                    return True
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return False
 
 
-if git("rev-parse", "--is-inside-work-tree") != "true":
-    sys.exit(0)
-
-
-def deny(reason):
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }))
-    sys.exit(0)
-
-
-transcript = payload.get("transcript_path") or ""
-if not transcript or not os.path.isfile(transcript):
-    sys.exit(0)
-
-saw_intake = False
-saw_gitnexus = False
-try:
-    with open(transcript, "r", errors="ignore") as fh:
-        for line in fh:
-            if not saw_intake and "REPO_CONTEXT_FORGE_REQUIRED_INTAKE" in line:
-                saw_intake = True
-            if not saw_gitnexus and (
-                    '"name":"mcp__gitnexus__' in line
-                    or '"name": "mcp__gitnexus__' in line):
-                saw_gitnexus = True
+def _transcript_markers(path: str, identity: RepoIdentity) -> tuple[bool, bool]:
+    saw_intake = False
+    saw_gitnexus = False
+    # Only the canonical root identifies the repository; two checkouts can
+    # share a basename and would otherwise satisfy each other's evidence.
+    targets = frozenset({str(identity.root)})
+    with Path(path).open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not saw_intake and INTAKE_MARKER in line:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    event = None
+                saw_intake = any(INTAKE_MARKER in text for text in _command_output_text(event))
+            if not saw_gitnexus and ('"name":"mcp__gitnexus__' in line or '"name": "mcp__gitnexus__' in line):
+                saw_gitnexus = _gitnexus_call_targets_repo(line, targets)
             if saw_intake and saw_gitnexus:
                 break
-except Exception:
-    sys.exit(0)
+    return saw_intake, saw_gitnexus
 
-if not saw_intake:
-    deny(
-        "BLOCKED by rcf-intake-gate: no Repo Context Forge intake in this session, "
-        "and this is a code edit inside a git repository. Run the workflow first: "
-        "python3 \"$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py\" --repo \"$PWD\" "
-        "(add --intent \"<task>\" for planned work), then packet GitNexus checks, "
-        "production-preflight, and production-code before editing. Docs-only *.md edits "
-        "are exempt. Do not work around this gate; run the intake."
+
+def _run() -> int:
+    try:
+        payload = read_hook_input(sys.stdin)
+    except HookInputError as exc:
+        return _deny(f"Malformed hook input cannot authorize a production edit: {exc}")
+    if not isinstance(payload, dict):
+        return _deny("Edit hook input is not a JSON object.")
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return _deny("Edit tool_input is malformed.")
+    target = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if not isinstance(target, str) or not target:
+        return _deny("Edit tool input has no valid target path.")
+    if not is_reviewable_path(target):
+        return 0
+    try:
+        identity = resolve_repo_identity(_nearest_existing(target))
+    except NotGitRepository:
+        return 0
+    # Intake, packet evidence and preflight advice are required in EVERY git
+    # repository. Only the GitNexus-specific checks depend on an index existing.
+    indexed = (identity.root / ".gitnexus").is_dir()
+    transcript = payload.get("transcript_path")
+    if not isinstance(transcript, str) or not Path(transcript).is_file():
+        return _deny("Session transcript is unavailable, so intake and advisor evidence cannot be verified.")
+    saw_intake, saw_gitnexus = _transcript_markers(transcript, identity)
+    if not saw_intake:
+        return _deny("No Repo Context Forge intake marker exists in this session.")
+    if indexed and not saw_gitnexus:
+        return _deny("No packet-scoped GitNexus context/impact call targeting this repository exists in this session.")
+    try:
+        validate_repoforge(identity)
+        try:
+            validate_preflight_advice(identity)
+            advisor_status = "passed"
+        except EvidenceMissing:
+            # Only an ABSENT attestation may fall back to the audited skip; a
+            # stale, malformed or mismatched one must block.
+            validate_preflight_skip(identity)
+            advisor_status = "skipped"
+    except EvidenceError as exc:
+        return _deny(f"Repo Context Forge or preflight-advice evidence is missing, stale, malformed, or mismatched: {exc}")
+    update_pass(
+        identity,
+        PassUpdate(
+            phase="production-code",
+            next_action="tdd-or-production-code",
+            gates={"repoContextForge": "passed", "gitnexus": "passed" if indexed else "not-indexed", "preflightAdvice": advisor_status, "editIntake": "passed"},
+        ),
     )
+    return 0
 
-repo_root = git("rev-parse", "--show-toplevel")
-meta_path = os.path.join(repo_root, ".gitnexus", "meta.json") if repo_root else ""
-if not meta_path or not os.path.isfile(meta_path):
-    sys.exit(0)
 
-if not saw_gitnexus:
-    deny(
-        "BLOCKED by rcf-intake-gate: this repo is GitNexus-indexed but no "
-        "mcp__gitnexus__* tool call exists in this session. Before code edits, run "
-        "the packet-listed GitNexus required checks (mcp__gitnexus__context / "
-        "mcp__gitnexus__impact on the symbols and seams you will touch or consume). "
-        "New files consuming an internal seam require mcp__gitnexus__context on that "
-        "seam first. Do not work around this gate; run the checks."
-    )
+def main() -> int:
+    try:
+        return _run()
+    except Exception as exc:
+        return _deny(f"Production intake gate internal error: {type(exc).__name__}: {exc}")
 
-try:
-    indexed = json.load(open(meta_path)).get("lastCommit", "")
-except Exception:
-    sys.exit(0)
-head = git("rev-parse", "HEAD")
-if indexed and head and indexed != head:
-    deny(
-        "BLOCKED by rcf-intake-gate: the GitNexus index is STALE — indexed commit "
-        f"{indexed[:8]} but HEAD is {head[:8]}. Reindex before code edits so graph "
-        "evidence matches the current PR head: run "
-        "`gitnexus analyze --skip-agents-md .` from the repo root, verify with "
-        "`gitnexus status`, then retry the edit."
-    )
 
-sys.exit(0)
+if __name__ == "__main__":
+    raise SystemExit(main())

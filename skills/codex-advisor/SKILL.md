@@ -40,8 +40,25 @@ SEPARATE files, and never wrap it in `timeout`:
   -- "Question: ..." > /tmp/scratch/advisor.out 2> /tmp/scratch/advisor.err
 ```
 
+Let the Bash tool do the backgrounding. Do NOT add `nohup`, `&`, or any other
+detach: the completion signal then reports the launcher exiting, not the
+consult, and a buffering run becomes indistinguishable from a dead one.
+
 A consult typically runs 2-15 minutes and **buffers**: an in-flight run writes
 zero bytes. Zero output is not failure — judge only after the process exits.
+Size alone never decides: a buffering run and a dead one both show zero bytes,
+so read the stderr marker. On failure the wrapper discards the delegate's
+stdout, so the diagnosis is the stderr `error:` line, not the output file.
+
+A resumed session that has accumulated earlier rounds can exhaust the model's
+context window; the wrapper reports it as a nonzero status. Carry that consult
+on `codex exec`, which compacts where the wrapper's session cannot — the one
+sanctioned exception in `PLUGIN-DECISION.md`, and operator-invoked only. Pass
+`-o/--output-last-message FILE` or the final answer never reaches stdout, then
+record the result with `advisor-state.py record --output FILE` so the round is
+attested. `--fresh` also clears the overflow but discards the session
+continuity that reusing one slug exists to preserve. The plugin and Agent tool
+stay banned, and the wrapper never chains to another transport itself.
 
 The model is pinned by the claudex alias (`gpt-5.6-sol`) and echoed in the
 session marker. Reasoning depth is NOT settable per consult: `claude -p`
@@ -86,14 +103,13 @@ role prompt and the read-only tool policy remain necessary layers.
 The advisor is DIRECTED to load a per-checkpoint rubric read-only — before
 code: `/codebase-design` + `/tdd` + `/code-quality` (reuse-before-new is a
 before-code question — dropping it in a 2026-07-25 A/B measurably lost the
-"this duplicates existing delta logic" finding); before commit: `/code-review` (its smell
-baseline makes Fake Test and Imaginary Risk hard violations) +
+"this duplicates existing delta logic" finding); before commit: `/code-review` +
 `/codebase-design` + `/tdd` + `/code-quality` — and told not to load unrelated
-skills (permissive wording let an irrelevant skill hijack a consult). Two
-criteria are stated as hard rules in the role itself, not left to the rubric:
-a mock/stub/fixture-substitute collaborator is never proof, and an
-undemonstrated risk is at most a report line, never a required change. It
-must NOT invoke heavyweight execution skills or substitute workflows
+skills (permissive wording let an irrelevant skill hijack a consult). The
+wrapper contains the one isolated delegate copy of the canonical mock-ban,
+imaginary-risk, and root-cause-first criteria because the delegate does not
+inherit the lead's `CLAUDE.md`; no skill body adds another copy. It must NOT
+invoke heavyweight execution skills or substitute workflows
 (`repo-production-workflow`, Repo Context Forge bootstrap,
 `production-preflight`, `production-code`), spawn subagents, or delegate
 onward. It reports missing preflight or Module-shape evidence rather than
@@ -125,12 +141,16 @@ Claude's implementation hypothesis.
 
 ```bash
 ask-codex-advisor.sh --slug "<task>" --phase preflight-advice --cwd "$PWD" \
+  --repo-context-packet "<packet-path>" \
+  --gitnexus-context-json /tmp/scratch/gitnexus-context.json \
   -- "Question: Does the packet cover the slice, correct Seams, and correct surface area before preflight?"
 ```
 
 ### 2. After Code: Diff Challenge
 
-After proof, before commit or push, for non-trivial diffs.
+After proof, before every production-code commit or push. A fresh code-review
+artifact is additionally required for non-trivial diffs; trivial diffs still
+require this challenge or the owned audited exception.
 
 The wrapper attaches the live unstaged, staged, and base/branch diffs from
 `--cwd`. Do not paste a prose summary as evidence — the advisor critiques the
@@ -153,6 +173,18 @@ Expected challenge shape: Verdict (commit-ready | fix-before-commit |
 context-mismatch); slice reconciliation; TDD check; Module shape;
 minimality/bloat; regression risk; one exact next Action.
 
+On successful checkpoint completion the wrapper atomically writes a structured
+advisor attestation under the canonical per-repository state directory. The
+precommit attestation is bound to the current `git write-tree`; the terminal
+marker includes its attestation id and path. Agent-writable attestations are
+workflow evidence, not tamper-proof security objects.
+
+For `preflight-advice` only, an actual nonzero wrapper exit may create the
+pass-bound audited exception when the caller supplied
+`--skip-reason-on-unavailable`. Empty output, a missing terminal marker, a
+caller quoting error, or a hand-written state file is not an accepted skip. A
+precommit exception uses the one-use nonce helper owned by the workflow.
+
 On `context-mismatch`, fix `--cwd`, `--base-ref`, or branch state and re-ask.
 Do not act on the prior answer.
 
@@ -160,7 +192,8 @@ Do not act on the prior answer.
 
 One short stable slug per task (`issue354`, `telemetry`), reused across the
 before-code → before-commit pair so the challenge retains the original scope. Session ids
-live in `~/.claude/codex-advisor/<cwd-key>-<slug>.sid`.
+live under `~/.claude/state/<canonical-repo-key>/advisor/<slug>.sid`; non-repository
+consults use the explicitly separate `_advisor-nonrepo` state directory.
 
 Do not put phase words in the slug (`pre-commit`, `review`, `challenge`,
 `final`, `preflight`) — phase belongs in `--phase`. The wrapper warns.
@@ -169,16 +202,17 @@ Use `--fresh` only when the stored session is stale or intentionally reset.
 
 ## When To Ask
 
-- both production checkpoints above (mandatory for non-trivial diffs)
+- both production checkpoints above for production code (mandatory except through the owned audited exception paths)
 - architecture, migration, correctness, security, concurrency, idempotency,
   data-loss, or non-obvious PR risk
 - when the user asks for Codex, advisor mode, or a second opinion
 - when Claude is stuck after two focused attempts
 
-Skip for mechanical edits, formatting, obvious single-file fixes, and questions
-the test suite answers directly. Fix-only commits whose every change addresses
-an already-confirmed finding may skip the before-commit challenge; state the
-skipped round.
+Documentation-only and non-repository work use the workflow exemptions.
+A narrowly identified fix-only commit whose every change addresses an already-
+confirmed finding may use the one-use audited before-commit exception. Do not
+silently skip production checkpoints for formatting, mechanical, or single-file
+code changes.
 
 ## Prompt Contract
 

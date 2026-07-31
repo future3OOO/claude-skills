@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .checks import duplicate_added_blocks, evaluate_bloat, scan_quality_escapes
 from .context import GateContext
-from .git_scope import collect_scope, read_file
+from .git_scope import collect_scope
 from .inputs import parse_gitnexus_context_json, parse_repo_context_packet
 from .path_policy import is_binary_path, is_production_source_path, is_temp_artifact
 from .reuse import detect_reuse_issues
@@ -17,8 +17,9 @@ def check(
     fail_on_warnings: bool,
     repo_context_packet: str = "",
     gitnexus_context_json: str = "",
+    staged_only: bool = False,
 ) -> dict[str, object]:
-    scope = collect_scope(repo, base_ref)
+    scope = collect_scope(repo, base_ref, staged_only=staged_only)
     errors: list[str] = list(scope["errors"])
     warnings: list[str] = []
     changed_files: set[str] = set(scope["changed_files"])
@@ -26,7 +27,7 @@ def check(
     warnings.extend(gitnexus_warnings)
     ctx = GateContext.from_scope(repo, scope)
 
-    conflict_files, temp_files = _changed_file_failures(repo, changed_files)
+    conflict_files, temp_files = _changed_file_failures(ctx)
     quality_escapes = scan_quality_escapes(ctx)
     duplicates = duplicate_added_blocks(ctx)
     bloat_errors, bloat_warnings, bloat_details = evaluate_bloat(ctx)
@@ -46,9 +47,13 @@ def check(
 
     checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, bloat_errors, bloat_warnings)
     return {
+        "schemaVersion": 1,
+        "gateVersion": "2026-07-29.1",
         "ok": not errors,
         "repo": str(repo),
         "changedScope": scope["changed_scope"],
+        "candidateSource": scope["candidate_source"],
+        "candidateTree": scope["candidate_tree"] or None,
         "changedFilesCount": len(changed_files),
         "changedFilesSample": sorted(changed_files)[:30],
         "sourceFilesCount": len([path for path in changed_files if is_production_source_path(path)]),
@@ -83,13 +88,14 @@ def format_text(result: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _changed_file_failures(repo: Path, changed_files: set[str]) -> tuple[list[str], list[str]]:
+def _changed_file_failures(ctx: GateContext) -> tuple[list[str], list[str]]:
     conflict_files: list[str] = []
     temp_files: list[str] = []
-    for rel_path in sorted(changed_files):
-        if is_temp_artifact(rel_path) and (repo / rel_path).exists():
+    for rel_path in sorted(ctx.changed_files):
+        text = ctx.read_current(rel_path)
+        if is_temp_artifact(rel_path) and text is not None:
             temp_files.append(rel_path)
-        if not is_binary_path(rel_path) and (text := read_file(repo / rel_path)) and re.search(r"^<{7} |^={7}$|^>{7} ", text, re.M):
+        if not is_binary_path(rel_path) and text and re.search(r"^<{7} |^={7}$|^>{7} ", text, re.M):
             conflict_files.append(rel_path)
     return conflict_files, temp_files
 
@@ -154,10 +160,15 @@ def _hard_rules(checks: list[dict[str, object]]) -> dict[str, dict[str, object]]
     no_duplication = passed["no-duplicate-added-blocks"] and passed["reuse-existing-helpers"]
     shortest_path = passed["risk-calibrated-bloat"] and no_duplication
     return {
-        "codeVolume": {"passed": passed["risk-calibrated-bloat"], "checks": ["risk-calibrated-bloat"]},
-        "noDuplication": {"passed": no_duplication, "checks": ["no-duplicate-added-blocks", "reuse-existing-helpers"]},
-        "shortestPath": {"passed": shortest_path, "checks": ["risk-calibrated-bloat", "no-duplicate-added-blocks", "reuse-existing-helpers"]},
-        "cleanup": {"passed": passed["no-quality-escapes"] and passed["no-temp-artifacts"], "checks": ["no-quality-escapes", "no-temp-artifacts"]},
-        "anticipateConsequences": {"passed": passed["no-merge-conflict-markers"], "checks": ["no-merge-conflict-markers"]},
-        "simplicity": {"passed": shortest_path, "checks": ["risk-calibrated-bloat", "no-duplicate-added-blocks", "reuse-existing-helpers"]},
+        "codeVolume": {"status": "evaluated", "passed": passed["risk-calibrated-bloat"], "checks": ["risk-calibrated-bloat"]},
+        "noDuplication": {"status": "evaluated", "passed": no_duplication, "checks": ["no-duplicate-added-blocks", "reuse-existing-helpers"]},
+        "shortestPath": {"status": "evaluated", "passed": shortest_path, "checks": ["risk-calibrated-bloat", "no-duplicate-added-blocks", "reuse-existing-helpers"]},
+        "cleanup": {"status": "evaluated", "passed": passed["no-quality-escapes"] and passed["no-temp-artifacts"], "checks": ["no-quality-escapes", "no-temp-artifacts"]},
+        "noMergeConflictMarkers": {"status": "evaluated", "passed": passed["no-merge-conflict-markers"], "checks": ["no-merge-conflict-markers"]},
+        "consequenceCoverage": {
+            "status": "not_evaluated",
+            "passed": None,
+            "checks": [],
+            "reason": "requires caller-supplied contract and GitNexus impact evidence",
+        },
     }

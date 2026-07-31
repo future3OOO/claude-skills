@@ -9,7 +9,6 @@ repo, so this is the only version-controlled copy.
 | `skills/` | `~/.claude/skills/` |
 | `settings.json` | `~/.claude/settings.json` — permissions, model, hooks, effort |
 | `hooks/` | `~/.claude/hooks/` — the gates settings.json wires up |
-| `.githooks/` | Native Git hooks; see [ADOPTION.md](ADOPTION.md) |
 
 The live copies are authoritative. Edit those, then sync here and push.
 
@@ -20,11 +19,17 @@ rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' ~/.claude/skills/ sk
 rsync -a --delete ~/.claude/hooks/ hooks/
 cp ~/.claude/CLAUDE.md CLAUDE.md
 cp ~/.claude/settings.json settings.json
-git add skills hooks CLAUDE.md settings.json && git commit && git push
+git add skills hooks CLAUDE.md settings.json
+# separate calls: the gate refuses one command that both stages and creates a revision
+git commit
+git push
 ```
 
 Stage those paths explicitly rather than `git add -A`: a blanket add publishes
-whatever else happens to be in the working tree without review.
+whatever else happens to be in the working tree without review. Staging and
+committing must also be separate Bash calls: the PreToolUse gate binds evidence
+to the already-staged `git write-tree`, so it refuses a single command that both
+stages and creates a revision, the `-a`/`--all` forms, and pathspec arguments.
 
 ## Restore
 
@@ -42,6 +47,10 @@ restore, because a non-executable hook fails silently instead of gating.
 Restore deliberately omits `--delete`, so a live file with no counterpart here
 survives. That leaves stale files behind, which is the safer failure: deleting
 would destroy live work that was never mirrored. Prune those by hand.
+
+Restore repairs drift only. A versioned package replacement may delete files
+(removed hook libraries, for example), which a non-deleting copy cannot do —
+use `ADOPTION.md`, which owns the only delete-capable install and rollback.
 
 ## External dependencies
 

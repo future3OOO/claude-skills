@@ -1,5 +1,8 @@
 name: gate suite
 
+# The offline suite must be enforced by the repository, not asserted in a
+# document. The live-transcript corpus stage is operator-machine only, so CI
+# runs the fixture corpus, the lifecycle contracts, and the quality gate.
 on:
   pull_request:
   push:
@@ -10,19 +13,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Advisor wrapper contracts
-        run: bash skills/codex-advisor/tests/test-ask-codex-advisor.sh
-      - name: Commit approval contracts
-        run: python3 hooks/tests/test_commit_approval.py
-      - name: Protected path contracts
-        run: python3 hooks/tests/test_protected_path_gate.py
-      - name: Prove the repository-local hook is active
+        with:
+          # Full history so the gate can diff against the PR base; a shallow
+          # checkout leaves the changed set empty and the gate self-passes.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Configure git identity for harness repositories
         run: |
-          git config --local user.name "Hook Probe"
-          git config --local user.email "hook-probe@example.com"
-          git config --local core.hooksPath .githooks
-          if git commit --allow-empty -m hook-probe 2>hook-probe.err; then
-            echo "pre-commit hook did not refuse an unapproved commit" >&2
-            exit 1
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Gate Suite"
+      - name: Captured command corpus regression
+        run: python3 hooks/tests/corpus_regression.py
+      - name: Lifecycle and evidence contracts
+        run: python3 -u hooks/tests/test_contracts.py
+      - name: Production quality-gate suite
+        run: python3 -u skills/production-code/scripts/test_code_quality_gate.py
+      - name: Advisor wrapper contract suite
+        run: CLAUDE_HOME="$PWD" bash skills/codex-advisor/tests/test-ask-codex-advisor.sh
+      - name: Package gate against the pull-request delta
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -n "$base" ]; then
+            python3 skills/production-code/scripts/code_quality_gate.py check --repo . --base-ref "$base"
+          else
+            python3 skills/production-code/scripts/code_quality_gate.py check --repo . --base-ref "${{ github.event.before }}"
           fi
-          grep -q BLOCKED hook-probe.err

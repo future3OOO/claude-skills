@@ -11,7 +11,7 @@ When exploring the codebase, use the project's domain glossary to get a clear me
 
 ## Iron Law
 
-No fix until root cause is reproduced, traced, and stated as a testable hypothesis.
+The canonical root-cause-first gate in `~/.claude/CLAUDE.md` governs entry to a fix; this skill owns the reproduction, tracing, and hypothesis procedure.
 
 Seeing the symptom is not root cause. A stack trace line, failing assertion, or bad final state is the starting point. Trace the failure back to the original trigger before proposing code changes.
 
@@ -28,7 +28,7 @@ Spend disproportionate effort here. **Be aggressive. Be creative. Refuse to give
 3. **CLI invocation** with a fixture input, diffing stdout against a known-good snapshot.
 4. **Headless browser script** (Playwright / Puppeteer) — drives the UI, asserts on DOM/console/network.
 5. **Replay a captured trace.** Save a real network request / payload / event log to disk; replay it through the code path in isolation.
-6. **Throwaway harness.** Spin up a minimal subset of the system (one service, mocked deps) that exercises the bug code path with a single function call.
+6. **Throwaway harness.** Spin up the smallest real subset of the system that exercises the bug path. A temporary stand-in may isolate one diagnostic hypothesis only; label it non-proof, and never use it to satisfy RED/GREEN or production verification.
 7. **Property / fuzz loop.** If the bug is "sometimes wrong output", run 1000 random inputs and look for the failure mode.
 8. **Bisection harness.** If the bug appeared between two known states (commit, dataset, version), automate "boot at state X, check, repeat" so you can `git bisect run` it.
 9. **Differential loop.** Run the same input through old-version vs new-version (or two configs) and diff outputs.
@@ -87,7 +87,7 @@ Fix at the source, not where the error merely appears.
 
 If the trace is unclear, add targeted instrumentation before the dangerous operation or state transition. Include the relevant value, cwd/environment/config when relevant, and a stack trace or caller context. Tag temporary logs with a unique `[DEBUG-...]` marker.
 
-If tracing requires bouncing through scattered helpers/services/managers, tests need internal mocks, or no clean seam owns the behavior, record that as a module-shape risk, named with the Module / Interface / Seam / Depth vocabulary `/codebase-design` owns. After the immediate bug is understood, escalate to `/improve-codebase-architecture` — the skill that does the refactor — rather than normalizing the shallow path.
+If tracing requires bouncing through scattered helpers/services/managers, proof can reach the behavior only by replacing internal collaborators, or no clean seam owns the behavior, record that as a module-shape risk, named with the Module / Interface / Seam / Depth vocabulary `/codebase-design` owns. After the immediate bug is understood, escalate to `/improve-codebase-architecture` — the skill that does the refactor — rather than normalizing the shallow path.
 
 ### Targeted GitNexus Check
 

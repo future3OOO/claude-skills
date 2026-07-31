@@ -21,6 +21,11 @@ def main(argv: list[str]) -> int:
     check_parser.add_argument("--fail-on-warnings", action="store_true")
     check_parser.add_argument("--repo-context-packet", default="")
     check_parser.add_argument("--gitnexus-context-json", default="")
+    check_parser.add_argument(
+        "--staged-only",
+        action="store_true",
+        help="evaluate the exact Git index tree against --base-ref; ignore worktree-only content",
+    )
     args = parser.parse_args(argv)
 
     repo = Path(args.repo).resolve()
@@ -30,7 +35,16 @@ def main(argv: list[str]) -> int:
     root = Path(git_text(repo, ["rev-parse", "--show-toplevel"]).strip()).resolve()
     repo_context_packet, repo_context_error = read_optional_input(args.repo_context_packet)
     gitnexus_context_json, gitnexus_context_error = read_optional_input(args.gitnexus_context_json)
-    result = check(root, args.base_ref or None, args.fail_on_warnings, repo_context_packet, gitnexus_context_json)
+    if args.staged_only and not args.base_ref:
+        parser.error("--staged-only requires --base-ref")
+    result = check(
+        root,
+        args.base_ref or None,
+        args.fail_on_warnings,
+        repo_context_packet,
+        gitnexus_context_json,
+        args.staged_only,
+    )
     optional_errors = [error for error in (repo_context_error, gitnexus_context_error) if error]
     if optional_errors:
         result["warnings"] = [*result.get("warnings", []), *optional_errors]
