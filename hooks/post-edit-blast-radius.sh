@@ -14,14 +14,7 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib.hook_input import read_hook_payload, working_directory  # noqa: E402
 from hooks.lib.repo_identity import try_resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import (  # noqa: E402
-    atomic_write_json,
-    code_paths,
-    read_json,
-    repo_state_dir,
-    state_lock,
-    untracked_paths,
-)
+from hooks.lib.state_store import code_paths, stop_session_swap, untracked_paths  # noqa: E402
 from hooks.lib.workflow_state import completion_missing, read_workflow, safe_slug, summary  # noqa: E402
 
 
@@ -43,21 +36,32 @@ def _tracked(root: Path) -> list[str] | None:
 
 def main() -> int:
     payload = read_hook_payload()
-    if payload.get("stop_hook_active") is True:
-        return 0
-    if os.environ.get("CODEX_ADVISOR_ACTIVE") or os.environ.get("ADVISOR_ACTIVE"):
+    if os.environ.get("CODEX_ADVISOR_ACTIVE"):
         return 0
     identity = try_resolve_repo_identity(working_directory(payload))
     if identity is None:
         return 0
 
     state = read_workflow(identity)
-    if state is not None and completion_missing(state) and not state.get("paused"):
+    running_work = bool(payload.get("background_tasks")) or bool(payload.get("session_crons"))
+    session = safe_slug(str(payload.get("session_id") or "unknown"))[:40]
+    if state is not None and completion_missing(state) and not state.get("paused") and not running_work:
+        latch_summary = summary(identity)
+        previous_fingerprint = stop_session_swap(identity, session, "blockFingerprint", latch_summary)
+        if payload.get("stop_hook_active") is True and previous_fingerprint == latch_summary:
+            context = (
+                latch_summary
+                + "\nStop released: no workflow progress since the previous latch block, so the latch "
+                "does not spin. Continue the recorded nextAction or pause before stopping again."
+            )[:3600]
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": context}}))
+            return 0
         reason = (
-            summary(identity)
+            latch_summary
             + f"\nStop latched: the active workflow is incomplete. nextAction: {state.get('nextAction')}. "
-            f"Continue that action, or record an honest wait with pass-state.py pause --slug '{state.get('slug')}' --reason '<why>' "
-            "(background tasks and scheduled wakeups are pause reasons)."
+            f"Continue that action, or record an honest wait with pass-state.py pause --slug '{state.get('slug')}' "
+            f"--workflow-id '{state.get('workflowId')}' --reason '<why>' for blockers the payload cannot see "
+            "(running background tasks and scheduled wakeups already release the latch)."
         )[:3600]
         print(json.dumps({"decision": "block", "reason": reason}))
         return 0
@@ -90,16 +94,8 @@ def main() -> int:
         + "\nAny production edit after review makes code review and final review pending."
     )[:3600]
 
-    session = safe_slug(str(payload.get("session_id") or "unknown"))[:40]
-    try:
-        dedupe = repo_state_dir(identity) / "stop" / f"{session}.json"
-        with state_lock(identity):
-            previous = read_json(dedupe)
-            if previous and previous.get("message") == context:
-                return 0
-            atomic_write_json(dedupe, {"schemaVersion": 1, "message": context})
-    except OSError as exc:
-        print(f"Stop feedback dedupe unavailable: {exc}", file=sys.stderr)
+    if stop_session_swap(identity, session, "message", context) == context:
+        return 0
 
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": context}}))
     return 0

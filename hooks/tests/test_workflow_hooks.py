@@ -19,6 +19,7 @@ from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
+FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.sh"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.sh"
 PRE_COMPACT = ROOT / "hooks" / "pre-compact-flush.sh"
@@ -81,26 +82,38 @@ class WorkflowHookTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
-    def stop(self, *, active: bool = False, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def stop(self, *, active: bool = False, env_extra: dict[str, str] | None = None,
+             background_tasks: list | None = None, session_crons: list | None = None) -> subprocess.CompletedProcess[str]:
         env = {**self.env, **(env_extra or {})}
+        shape = "active" if active else "natural"
+        payload = dict(json.loads(FIXTURE.read_text(encoding="utf-8"))["shapes"][shape])
+        payload.update({
+            "cwd": str(self.repo),
+            "session_id": "real-hook-session",
+            "background_tasks": background_tasks or [],
+            "session_crons": session_crons or [],
+        })
         return subprocess.run(
             [str(STOP)], cwd=self.repo, env=env, text=True,
-            input=json.dumps({"cwd": str(self.repo), "session_id": "real-hook-session", "stop_hook_active": active}),
+            input=json.dumps(payload),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
 
-    def complete_workflow(self) -> None:
-        begun = self.state("begin", "--slug", "hook-sequence")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-        self.owner_phase("repo-context-forge", "passed")
+    def complete_workflow(self, slug: str = "hook-sequence", *, resume: bool = False) -> None:
+        if resume:
+            wid = json.loads(self.state("status").stdout)["workflowId"]
+        else:
+            begun = self.state("begin", "--slug", slug)
+            self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+            wid = json.loads(begun.stdout)["workflowId"]
+            self.owner_phase("repo-context-forge", "passed")
         transitions = (
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
-            ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", "hook-sequence", "--stage", "preflight", "--findings", "none"),
+            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
             ("set-phase", "--phase", "verification", "--status", "passed"),
@@ -112,8 +125,8 @@ class WorkflowHookTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.owner_phase("code-review", "passed", findings="none")
         for transition in (
-            ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
-            ("advisor-disposition", "--slug", "hook-sequence", "--stage", "final", "--findings", "none"),
+            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
+            ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--findings", "none"),
             ("complete",),
         ):
             result = self.state(*transition)
@@ -145,7 +158,7 @@ class WorkflowHookTests(unittest.TestCase):
         transitions = (
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", "hook-sequence", "--stage", "preflight", "--findings", "none"),
+            ("advisor-disposition", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
         )
         for transition in transitions:
@@ -167,7 +180,7 @@ class WorkflowHookTests(unittest.TestCase):
         for transition in (
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", "tdd-ordering", "--stage", "preflight", "--findings", "none"),
+            ("advisor-disposition", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
@@ -265,7 +278,7 @@ class WorkflowHookTests(unittest.TestCase):
         for transition in (
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", "governance-sequence", "--stage", "preflight", "--findings", "none"),
+            ("advisor-disposition", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
@@ -306,9 +319,58 @@ class WorkflowHookTests(unittest.TestCase):
         settings = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings["hooks"]["PreCompact"][0]["matcher"], "manual|auto")
 
+    def test_stop_contract_follows_the_real_captured_payload(self) -> None:
+        begun = self.state("begin", "--slug", "stop-real")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
+
+        for label, kwargs in (
+            ("background task", {"background_tasks": [{"id": "bash-1", "type": "shell", "status": "running", "description": "test task", "command": "sleep 5"}]}),
+            ("scheduled wakeup", {"session_crons": [{"id": "cron-1"}]}),
+        ):
+            released = self.stop(**kwargs)
+            self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
+            payload = json.loads(released.stdout) if released.stdout else {}
+            self.assertNotIn("decision", payload, f"{label} did not permit Stop")
+
+        delegate = self.stop(env_extra={"CODEX_ADVISOR_ACTIVE": "1"})
+        self.assertEqual(delegate.stdout, "", "CODEX_ADVISOR_ACTIVE delegate was latched")
+        shared_only = self.stop(env_extra={"ADVISOR_ACTIVE": "1"})
+        self.assertEqual(
+            json.loads(shared_only.stdout).get("decision"), "block",
+            "ADVISOR_ACTIVE alone must not release the latch",
+        )
+
+        blocked = self.stop()
+        self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
+
+        stalled = self.stop(active=True)
+        self.assertEqual(stalled.returncode, 0, stalled.stdout + stalled.stderr)
+        stalled_payload = json.loads(stalled.stdout) if stalled.stdout else {}
+        self.assertNotIn("decision", stalled_payload, "no-progress re-stop was latched forever")
+        self.assertIn(
+            "released", stalled_payload.get("hookSpecificOutput", {}).get("additionalContext", ""),
+            "the progress-aware release is not documented in the surfaced context",
+        )
+
+        progressed = self.state("set-phase", "--phase", "gitnexus", "--status", "passed")
+        self.assertEqual(progressed.returncode, 0, progressed.stdout + progressed.stderr)
+        relatched = self.stop(active=True)
+        self.assertEqual(
+            json.loads(relatched.stdout).get("decision"), "block",
+            "progress since the last block must re-latch even on stop_hook_active",
+        )
+
+        self.complete_workflow("stop-real", resume=True)
+        finished = self.stop(active=True)
+        self.assertEqual(finished.returncode, 0, finished.stdout + finished.stderr)
+        done = json.loads(finished.stdout) if finished.stdout else {}
+        self.assertNotIn("decision", done)
+
     def test_stop_latch_blocks_incomplete_and_permits_terminal_states(self) -> None:
         begun = self.state("begin", "--slug", "stop-latch")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
 
         blocked = self.stop()
         self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
@@ -318,8 +380,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("repo-context-forge", decision["reason"])
         self.assertIn("slug=stop-latch", decision["reason"])
         self.assertIn(
-            "pause --slug 'stop-latch' --reason", decision["reason"],
-            "the latch recovery instruction does not match the slug-bound pause Interface",
+            "pause --slug 'stop-latch' --workflow-id", decision["reason"],
+            "the latch recovery instruction does not match the instance-bound pause Interface",
         )
 
         repeat = self.stop()
@@ -327,16 +389,17 @@ class WorkflowHookTests(unittest.TestCase):
 
         looped = self.stop(active=True)
         self.assertEqual(looped.returncode, 0, looped.stdout + looped.stderr)
-        self.assertEqual(looped.stdout, "", "stop_hook_active did not bound the latch")
+        looped_payload = json.loads(looped.stdout) if looped.stdout else {}
+        self.assertNotIn("decision", looped_payload, "stop_hook_active without progress did not release")
 
         delegate = self.stop(env_extra={"CODEX_ADVISOR_ACTIVE": "1"})
         self.assertEqual(delegate.returncode, 0, delegate.stdout + delegate.stderr)
         self.assertEqual(delegate.stdout, "", "advisor delegate session was latched")
 
-        empty_pause = self.state("pause", "--slug", "stop-latch", "--reason", " ")
+        empty_pause = self.state("pause", "--slug", "stop-latch", "--workflow-id", wid, "--reason", " ")
         self.assertEqual(empty_pause.returncode, 2, empty_pause.stdout + empty_pause.stderr)
 
-        paused = self.state("pause", "--slug", "stop-latch", "--reason", "waiting on scheduled background CI wakeup")
+        paused = self.state("pause", "--slug", "stop-latch", "--workflow-id", wid, "--reason", "waiting on scheduled background CI wakeup")
         self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
         released = self.stop()
         self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
@@ -348,7 +411,7 @@ class WorkflowHookTests(unittest.TestCase):
         relatched = self.stop()
         self.assertEqual(json.loads(relatched.stdout).get("decision"), "block", "advancing update did not clear the pause")
 
-        repaused = self.state("pause", "--slug", "stop-latch", "--reason", "waiting again")
+        repaused = self.state("pause", "--slug", "stop-latch", "--workflow-id", wid, "--reason", "waiting again")
         self.assertEqual(repaused.returncode, 0, repaused.stdout + repaused.stderr)
         (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
         edited = self.post_edit("app.py")
@@ -366,6 +429,7 @@ class WorkflowHookTests(unittest.TestCase):
     def test_stop_latch_is_indefinite_and_keyed_to_completion_readiness(self) -> None:
         begun = self.state("begin", "--slug", "stop-nine")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
 
         for attempt in range(9):
             blocked = self.stop()
@@ -376,7 +440,7 @@ class WorkflowHookTests(unittest.TestCase):
             )
         self.assertEqual(json.loads(self.state("status").stdout)["phase"], "intake")
 
-        paused = self.state("pause", "--slug", "stop-nine", "--reason", "external dependency wait")
+        paused = self.state("pause", "--slug", "stop-nine", "--workflow-id", wid, "--reason", "external dependency wait")
         self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
         released = self.stop()
         context = json.loads(released.stdout)["hookSpecificOutput"]["additionalContext"]
@@ -426,7 +490,8 @@ class WorkflowHookTests(unittest.TestCase):
 
         recursive = self.stop(active=True)
         self.assertEqual(recursive.returncode, 0, recursive.stdout + recursive.stderr)
-        self.assertEqual(recursive.stdout, "")
+        recursive_payload = json.loads(recursive.stdout) if recursive.stdout else {}
+        self.assertNotIn("decision", recursive_payload, "hook-triggered re-stop must not block without progress")
 
 
 if __name__ == "__main__":

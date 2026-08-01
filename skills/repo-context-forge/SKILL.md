@@ -21,7 +21,8 @@ python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
 
 `--workflow-slug` must be the active workflow's slug and `--intent` its
 intent; the adapter records the Repo Context Forge step on that workflow and
-refuses a mismatched slug.
+refuses a mismatched slug. Shell-quote the `--intent` text and any slug
+placeholder — intents contain spaces and punctuation that split unquoted.
 
 Standalone exploration, review, or planning with no governed pass (`repo`,
 `local`, or `intent` mode):

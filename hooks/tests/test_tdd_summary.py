@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
+from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
@@ -48,7 +48,7 @@ class TddSummaryTests(unittest.TestCase):
         set_phase(identity, "repo-context-forge", "passed")
         set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
-        advisor_disposition(identity, "tdd-summary", "preflight", "none")
+        advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         set_phase(identity, "preflight", "passed")
 
     def tearDown(self) -> None:
@@ -223,7 +223,7 @@ class TddSummaryTests(unittest.TestCase):
         set_phase(identity, "repo-context-forge", "passed")
         set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
-        advisor_disposition(identity, "tdd-summary", "preflight", "none")
+        advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         set_phase(identity, "preflight", "passed")
 
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
@@ -262,6 +262,95 @@ class TddSummaryTests(unittest.TestCase):
         state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
         self.assertEqual(state["tdd"], "pending", "the replacement workflow inherited the raced producer's state")
 
+    def test_next_tracer_red_reopens_the_cycle_and_midcycle_switches_reject(self) -> None:
+        def tracer(phase, behavior, command, expected=None):
+            args = [
+                TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+                "--phase", phase, "--behavior", behavior,
+                "--seam", "tdd-run CLI subprocess boundary",
+            ]
+            if expected:
+                args += ["--expected-failure", expected]
+            return self.run_script(*args, "--", *command)
+
+        check_two = (sys.executable, "-c", "import app; assert app.value == 2, 'AssertionError: value must be 2'")
+        first = tracer("red", "first behavior", check_two, "AssertionError")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = tracer("green", "first behavior", check_two)
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+
+        identity = resolve_repo_identity(self.repo)
+        wid = read_workflow(identity)["workflowId"]
+        set_phase(identity, "implementation", "passed")
+        set_phase(identity, "verification", "passed")
+        pause(identity, "tdd-summary", wid, "waiting for the next tracer")
+        self.assertIn("paused", read_workflow(identity))
+
+        check_three = (sys.executable, "-c", "import app; assert app.value == 3, 'AssertionError: value must be 3'")
+        second = tracer("red", "second behavior", check_three, "AssertionError")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "in-progress")
+        self.assertEqual(state["implementation"], "in-progress", "a next-tracer RED did not reopen implementation")
+        self.assertEqual(state["verification"], "pending")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertNotIn("paused", state, "a next-tracer RED did not clear the pause")
+
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        second_green = tracer("green", "second behavior", check_three)
+        self.assertEqual(second_green.returncode, 0, second_green.stdout + second_green.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "passed")
+        self.assertEqual(state["verification"], "pending", "stale verification survived the next GREEN")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+
+        third = tracer("red", "third behavior", (sys.executable, "-c", "raise AssertionError('AssertionError: four')"), "AssertionError")
+        self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+        summary_path = Path(json.loads(third.stdout.splitlines()[-1])["summaryPath"])
+        before = summary_path.read_text(encoding="utf-8")
+        switch = tracer("red", "fourth behavior mid-cycle", (sys.executable, "-c", "raise AssertionError('AssertionError: five')"), "AssertionError")
+        self.assertEqual(switch.returncode, 2, "a mid-cycle candidate switch was accepted")
+        self.assertEqual(summary_path.read_text(encoding="utf-8"), before, "a rejected switch mutated the active candidate")
+
+    def test_producer_commits_enforce_ordering_and_evidence_cas(self) -> None:
+        rebegun = self.run_script(PASS_STATE, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
+        self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
+        premature = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "too early",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", sys.executable, "-c", "raise AssertionError('AssertionError: early')",
+        )
+        self.assertEqual(premature.returncode, 2, "a RED at intake bypassed the ordering gate")
+        self.assertIn("requires", premature.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual((state["tdd"], state["implementation"]), ("pending", "pending"))
+
+        identity = resolve_repo_identity(self.repo)
+        set_phase(identity, "repo-context-forge", "passed")
+        set_phase(identity, "gitnexus", "passed")
+        record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
+        advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
+        set_phase(identity, "preflight", "passed")
+
+        # Contract pin (not seam proof): the read-to-lock window is not drivable
+        # through the CLI, so the compare-and-swap is pinned at the commit boundary.
+        from hooks.lib.workflow_state import WorkflowError, commit_tdd
+        summary_file = self.tmp / "state" / read_workflow(identity)["repo"]["key"] / "tdd-tdd-summary.json"
+        summary_file.write_text(json.dumps({"schemaVersion": 1, "interleaved": True}), encoding="utf-8")
+        with self.assertRaises(WorkflowError) as raced:
+            commit_tdd(
+                identity, "tdd-summary", read_workflow(identity)["workflowId"],
+                summary_file, {"schemaVersion": 1, "stale": True}, "in-progress",
+                expected_evidence=None,
+            )
+        self.assertIn("evidence changed during the run", str(raced.exception))
+        self.assertEqual(
+            json.loads(summary_file.read_text(encoding="utf-8")), {"schemaVersion": 1, "interleaved": True},
+            "the interleaved evidence write was clobbered by the stale producer",
+        )
+
     def test_terminal_workflow_rejects_reruns_before_touching_evidence(self) -> None:
         behavior_command = (
             sys.executable, "-c",
@@ -290,7 +379,7 @@ class TddSummaryTests(unittest.TestCase):
         set_phase(identity, "verification", "passed")
         set_phase(identity, "code-review", "passed", findings="none")
         record_advisor_result(identity, "tdd-summary", wid, "final", "codex-advisor", "commit-ready")
-        advisor_disposition(identity, "tdd-summary", "final", "none")
+        advisor_disposition(identity, "tdd-summary", wid, "final", "none")
         completed = self.run_script(PASS_STATE, "complete", "--repo", str(self.repo))
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 

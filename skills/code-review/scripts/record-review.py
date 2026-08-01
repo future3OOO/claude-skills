@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import atomic_write_json, repo_state_dir, state_lock, utc_timestamp  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, bound_instance, safe_slug, set_phase  # noqa: E402
+from hooks.lib.state_store import repo_state_dir, utc_timestamp  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, commit_review, safe_slug  # noqa: E402
 
 RESOLVED = {"fixed", "rejected-with-evidence"}
 DISPOSITIONS = RESOLVED | {"accepted-follow-up"}
@@ -73,7 +73,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=".")
     parser.add_argument("--slug", required=True)
-    parser.add_argument("--workflow-id")
+    parser.add_argument("--workflow-id", required=True)
     parser.add_argument("--resolved-model", required=True)
     parser.add_argument("--review-context-id", required=True)
     parser.add_argument("--input", required=True)
@@ -89,22 +89,18 @@ def main() -> int:
         status = "pending" if unresolved else "passed"
         finding_status = "pending" if unresolved else "addressed" if findings else "none"
         path = repo_state_dir(identity) / f"review-{slug}.json"
-        with state_lock(identity):
-            state = bound_instance(identity, slug, args.workflow_id)
-            summary = {
-                "schemaVersion": 1,
-                "slug": slug,
-                "workflowId": state.get("workflowId"),
-                "status": status,
-                "resolvedModel": resolved_model,
-                "reviewContextId": review_context_id,
-                "findings": findings,
-                "dispositions": dispositions,
-                "recordedAt": utc_timestamp(),
-            }
-            atomic_write_json(path, summary)
-        bound_instance(identity, slug, args.workflow_id)
-        set_phase(identity, "code-review", status, findings=finding_status)
+        summary = {
+            "schemaVersion": 1,
+            "slug": slug,
+            "workflowId": args.workflow_id,
+            "status": status,
+            "resolvedModel": resolved_model,
+            "reviewContextId": review_context_id,
+            "findings": findings,
+            "dispositions": dispositions,
+            "recordedAt": utc_timestamp(),
+        }
+        commit_review(identity, slug, args.workflow_id, path, summary, status, finding_status)
         print(json.dumps({"summaryPath": str(path), "status": status}, sort_keys=True))
         if unresolved:
             print("error: material review findings remain unresolved", file=sys.stderr)

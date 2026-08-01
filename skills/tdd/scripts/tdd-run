@@ -15,8 +15,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import atomic_write_json, read_json, repo_state_dir, state_lock, utc_timestamp  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, bound_instance, bound_state, record_tdd_regression, safe_slug, set_phase  # noqa: E402
+from hooks.lib.state_store import read_json, repo_state_dir, utc_timestamp  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, bound_state, commit_tdd, safe_slug  # noqa: E402
 
 MAX_CAPTURE = 16000
 
@@ -32,25 +32,22 @@ def _active_candidate(identity: RepoIdentity, value: str) -> tuple[str, str | No
 
 def _not_required(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: str) -> int:
     path = _path(identity, slug)
-    with state_lock(identity):
-        bound_instance(identity, slug, workflow_id)
-        existing = read_json(path)
-        runs = existing.get("runs") if isinstance(existing, dict) else None
-        if (
-            isinstance(runs, list)
-            and existing.get("workflowId") == workflow_id
-            and any(isinstance(run, dict) and run.get("valid") is True for run in runs)
-        ):
-            raise WorkflowError("--not-required cannot replace valid TDD evidence")
-        atomic_write_json(path, {
-            "schemaVersion": 1,
-            "slug": slug,
-            "workflowId": workflow_id,
-            "status": "not-required",
-            "reason": reason,
-            "updatedAt": utc_timestamp(),
-        })
-    set_phase(identity, "tdd", "not-required")
+    existing = read_json(path)
+    runs = existing.get("runs") if isinstance(existing, dict) else None
+    if (
+        isinstance(runs, list)
+        and existing.get("workflowId") == workflow_id
+        and any(isinstance(run, dict) and run.get("valid") is True for run in runs)
+    ):
+        raise WorkflowError("--not-required cannot replace valid TDD evidence")
+    commit_tdd(identity, slug, workflow_id, path, {
+        "schemaVersion": 1,
+        "slug": slug,
+        "workflowId": workflow_id,
+        "status": "not-required",
+        "reason": reason,
+        "updatedAt": utc_timestamp(),
+    }, "not-required", expected_evidence=existing)
     print(json.dumps({"summaryPath": str(path), "status": "not-required"}, sort_keys=True))
     return 0
 
@@ -108,57 +105,59 @@ def main(argv: list[str] | None = None) -> int:
         command_text = shlex.join(command)
         expected = args.expected_failure.strip()
         observed = bool(expected) and expected in raw.decode("utf-8", errors="replace")
-        with state_lock(identity):
-            bound_instance(identity, slug, workflow_id)
-            existing = read_json(path)
-            matches = bool(existing) and all(existing.get(key) == value for key, value in {
+        existing = read_json(path)
+        same_instance = bool(existing) and existing.get("workflowId") == workflow_id
+        matches = same_instance and all(existing.get(key) == value for key, value in {
+            "slug": slug,
+            "behavior": behavior,
+            "seam": seam,
+            "command": command_text,
+        }.items())
+        completed_cycle = same_instance and existing.get("status") == "passed"
+        prior_runs = existing.get("runs") if matches and isinstance(existing.get("runs"), list) else []
+        prior_red = any(isinstance(run, dict) and run.get("phase") == "red" and run.get("valid") is True for run in prior_runs)
+        valid = (
+            not timed_out and exit_code != 0 and observed
+            if args.phase == "red"
+            else not timed_out and exit_code == 0 and prior_red
+        )
+        preserved = args.phase == "red" and matches and not valid and completed_cycle
+        new_cycle = args.phase == "red" and valid and not matches and (not same_instance or completed_cycle)
+        recorded = not preserved and (matches or new_cycle)
+        regression = args.phase == "green" and matches and not valid
+        if args.phase == "red" and valid and not matches and same_instance and not completed_cycle:
+            print(
+                "error: candidate does not match the active cycle; finish or regress the current candidate first",
+                file=sys.stderr,
+            )
+            return 2
+        run = {
+            "phase": args.phase,
+            "expectedFailure": expected or None,
+            "exitCode": exit_code,
+            "timedOut": timed_out,
+            "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
+            "valid": valid,
+        }
+        if recorded:
+            reopen = regression or (args.phase == "red" and valid and (new_cycle or completed_cycle))
+            action = (
+                "passed" if args.phase == "green" and valid
+                else "reopen" if reopen
+                else "in-progress"
+            )
+            commit_tdd(identity, slug, workflow_id, path, {
+                "schemaVersion": 1,
                 "slug": slug,
                 "workflowId": workflow_id,
+                "status": "passed" if args.phase == "green" and valid else "pending",
                 "behavior": behavior,
                 "seam": seam,
                 "command": command_text,
-            }.items())
-            prior_runs = existing.get("runs") if matches and isinstance(existing.get("runs"), list) else []
-            prior_red = any(isinstance(run, dict) and run.get("phase") == "red" and run.get("valid") is True for run in prior_runs)
-            valid = (
-                not timed_out and exit_code != 0 and observed
-                if args.phase == "red"
-                else not timed_out and exit_code == 0 and prior_red
-            )
-            run = {
-                "phase": args.phase,
-                "expectedFailure": expected or None,
-                "exitCode": exit_code,
-                "timedOut": timed_out,
-                "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
-                "valid": valid,
-            }
-            preserved = (
-                args.phase == "red" and matches and not valid
-                and existing.get("status") == "passed"
-            )
-            recorded = not preserved and (matches or (args.phase == "red" and valid))
-            regression = args.phase == "green" and matches and not valid
-            if recorded:
-                runs = [*prior_runs, run] if matches else [run]
-                atomic_write_json(path, {
-                    "schemaVersion": 1,
-                    "slug": slug,
-                    "workflowId": workflow_id,
-                    "status": "passed" if args.phase == "green" and valid else "pending",
-                    "behavior": behavior,
-                    "seam": seam,
-                    "command": command_text,
-                    "runs": runs,
-                    "updatedAt": utc_timestamp(),
-                })
+                "runs": [*prior_runs, run] if matches else [run],
+                "updatedAt": utc_timestamp(),
+            }, action, expected_evidence=existing)
 
-        if recorded:
-            bound_instance(identity, slug, workflow_id)
-            if regression:
-                record_tdd_regression(identity)
-            else:
-                set_phase(identity, "tdd", "passed" if args.phase == "green" and valid else "in-progress")
         output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
         if output:
             print(output, end="" if output.endswith("\n") else "\n")

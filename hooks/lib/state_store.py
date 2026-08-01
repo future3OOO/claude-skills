@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +92,25 @@ def read_json(path: Path) -> dict[str, object] | None:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def stop_session_swap(identity: RepoIdentity, session: str, key: str, value: str) -> str | None:
+    """Compare-and-set one per-session Stop-feedback key under the state lock.
+
+    Returns the previous value. Fail-soft: Stop feedback must never break the
+    hook, so storage errors surface on stderr and read as no-previous-value.
+    """
+    try:
+        with state_lock(identity):
+            path = repo_state_dir(identity) / "stop" / f"{session}.json"
+            session_state = read_json(path) or {}
+            previous = session_state.get(key)
+            session_state.update({"schemaVersion": 1, key: value})
+            atomic_write_json(path, session_state)
+            return previous if isinstance(previous, str) else None
+    except OSError as exc:
+        print(f"Stop session state unavailable: {exc}", file=sys.stderr)
+        return None
 
 
 def utc_timestamp() -> str:

@@ -33,8 +33,9 @@ statuses, code-review disposition state, and final-review result.
 begin              # assigns the pass's random workflowId
 set-phase          # lead-owned step recording (ordered, slug-scoped)
 advisor-result     # producer-recorded raw consult, slug + workflowId bound
-advisor-disposition  # lead-owned findings disposition, slug bound
-pause              # slug-bound honest wait; releases the Stop latch
+advisor-disposition  # lead-owned findings disposition, instance bound
+pause              # instance-bound honest wait; releases the Stop latch
+checkpoint         # read-only consult readiness for the advisor phases
 complete           # terminal; only begin starts another pass
 summary
 status
@@ -45,11 +46,13 @@ after compaction; it is not tamper-proof and does not authorize Git. A normal
 commit or HEAD change does not invalidate it. After production preflight,
 test-like edits are admitted while TDD is pending; production edits stay
 blocked until a valid RED or a recorded not-required decision. A normally
-completed workflow is terminal: every mutation except `begin` is rejected,
-and a governance edit after completion opens a revalidation window that
-reopens the workflow for re-verification; completing again requires the
-verification, code-review, and final-review chain and restores the terminal
-state.
+completed workflow is terminal: every mutation except `begin` is rejected.
+A governance-document edit after
+completion is the sole controlled revalidation exception: it opens a window in
+which only verification, code review, the final advisor review, and completion
+are accepted, production editing stays closed, and completing again restores
+the terminal state. The read-only `checkpoint` query reports consult
+readiness for the advisor phases without mutating anything.
 
 `complete` requires:
 

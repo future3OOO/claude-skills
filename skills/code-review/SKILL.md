@@ -86,7 +86,8 @@ After lead disposition, record the ordinary workflow summary:
 
 ```bash
 <review-json-producer> | python3 "$HOME/.claude/skills/code-review/scripts/record-review.py" \
-  --repo "$PWD" --slug "<task>" --resolved-model "<actual-model>" \
+  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
+  --resolved-model "<actual-model>" \
   --review-context-id "<fresh-context-id>" --input -
 ```
 

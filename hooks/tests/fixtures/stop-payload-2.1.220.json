@@ -1,0 +1,59 @@
+{
+  "capturedOn": "Claude Code 2.1.220, real Stop hook invocation, 2026-08-01",
+  "note": "background_tasks and session_crons are first-class payload fields; empty arrays when nothing is running. The natural-with-background-task shape was captured live while a real shell task ran and the installed latch permitted the stop on it.",
+  "shapes": {
+    "active": {
+      "background_tasks": [],
+      "cwd": "<redacted>",
+      "effort": {
+        "level": "<redacted>"
+      },
+      "hook_event_name": "Stop",
+      "last_assistant_message": "<redacted>",
+      "permission_mode": "bypassPermissions",
+      "prompt_id": "<redacted>",
+      "session_crons": [],
+      "session_id": "<redacted>",
+      "stop_hook_active": true,
+      "transcript_path": "<redacted>"
+    },
+    "natural": {
+      "background_tasks": [],
+      "cwd": "<redacted>",
+      "effort": {
+        "level": "<redacted>"
+      },
+      "hook_event_name": "Stop",
+      "last_assistant_message": "<redacted>",
+      "permission_mode": "bypassPermissions",
+      "prompt_id": "<redacted>",
+      "session_crons": [],
+      "session_id": "<redacted>",
+      "stop_hook_active": false,
+      "transcript_path": "<redacted>"
+    },
+    "natural-with-background-task": {
+      "background_tasks": [
+        {
+          "command": "<redacted>",
+          "description": "<redacted>",
+          "id": "<redacted>",
+          "status": "running",
+          "type": "shell"
+        }
+      ],
+      "cwd": "<redacted>",
+      "effort": {
+        "level": "<redacted>"
+      },
+      "hook_event_name": "Stop",
+      "last_assistant_message": "<redacted>",
+      "permission_mode": "bypassPermissions",
+      "prompt_id": "<redacted>",
+      "session_crons": [],
+      "session_id": "<redacted>",
+      "stop_hook_active": false,
+      "transcript_path": "<redacted>"
+    }
+  }
+}

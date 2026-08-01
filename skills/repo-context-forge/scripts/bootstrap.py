@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, bound_instance, read_workflow, safe_slug, set_phase  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, producer_set_phase, read_workflow, safe_slug  # noqa: E402
 
 SOURCE_ROOT = Path("/home/prop_/projects/repo-context-forge")
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
@@ -84,8 +84,7 @@ def main(argv: list[str]) -> int:
         return result.returncode
     try:
         if workflow_slug:
-            bound_instance(identity, safe_slug(workflow_slug), captured_workflow_id)
-            set_phase(identity, "repo-context-forge", "passed")
+            producer_set_phase(identity, safe_slug(workflow_slug), captured_workflow_id, "repo-context-forge", "passed")
     except (WorkflowError, RepoIdentityError, ValueError) as exc:
         sys.stderr.write(f"<blocker>cannot advance workflow after Repo Context Forge: {exc}</blocker>\n")
         return 2

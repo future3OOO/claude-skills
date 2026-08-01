@@ -132,6 +132,10 @@ out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_R
   "$WRAPPER" --slug wrong-pass --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
 check_status "mismatched-slug governed consult refused" 2 "$status"
 check "slug-mismatch refusal names both slugs" "does not match the active workflow" "$out"
+out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
+  "$WRAPPER" --slug real-pass --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
+check_status "not-ready checkpoint refused before the consult" 2 "$status"
+check "checkpoint refusal names the missing steps" "missing: repo-context-forge,gitnexus" "$out"
 rm -rf "$gatetmp"
 
 fields=$(printf '%s' '{"slug":"legacy-pass","tdd":"passed","codeReview":{"status":"passed"}}' | python3 -c 'import json,sys
@@ -155,7 +159,7 @@ run_offline "$idtmp/repo/sub" || :
 ln -s "$idtmp/repo" "$idtmp/link"
 run_offline "$idtmp/link" || :
 sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
-check "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
+check_status "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
 rm -rf "$idtmp"
 
 if [[ "${LIVE:-0}" = "1" ]]; then

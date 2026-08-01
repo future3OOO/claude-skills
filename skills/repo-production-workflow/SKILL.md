@@ -67,10 +67,11 @@ production preflight:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  advisor-disposition --repo "$PWD" --slug "<task>" --stage preflight --findings none
+  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings none
 ```
 
-A disposition is slug-bound to the active workflow and can only move findings
+The active `workflowId` comes from `pass-state.py status`. A disposition is
+bound to the active workflow instance and can only move findings
 to `none` or `addressed`; it can never create a result or alter its source or
 verdict. An unavailable consult requires `--reason` with the measured
 transport failure and needs no disposition.
@@ -185,14 +186,15 @@ review has no unavailable exception. Ordinary documentation, scratch, and
 non-repository work keeps the lightweight exception; governance docs still
 reset downstream review readiness. Stop surfaces the active workflow summary
 whenever its state has changed (identical repeats are deduplicated per
-session); it blocks with the exact `nextAction` while an active workflow is
-incomplete and unpaused, and it permits stopping for complete workflows,
-recorded `pause --slug <active-slug> --reason` waits (the slug-bound route for
-background work and scheduled wakeups), and advisor-delegate sessions. Any
+session); it blocks with the exact `nextAction` while completion readiness is
+missing and no pause is recorded. It permits stopping for ready workflows,
+non-empty `background_tasks`/`session_crons` in the real Stop payload,
+recorded `pause --slug <slug> --workflow-id <id> --reason` waits for blockers
+the payload cannot see, and `CODEX_ADVISOR_ACTIVE` delegate sessions. Any
 advancing update — including an edit-triggered invalidation — clears a
-recorded pause. `stop_hook_active`
-bounds the latch to one block per natural stop. Unavailable blast-radius
-impact is reported as `unknown`.
+recorded pause. A `stop_hook_active` re-stop blocks again only when the
+workflow progressed since the last block and otherwise releases with the
+summary. Unavailable blast-radius impact is reported as `unknown`.
 
 ## Final response
 

@@ -68,17 +68,21 @@ pass_state="$script_dir/../../repo-production-workflow/scripts/pass-state.py"
 producer_slug=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.workflow_state import safe_slug; print(safe_slug(sys.argv[2]))' "$script_dir/../../.." "$slug")
 active_wid=""; active_tdd=""; active_review=""
 if [[ -n "$phase" ]]; then
-  active_json=$(python3 "$pass_state" status --repo "$repo_root" 2>/dev/null) || {
+  checkpoint_json=$(python3 "$pass_state" checkpoint --repo "$repo_root" --phase "$phase" 2>/dev/null) || {
     printf 'error: %s requires an active workflow; begin the pass before consulting\n' "$phase" >&2
     exit 2
   }
   # "|" is a non-whitespace delimiter, so bash read preserves empty fields
   # (IFS whitespace like tab collapses them and shifts every later field).
-  IFS='|' read -r active_slug active_wid active_tdd active_review < <(printf '%s' "$active_json" | python3 -c 'import json,sys
+  IFS='|' read -r active_slug active_wid active_tdd active_review checkpoint_ready checkpoint_missing < <(printf '%s' "$checkpoint_json" | python3 -c 'import json,sys
 state = json.load(sys.stdin)
-print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") or "", (state.get("codeReview") or {}).get("status") or "", sep="|")')
+print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") or "", state.get("codeReviewStatus") or "", "yes" if state.get("ready") else "no", ",".join(state.get("missing") or []), sep="|")')
   if [[ "$active_slug" != "$producer_slug" ]]; then
     printf 'error: --slug %s does not match the active workflow %s\n' "$producer_slug" "$active_slug" >&2
+    exit 2
+  fi
+  if [[ "$checkpoint_ready" != "yes" ]]; then
+    printf 'error: %s checkpoint is not ready; missing: %s\n' "$phase" "$checkpoint_missing" >&2
     exit 2
   fi
 fi

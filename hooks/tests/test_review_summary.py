@@ -49,7 +49,7 @@ class ReviewSummaryTests(unittest.TestCase):
         set_phase(identity, "repo-context-forge", "passed")
         set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
-        advisor_disposition(identity, "review-summary", "preflight", "none")
+        advisor_disposition(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         set_phase(identity, "preflight", "passed")
         set_phase(identity, "tdd", "not-required")
         set_phase(identity, "implementation", "passed")
@@ -127,6 +127,26 @@ class ReviewSummaryTests(unittest.TestCase):
             self.assertNotIn(removed, summary)
         state = json.loads(self.run_script(PASS_STATE, "status").stdout)
         self.assertEqual(state["codeReview"], {"status": "passed", "findings": "addressed"})
+
+
+    def test_rejected_recorder_calls_leave_evidence_untouched(self) -> None:
+        rebegun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
+        self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
+        identity = resolve_repo_identity(self.repo)
+        new_wid = read_workflow(identity)["workflowId"]
+        review_file = self.tmp / "state" / read_workflow(identity)["repo"]["key"] / "review-review-summary.json"
+        before = review_file.read_text(encoding="utf-8") if review_file.exists() else None
+
+        payload = self.tmp / "premature.json"
+        payload.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
+        premature = self.run_script(
+            RECORDER, "--slug", "review-summary", "--workflow-id", new_wid,
+            "--resolved-model", "gpt-5", "--review-context-id", "fresh-review-2",
+            "--input", str(payload),
+        )
+        self.assertEqual(premature.returncode, 2, "a premature recorder call was accepted before verification")
+        after = review_file.read_text(encoding="utf-8") if review_file.exists() else None
+        self.assertEqual(after, before, "a rejected recorder call wrote review evidence")
 
 
 if __name__ == "__main__":

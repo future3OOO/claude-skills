@@ -57,6 +57,13 @@ wait for the process rather than polling with repeated sleeps.
   "<focused completion question>"
 ```
 
+Before the expensive consult the wrapper runs the read-only
+`pass-state.py checkpoint --phase <phase>` query and refuses when the
+checkpoint is not ready: `preflight-advice` requires Repo Context Forge and
+GitNexus recorded; `final-review` requires verification passed and a terminal
+code-review state. The delayed result still revalidates slug and workflowId at
+recording time.
+
 `--base-ref` is required for `final-review` and must resolve in the repository.
 `--packet` and `--gitnexus` are optional bounded read-only files appended to
 the evidence. The wrapper derives the repository root and session identity
@@ -98,11 +105,11 @@ consult, record its lead-owned disposition before production preflight:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  advisor-disposition --repo "$PWD" --slug "<task>" --stage preflight --findings none
+  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings none
 ```
 
-The disposition is slug-bound: a slug that does not match the active workflow
-is rejected without mutating state, and `pause` carries the same binding.
+Dispositions and `pause` are bound to the active workflow instance: a slug or
+workflowId that does not match is rejected without mutating state.
 
 Use `--findings addressed` when the consult produced findings that were fixed
 or rejected with evidence. For an unavailable consult, record the full
@@ -121,5 +128,5 @@ way:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  advisor-disposition --repo "$PWD" --slug "<task>" --stage final --findings none
+  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage final --findings none
 ```
