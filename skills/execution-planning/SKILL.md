@@ -138,7 +138,7 @@ Keep this proportional for ordinary work.
 
 Load and apply the [canonical transaction doctrine](../production-code/references/transaction-doctrine.md).
 The artifact must expose its authoritative records, mutation boundary,
-interleavings, shared projection/recovery/no-op paths, helper semantic splits,
+interleavings, shared projection, replay, recovery, stale-secondary, and no-op paths, helper semantic splits,
 contract, invariants, and proof plan; planning does not redefine them.
 
 ### 5. Add tracked execution state
@@ -206,7 +206,11 @@ For transaction-sensitive work, also require:
 - authoritative records
 - mutation boundary
 - adjacent interleavings
-- projection/recovery/no-op paths
+- projection paths
+- replay paths
+- recovery paths
+- stale-secondary paths
+- no-op paths
 - authoritativeContract
 - invariants
 - proofPlan

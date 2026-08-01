@@ -42,10 +42,6 @@
             "command": "/home/prop_/.claude/hooks/code-quality-gate.sh"
           }
         ]
-      },
-      {
-        "matcher": "*",
-        "hooks": []
       }
     ],
     "PreToolUse": [
@@ -59,10 +55,6 @@
             "statusMessage": "Checking Repo Context Forge intake gate"
           }
         ]
-      },
-      {
-        "matcher": "*",
-        "hooks": []
       }
     ],
     "SessionStart": [

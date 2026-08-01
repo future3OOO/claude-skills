@@ -33,7 +33,11 @@ Use only for transaction-sensitive work. Apply `../../production-code/references
 - authoritative records:
 - mutation boundary:
 - adjacent interleavings:
-- projection/recovery/no-op paths:
+- projection paths:
+- replay paths:
+- recovery paths:
+- stale-secondary paths:
+- no-op paths:
 - helper semantic splits:
 
 ## Contract And Proof Model

@@ -36,6 +36,12 @@ def _active_slug(identity: RepoIdentity, value: str) -> str:
 def _not_required(identity: RepoIdentity, slug: str, reason: str) -> int:
     path = _path(identity, slug)
     with state_lock(identity):
+        existing = read_json(path)
+        runs = existing.get("runs") if isinstance(existing, dict) else None
+        if isinstance(runs, list) and any(
+            isinstance(run, dict) and run.get("valid") is True for run in runs
+        ):
+            raise WorkflowError("--not-required cannot replace valid TDD evidence")
         atomic_write_json(path, {
             "schemaVersion": 1,
             "slug": slug,

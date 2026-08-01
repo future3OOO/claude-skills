@@ -61,6 +61,11 @@ preferably in a dedicated chat pane. Supply the contract, packet, GitNexus
 summary, intended proof, and no-change surfaces. Invoke `codebase-design` first
 when adding/changing a Module, public Interface, or Seam.
 
+The wrapper records completed advice with findings pending. After validating
+its output, the lead records `--findings none` or `--findings addressed` before
+production preflight. An unavailable consult requires `--reason` with the
+measured transport failure.
+
 ### 5. Production preflight
 
 Invoke `production-preflight` before tracked production edits. Anchor it to the
@@ -111,13 +116,13 @@ Invoke `code-review` in fresh independent context for non-trivial changes.
 Review Standards and Spec separately, verify every finding, and let the lead
 disposition it. The optional recorder writes an ordinary review summary and
 sets code-review state. For a genuinely trivial change, record
-`code-review --status not-required --findings none`.
+`set-phase --phase code-review --status not-required --findings none`.
 
 Any correction returns to implementation and invalidates downstream readiness.
 
 ### 9. Final review
 
-Invoke the final Codex Agent or Codex Advisor review against the live diff. For
+Invoke the final Codex Advisor review against the live diff. For
 the wrapper use phase `final-review`, the same slug, and the base ref. Address
 and disposition material findings. The wrapper leaves final findings pending;
 the lead explicitly records `none` or `addressed` only after validating the
@@ -132,8 +137,8 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 ```
 
 `complete` refuses unless required phases are ready, material code-review
-findings are dispositioned, and the final source is `codex-agent` or
-`codex-advisor` with `commit-ready`. It changes workflow state only. It does not
+findings are dispositioned, and the final source is `codex-advisor` with
+`commit-ready`. It changes workflow state only. It does not
 inspect, intercept, authorize, or execute Git.
 
 ### 11. Delivery and reviewer completion

@@ -12,6 +12,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_state import set_phase  # noqa: E402
+
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.sh"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.sh"
@@ -24,6 +30,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="workflow-hooks-"))
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
+        self.previous_state_root = os.environ.get("CLAUDE_WORKFLOW_STATE_ROOT")
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.tmp / "state")
         self.env = os.environ.copy()
         self.env.update({
             "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
@@ -39,6 +47,10 @@ class WorkflowHookTests(unittest.TestCase):
         self.git("commit", "-q", "-m", "base")
 
     def tearDown(self) -> None:
+        if self.previous_state_root is None:
+            os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
+        else:
+            os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.previous_state_root
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def git(self, *args: str) -> None:
@@ -76,21 +88,30 @@ class WorkflowHookTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
+    def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
+        set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
+
     def complete_workflow(self) -> None:
+        begun = self.state("begin", "--slug", "hook-sequence")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
         transitions = (
-            ("begin", "--slug", "hook-sequence"),
-            ("set-phase", "--phase", "repo-context-forge", "--status", "passed"),
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
-            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
-            ("set-phase", "--phase", "tdd", "--status", "not-required"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
             ("set-phase", "--phase", "verification", "--status", "passed"),
-            ("set-phase", "--phase", "code-review", "--status", "passed", "--findings", "none"),
+        )
+        for index, transition in enumerate(transitions):
+            if index == 3:
+                self.owner_phase("tdd", "not-required")
+            result = self.state(*transition)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.owner_phase("code-review", "passed", findings="none")
+        for transition in (
             ("advisor-result", "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready", "--findings", "none"),
             ("complete",),
-        )
-        for transition in transitions:
+        ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -113,11 +134,12 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(docs.returncode, 0, docs.stdout + docs.stderr)
         self.assertEqual(docs.stdout, "")
 
+        begun = self.state("begin", "--slug", "hook-sequence")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
         transitions = (
-            ("begin", "--slug", "hook-sequence"),
-            ("set-phase", "--phase", "repo-context-forge", "--status", "passed"),
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
-            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
         )
         for transition in transitions:
@@ -151,6 +173,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
         state = json.loads(status.stdout)
         self.assertEqual(state["phase"], "implementation")
+        self.assertEqual(state["nextAction"], "implementation")
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 
@@ -194,6 +217,26 @@ class WorkflowHookTests(unittest.TestCase):
         decision = json.loads(blocked.stdout)["hookSpecificOutput"]
         self.assertEqual(decision["permissionDecision"], "deny")
         self.assertIn("new active workflow", decision["permissionDecisionReason"])
+
+    def test_first_governance_edit_resumes_at_the_first_pending_phase(self) -> None:
+        begun = self.state("begin", "--slug", "governance-sequence")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
+        for transition in (
+            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed", "--findings", "none"),
+            ("set-phase", "--phase", "preflight", "--status", "passed"),
+        ):
+            result = self.state(*transition)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        governance = self.repo / "CLAUDE.md"
+        governance.write_text("updated agent behavior\n", encoding="utf-8")
+        changed = self.post_edit("CLAUDE.md")
+        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        state = json.loads(self.state("status").stdout)
+        self.assertEqual(state["implementation"], "pending")
+        self.assertEqual(state["nextAction"], "tdd")
 
     def test_shipped_hooks_do_not_intercept_bash_or_git(self) -> None:
         settings = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
@@ -239,6 +282,16 @@ class WorkflowHookTests(unittest.TestCase):
         duplicate = self.stop()
         self.assertEqual(duplicate.returncode, 0, duplicate.stdout + duplicate.stderr)
         self.assertEqual(duplicate.stdout, "")
+
+        begun = self.state("begin", "--slug", "stop-context")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        workflow_changed = self.stop()
+        self.assertEqual(workflow_changed.returncode, 0, workflow_changed.stdout + workflow_changed.stderr)
+        self.assertTrue(workflow_changed.stdout, "workflow progress did not refresh Stop context")
+        refreshed = json.loads(workflow_changed.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Active workflow: slug=stop-context", refreshed)
+        self.assertIn("next=repo-context-forge", refreshed)
+
         recursive = self.stop(active=True)
         self.assertEqual(recursive.returncode, 0, recursive.stdout + recursive.stderr)
         self.assertEqual(recursive.stdout, "")

@@ -12,6 +12,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_state import record_advisor_result, set_phase  # noqa: E402
+
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
 
@@ -21,6 +27,8 @@ class TddSummaryTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="workflow-tdd-summary-"))
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
+        self.previous_state_root = os.environ.get("CLAUDE_WORKFLOW_STATE_ROOT")
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.tmp / "state")
         self.env = os.environ.copy()
         self.env.update({
             "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
@@ -36,8 +44,17 @@ class TddSummaryTests(unittest.TestCase):
         self.git("commit", "-q", "-m", "base")
         begun = self.run_script(PASS_STATE, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        identity = resolve_repo_identity(self.repo)
+        set_phase(identity, "repo-context-forge", "passed")
+        set_phase(identity, "gitnexus", "passed")
+        record_advisor_result(identity, "preflight", "codex-advisor", "completed", findings="none")
+        set_phase(identity, "preflight", "passed")
 
     def tearDown(self) -> None:
+        if self.previous_state_root is None:
+            os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
+        else:
+            os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.previous_state_root
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def git(self, *args: str) -> str:
@@ -83,6 +100,13 @@ class TddSummaryTests(unittest.TestCase):
         self.assertEqual(summary["seam"], "tdd-run CLI subprocess boundary")
         for removed in ("head", "startingHead", "candidateChangeFingerprint", "commandSha256"):
             self.assertNotIn(removed, summary)
+
+        downgraded = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--not-required", "changed our mind after recording evidence",
+        )
+        self.assertEqual(downgraded.returncode, 2, downgraded.stdout + downgraded.stderr)
+        self.assertIn("cannot replace valid TDD evidence", downgraded.stderr)
 
     def test_only_the_declared_failure_and_seam_count(self) -> None:
         silent = self.run_script(

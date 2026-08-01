@@ -63,6 +63,7 @@ Return a human-readable Standards/Spec review followed by one JSON object:
       "location": "path:line",
       "claim": "...",
       "evidence": "...",
+      "consequence": "...",
       "smallest_action": "..."
     }
   ],
@@ -84,9 +85,9 @@ If there are no findings, use empty arrays and name remaining proof gaps.
 After lead disposition, record the ordinary workflow summary:
 
 ```bash
-python3 "$HOME/.claude/skills/code-review/scripts/record-review.py" \
+<review-json-producer> | python3 "$HOME/.claude/skills/code-review/scripts/record-review.py" \
   --repo "$PWD" --slug "<task>" --resolved-model "<actual-model>" \
-  --review-context-id "<fresh-context-id>" --input /tmp/scratch/code-review.json
+  --review-context-id "<fresh-context-id>" --input -
 ```
 
 The summary is agent-writable continuity state. It is not a certificate, Git

@@ -67,6 +67,9 @@ If any item is missing, use `/diagnose` before editing. If the trace crosses sca
 
 ## Module Shape Gate
 
+When the change proposes a new production Module, public Seam, or change to a
+public Interface, invoke `codebase-design` before completing this gate.
+
 Before production edits, name the module shape:
 
 - `publicInterface`: the caller-facing interface, CLI, IPC, UI flow, or module seam the proof crosses

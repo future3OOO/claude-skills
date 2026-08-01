@@ -12,6 +12,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_state import record_advisor_result, set_phase  # noqa: E402
+
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 RECORDER = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
 
@@ -21,6 +27,8 @@ class ReviewSummaryTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="review-summary-"))
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
+        self.previous_state_root = os.environ.get("CLAUDE_WORKFLOW_STATE_ROOT")
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.tmp / "state")
         self.env = os.environ.copy()
         self.env.update({
             "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
@@ -36,8 +44,20 @@ class ReviewSummaryTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=self.repo, env=self.env, check=True)
         begun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        identity = resolve_repo_identity(self.repo)
+        set_phase(identity, "repo-context-forge", "passed")
+        set_phase(identity, "gitnexus", "passed")
+        record_advisor_result(identity, "preflight", "codex-advisor", "completed", findings="none")
+        set_phase(identity, "preflight", "passed")
+        set_phase(identity, "tdd", "not-required")
+        set_phase(identity, "implementation", "passed")
+        set_phase(identity, "verification", "passed")
 
     def tearDown(self) -> None:
+        if self.previous_state_root is None:
+            os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
+        else:
+            os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.previous_state_root
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def run_script(self, script: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -69,6 +89,19 @@ class ReviewSummaryTests(unittest.TestCase):
         )
         self.assertEqual(missing_identity.returncode, 2, missing_identity.stdout + missing_identity.stderr)
         self.assertIn("resolved model", missing_identity.stderr)
+        path.write_text(json.dumps(review), encoding="utf-8")
+        missing_consequence = self.run_script(
+            RECORDER, "--slug", "review-summary", "--resolved-model", "gpt-5",
+            "--review-context-id", "fresh-review-1", "--input", str(path),
+        )
+        self.assertEqual(
+            missing_consequence.returncode,
+            2,
+            missing_consequence.stdout + missing_consequence.stderr,
+        )
+        self.assertIn("requires consequence", missing_consequence.stderr)
+
+        review["findings"][0]["consequence"] = "The production result would remain incorrect."
         path.write_text(json.dumps(review), encoding="utf-8")
         pending = self.run_script(
             RECORDER, "--slug", "review-summary", "--resolved-model", "gpt-5",

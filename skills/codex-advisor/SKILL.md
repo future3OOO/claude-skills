@@ -83,6 +83,19 @@ records it as fixed, rejected-with-evidence, or accepted follow-up. Any
 production edit after final review resets code review and final review to
 pending.
 
+After a completed preflight consult, record its lead disposition before
+production preflight:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+  advisor-result --repo "$PWD" --stage preflight --source codex-advisor \
+  --verdict completed --findings none
+```
+
+Use `--findings addressed` when the consult produced findings that were fixed
+or rejected with evidence. For an unavailable consult, use `--verdict
+unavailable --reason "<measured transport failure>"`.
+
 After that validation, record the final disposition explicitly:
 
 ```bash
