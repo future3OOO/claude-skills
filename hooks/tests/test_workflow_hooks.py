@@ -82,17 +82,13 @@ class WorkflowHookTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
-    def stop(self, *, active: bool = False, env_extra: dict[str, str] | None = None,
-             background_tasks: list | None = None, session_crons: list | None = None) -> subprocess.CompletedProcess[str]:
+    def stop(self, *, shape: str = "natural", env_extra: dict[str, str] | None = None,
+             session_crons: list | None = None) -> subprocess.CompletedProcess[str]:
         env = {**self.env, **(env_extra or {})}
-        shape = "active" if active else "natural"
         payload = dict(json.loads(FIXTURE.read_text(encoding="utf-8"))["shapes"][shape])
-        payload.update({
-            "cwd": str(self.repo),
-            "session_id": "real-hook-session",
-            "background_tasks": background_tasks or [],
-            "session_crons": session_crons or [],
-        })
+        payload.update({"cwd": str(self.repo), "session_id": "real-hook-session"})
+        if session_crons is not None:
+            payload["session_crons"] = session_crons
         return subprocess.run(
             [str(STOP)], cwd=self.repo, env=env, text=True,
             input=json.dumps(payload),
@@ -109,7 +105,7 @@ class WorkflowHookTests(unittest.TestCase):
             begun = self.state("begin", "--slug", slug)
             self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
             wid = json.loads(begun.stdout)["workflowId"]
-            self.owner_phase("repo-context-forge", "passed")
+        self.owner_phase("repo-context-forge", "passed")
         transitions = (
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
@@ -325,7 +321,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.owner_phase("repo-context-forge", "passed")
 
         for label, kwargs in (
-            ("background task", {"background_tasks": [{"id": "bash-1", "type": "shell", "status": "running", "description": "test task", "command": "sleep 5"}]}),
+            ("background task", {"shape": "natural-with-background-task"}),
             ("scheduled wakeup", {"session_crons": [{"id": "cron-1"}]}),
         ):
             released = self.stop(**kwargs)
@@ -344,7 +340,7 @@ class WorkflowHookTests(unittest.TestCase):
         blocked = self.stop()
         self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
 
-        stalled = self.stop(active=True)
+        stalled = self.stop(shape="active")
         self.assertEqual(stalled.returncode, 0, stalled.stdout + stalled.stderr)
         stalled_payload = json.loads(stalled.stdout) if stalled.stdout else {}
         self.assertNotIn("decision", stalled_payload, "no-progress re-stop was latched forever")
@@ -355,14 +351,14 @@ class WorkflowHookTests(unittest.TestCase):
 
         progressed = self.state("set-phase", "--phase", "gitnexus", "--status", "passed")
         self.assertEqual(progressed.returncode, 0, progressed.stdout + progressed.stderr)
-        relatched = self.stop(active=True)
+        relatched = self.stop(shape="active")
         self.assertEqual(
             json.loads(relatched.stdout).get("decision"), "block",
             "progress since the last block must re-latch even on stop_hook_active",
         )
 
         self.complete_workflow("stop-real", resume=True)
-        finished = self.stop(active=True)
+        finished = self.stop(shape="active")
         self.assertEqual(finished.returncode, 0, finished.stdout + finished.stderr)
         done = json.loads(finished.stdout) if finished.stdout else {}
         self.assertNotIn("decision", done)
@@ -387,7 +383,7 @@ class WorkflowHookTests(unittest.TestCase):
         repeat = self.stop()
         self.assertEqual(json.loads(repeat.stdout).get("decision"), "block")
 
-        looped = self.stop(active=True)
+        looped = self.stop(shape="active")
         self.assertEqual(looped.returncode, 0, looped.stdout + looped.stderr)
         looped_payload = json.loads(looped.stdout) if looped.stdout else {}
         self.assertNotIn("decision", looped_payload, "stop_hook_active without progress did not release")
@@ -419,14 +415,51 @@ class WorkflowHookTests(unittest.TestCase):
         resumed = self.stop()
         self.assertEqual(json.loads(resumed.stdout).get("decision"), "block", "edit-triggered invalidation did not clear the pause")
 
-        self.complete_workflow()
+        self.complete_workflow("stop-latch", resume=True)
         completed = self.stop()
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         done = json.loads(completed.stdout)
         self.assertNotIn("decision", done)
-        self.assertIn("phase=complete", done["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("slug=stop-latch phase=complete", done["hookSpecificOutput"]["additionalContext"])
 
-    def test_stop_latch_is_indefinite_and_keyed_to_completion_readiness(self) -> None:
+    def test_legacy_state_without_an_instance_id_is_latched_with_a_begin_instruction(self) -> None:
+        begun = self.state("begin", "--slug", "stop-legacy")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / resolve_repo_identity(self.repo).key / "workflow.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy.pop("workflowId")
+        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
+
+        blocked = self.stop()
+        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        reason = json.loads(blocked.stdout)["reason"]
+        self.assertIn("begin a new workflow", reason)
+        self.assertNotIn(
+            "--workflow-id 'None'", reason,
+            "the latch offered a pause the legacy state cannot record",
+        )
+
+    def test_a_replacement_instance_does_not_inherit_the_previous_latch_release(self) -> None:
+        first = self.state("begin", "--slug", "stop-instance")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        blocked = self.stop()
+        self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
+
+        second = self.state("begin", "--slug", "stop-instance")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertNotEqual(
+            json.loads(second.stdout)["workflowId"], json.loads(first.stdout)["workflowId"],
+            "the replacement workflow reused the previous instance id",
+        )
+
+        relatched = self.stop(shape="active")
+        self.assertEqual(relatched.returncode, 0, relatched.stdout + relatched.stderr)
+        self.assertEqual(
+            json.loads(relatched.stdout).get("decision"), "block",
+            "a new workflow instance inherited the previous instance's latch block",
+        )
+
+    def test_stop_latch_holds_across_natural_stops_and_keys_to_completion_readiness(self) -> None:
         begun = self.state("begin", "--slug", "stop-nine")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
@@ -447,7 +480,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("paused", context.lower())
         self.assertIn("external dependency wait", context)
 
-        self.complete_workflow()
+        self.complete_workflow("stop-nine", resume=True)
         governance = self.repo / "skills" / "diagnose" / "SKILL.md"
         governance.parent.mkdir(parents=True)
         governance.write_text("updated agent behavior\n", encoding="utf-8")
@@ -488,7 +521,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("Active workflow: slug=stop-context", latched["reason"])
         self.assertIn("next=repo-context-forge", latched["reason"])
 
-        recursive = self.stop(active=True)
+        recursive = self.stop(shape="active")
         self.assertEqual(recursive.returncode, 0, recursive.stdout + recursive.stderr)
         recursive_payload = json.loads(recursive.stdout) if recursive.stdout else {}
         self.assertNotIn("decision", recursive_payload, "hook-triggered re-stop must not block without progress")

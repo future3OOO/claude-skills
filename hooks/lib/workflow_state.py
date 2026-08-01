@@ -41,6 +41,8 @@ STEP_STATUSES = {"pending", "in-progress", "passed", "not-required", "unavailabl
 FINDING_STATUSES = {"pending", "none", "addressed"}
 REVIEW_SOURCES = {"codex-advisor"}
 FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
+NO_INSTANCE_ID = "this state predates workflow instance identity and can no longer advance; begin a new workflow"
+PREFLIGHT_CLOSED = "governance revalidation permits only re-verification and review; preflight consults are closed"
 
 
 class WorkflowError(RuntimeError):
@@ -301,7 +303,7 @@ def record_advisor_result(
         state.pop("paused", None)
         if stage == "preflight":
             if state.get("revalidation"):
-                raise WorkflowError("governance revalidation permits only re-verification and review; preflight consults are closed")
+                raise WorkflowError(PREFLIGHT_CLOSED)
             _require_predecessor(state, "advisor-preflight")
             if source != "codex-advisor":
                 raise ValueError("preflight advisor source must be codex-advisor")
@@ -343,10 +345,19 @@ def bound_state(identity: RepoIdentity, slug: str) -> JsonObject:
     return state
 
 
+def instance_id(state: JsonObject) -> str | None:
+    """The active workflow's instance id, or None when the state predates instance identity."""
+    value = state.get("workflowId")
+    return value if isinstance(value, str) and value else None
+
+
 def bound_instance(identity: RepoIdentity, slug: str, workflow_id: str | None) -> JsonObject:
     """bound_state plus strict instance equality; producers call this under the state lock before writing."""
     state = bound_state(identity, slug)
-    if (state.get("workflowId") or None) != (workflow_id or None):
+    active = instance_id(state)
+    if active is None:
+        raise WorkflowError(NO_INSTANCE_ID)
+    if active != workflow_id:
         raise WorkflowError("--workflow-id does not match the active workflow instance")
     return state
 
@@ -370,6 +381,8 @@ def advisor_disposition(identity: RepoIdentity, slug: str, workflow_id: str | No
         raise ValueError(f"unsupported advisor stage: {stage}")
     with state_lock(identity):
         state = bound_instance(identity, slug, workflow_id)
+        if stage == "preflight" and state.get("revalidation"):
+            raise WorkflowError(PREFLIGHT_CLOSED)
         state.pop("paused", None)
         field = "advisorPreflight" if stage == "preflight" else "finalReview"
         record = state.get(field)
@@ -388,7 +401,7 @@ def advisor_disposition(identity: RepoIdentity, slug: str, workflow_id: str | No
 
 def completion_missing(state: JsonObject) -> list[str]:
     """The canonical completion-readiness check shared by complete() and the Stop latch."""
-    missing: list[str] = []
+    missing: list[str] = [] if instance_id(state) else ["workflowId"]
     for field in ("repoContextForge", "gitnexus", "preflight", "implementation", "verification"):
         if state.get(field) != "passed":
             missing.append(field)
@@ -406,21 +419,35 @@ def completion_missing(state: JsonObject) -> list[str]:
 CHECKPOINT_PHASES = {"preflight-advice", "final-review"}
 
 
+def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:
+    """The intake steps that gate both a preflight consult and any tracked production edit."""
+    return (
+        ("repo-context-forge", state.get("repoContextForge") == "passed"),
+        ("gitnexus", state.get("gitnexus") == "passed"),
+    )
+
+
 def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
     """Read-only consult-readiness query used before an expensive advisor call."""
     if phase not in CHECKPOINT_PHASES:
         raise ValueError(f"unsupported checkpoint phase: {phase}")
     state = _require(identity)
-    if phase == "preflight-advice":
-        requirements = (
-            ("repo-context-forge", state.get("repoContextForge") == "passed"),
-            ("gitnexus", state.get("gitnexus") == "passed"),
-        )
-    else:
-        requirements = (
-            ("verification", state.get("verification") == "passed"),
-            ("code-review", _allows_next(state, "code-review")),
-        )
+    revalidation = bool(state.get("revalidation"))
+    # A terminal workflow rejects every consult; revalidation reopens only final review.
+    terminal = state.get("phase") == "complete" and not revalidation
+    open_for_phase = not terminal and not (phase == "preflight-advice" and revalidation)
+    requirements = (
+        ("workflowId", instance_id(state) is not None),
+        ("open-workflow", open_for_phase),
+        *(
+            _context_steps(state)
+            if phase == "preflight-advice"
+            else (
+                ("verification", state.get("verification") == "passed"),
+                ("code-review", _allows_next(state, "code-review")),
+            )
+        ),
+    )
     missing = [name for name, ready in requirements if not ready]
     review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
     return {
@@ -480,8 +507,7 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
         return False, ["new active workflow (governance revalidation keeps production editing closed)"]
     missing = [
         name for name, ready in (
-            ("Repo Context Forge", state.get("repoContextForge") == "passed"),
-            ("GitNexus", state.get("gitnexus") == "passed"),
+            *_context_steps(state),
             ("advisor preflight", _allows_next(state, "advisor-preflight")),
             ("production preflight", state.get("preflight") == "passed"),
         ) if not ready

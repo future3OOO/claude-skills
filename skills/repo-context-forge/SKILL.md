@@ -24,8 +24,17 @@ intent; the adapter records the Repo Context Forge step on that workflow and
 refuses a mismatched slug. Shell-quote the `--intent` text and any slug
 placeholder — intents contain spaces and punctuation that split unquoted.
 
-Standalone exploration, review, or planning with no governed pass (`repo`,
-`local`, or `intent` mode):
+Standalone planned work with no governed pass — `intent` mode needs `--intent`
+and must not pass `--workflow-slug`, which would be refused with no active
+workflow to match:
+
+```bash
+python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
+  --repo "$PWD" --intent "<user request>"
+```
+
+Standalone exploration or review with no governed pass and no described work —
+`repo` mode on a clean checkout, `local` mode when the worktree is dirty:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD"
@@ -122,12 +131,9 @@ checkout as read-only input; Repo Context Forge must not leave `.soulforge` or
 Do not switch to a sibling worktree unless the user explicitly asks. The current
 git folder is the target.
 
-For a user-described implementation before edits, prefer:
-
-```bash
-python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
-  --repo "$PWD" --workflow-slug "<active-pass-slug>" --intent "<task>"
-```
+For a user-described implementation before edits, pass `--intent "<task>"`, and
+add `--workflow-slug "<active-pass-slug>"` only when a governed pass is already
+active — see the two standalone forms in the startup flow above.
 
 ## GitNexus Follow-Up
 

@@ -79,10 +79,11 @@ def main() -> int:
                 findings=args.findings,
             )
         elif args.action == "advisor-result":
+            slug, workflow_id = instance_args(args)
             state = record_advisor_result(
                 identity,
-                required(args.slug, "--slug"),
-                args.workflow_id,
+                slug,
+                workflow_id,
                 required(args.stage, "--stage"),
                 required(args.source, "--source"),
                 required(args.verdict, "--verdict"),

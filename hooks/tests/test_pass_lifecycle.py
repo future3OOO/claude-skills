@@ -17,6 +17,8 @@ if str(ROOT) not in sys.path:
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 REARM = ROOT / "hooks" / "skill-discipline-rearm.sh"
+TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+RECORD_REVIEW = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
@@ -74,6 +76,11 @@ class PassLifecycleTests(unittest.TestCase):
         begun = self.cli("begin", "--slug", slug)
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         return json.loads(begun.stdout)["workflowId"]
+
+    def checkpoint(self, phase: str) -> dict[str, object]:
+        result = self.cli("checkpoint", "--phase", phase)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
 
     def run_cli(self, *transitions: tuple[str, ...]) -> None:
         for transition in transitions:
@@ -348,6 +355,9 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_completed_state_is_terminal_until_governance_revalidation(self) -> None:
         wid = self.complete_slug("terminal-state")
+        terminal = self.checkpoint("final-review")
+        self.assertFalse(terminal["ready"], "a completed workflow was reported consult-ready")
+        self.assertIn("open-workflow", terminal["missing"])
 
         for mutation in (
             ("set-phase", "--phase", "verification", "--status", "passed"),
@@ -384,6 +394,15 @@ class PassLifecycleTests(unittest.TestCase):
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
         )
         self.assertEqual(preflight_consult.returncode, 2, "a preflight consult was recorded during revalidation")
+        preflight_disposition = self.cli(
+            "advisor-disposition", "--slug", "terminal-state", "--workflow-id", wid,
+            "--stage", "preflight", "--findings", "addressed",
+        )
+        self.assertEqual(preflight_disposition.returncode, 2, "a preflight disposition landed during revalidation")
+        self.assertIn("revalidation", preflight_disposition.stderr)
+        closed = self.checkpoint("preflight-advice")
+        self.assertFalse(closed["ready"], "preflight advice was reported consult-ready during revalidation")
+        self.assertIn("open-workflow", closed["missing"])
 
         reverified = self.cli("set-phase", "--phase", "verification", "--status", "passed")
         self.assertEqual(reverified.returncode, 0, reverified.stdout + reverified.stderr)
@@ -394,6 +413,10 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertTrue(any("revalidation" in item or "new active workflow" in item for item in missing), missing)
 
         self.owner_phase("code-review", "passed", findings="none")
+        self.assertTrue(
+            self.checkpoint("final-review")["ready"],
+            "revalidation closed the final review it exists to re-run",
+        )
         final = self.cli("advisor-result", "--slug", "terminal-state", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready")
         self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
         disposed = self.cli("advisor-disposition", "--slug", "terminal-state", "--workflow-id", wid, "--stage", "final", "--findings", "none")
@@ -404,6 +427,63 @@ class PassLifecycleTests(unittest.TestCase):
 
         again = self.cli("set-phase", "--phase", "verification", "--status", "passed")
         self.assertEqual(again.returncode, 2, "completion did not restore the terminal state")
+
+    def test_legacy_state_without_an_instance_id_rejects_every_producer(self) -> None:
+        wid = self.begin_slug("legacy-instance")
+        self.advance_to_preflight("legacy-instance", wid)
+
+        identity = resolve_repo_identity(self.repo)
+        state_dir = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / identity.key
+        state_path = state_dir / "workflow.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy.pop("workflowId")
+        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
+        before = state_path.read_text(encoding="utf-8")
+
+        for label, expected, transition in (
+            ("advisor-result unbound", "--workflow-id is required", (
+                "advisor-result", "--slug", "legacy-instance", "--stage", "preflight",
+                "--source", "codex-advisor", "--verdict", "completed")),
+            ("advisor-result empty id", "begin a new workflow", (
+                "advisor-result", "--slug", "legacy-instance", "--workflow-id", "", "--stage", "preflight",
+                "--source", "codex-advisor", "--verdict", "completed")),
+            ("advisor-disposition", "begin a new workflow", (
+                "advisor-disposition", "--slug", "legacy-instance", "--workflow-id", "",
+                "--stage", "preflight", "--findings", "none")),
+            ("pause", "begin a new workflow", (
+                "pause", "--slug", "legacy-instance", "--workflow-id", "", "--reason", "waiting")),
+        ):
+            rejected = self.cli(*transition)
+            self.assertEqual(rejected.returncode, 2, f"{label}: {rejected.stdout}{rejected.stderr}")
+            self.assertIn(expected, rejected.stderr, label)
+
+        marker = self.tmp / "tdd-command-ran"
+        red = subprocess.run(
+            [sys.executable, str(TDD_RUN), "--cwd", str(self.repo), "--slug", "legacy-instance",
+             "--phase", "red", "--behavior", "legacy fence", "--seam", "pass-state CLI",
+             "--expected-failure", "AssertionError", "--", sys.executable, "-c",
+             f"open({str(marker)!r}, 'w').close(); raise AssertionError('AssertionError: legacy')"],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(red.returncode, 2, red.stdout + red.stderr)
+        self.assertFalse(marker.exists(), "tdd-run ran the test command for a workflow with no instance id")
+
+        review_input = self.tmp / "review.json"
+        review_input.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
+        review = subprocess.run(
+            [sys.executable, str(RECORD_REVIEW), "--repo", str(self.repo), "--slug", "legacy-instance",
+             "--workflow-id", "", "--resolved-model", "test-model", "--review-context-id", "ctx-1",
+             "--input", str(review_input)],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(review.returncode, 2, review.stdout + review.stderr)
+
+        self.assertEqual(state_path.read_text(encoding="utf-8"), before, "a rejected producer mutated legacy state")
+        self.assertEqual(
+            sorted(path.name for path in state_dir.glob("*.json")), ["workflow.json"],
+            "a rejected producer wrote evidence for a workflow with no instance id",
+        )
+        self.assertIn("workflowId", self.cli("complete").stderr, "legacy state without an instance id completed")
 
     def test_rearm_adapter_restores_only_recorded_pass_state(self) -> None:
         begun = self.cli("begin", "--slug", "compact recovery")

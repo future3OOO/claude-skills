@@ -12,7 +12,14 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, producer_set_phase, read_workflow, safe_slug  # noqa: E402
+from hooks.lib.workflow_state import (  # noqa: E402
+    NO_INSTANCE_ID,
+    WorkflowError,
+    instance_id,
+    producer_set_phase,
+    read_workflow,
+    safe_slug,
+)
 
 SOURCE_ROOT = Path("/home/prop_/projects/repo-context-forge")
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
@@ -68,7 +75,9 @@ def main(argv: list[str]) -> int:
             state = read_workflow(identity)
             if state is None or state.get("slug") != safe_slug(workflow_slug):
                 raise WorkflowError("Repo Context Forge slug does not match the active workflow")
-            captured_workflow_id = state.get("workflowId")
+            captured_workflow_id = instance_id(state)
+            if captured_workflow_id is None:
+                raise WorkflowError(NO_INSTANCE_ID)
         except (WorkflowError, RepoIdentityError, ValueError) as exc:
             sys.stderr.write(f"<blocker>cannot bind Repo Context Forge to the active workflow: {exc}</blocker>\n")
             return 2

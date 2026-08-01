@@ -16,7 +16,14 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import read_json, repo_state_dir, utc_timestamp  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, bound_state, commit_tdd, safe_slug  # noqa: E402
+from hooks.lib.workflow_state import (  # noqa: E402
+    NO_INSTANCE_ID,
+    WorkflowError,
+    bound_state,
+    commit_tdd,
+    instance_id,
+    safe_slug,
+)
 
 MAX_CAPTURE = 16000
 
@@ -25,9 +32,13 @@ def _path(identity: RepoIdentity, slug: str) -> Path:
     return repo_state_dir(identity) / f"tdd-{slug}.json"
 
 
-def _active_candidate(identity: RepoIdentity, value: str) -> tuple[str, str | None]:
+def _active_candidate(identity: RepoIdentity, value: str) -> tuple[str, str]:
+    """The active slug and instance id; a workflow without an instance id refuses before the run."""
     state = bound_state(identity, safe_slug(value))
-    return state["slug"], state.get("workflowId")
+    workflow_id = instance_id(state)
+    if workflow_id is None:
+        raise WorkflowError(NO_INSTANCE_ID)
+    return state["slug"], workflow_id
 
 
 def _not_required(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: str) -> int:
@@ -113,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             "seam": seam,
             "command": command_text,
         }.items())
-        completed_cycle = same_instance and existing.get("status") == "passed"
+        completed_cycle = same_instance and existing.get("status") in {"passed", "not-required"}
         prior_runs = existing.get("runs") if matches and isinstance(existing.get("runs"), list) else []
         prior_red = any(isinstance(run, dict) and run.get("phase") == "red" and run.get("valid") is True for run in prior_runs)
         valid = (

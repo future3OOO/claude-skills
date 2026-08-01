@@ -436,6 +436,52 @@ class TddSummaryTests(unittest.TestCase):
         )
         self.assertEqual(wrong_seam.returncode, 2, wrong_seam.stdout + wrong_seam.stderr)
 
+    def test_a_valid_red_replaces_a_not_required_decision_and_reopens_the_cycle(self) -> None:
+        decision = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--not-required", "no production behavior changed",
+        )
+        self.assertEqual(decision.returncode, 0, decision.stdout + decision.stderr)
+        summary_path = Path(json.loads(decision.stdout)["summaryPath"])
+
+        identity = resolve_repo_identity(self.repo)
+        set_phase(identity, "implementation", "passed")
+        set_phase(identity, "verification", "passed")
+        pause(identity, "tdd-summary", read_workflow(identity)["workflowId"], "waiting on the scope decision")
+
+        behavior_command = (
+            sys.executable, "-c",
+            "import app; assert app.value == 2, 'AssertionError: value must be 2'",
+        )
+        red = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "scope changed after the not-required decision",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "pending")
+        self.assertNotIn("reason", summary, "the not-required decision survived the replacing RED")
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual((state["tdd"], state["implementation"]), ("in-progress", "in-progress"))
+        self.assertEqual(state["verification"], "pending")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertNotIn("paused", state, "the replacing RED did not clear the pause")
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "scope changed after the not-required decision",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "passed")
+        self.assertEqual(state["verification"], "pending", "stale verification survived the replaced cycle")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
+
     def test_not_required_decision_is_recorded_in_pass_state(self) -> None:
         (self.repo / "notes.md").write_text("documentation only\n", encoding="utf-8")
         decision = self.run_script(

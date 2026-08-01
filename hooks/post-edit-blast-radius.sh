@@ -15,7 +15,14 @@ if str(ROOT) not in sys.path:
 from hooks.lib.hook_input import read_hook_payload, working_directory  # noqa: E402
 from hooks.lib.repo_identity import try_resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import code_paths, stop_session_swap, untracked_paths  # noqa: E402
-from hooks.lib.workflow_state import completion_missing, read_workflow, safe_slug, summary  # noqa: E402
+from hooks.lib.workflow_state import (  # noqa: E402
+    NO_INSTANCE_ID,
+    completion_missing,
+    instance_id,
+    read_workflow,
+    safe_slug,
+    summary,
+)
 
 
 def _tracked(root: Path) -> list[str] | None:
@@ -47,8 +54,12 @@ def main() -> int:
     session = safe_slug(str(payload.get("session_id") or "unknown"))[:40]
     if state is not None and completion_missing(state) and not state.get("paused") and not running_work:
         latch_summary = summary(identity)
-        previous_fingerprint = stop_session_swap(identity, session, "blockFingerprint", latch_summary)
-        if payload.get("stop_hook_active") is True and previous_fingerprint == latch_summary:
+        workflow_id = instance_id(state)
+        # A replacement pass can reproduce the previous summary verbatim, so the
+        # release compares the instance too and never inherits another pass's block.
+        fingerprint = f"{workflow_id}:{latch_summary}"
+        previous_fingerprint = stop_session_swap(identity, session, "blockFingerprint", fingerprint)
+        if payload.get("stop_hook_active") is True and previous_fingerprint == fingerprint:
             context = (
                 latch_summary
                 + "\nStop released: no workflow progress since the previous latch block, so the latch "
@@ -56,12 +67,17 @@ def main() -> int:
             )[:3600]
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": context}}))
             return 0
+        recovery = (
+            f"Continue that action, or record an honest wait with pass-state.py pause "
+            f"--slug '{state.get('slug')}' --workflow-id '{workflow_id}' --reason '<why>' for blockers "
+            "the payload cannot see (running background tasks and scheduled wakeups already release the latch)."
+            if workflow_id
+            else f"Recovery: {NO_INSTANCE_ID}."
+        )
         reason = (
             latch_summary
             + f"\nStop latched: the active workflow is incomplete. nextAction: {state.get('nextAction')}. "
-            f"Continue that action, or record an honest wait with pass-state.py pause --slug '{state.get('slug')}' "
-            f"--workflow-id '{state.get('workflowId')}' --reason '<why>' for blockers the payload cannot see "
-            "(running background tasks and scheduled wakeups already release the latch)."
+            + recovery
         )[:3600]
         print(json.dumps({"decision": "block", "reason": reason}))
         return 0

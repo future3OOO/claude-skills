@@ -77,6 +77,19 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
+    def test_legacy_state_without_an_instance_id_refuses_before_the_bootstrap_runs(self) -> None:
+        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / self.status()["repo"]["key"] / "workflow.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy.pop("workflowId")
+        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
+        before = state_path.read_text(encoding="utf-8")
+
+        refused = self.bootstrap()
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("begin a new workflow", refused.stderr)
+        self.assertEqual(refused.stdout, "", "the external bootstrap ran for a workflow with no instance id")
+        self.assertEqual(state_path.read_text(encoding="utf-8"), before)
+
     def test_real_bootstrap_advances_workflow_without_extra_persisted_records(self) -> None:
         direct = self.bootstrap()
         self.assertEqual(direct.returncode, 0, direct.stdout + direct.stderr)
