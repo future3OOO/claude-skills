@@ -169,6 +169,37 @@ class PassLifecycleTests(unittest.TestCase):
         preflight = self.cli("set-phase", "--phase", "preflight", "--status", "passed")
         self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
 
+    def test_legacy_preflight_state_requires_an_explicit_findings_disposition(self) -> None:
+        begun = self.cli("begin", "--slug", "legacy-advisor-state")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
+        gitnexus = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed")
+        self.assertEqual(gitnexus.returncode, 0, gitnexus.stdout + gitnexus.stderr)
+
+        identity = resolve_repo_identity(self.repo)
+        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / identity.key / "workflow.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy["advisorPreflight"] = {"source": "codex-advisor", "status": "completed"}
+        state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        status = self.cli("status")
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        advisor = json.loads(status.stdout)["advisorPreflight"]
+        self.assertEqual(advisor["findings"], "pending")
+        self.assertIsNone(advisor["reason"])
+
+        blocked = self.cli("set-phase", "--phase", "preflight", "--status", "passed")
+        self.assertEqual(blocked.returncode, 2, blocked.stdout + blocked.stderr)
+        self.assertIn("advisor-preflight", blocked.stderr)
+
+        addressed = self.cli(
+            "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
+            "--verdict", "completed", "--findings", "addressed",
+        )
+        self.assertEqual(addressed.returncode, 0, addressed.stdout + addressed.stderr)
+        resumed = self.cli("set-phase", "--phase", "preflight", "--status", "passed")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+
     def test_rearm_adapter_restores_only_recorded_pass_state(self) -> None:
         begun = self.cli("begin", "--slug", "compact recovery")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)

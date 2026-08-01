@@ -67,6 +67,10 @@ def read_workflow(identity: RepoIdentity) -> JsonObject | None:
     state = read_json(_path(identity))
     if not state or state.get("schemaVersion") != 1 or state.get("repo") != identity.as_dict():
         return None
+    advisor = state.get("advisorPreflight")
+    if isinstance(advisor, dict):
+        advisor.setdefault("findings", "pending")
+        advisor.setdefault("reason", None)
     return state
 
 
