@@ -31,7 +31,7 @@
     ],
     "defaultMode": "bypassPermissions"
   },
-  "model": "opus[1m]",
+  "model": "claude-fable-5[1m]",
   "hooks": {
     "PostToolUse": [
       {
@@ -72,6 +72,16 @@
           {
             "type": "command",
             "command": "/home/prop_/.claude/hooks/skill-discipline-rearm.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/prop_/.claude/hooks/herdr-agent-state.sh' session",
             "timeout": 10
           }
         ]

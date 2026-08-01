@@ -1,7 +1,9 @@
 # claude-skills
 
-Tracked mirror of the live Claude Code agent estate. `~/.claude/` is not a git
-repo, so this is the only version-controlled copy.
+Version-controlled source for the governed Claude Code agent estate. The
+tracked files on `main` are authoritative; `~/.claude/` is the installed copy.
+Machine-managed files that are not tracked here, such as HerdR's generated
+session hook, must survive an install.
 
 | Repo path | Live path |
 | --- | --- |
@@ -10,45 +12,84 @@ repo, so this is the only version-controlled copy.
 | `settings.json` | `~/.claude/settings.json` — permissions, model, hooks, effort |
 | `hooks/` | `~/.claude/hooks/` — the gates settings.json wires up |
 
-The live copies are authoritative. Edit those, then sync here and push.
+## Workflow boundary
 
-## Sync
+The estate records one repository-scoped production workflow:
 
-```bash
-rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' ~/.claude/skills/ skills/
-rsync -a --delete ~/.claude/hooks/ hooks/
-cp ~/.claude/CLAUDE.md CLAUDE.md
-cp ~/.claude/settings.json settings.json
-git add skills hooks CLAUDE.md settings.json && git commit && git push
+```
+context -> preflight advice -> production preflight -> TDD/implementation
+        -> verification -> code review -> final review -> complete -> delivery
 ```
 
-Stage those paths explicitly rather than `git add -A`: a blanket add publishes
-whatever else happens to be in the working tree without review.
+The state is continuity for the agent, not Git authorization. No shipped hook
+parses Bash or intercepts commits. Edit hooks admit governed work and invalidate
+stale downstream review state; compaction/resume hooks preserve the next action;
+the Stop hook returns non-blocking change context.
 
-## Restore
+## Install or update
+
+Start from a clean checkout of the current `main`. Review any live differences
+before overwriting them; reconcile intentional machine changes into the tracked
+configuration first.
 
 ```bash
+git fetch origin
+git switch main
+git pull --ff-only
+diff -u settings.json ~/.claude/settings.json
+diff -u CLAUDE.md ~/.claude/CLAUDE.md
+```
+
+After reconciliation, install without deleting machine-managed additions:
+
+```bash
+backup="$HOME/.claude-backups/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup"
+cp -a ~/.claude/CLAUDE.md ~/.claude/settings.json ~/.claude/hooks ~/.claude/skills "$backup/"
 rsync -a skills/ ~/.claude/skills/
 rsync -a hooks/ ~/.claude/hooks/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
 chmod +x ~/.claude/hooks/*.sh
+rm -f ~/.claude/hooks/codex-challenge-commit-gate.sh
+rm -f ~/.claude/hooks/repoforge-commit-gate.sh
 ```
 
-Hooks must stay executable — git records mode 100755, but verify after any
-restore, because a non-executable hook fails silently instead of gating.
+The two removed files are obsolete PR #2 commit gates. Their deletion is
+intentional. Do not use `--delete` for the directory copies: HerdR and other
+machine integrations may own additional live files.
 
-Restore deliberately omits `--delete`, so a live file with no counterpart here
-survives. That leaves stale files behind, which is the safer failure: deleting
-would destroy live work that was never mirrored. Prune those by hand.
+Verify the installed estate itself, not only the checkout:
+
+```bash
+bash ~/.claude/hooks/tests/run.sh
+bash ~/.claude/skills/codex-advisor/tests/test-ask-codex-advisor.sh
+diff -u CLAUDE.md ~/.claude/CLAUDE.md
+diff -u settings.json ~/.claude/settings.json
+diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
+diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
+```
+
+The final hooks diff should report only deliberate externally managed files
+(currently `herdr-agent-state.sh`). Any other difference needs reconciliation.
+Git records executable modes, but verify them after installation because a
+non-executable hook fails silently.
 
 ## External dependencies
 
-This mirror is **not self-contained**. `CLAUDE.md` mandates these tools and the
-hooks refuse work without them, but none of them live here. Restore the mirror
-onto a machine without them and the estate bricks itself: `rcf-intake-gate.sh`
+This estate is **not self-contained**. `CLAUDE.md` mandates these tools and the
+hooks refuse work without them, but none of them live here. Install it onto a
+machine without them and the estate bricks itself: `rcf-intake-gate.sh`
 blocks every code edit until a Repo Context Forge intake and a fresh GitNexus
 index exist, and neither tool would be present to produce one.
+
+HerdR also manages `~/.claude/hooks/herdr-agent-state.sh` and may overwrite it
+when its Claude integration is reinstalled or upgraded. The tracked settings
+register that hook, but this repository deliberately does not copy the
+generated file. Reinstalling the integration may also rewrite that
+`SessionStart` settings entry, so reconcile it before the next tracked install.
+This estate was last verified with HerdR `0.7.5` and Claude integration version
+`7`.
 
 SHAs are what this estate was last verified against, not minimums.
 
@@ -107,8 +148,8 @@ that shells out to its separate repo.
 
 ## Notes
 
-- `settings.json` hardcodes absolute paths under `/home/prop_`, so it is a
-  backup of this machine rather than a portable config.
+- `settings.json` hardcodes absolute paths under `/home/prop_`, so it is the
+  tracked configuration for this machine rather than a portable default.
 - `~/.claude/settings.local.json` is deliberately **not** mirrored: it is the
   machine-local override and may hold credentials.
 - A sibling `~/projects/codex-skills` mirrors the Codex estate the same way
