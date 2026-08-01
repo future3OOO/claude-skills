@@ -307,23 +307,15 @@ def record_advisor_result(
                 raise ValueError("preflight advisor source must be codex-advisor")
             if verdict not in {"completed", "unavailable"}:
                 raise ValueError("preflight verdict must be completed or unavailable")
-            if verdict == "unavailable":
-                measured_reason = str(reason or "").strip()
-                if not measured_reason:
-                    raise ValueError("preflight unavailable requires --reason")
-                state["advisorPreflight"] = {
-                    "source": source,
-                    "status": verdict,
-                    "findings": "none",
-                    "reason": measured_reason,
-                }
-            else:
-                state["advisorPreflight"] = {
-                    "source": source,
-                    "status": verdict,
-                    "findings": "pending",
-                    "reason": None,
-                }
+            measured_reason = str(reason or "").strip() or None
+            if verdict == "unavailable" and not measured_reason:
+                raise ValueError("preflight unavailable requires --reason")
+            state["advisorPreflight"] = {
+                "source": source,
+                "status": verdict,
+                "findings": "none" if verdict == "unavailable" else "pending",
+                "reason": measured_reason if verdict == "unavailable" else None,
+            }
             state["phase"] = "advisor-preflight"
         elif stage == "final":
             _require_predecessor(state, "final-review")

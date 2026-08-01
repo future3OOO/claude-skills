@@ -51,6 +51,10 @@ def required(value: str | None, flag: str) -> str:
     return value
 
 
+def instance_args(args: argparse.Namespace) -> tuple[str, str]:
+    return required(args.slug, "--slug"), required(args.workflow_id, "--workflow-id")
+
+
 def main() -> int:
     args = parser().parse_args()
     try:
@@ -86,20 +90,12 @@ def main() -> int:
                 reason=args.reason,
             )
         elif args.action == "advisor-disposition":
-            state = advisor_disposition(
-                identity,
-                required(args.slug, "--slug"),
-                required(args.workflow_id, "--workflow-id"),
-                required(args.stage, "--stage"),
-                required(args.findings, "--findings"),
-            )
+            slug, workflow_id = instance_args(args)
+            stage = required(args.stage, "--stage")
+            state = advisor_disposition(identity, slug, workflow_id, stage, required(args.findings, "--findings"))
         elif args.action == "pause":
-            state = pause(
-                identity,
-                required(args.slug, "--slug"),
-                required(args.workflow_id, "--workflow-id"),
-                required(args.reason, "--reason"),
-            )
+            slug, workflow_id = instance_args(args)
+            state = pause(identity, slug, workflow_id, required(args.reason, "--reason"))
         elif args.action == "checkpoint":
             print(json.dumps(checkpoint(identity, required(args.phase, "--phase")), sort_keys=True))
             return 0
