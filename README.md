@@ -24,7 +24,7 @@ context -> preflight advice -> production preflight -> TDD/implementation
 The state is continuity for the agent, not Git authorization. No shipped hook
 parses Bash or intercepts commits. Edit hooks admit governed work and invalidate
 stale downstream review state; compaction/resume hooks preserve the next action;
-the Stop hook returns non-blocking change context.
+the Stop hook is a completion latch plus context: it blocks ending the turn while an active workflow is incomplete and unpaused, and otherwise surfaces the bounded workflow summary.
 
 ## Install or update
 

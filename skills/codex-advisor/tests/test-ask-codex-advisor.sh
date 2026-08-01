@@ -59,9 +59,17 @@ grep -q 'phase belongs in --phase' "$WRAPPER" \
   && { printf 'PASS  phase-word warning retained\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  phase-word warning missing\n'; fail=$((fail+1)); }
 
-grep -q 'disallowed-tools "Edit Write NotebookEdit Task Bash"' "$WRAPPER" \
-  && { printf 'PASS  writes, subagents, and Bash blocked\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  tool policy must block writes, subagents, and Bash\n'; fail=$((fail+1)); }
+grep -q 'disallowed-tools "Edit Write NotebookEdit Task Bash mcp__\*"' "$WRAPPER" \
+  && { printf 'PASS  writes, subagents, Bash, and MCP tools blocked\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  tool policy must block writes, subagents, Bash, and inherited MCP tools\n'; fail=$((fail+1)); }
+
+grep -q -- '--tools "Read,Grep,Glob,Skill"' "$WRAPPER" \
+  && { printf 'PASS  built-in tool surface restricted via --tools\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  --tools must restrict the built-in surface to Read,Grep,Glob,Skill\n'; fail=$((fail+1)); }
+
+grep -q -- '--strict-mcp-config' "$WRAPPER" \
+  && { printf 'PASS  MCP configuration isolated via --strict-mcp-config\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  --strict-mcp-config must isolate MCP configuration\n'; fail=$((fail+1)); }
 
 grep -q 'Load /codebase-design, /tdd, and /code-quality' "$WRAPPER" \
   && { printf 'PASS  before-code rubric named\n'; pass=$((pass+1)); } \
@@ -79,9 +87,9 @@ grep -q 'cannot require code' "$WRAPPER" \
   && { printf 'PASS  imaginary-risk rule present\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  imaginary-risk rule missing\n'; fail=$((fail+1)); }
 
-grep -q 'allowed-tools "Read Grep Glob Skill' "$WRAPPER" \
+grep -q '"Read,Grep,Glob,Skill"' "$WRAPPER" \
   && { printf 'PASS  rubric skills permitted\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  Skill must stay allowed for read-only rubric use\n'; fail=$((fail+1)); }
+  || { printf 'FAIL  Skill must stay available for read-only rubric use\n'; fail=$((fail+1)); }
 
 if grep -q '\.stamp\|commit gate\|commit-approval' "$WRAPPER"; then
   printf 'FAIL  commit authorization residue remains\n'; fail=$((fail+1))
@@ -109,6 +117,32 @@ check_status "unreadable bounded input rejected" 2 "$status"
 grep -q 'from hooks.lib.workflow_state import safe_slug' "$WRAPPER" \
   && { printf 'PASS  evidence attach uses the producer safe_slug contract\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  evidence attach must derive the slug via the producer safe_slug\n'; fail=$((fail+1)); }
+
+printf '== governed pre-consult gate (offline)\n'
+gatetmp=$(mktemp -d)
+mkdir -p "$gatetmp/home"
+git -C "$gatetmp" init -q
+out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
+  "$WRAPPER" --slug orphan --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
+check_status "governed consult without an active workflow refused" 2 "$status"
+check "no-workflow refusal names the cause" "requires an active workflow" "$out"
+CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/pass-state.py" \
+  begin --repo "$gatetmp" --slug real-pass >/dev/null 2>&1
+out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
+  "$WRAPPER" --slug wrong-pass --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
+check_status "mismatched-slug governed consult refused" 2 "$status"
+check "slug-mismatch refusal names both slugs" "does not match the active workflow" "$out"
+rm -rf "$gatetmp"
+
+fields=$(printf '%s' '{"slug":"legacy-pass","tdd":"passed","codeReview":{"status":"passed"}}' | python3 -c 'import json,sys
+state = json.load(sys.stdin)
+print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") or "", (state.get("codeReview") or {}).get("status") or "", sep="|")')
+IFS='|' read -r f_slug f_wid f_tdd f_review <<<"$fields"
+if [[ "$f_slug" == "legacy-pass" && -z "$f_wid" && "$f_tdd" == "passed" && "$f_review" == "passed" ]]; then
+  printf 'PASS  empty workflowId field survives capture without shifting\n'; pass=$((pass+1))
+else
+  printf 'FAIL  capture field shift: slug=%s wid=%s tdd=%s review=%s\n' "$f_slug" "$f_wid" "$f_tdd" "$f_review"; fail=$((fail+1))
+fi
 
 printf '== session identity (offline)\n'
 idtmp=$(mktemp -d)

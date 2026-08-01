@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import atomic_write_json, repo_state_dir, state_lock, utc_timestamp  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, read_workflow, safe_slug, set_phase  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, bound_instance, safe_slug, set_phase  # noqa: E402
 
 RESOLVED = {"fixed", "rejected-with-evidence"}
 DISPOSITIONS = RESOLVED | {"accepted-follow-up"}
@@ -73,6 +73,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=".")
     parser.add_argument("--slug", required=True)
+    parser.add_argument("--workflow-id")
     parser.add_argument("--resolved-model", required=True)
     parser.add_argument("--review-context-id", required=True)
     parser.add_argument("--input", required=True)
@@ -84,25 +85,25 @@ def main() -> int:
             raise ValueError("resolved model and review context id must be non-empty")
         identity = resolve_repo_identity(args.repo)
         slug = safe_slug(args.slug)
-        state = read_workflow(identity)
-        if state is None or state.get("slug") != slug:
-            raise WorkflowError("--slug does not match the active workflow")
         findings, dispositions, unresolved = _validated(_load(args.input))
         status = "pending" if unresolved else "passed"
         finding_status = "pending" if unresolved else "addressed" if findings else "none"
-        summary = {
-            "schemaVersion": 1,
-            "slug": slug,
-            "status": status,
-            "resolvedModel": resolved_model,
-            "reviewContextId": review_context_id,
-            "findings": findings,
-            "dispositions": dispositions,
-            "recordedAt": utc_timestamp(),
-        }
         path = repo_state_dir(identity) / f"review-{slug}.json"
         with state_lock(identity):
+            state = bound_instance(identity, slug, args.workflow_id)
+            summary = {
+                "schemaVersion": 1,
+                "slug": slug,
+                "workflowId": state.get("workflowId"),
+                "status": status,
+                "resolvedModel": resolved_model,
+                "reviewContextId": review_context_id,
+                "findings": findings,
+                "dispositions": dispositions,
+                "recordedAt": utc_timestamp(),
+            }
             atomic_write_json(path, summary)
+        bound_instance(identity, slug, args.workflow_id)
         set_phase(identity, "code-review", status, findings=finding_status)
         print(json.dumps({"summaryPath": str(path), "status": status}, sort_keys=True))
         if unresolved:

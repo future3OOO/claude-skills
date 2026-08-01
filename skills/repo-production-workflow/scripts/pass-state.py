@@ -40,6 +40,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--verdict")
     result.add_argument("--findings")
     result.add_argument("--reason")
+    result.add_argument("--workflow-id")
     return result
 
 
@@ -75,6 +76,8 @@ def main() -> int:
         elif args.action == "advisor-result":
             state = record_advisor_result(
                 identity,
+                required(args.slug, "--slug"),
+                args.workflow_id,
                 required(args.stage, "--stage"),
                 required(args.source, "--source"),
                 required(args.verdict, "--verdict"),

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 
 from .repo_identity import RepoIdentity
@@ -151,6 +152,7 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "schemaVersion": 1,
         "repo": identity.as_dict(),
         "slug": normalized,
+        "workflowId": uuid.uuid4().hex,
         "intent": intent.strip(),
         "phase": "intake",
         "nextAction": "repo-context-forge",
@@ -183,6 +185,7 @@ def set_phase(
         raise ValueError(f"unsupported workflow phase: {phase}")
     with state_lock(identity):
         state = _require(identity)
+        _require_open(state)
         state.pop("paused", None)
         _require_predecessor(state, phase)
         if phase == "implementation" and status == "passed" and state.get("tdd") not in {"passed", "not-required"}:
@@ -204,6 +207,8 @@ def set_phase(
 
 def record_advisor_result(
     identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
     stage: str,
     source: str,
     verdict: str,
@@ -216,7 +221,7 @@ def record_advisor_result(
     if findings not in {None, "pending"}:
         raise ValueError("advisor-result records findings=pending; disposition findings with advisor-disposition")
     with state_lock(identity):
-        state = _require(identity)
+        state = bound_instance(identity, slug, workflow_id)
         state.pop("paused", None)
         if stage == "preflight":
             _require_predecessor(state, "advisor-preflight")
@@ -254,11 +259,25 @@ def record_advisor_result(
         return _persist(identity, state)
 
 
-def _bound_state(identity: RepoIdentity, slug: str) -> JsonObject:
+def _require_open(state: JsonObject) -> None:
+    if state.get("phase") == "complete" and not state.get("revalidation"):
+        raise WorkflowError("workflow is terminal after completion; begin a new pass")
+
+
+def bound_state(identity: RepoIdentity, slug: str) -> JsonObject:
     """Active state for a slug-bound mutation; a stale or concurrent slug is rejected."""
     state = _require(identity)
+    _require_open(state)
     if state.get("slug") != safe_slug(str(slug or "")):
         raise WorkflowError("--slug does not match the active workflow")
+    return state
+
+
+def bound_instance(identity: RepoIdentity, slug: str, workflow_id: str | None) -> JsonObject:
+    """bound_state plus strict instance equality; producers call this under the state lock before writing."""
+    state = bound_state(identity, slug)
+    if (state.get("workflowId") or None) != (workflow_id or None):
+        raise WorkflowError("--workflow-id does not match the active workflow instance")
     return state
 
 
@@ -268,7 +287,7 @@ def pause(identity: RepoIdentity, slug: str, reason: str) -> JsonObject:
     if not cleaned:
         raise ValueError("pause requires a non-empty --reason")
     with state_lock(identity):
-        state = _bound_state(identity, slug)
+        state = bound_state(identity, slug)
         state["paused"] = {"reason": cleaned, "at": utc_timestamp()}
         return _persist(identity, state)
 
@@ -280,7 +299,7 @@ def advisor_disposition(identity: RepoIdentity, slug: str, stage: str, findings:
     if stage not in {"preflight", "final"}:
         raise ValueError(f"unsupported advisor stage: {stage}")
     with state_lock(identity):
-        state = _bound_state(identity, slug)
+        state = bound_state(identity, slug)
         state.pop("paused", None)
         field = "advisorPreflight" if stage == "preflight" else "finalReview"
         record = state.get(field)
@@ -297,28 +316,41 @@ def advisor_disposition(identity: RepoIdentity, slug: str, stage: str, findings:
         return _persist(identity, state)
 
 
+def completion_missing(state: JsonObject) -> list[str]:
+    """The canonical completion-readiness check shared by complete() and the Stop latch."""
+    missing: list[str] = []
+    for field in ("repoContextForge", "gitnexus", "preflight", "implementation", "verification"):
+        if state.get(field) != "passed":
+            missing.append(field)
+    if state.get("tdd") not in {"passed", "not-required"}:
+        missing.append("tdd")
+    if not _allows_next(state, "advisor-preflight"):
+        missing.append("advisorPreflight")
+    if not _allows_next(state, "code-review"):
+        missing.append("codeReview")
+    if not _allows_next(state, "final-review"):
+        missing.append("finalReview")
+    return missing
+
+
 def complete(identity: RepoIdentity) -> JsonObject:
     with state_lock(identity):
         state = _require(identity)
         state.pop("paused", None)
-        missing: list[str] = []
-        for field in ("repoContextForge", "gitnexus", "preflight", "implementation", "verification"):
-            if state.get(field) != "passed":
-                missing.append(field)
-        if state.get("tdd") not in {"passed", "not-required"}:
-            missing.append("tdd")
-        advisor = state.get("advisorPreflight")
-        if not _allows_next(state, "advisor-preflight"):
-            missing.append("advisorPreflight")
-        if not _allows_next(state, "code-review"):
-            missing.append("codeReview")
-        if not _allows_next(state, "final-review"):
-            missing.append("finalReview")
+        state.pop("revalidation", None)
+        missing = completion_missing(state)
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
         state["phase"] = "complete"
         state["nextAction"] = "delivery-and-reviewer-completion"
         return _persist(identity, state)
+
+
+def _reset_downstream(state: JsonObject) -> None:
+    state["verification"] = "pending"
+    state["codeReview"] = {"status": "pending", "findings": "pending"}
+    state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
+    state["nextAction"] = _derive_next_action(state)
 
 
 def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | None:
@@ -333,10 +365,21 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
         if reviewable:
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
-        state["verification"] = "pending"
-        state["codeReview"] = {"status": "pending", "findings": "pending"}
-        state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
-        state["nextAction"] = _derive_next_action(state)
+        elif state.get("phase") == "complete":
+            state["revalidation"] = True
+        _reset_downstream(state)
+        return _persist(identity, state)
+
+
+def record_tdd_regression(identity: RepoIdentity) -> JsonObject:
+    """A matching GREEN that now fails reopens TDD and implementation and resets downstream readiness."""
+    with state_lock(identity):
+        state = _require(identity)
+        _require_open(state)
+        state["tdd"] = "in-progress"
+        state["phase"] = "implementation"
+        state["implementation"] = "in-progress"
+        _reset_downstream(state)
         return _persist(identity, state)
 
 
@@ -380,6 +423,11 @@ def summary(identity: RepoIdentity, limit: int = 1200) -> str:
         f"code-review={code_review.get('status')}/{code_review.get('findings')}, "
         f"final-review={final_review.get('source')}/{final_review.get('status')}/{final_review.get('findings')}. "
         + (f" Advisor outage: {advisor.get('reason')}." if advisor.get("status") == "unavailable" else "")
+        + (
+            f" Paused: {str(paused.get('reason'))[:160]}."
+            if isinstance(paused := state.get("paused"), dict)
+            else ""
+        )
         + " Missing state is pending, never success."
     )
     return text[:limit]

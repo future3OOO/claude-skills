@@ -105,9 +105,16 @@ The disposition is slug-bound: a slug that does not match the active workflow
 is rejected without mutating state, and `pause` carries the same binding.
 
 Use `--findings addressed` when the consult produced findings that were fixed
-or rejected with evidence. For an unavailable consult, record `advisor-result
---verdict unavailable --reason "<measured transport failure>"`; no disposition
-is needed. Final review has no unavailable route.
+or rejected with evidence. For an unavailable consult, record the full
+slug- and instance-bound command; no disposition is needed and final review
+has no unavailable route:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+  advisor-result --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
+  --stage preflight --source codex-advisor \
+  --verdict unavailable --reason "<measured transport failure>"
+```
 
 After validating final-review output, record the final disposition the same
 way:

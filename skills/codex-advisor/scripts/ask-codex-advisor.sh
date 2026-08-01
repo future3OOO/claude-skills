@@ -64,9 +64,28 @@ if [[ -n "$base_ref" ]] && ! git -C "$repo_root" rev-parse --verify --quiet "$ba
   exit 2
 fi
 
+pass_state="$script_dir/../../repo-production-workflow/scripts/pass-state.py"
+producer_slug=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.workflow_state import safe_slug; print(safe_slug(sys.argv[2]))' "$script_dir/../../.." "$slug")
+active_wid=""; active_tdd=""; active_review=""
+if [[ -n "$phase" ]]; then
+  active_json=$(python3 "$pass_state" status --repo "$repo_root" 2>/dev/null) || {
+    printf 'error: %s requires an active workflow; begin the pass before consulting\n' "$phase" >&2
+    exit 2
+  }
+  # "|" is a non-whitespace delimiter, so bash read preserves empty fields
+  # (IFS whitespace like tab collapses them and shifts every later field).
+  IFS='|' read -r active_slug active_wid active_tdd active_review < <(printf '%s' "$active_json" | python3 -c 'import json,sys
+state = json.load(sys.stdin)
+print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") or "", (state.get("codeReview") or {}).get("status") or "", sep="|")')
+  if [[ "$active_slug" != "$producer_slug" ]]; then
+    printf 'error: --slug %s does not match the active workflow %s\n' "$producer_slug" "$active_slug" >&2
+    exit 2
+  fi
+fi
+
 state_dir="${CLAUDE_HOME:-$HOME/.claude}/state/_advisor-sessions"
 mkdir -p "$state_dir"; chmod 700 "$state_dir"
-sid_file="$state_dir/${repo_key}-${normalized_slug}.sid"
+sid_file="$state_dir/${repo_key}-${normalized_slug}${active_wid:+-$active_wid}.sid"
 new_session_id() { if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/kernel/random/uuid; else python3 -c 'import uuid; print(uuid.uuid4())'; fi; }
 if [[ "$fresh" -eq 1 || ! -s "$sid_file" ]]; then
   sid=$(new_session_id); temporary="$sid_file.tmp.$$"; printf '%s\n' "$sid" >"$temporary"; chmod 600 "$temporary"; mv "$temporary" "$sid_file"
@@ -106,10 +125,22 @@ if [[ -n "$phase" ]]; then
   [[ -n "$base_ref" ]] && branch_diff=$(git -C "$repo_root" diff "$base_ref"...HEAD)
   packet_excerpt=""; [[ -n "$packet_file" ]] && packet_excerpt=$(head -c 20000 -- "$packet_file")
   gitnexus_excerpt=""; [[ -n "$gitnexus_file" ]] && gitnexus_excerpt=$(head -c 12000 -- "$gitnexus_file")
-  workflow_state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/$repo_key"
-  producer_slug=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.workflow_state import safe_slug; print(safe_slug(sys.argv[2]))' "$script_dir/../../.." "$slug")
-  tdd_excerpt=""; [[ -r "$workflow_state_dir/tdd-$producer_slug.json" ]] && tdd_excerpt=$(head -c 4000 -- "$workflow_state_dir/tdd-$producer_slug.json")
-  review_excerpt=""; [[ -r "$workflow_state_dir/review-$producer_slug.json" ]] && review_excerpt=$(head -c 4000 -- "$workflow_state_dir/review-$producer_slug.json")
+  tdd_excerpt=""; review_excerpt=""
+  if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
+    workflow_state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/$repo_key"
+    owned_excerpt() { python3 -c 'import json,sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit
+if data.get("workflowId") == sys.argv[2]:
+    print(json.dumps(data, sort_keys=True)[:4000])' "$1" "$active_wid"; }
+    [[ "$active_tdd" != "pending" ]] && tdd_excerpt=$(owned_excerpt "$workflow_state_dir/tdd-$producer_slug.json")
+    case "$active_review" in
+      passed|not-required) review_excerpt=$(owned_excerpt "$workflow_state_dir/review-$producer_slug.json") ;;
+    esac
+  fi
   evidence="
 === Live repository evidence
 root: $repo_root  branch: $(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)  head: $(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)  base-ref: ${base_ref:-<none>}
@@ -147,8 +178,9 @@ set +e
 printf '%s' "$prompt" | CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token" \
   claude -p "${session_args[@]}" --model "$model" --output-format text \
     --append-system-prompt "$role" \
-    --allowed-tools "Read Grep Glob Skill" \
-    --disallowed-tools "Edit Write NotebookEdit Task Bash" >"$output_file"
+    --tools "Read,Grep,Glob,Skill" \
+    --disallowed-tools "Edit Write NotebookEdit Task Bash mcp__*" \
+    --strict-mcp-config >"$output_file"
 status=$?
 set -e
 if [[ "$status" -ne 0 ]]; then
@@ -160,9 +192,9 @@ if [[ ! -s "$output_file" ]] || [[ -z "$(tr -d '[:space:]' <"$output_file")" ]];
   exit 2
 fi
 
-pass_state="$script_dir/../../repo-production-workflow/scripts/pass-state.py"
 if [[ "$phase" == "preflight-advice" ]]; then
-  python3 "$pass_state" advisor-result --repo "$repo_root" --stage preflight --source codex-advisor --verdict completed >/dev/null
+  python3 "$pass_state" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
+    --stage preflight --source codex-advisor --verdict completed >/dev/null
 elif [[ "$phase" == "final-review" ]]; then
   last_line=$(awk 'NF {line=$0} END {print line}' "$output_file")
   case "$last_line" in
@@ -171,7 +203,8 @@ elif [[ "$phase" == "final-review" ]]; then
     "Verdict: context-mismatch") verdict=context-mismatch ;;
     *) printf 'error: final-review output lacks an exact terminal Verdict line\n' >&2; exit 2 ;;
   esac
-  python3 "$pass_state" advisor-result --repo "$repo_root" --stage final --source codex-advisor --verdict "$verdict" >/dev/null
+  python3 "$pass_state" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
+    --stage final --source codex-advisor --verdict "$verdict" >/dev/null
 fi
 
 cat "$output_file"

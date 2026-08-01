@@ -96,7 +96,14 @@ bullet at a time. In this governed workflow `tdd-run` is the required producer
 for behavior-change TDD state (`set-phase` does not accept the `tdd` phase);
 outside the governed workflow it stays optional. It keeps a bounded summary
 and advances the TDD state; it is not proof by itself. For genuinely
-non-behavioral work record `tdd-run --not-required "<reason>"`. After
+non-behavioral work record the decision with the full producer command:
+
+```bash
+python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --repo "$PWD" \
+  --slug "<task>" --not-required "<specific non-behavioral reason>"
+```
+
+After
 production preflight, test-like edits are admitted while TDD is pending;
 production edits stay blocked until a valid RED (`in-progress`) or a recorded
 not-required decision, and `implementation` cannot be recorded `passed` until

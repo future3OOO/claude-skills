@@ -30,16 +30,26 @@ One repository-scoped file records the active slug, phase, next action, step
 statuses, code-review disposition state, and final-review result.
 
 ```text
-begin
-set-phase
-advisor-result
-complete
+begin              # assigns the pass's random workflowId
+set-phase          # lead-owned step recording (ordered, slug-scoped)
+advisor-result     # producer-recorded raw consult, slug + workflowId bound
+advisor-disposition  # lead-owned findings disposition, slug bound
+pause              # slug-bound honest wait; releases the Stop latch
+complete           # terminal; only begin starts another pass
 summary
+status
 ```
 
 The state file is atomic, private, and agent-writable. It provides continuity
 after compaction; it is not tamper-proof and does not authorize Git. A normal
-commit or HEAD change does not invalidate it.
+commit or HEAD change does not invalidate it. After production preflight,
+test-like edits are admitted while TDD is pending; production edits stay
+blocked until a valid RED or a recorded not-required decision. A normally
+completed workflow is terminal: every mutation except `begin` is rejected,
+and a governance edit after completion opens a revalidation window that
+reopens the workflow for re-verification; completing again requires the
+verification, code-review, and final-review chain and restores the terminal
+state.
 
 `complete` requires:
 
@@ -79,7 +89,7 @@ implementation returns to verification.
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, then return quality feedback |
 | `PreCompact(manual\|auto)` | Atomically flush existing state without advancing it |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary |
-| `Stop` | Return non-blocking changed-file and caller/callee context; unavailable checks are `unknown` |
+| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, recorded slug-bound `pause` waits (the route for background work and scheduled wakeups), and advisor delegates; surfaces the bounded summary otherwise |
 
 There is no Bash command matcher, Git hook, command classifier, protected-path
 parser, candidate-tree gate, approval marker, nonce, or evidence graph.
@@ -93,5 +103,8 @@ are never substitutes for the real packet, test command, or live review.
 ## Delivery is separate
 
 Workflow completion means the production process reached a final ready review.
+Delivery follows only when integration is intended; the no-PR route (local-only
+work, estate syncs, work the user said not to push) completes the workflow,
+reports the change and its verification, and names why no PR exists.
 Commit, push, PR creation, CI, reviewer comments, and mergeability remain normal
 delivery/reviewer-loop concerns after that point.

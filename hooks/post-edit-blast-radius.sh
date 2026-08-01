@@ -22,7 +22,7 @@ from hooks.lib.state_store import (  # noqa: E402
     state_lock,
     untracked_paths,
 )
-from hooks.lib.workflow_state import read_workflow, safe_slug, summary  # noqa: E402
+from hooks.lib.workflow_state import completion_missing, read_workflow, safe_slug, summary  # noqa: E402
 
 
 def _tracked(root: Path) -> list[str] | None:
@@ -52,7 +52,7 @@ def main() -> int:
         return 0
 
     state = read_workflow(identity)
-    if state is not None and state.get("phase") != "complete" and not state.get("paused"):
+    if state is not None and completion_missing(state) and not state.get("paused"):
         reason = (
             summary(identity)
             + f"\nStop latched: the active workflow is incomplete. nextAction: {state.get('nextAction')}. "
