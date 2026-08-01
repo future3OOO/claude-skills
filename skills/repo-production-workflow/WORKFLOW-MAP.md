@@ -44,13 +44,14 @@ commit or HEAD change does not invalidate it.
 `complete` requires:
 
 - Repo Context Forge and GitNexus completed;
-- advisor preflight completed or explicitly unavailable;
+- advisor preflight completed with findings dispositioned, or explicitly
+  unavailable with a measured reason;
 - production preflight completed;
 - TDD passed or not required;
 - implementation and verification passed;
 - code review passed/not required with material findings addressed;
-- final review from `codex-agent` or `codex-advisor` with `commit-ready` and no
-  pending material findings.
+- final review from `codex-advisor` with `commit-ready` and no pending material
+  findings.
 
 ## Edit invalidation
 
@@ -60,13 +61,15 @@ production Edit/Write/NotebookEdit
   -> verification = pending
   -> codeReview = pending
   -> finalReview = pending
-  -> nextAction = verification
+  -> nextAction = implementation
 ```
 
 Invalidation occurs before quality feedback, so a failing quality check cannot
 leave stale readiness behind. Ordinary documentation and scratch edits are
 exempt; governance docs reset verification, code review, and final review, and
-set `nextAction` to `verification`.
+resume at the first unsatisfied phase in the same ordered workflow. A
+governance-first pass therefore returns to TDD, while a completed
+implementation returns to verification.
 
 ## Hook roles
 

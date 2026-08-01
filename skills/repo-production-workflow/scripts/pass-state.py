@@ -22,6 +22,8 @@ from hooks.lib.workflow_state import (  # noqa: E402
     summary,
 )
 
+LEAD_PHASES = {"gitnexus", "preflight", "implementation", "verification", "code-review"}
+
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
@@ -35,6 +37,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source")
     result.add_argument("--verdict")
     result.add_argument("--findings")
+    result.add_argument("--reason")
     return result
 
 
@@ -51,10 +54,20 @@ def main() -> int:
         if args.action == "begin":
             state = begin(identity, required(args.slug, "--slug"), args.intent)
         elif args.action == "set-phase":
+            phase = required(args.phase, "--phase")
+            if phase not in LEAD_PHASES:
+                raise ValueError(
+                    "set-phase is lead-owned only for gitnexus, preflight, implementation, and verification"
+                )
+            status = required(args.status, "--status")
+            if phase == "code-review" and (status != "not-required" or args.findings != "none"):
+                raise ValueError(
+                    "code-review passed is recorder-owned; lead-owned set-phase permits only not-required with findings none"
+                )
             state = set_phase(
                 identity,
-                required(args.phase, "--phase"),
-                required(args.status, "--status"),
+                phase,
+                status,
                 findings=args.findings,
             )
         elif args.action == "advisor-result":
@@ -64,6 +77,7 @@ def main() -> int:
                 required(args.source, "--source"),
                 required(args.verdict, "--verdict"),
                 findings=args.findings,
+                reason=args.reason,
             )
         elif args.action == "complete":
             state = complete(identity)

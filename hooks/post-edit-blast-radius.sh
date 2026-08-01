@@ -22,7 +22,7 @@ from hooks.lib.state_store import (  # noqa: E402
     state_lock,
     untracked_paths,
 )
-from hooks.lib.workflow_state import safe_slug  # noqa: E402
+from hooks.lib.workflow_state import safe_slug, summary  # noqa: E402
 
 
 def _tracked(root: Path) -> list[str] | None:
@@ -65,28 +65,29 @@ def main() -> int:
         changed_line = "changed code: " + ", ".join(labels)
         if len(changed) > len(labels):
             changed_line += f"; plus {len(changed) - len(labels)} more"
-        change_state = {"tracked": tracked, "untracked": untracked}
     else:
         changed_line = "changed code: unknown (Git status unavailable)"
-        change_state = {"tracked": tracked, "untracked": untracked}
+
+    context = (
+        "Non-blocking completion feedback. Unknown is not green.\n"
+        + changed_line
+        + "\n"
+        + summary(identity)
+        + "\nblast radius: callers=unknown; callees=unknown until packet-scoped GitNexus analysis runs"
+        + "\nAny production edit after review makes code review and final review pending."
+    )[:3600]
 
     session = safe_slug(str(payload.get("session_id") or "unknown"))[:40]
     try:
         dedupe = repo_state_dir(identity) / "stop" / f"{session}.json"
         with state_lock(identity):
             previous = read_json(dedupe)
-            if previous and previous.get("changeState") == change_state:
+            if previous and previous.get("message") == context:
                 return 0
-            atomic_write_json(dedupe, {"schemaVersion": 1, "changeState": change_state})
+            atomic_write_json(dedupe, {"schemaVersion": 1, "message": context})
     except OSError as exc:
         print(f"Stop feedback dedupe unavailable: {exc}", file=sys.stderr)
 
-    context = (
-        "Non-blocking completion feedback. Unknown is not green.\n"
-        + changed_line
-        + "\nblast radius: callers=unknown; callees=unknown until packet-scoped GitNexus analysis runs"
-        + "\nAny production edit after review makes code review and final review pending."
-    )[:3600]
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": context}}))
     return 0
 

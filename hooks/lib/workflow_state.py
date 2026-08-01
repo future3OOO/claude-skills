@@ -24,18 +24,21 @@ STEP_FIELDS = {
     "implementation": "implementation",
     "verification": "verification",
 }
-NEXT_ACTIONS = {
-    "repo-context-forge": "gitnexus",
-    "gitnexus": "advisor-preflight",
-    "preflight": "tdd",
-    "tdd": "implementation",
-    "implementation": "verification",
-    "verification": "code-review",
-    "code-review": "final-review",
-}
+WORKFLOW_SEQUENCE = (
+    "repo-context-forge",
+    "gitnexus",
+    "advisor-preflight",
+    "preflight",
+    "tdd",
+    "implementation",
+    "verification",
+    "code-review",
+    "final-review",
+)
+NEXT_ACTIONS = dict(zip(WORKFLOW_SEQUENCE, WORKFLOW_SEQUENCE[1:]))
 STEP_STATUSES = {"pending", "in-progress", "passed", "not-required", "unavailable"}
 FINDING_STATUSES = {"pending", "none", "addressed"}
-REVIEW_SOURCES = {"codex-agent", "codex-advisor"}
+REVIEW_SOURCES = {"codex-advisor"}
 FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch", "unavailable"}
 
 
@@ -64,6 +67,10 @@ def read_workflow(identity: RepoIdentity) -> JsonObject | None:
     state = read_json(_path(identity))
     if not state or state.get("schemaVersion") != 1 or state.get("repo") != identity.as_dict():
         return None
+    advisor = state.get("advisorPreflight")
+    if isinstance(advisor, dict):
+        advisor.setdefault("findings", "pending")
+        advisor.setdefault("reason", None)
     return state
 
 
@@ -80,6 +87,48 @@ def _persist(identity: RepoIdentity, state: JsonObject) -> JsonObject:
     return state
 
 
+def _allows_next(state: JsonObject, phase: str) -> bool:
+    if phase in STEP_FIELDS:
+        status = state.get(STEP_FIELDS[phase])
+        return status in ({"in-progress", "passed", "not-required"} if phase == "tdd" else {"passed"})
+    if phase == "advisor-preflight":
+        advisor = state.get("advisorPreflight")
+        if not isinstance(advisor, dict):
+            return False
+        if advisor.get("status") == "completed":
+            return advisor.get("findings") in {"none", "addressed"}
+        return advisor.get("status") == "unavailable" and bool(str(advisor.get("reason") or "").strip())
+    if phase == "code-review":
+        review = state.get("codeReview")
+        return (
+            isinstance(review, dict)
+            and review.get("status") in {"passed", "not-required"}
+            and review.get("findings") in {"none", "addressed"}
+        )
+    if phase == "final-review":
+        review = state.get("finalReview")
+        return (
+            isinstance(review, dict)
+            and review.get("source") in REVIEW_SOURCES
+            and review.get("status") == "commit-ready"
+            and review.get("findings") in {"none", "addressed"}
+        )
+    return False
+
+
+def _require_predecessor(state: JsonObject, phase: str) -> None:
+    position = WORKFLOW_SEQUENCE.index(phase)
+    if position and not _allows_next(state, WORKFLOW_SEQUENCE[position - 1]):
+        raise WorkflowIncomplete(f"{phase} requires {WORKFLOW_SEQUENCE[position - 1]}")
+
+
+def _next_incomplete_phase(state: JsonObject) -> str:
+    return next(
+        (phase for phase in WORKFLOW_SEQUENCE if not _allows_next(state, phase)),
+        "complete-workflow",
+    )
+
+
 def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
     normalized = safe_slug(slug)
     if normalized == "unnamed-workflow":
@@ -94,7 +143,7 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "nextAction": "repo-context-forge",
         "repoContextForge": "pending",
         "gitnexus": "pending",
-        "advisorPreflight": {"source": None, "status": "pending"},
+        "advisorPreflight": {"source": None, "status": "pending", "findings": "pending", "reason": None},
         "preflight": "pending",
         "tdd": "pending",
         "implementation": "pending",
@@ -117,8 +166,11 @@ def set_phase(
 ) -> JsonObject:
     if status not in STEP_STATUSES:
         raise ValueError(f"unsupported workflow status: {status}")
+    if phase not in STEP_FIELDS and phase != "code-review":
+        raise ValueError(f"unsupported workflow phase: {phase}")
     with state_lock(identity):
         state = _require(identity)
+        _require_predecessor(state, phase)
         if phase == "code-review":
             if findings not in FINDING_STATUSES:
                 raise ValueError("code-review requires --findings pending, none, or addressed")
@@ -141,20 +193,45 @@ def record_advisor_result(
     verdict: str,
     *,
     findings: str | None = None,
+    reason: str | None = None,
 ) -> JsonObject:
     if source not in REVIEW_SOURCES:
         raise ValueError(f"unsupported reviewer source: {source}")
     with state_lock(identity):
         state = _require(identity)
         if stage == "preflight":
+            _require_predecessor(state, "advisor-preflight")
             if source != "codex-advisor":
                 raise ValueError("preflight advisor source must be codex-advisor")
             if verdict not in {"completed", "unavailable"}:
                 raise ValueError("preflight verdict must be completed or unavailable")
-            state["advisorPreflight"] = {"source": source, "status": verdict}
+            if verdict == "unavailable":
+                measured_reason = str(reason or "").strip()
+                if not measured_reason:
+                    raise ValueError("preflight unavailable requires --reason")
+                state["advisorPreflight"] = {
+                    "source": source,
+                    "status": verdict,
+                    "findings": "none",
+                    "reason": measured_reason,
+                }
+            else:
+                finding_status = findings or "pending"
+                if finding_status not in FINDING_STATUSES:
+                    raise ValueError("preflight review requires --findings pending, none, or addressed")
+                state["advisorPreflight"] = {
+                    "source": source,
+                    "status": verdict,
+                    "findings": finding_status,
+                    "reason": None,
+                }
             state["phase"] = "advisor-preflight"
-            state["nextAction"] = "production-preflight"
+            state["nextAction"] = (
+                "production-preflight" if _allows_next(state, "advisor-preflight")
+                else "address-advisor-findings"
+            )
         elif stage == "final":
+            _require_predecessor(state, "final-review")
             if verdict not in FINAL_VERDICTS:
                 raise ValueError(f"unsupported final-review verdict: {verdict}")
             if findings not in FINDING_STATUSES:
@@ -177,13 +254,11 @@ def complete(identity: RepoIdentity) -> JsonObject:
         if state.get("tdd") not in {"passed", "not-required"}:
             missing.append("tdd")
         advisor = state.get("advisorPreflight")
-        if not isinstance(advisor, dict) or advisor.get("status") not in {"completed", "unavailable"}:
+        if not _allows_next(state, "advisor-preflight"):
             missing.append("advisorPreflight")
-        code_review = state.get("codeReview")
-        if not isinstance(code_review, dict) or code_review.get("status") not in {"passed", "not-required"} or code_review.get("findings") not in {"none", "addressed"}:
+        if not _allows_next(state, "code-review"):
             missing.append("codeReview")
-        final_review = state.get("finalReview")
-        if not isinstance(final_review, dict) or final_review.get("source") not in REVIEW_SOURCES or final_review.get("status") != "commit-ready" or final_review.get("findings") not in {"none", "addressed"}:
+        if not _allows_next(state, "final-review"):
             missing.append("finalReview")
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
@@ -203,10 +278,10 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
         if reviewable:
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
-        state["nextAction"] = "verification"
         state["verification"] = "pending"
         state["codeReview"] = {"status": "pending", "findings": "pending"}
         state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
+        state["nextAction"] = _next_incomplete_phase(state)
         return _persist(identity, state)
 
 
@@ -220,7 +295,7 @@ def ready_for_edit(identity: RepoIdentity) -> tuple[bool, list[str]]:
         name for name, ready in (
             ("Repo Context Forge", state.get("repoContextForge") == "passed"),
             ("GitNexus", state.get("gitnexus") == "passed"),
-            ("advisor preflight", isinstance(state.get("advisorPreflight"), dict) and state["advisorPreflight"].get("status") in {"completed", "unavailable"}),
+            ("advisor preflight", _allows_next(state, "advisor-preflight")),
             ("production preflight", state.get("preflight") == "passed"),
         ) if not ready
     ]
@@ -243,10 +318,11 @@ def summary(identity: RepoIdentity, limit: int = 1200) -> str:
     text = (
         f"Active workflow: slug={state.get('slug')} phase={state.get('phase')} next={state.get('nextAction')}. "
         f"Steps: repo-context-forge={state.get('repoContextForge')}, gitnexus={state.get('gitnexus')}, "
-        f"advisor-preflight={advisor.get('status')}, preflight={state.get('preflight')}, tdd={state.get('tdd')}, "
+        f"advisor-preflight={advisor.get('status')}/{advisor.get('findings')}, preflight={state.get('preflight')}, tdd={state.get('tdd')}, "
         f"implementation={state.get('implementation')}, verification={state.get('verification')}, "
         f"code-review={code_review.get('status')}/{code_review.get('findings')}, "
         f"final-review={final_review.get('source')}/{final_review.get('status')}/{final_review.get('findings')}. "
-        "Missing state is pending, never success."
+        + (f" Advisor outage: {advisor.get('reason')}." if advisor.get("status") == "unavailable" else "")
+        + " Missing state is pending, never success."
     )
     return text[:limit]
