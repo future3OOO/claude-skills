@@ -13,8 +13,13 @@ debug, refactor, explain, or plan work in a git repository.
 1. Run the bundled bootstrap wrapper from this skill via the Bash tool:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD"
+python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
+  --repo "$PWD" --workflow-slug "<active-pass-slug>" --intent "<user request>"
 ```
+
+In a governed production pass, `--workflow-slug` must be the active workflow's
+slug and `--intent` its intent; the adapter records the Repo Context Forge
+step on that workflow and refuses a mismatched slug.
 
 2. Treat the script output as the initial repository context packet for the
 current task. The output begins with `REPO_CONTEXT_FORGE_REQUIRED_INTAKE`; that
@@ -110,7 +115,8 @@ git folder is the target.
 For a user-described implementation before edits, prefer:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" --repo "$PWD" --intent "<task>"
+python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
+  --repo "$PWD" --workflow-slug "<active-pass-slug>" --intent "<task>"
 ```
 
 ## GitNexus Follow-Up

@@ -14,8 +14,10 @@ if str(ROOT) not in sys.path:
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowError,
+    advisor_disposition,
     begin,
     complete,
+    pause,
     read_workflow,
     record_advisor_result,
     set_phase,
@@ -27,7 +29,7 @@ LEAD_PHASES = {"gitnexus", "preflight", "implementation", "verification", "code-
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
-    result.add_argument("action", choices=("begin", "set-phase", "advisor-result", "complete", "summary", "status"))
+    result.add_argument("action", choices=("begin", "set-phase", "advisor-result", "advisor-disposition", "pause", "complete", "summary", "status"))
     result.add_argument("--repo", default=".")
     result.add_argument("--slug")
     result.add_argument("--intent", default="")
@@ -79,6 +81,15 @@ def main() -> int:
                 findings=args.findings,
                 reason=args.reason,
             )
+        elif args.action == "advisor-disposition":
+            state = advisor_disposition(
+                identity,
+                required(args.slug, "--slug"),
+                required(args.stage, "--stage"),
+                required(args.findings, "--findings"),
+            )
+        elif args.action == "pause":
+            state = pause(identity, required(args.slug, "--slug"), required(args.reason, "--reason"))
         elif args.action == "complete":
             state = complete(identity)
         elif args.action == "summary":

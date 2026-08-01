@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import record_advisor_result, set_phase  # noqa: E402
+from hooks.lib.workflow_state import advisor_disposition, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
@@ -47,7 +47,8 @@ class TddSummaryTests(unittest.TestCase):
         identity = resolve_repo_identity(self.repo)
         set_phase(identity, "repo-context-forge", "passed")
         set_phase(identity, "gitnexus", "passed")
-        record_advisor_result(identity, "preflight", "codex-advisor", "completed", findings="none")
+        record_advisor_result(identity, "preflight", "codex-advisor", "completed")
+        advisor_disposition(identity, "tdd-summary", "preflight", "none")
         set_phase(identity, "preflight", "passed")
 
     def tearDown(self) -> None:
@@ -107,6 +108,44 @@ class TddSummaryTests(unittest.TestCase):
         )
         self.assertEqual(downgraded.returncode, 2, downgraded.stdout + downgraded.stderr)
         self.assertIn("cannot replace valid TDD evidence", downgraded.stderr)
+
+    def test_invalid_or_mismatched_runs_do_not_regress_recorded_tdd_state(self) -> None:
+        behavior_command = (
+            sys.executable, "-c",
+            "import app; assert app.value == 2, 'AssertionError: value must be 2'",
+        )
+        red = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
+
+        mismatched = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "a different behavior",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(mismatched.returncode, 2, mismatched.stdout + mismatched.stderr)
+
+        state = self.run_script(PASS_STATE, "status", "--repo", str(self.repo))
+        self.assertEqual(state.returncode, 0, state.stdout + state.stderr)
+        self.assertEqual(
+            json.loads(state.stdout)["tdd"], "passed",
+            "a mismatched candidate regressed the recorded TDD gate",
+        )
+        self.assertEqual(
+            json.loads(summary_path.read_text(encoding="utf-8"))["status"], "passed",
+        )
 
     def test_only_the_declared_failure_and_seam_count(self) -> None:
         silent = self.run_script(

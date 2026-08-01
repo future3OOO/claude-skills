@@ -130,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
                 "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
                 "valid": valid,
             }
-            if args.phase == "red" or matches:
+            recorded = matches or (args.phase == "red" and valid)
+            if recorded:
                 runs = [*prior_runs, run] if matches else [run]
                 atomic_write_json(path, {
                     "schemaVersion": 1,
@@ -143,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
                     "updatedAt": utc_timestamp(),
                 })
 
-        set_phase(identity, "tdd", "passed" if args.phase == "green" and valid else "in-progress" if valid else "pending")
+        if recorded:
+            set_phase(identity, "tdd", "passed" if args.phase == "green" and valid else "in-progress")
         output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
         if output:
             print(output, end="" if output.endswith("\n") else "\n")

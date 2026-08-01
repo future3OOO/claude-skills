@@ -22,7 +22,7 @@ from hooks.lib.state_store import (  # noqa: E402
     state_lock,
     untracked_paths,
 )
-from hooks.lib.workflow_state import safe_slug, summary  # noqa: E402
+from hooks.lib.workflow_state import read_workflow, safe_slug, summary  # noqa: E402
 
 
 def _tracked(root: Path) -> list[str] | None:
@@ -45,8 +45,21 @@ def main() -> int:
     payload = read_hook_payload()
     if payload.get("stop_hook_active") is True:
         return 0
+    if os.environ.get("CODEX_ADVISOR_ACTIVE") or os.environ.get("ADVISOR_ACTIVE"):
+        return 0
     identity = try_resolve_repo_identity(working_directory(payload))
     if identity is None:
+        return 0
+
+    state = read_workflow(identity)
+    if state is not None and state.get("phase") != "complete" and not state.get("paused"):
+        reason = (
+            summary(identity)
+            + f"\nStop latched: the active workflow is incomplete. nextAction: {state.get('nextAction')}. "
+            f"Continue that action, or record an honest wait with pass-state.py pause --slug '{state.get('slug')}' --reason '<why>' "
+            "(background tasks and scheduled wakeups are pause reasons)."
+        )[:3600]
+        print(json.dumps({"decision": "block", "reason": reason}))
         return 0
 
     tracked = _tracked(identity.root)
@@ -56,13 +69,13 @@ def main() -> int:
         untracked = None
     if tracked is not None and untracked is not None:
         changed = code_paths([*tracked, *untracked])
-        if not changed:
+        if not changed and state is None:
             return 0
         labels = [
             f"{path} ({'untracked' if path in untracked else 'tracked/modified'})"
             for path in changed[:8]
         ]
-        changed_line = "changed code: " + ", ".join(labels)
+        changed_line = "changed code: " + (", ".join(labels) if labels else "none")
         if len(changed) > len(labels):
             changed_line += f"; plus {len(changed) - len(labels)} more"
     else:

@@ -211,6 +211,7 @@ For transaction-sensitive work, also require:
 - recovery paths
 - stale-secondary paths
 - no-op paths
+- helper semantic splits
 - authoritativeContract
 - invariants
 - proofPlan

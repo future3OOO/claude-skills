@@ -61,10 +61,19 @@ preferably in a dedicated chat pane. Supply the contract, packet, GitNexus
 summary, intended proof, and no-change surfaces. Invoke `codebase-design` first
 when adding/changing a Module, public Interface, or Seam.
 
-The wrapper records completed advice with findings pending. After validating
-its output, the lead records `--findings none` or `--findings addressed` before
-production preflight. An unavailable consult requires `--reason` with the
-measured transport failure.
+The wrapper records the raw completed result with findings pending. After
+validating its output, the lead records the separate disposition before
+production preflight:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+  advisor-disposition --repo "$PWD" --slug "<task>" --stage preflight --findings none
+```
+
+A disposition is slug-bound to the active workflow and can only move findings
+to `none` or `addressed`; it can never create a result or alter its source or
+verdict. An unavailable consult requires `--reason` with the measured
+transport failure and needs no disposition.
 
 ### 5. Production preflight
 
@@ -83,9 +92,15 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 ### 6. TDD and implementation
 
 For behavior changes invoke `tdd` and drive one real-Seam RED/GREEN tracer
-bullet at a time. `tdd-run` keeps an optional bounded summary and advances the
-TDD state; it is not proof by itself. For genuinely non-behavioral work record
-`tdd --status not-required`.
+bullet at a time. In this governed workflow `tdd-run` is the required producer
+for behavior-change TDD state (`set-phase` does not accept the `tdd` phase);
+outside the governed workflow it stays optional. It keeps a bounded summary
+and advances the TDD state; it is not proof by itself. For genuinely
+non-behavioral work record `tdd-run --not-required "<reason>"`. After
+production preflight, test-like edits are admitted while TDD is pending;
+production edits stay blocked until a valid RED (`in-progress`) or a recorded
+not-required decision, and `implementation` cannot be recorded `passed` until
+TDD is `passed` or `not-required`.
 
 Invoke `production-code`, implement the smallest direct change, and remove
 obsolete code created by the change. PostToolUse marks implementation
@@ -114,8 +129,10 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 
 Invoke `code-review` in fresh independent context for non-trivial changes.
 Review Standards and Spec separately, verify every finding, and let the lead
-disposition it. The optional recorder writes an ordinary review summary and
-sets code-review state. For a genuinely trivial change, record
+disposition it. In this governed workflow `record-review.py` is the required
+producer for non-trivial review state (`set-phase` cannot record a passed
+review); outside the governed workflow it stays optional. For a genuinely
+trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
 Any correction returns to implementation and invalidates downstream readiness.
@@ -147,14 +164,28 @@ Commit, push, and open/update the PR when intended for integration. Then run the
 PR Reviewer Completion Gate from `CLAUDE.md` on the current head. A reviewer-fix
 round begins a new production pass; pushing is not completion.
 
+When the completed work is intentionally not delivered as a PR — local-only
+config, an estate sync, or work the user told you not to push — the no-PR
+route is: complete the workflow, report the change and its verification in the
+final response, and name why no PR exists. The completed state then simply
+remains until the next `begin` replaces it; no reviewer gate applies.
+
 ## Failure semantics
 
 Missing or corrupt workflow state is pending, never success. Preflight advisor
 transport may be recorded `unavailable` only with the measured reason; final
 review has no unavailable exception. Ordinary documentation, scratch, and
 non-repository work keeps the lightweight exception; governance docs still
-reset downstream review readiness. Stop feedback is non-blocking and reports
-unavailable impact as `unknown`.
+reset downstream review readiness. Stop surfaces the active workflow summary
+whenever its state has changed (identical repeats are deduplicated per
+session); it blocks with the exact `nextAction` while an active workflow is
+incomplete and unpaused, and it permits stopping for complete workflows,
+recorded `pause --slug <active-slug> --reason` waits (the slug-bound route for
+background work and scheduled wakeups), and advisor-delegate sessions. Any
+advancing update — including an edit-triggered invalidation — clears a
+recorded pause. `stop_hook_active`
+bounds the latch to one block per natural stop. Unavailable blast-radius
+impact is reported as `unknown`.
 
 ## Final response
 

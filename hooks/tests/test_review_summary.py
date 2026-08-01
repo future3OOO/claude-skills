@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import record_advisor_result, set_phase  # noqa: E402
+from hooks.lib.workflow_state import advisor_disposition, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 RECORDER = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
@@ -47,7 +47,8 @@ class ReviewSummaryTests(unittest.TestCase):
         identity = resolve_repo_identity(self.repo)
         set_phase(identity, "repo-context-forge", "passed")
         set_phase(identity, "gitnexus", "passed")
-        record_advisor_result(identity, "preflight", "codex-advisor", "completed", findings="none")
+        record_advisor_result(identity, "preflight", "codex-advisor", "completed")
+        advisor_disposition(identity, "review-summary", "preflight", "none")
         set_phase(identity, "preflight", "passed")
         set_phase(identity, "tdd", "not-required")
         set_phase(identity, "implementation", "passed")

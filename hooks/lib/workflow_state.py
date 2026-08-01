@@ -9,6 +9,7 @@ from .state_store import (
     atomic_write_json,
     is_governance_path,
     is_reviewable_path,
+    is_test_path,
     read_json,
     repo_state_dir,
     state_lock,
@@ -35,11 +36,10 @@ WORKFLOW_SEQUENCE = (
     "code-review",
     "final-review",
 )
-NEXT_ACTIONS = dict(zip(WORKFLOW_SEQUENCE, WORKFLOW_SEQUENCE[1:]))
 STEP_STATUSES = {"pending", "in-progress", "passed", "not-required", "unavailable"}
 FINDING_STATUSES = {"pending", "none", "addressed"}
 REVIEW_SOURCES = {"codex-advisor"}
-FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch", "unavailable"}
+FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
 
 
 class WorkflowError(RuntimeError):
@@ -129,6 +129,19 @@ def _next_incomplete_phase(state: JsonObject) -> str:
     )
 
 
+def _derive_next_action(state: JsonObject) -> str:
+    phase = _next_incomplete_phase(state)
+    if phase == "advisor-preflight":
+        advisor = state.get("advisorPreflight")
+        if isinstance(advisor, dict) and advisor.get("status") == "completed":
+            return "address-advisor-findings"
+    if phase == "final-review":
+        review = state.get("finalReview")
+        if isinstance(review, dict) and review.get("status") not in {None, "pending"}:
+            return "address-review-findings"
+    return phase
+
+
 def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
     normalized = safe_slug(slug)
     if normalized == "unnamed-workflow":
@@ -170,7 +183,10 @@ def set_phase(
         raise ValueError(f"unsupported workflow phase: {phase}")
     with state_lock(identity):
         state = _require(identity)
+        state.pop("paused", None)
         _require_predecessor(state, phase)
+        if phase == "implementation" and status == "passed" and state.get("tdd") not in {"passed", "not-required"}:
+            raise WorkflowIncomplete("implementation passed requires tdd passed or not-required")
         if phase == "code-review":
             if findings not in FINDING_STATUSES:
                 raise ValueError("code-review requires --findings pending, none, or addressed")
@@ -182,7 +198,7 @@ def set_phase(
         else:
             raise ValueError(f"unsupported workflow phase: {phase}")
         state["phase"] = phase
-        state["nextAction"] = NEXT_ACTIONS[phase]
+        state["nextAction"] = _derive_next_action(state)
         return _persist(identity, state)
 
 
@@ -197,8 +213,11 @@ def record_advisor_result(
 ) -> JsonObject:
     if source not in REVIEW_SOURCES:
         raise ValueError(f"unsupported reviewer source: {source}")
+    if findings not in {None, "pending"}:
+        raise ValueError("advisor-result records findings=pending; disposition findings with advisor-disposition")
     with state_lock(identity):
         state = _require(identity)
+        state.pop("paused", None)
         if stage == "preflight":
             _require_predecessor(state, "advisor-preflight")
             if source != "codex-advisor":
@@ -216,37 +235,72 @@ def record_advisor_result(
                     "reason": measured_reason,
                 }
             else:
-                finding_status = findings or "pending"
-                if finding_status not in FINDING_STATUSES:
-                    raise ValueError("preflight review requires --findings pending, none, or addressed")
                 state["advisorPreflight"] = {
                     "source": source,
                     "status": verdict,
-                    "findings": finding_status,
+                    "findings": "pending",
                     "reason": None,
                 }
             state["phase"] = "advisor-preflight"
-            state["nextAction"] = (
-                "production-preflight" if _allows_next(state, "advisor-preflight")
-                else "address-advisor-findings"
-            )
         elif stage == "final":
             _require_predecessor(state, "final-review")
             if verdict not in FINAL_VERDICTS:
                 raise ValueError(f"unsupported final-review verdict: {verdict}")
-            if findings not in FINDING_STATUSES:
-                raise ValueError("final review requires --findings pending, none, or addressed")
-            state["finalReview"] = {"source": source, "status": verdict, "findings": findings}
+            state["finalReview"] = {"source": source, "status": verdict, "findings": "pending"}
             state["phase"] = "final-review"
-            state["nextAction"] = "complete-workflow" if verdict == "commit-ready" and findings != "pending" else "address-review-findings"
         else:
             raise ValueError(f"unsupported advisor stage: {stage}")
+        state["nextAction"] = _derive_next_action(state)
+        return _persist(identity, state)
+
+
+def _bound_state(identity: RepoIdentity, slug: str) -> JsonObject:
+    """Active state for a slug-bound mutation; a stale or concurrent slug is rejected."""
+    state = _require(identity)
+    if state.get("slug") != safe_slug(str(slug or "")):
+        raise WorkflowError("--slug does not match the active workflow")
+    return state
+
+
+def pause(identity: RepoIdentity, slug: str, reason: str) -> JsonObject:
+    """Record an honest wait (background work, scheduled wakeup, blocked input) that releases the Stop latch."""
+    cleaned = reason.strip()
+    if not cleaned:
+        raise ValueError("pause requires a non-empty --reason")
+    with state_lock(identity):
+        state = _bound_state(identity, slug)
+        state["paused"] = {"reason": cleaned, "at": utc_timestamp()}
+        return _persist(identity, state)
+
+
+def advisor_disposition(identity: RepoIdentity, slug: str, stage: str, findings: str) -> JsonObject:
+    """Lead-owned findings disposition over an existing producer-recorded result."""
+    if findings not in {"none", "addressed"}:
+        raise ValueError("advisor disposition requires --findings none or addressed")
+    if stage not in {"preflight", "final"}:
+        raise ValueError(f"unsupported advisor stage: {stage}")
+    with state_lock(identity):
+        state = _bound_state(identity, slug)
+        state.pop("paused", None)
+        field = "advisorPreflight" if stage == "preflight" else "finalReview"
+        record = state.get(field)
+        recorded = (
+            isinstance(record, dict)
+            and record.get("source") in REVIEW_SOURCES
+            and (record.get("status") == "completed" if stage == "preflight" else record.get("status") in FINAL_VERDICTS)
+        )
+        if not recorded:
+            raise WorkflowError("advisor disposition cannot create a result; record the consult first")
+        record["findings"] = findings
+        state["phase"] = "advisor-preflight" if stage == "preflight" else "final-review"
+        state["nextAction"] = _derive_next_action(state)
         return _persist(identity, state)
 
 
 def complete(identity: RepoIdentity) -> JsonObject:
     with state_lock(identity):
         state = _require(identity)
+        state.pop("paused", None)
         missing: list[str] = []
         for field in ("repoContextForge", "gitnexus", "preflight", "implementation", "verification"):
             if state.get(field) != "passed":
@@ -275,17 +329,18 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
         state = read_workflow(identity)
         if state is None:
             return None
+        state.pop("paused", None)
         if reviewable:
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
         state["verification"] = "pending"
         state["codeReview"] = {"status": "pending", "findings": "pending"}
         state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
-        state["nextAction"] = _next_incomplete_phase(state)
+        state["nextAction"] = _derive_next_action(state)
         return _persist(identity, state)
 
 
-def ready_for_edit(identity: RepoIdentity) -> tuple[bool, list[str]]:
+def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
     state = read_workflow(identity)
     if state is None:
         return False, ["active workflow"]
@@ -299,6 +354,8 @@ def ready_for_edit(identity: RepoIdentity) -> tuple[bool, list[str]]:
             ("production preflight", state.get("preflight") == "passed"),
         ) if not ready
     ]
+    if not is_test_path(path) and state.get("tdd") not in {"in-progress", "passed", "not-required"}:
+        missing.append("TDD RED or a recorded not-required decision (test-like edits stay open)")
     return not missing, missing
 
 

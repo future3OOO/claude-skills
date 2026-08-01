@@ -93,9 +93,36 @@ grep -q 'final-review output lacks an exact terminal Verdict line' "$WRAPPER" \
   && { printf 'PASS  final verdict is exact and terminal\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  final verdict contract missing\n'; fail=$((fail+1)); }
 
-grep -q '"Verdict: commit-ready") verdict=commit-ready; findings=pending' "$WRAPPER" \
-  && { printf 'PASS  final findings await lead disposition\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  wrapper must not self-disposition final findings\n'; fail=$((fail+1)); }
+if grep -q 'advisor-disposition' "$WRAPPER"; then
+  printf 'FAIL  wrapper must never disposition findings; that is lead-owned\n'; fail=$((fail+1))
+else
+  printf 'PASS  final findings await lead disposition\n'; pass=$((pass+1))
+fi
+
+out=$("$WRAPPER" --slug t --phase final-review --cwd "$PWD" -- "q" 2>&1); status=$?
+check_status "final-review without --base-ref rejected" 2 "$status"
+check "final-review base-ref requirement named" "--base-ref is required" "$out"
+
+out=$("$WRAPPER" --slug t --packet /definitely/not/a/file --cwd "$PWD" -- "q" 2>&1); status=$?
+check_status "unreadable bounded input rejected" 2 "$status"
+
+grep -q 'from hooks.lib.workflow_state import safe_slug' "$WRAPPER" \
+  && { printf 'PASS  evidence attach uses the producer safe_slug contract\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  evidence attach must derive the slug via the producer safe_slug\n'; fail=$((fail+1)); }
+
+printf '== session identity (offline)\n'
+idtmp=$(mktemp -d)
+mkdir -p "$idtmp/home" "$idtmp/repo/sub"
+git -C "$idtmp/repo" init -q
+run_offline() { HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$1" -- "q" >/dev/null 2>&1; }
+run_offline "$idtmp/repo" || :
+run_offline "$idtmp/repo/sub" || :
+( cd "$idtmp/repo" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd ./sub -- "q" >/dev/null 2>&1 ) || :
+ln -s "$idtmp/repo" "$idtmp/link"
+run_offline "$idtmp/link" || :
+sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+check "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
+rm -rf "$idtmp"
 
 if [[ "${LIVE:-0}" = "1" ]]; then
   printf '== live consult (costs tokens)\n'

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -13,6 +14,12 @@ from typing import Iterable, Iterator
 import fcntl
 
 from .repo_identity import RepoIdentity
+
+_PATH_POLICY_FILE = (
+    Path(__file__).resolve().parents[2]
+    / "skills" / "production-code" / "scripts" / "_quality_gate" / "path_policy.py"
+)
+_path_policy = None
 
 CODE_SUFFIXES = {
     ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".sh", ".bash",
@@ -121,6 +128,20 @@ def is_code_path(path: str) -> bool:
 
 def is_reviewable_path(path: str) -> bool:
     return not is_docs_or_scratch(path.replace("\\", "/"))
+
+
+def is_test_path(path: str) -> bool:
+    """Test-like per the quality gate's single classifier; unclassifiable fails closed as production."""
+    global _path_policy
+    if _path_policy is None:
+        try:
+            spec = importlib.util.spec_from_file_location("_workflow_path_policy", _PATH_POLICY_FILE)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except (OSError, AttributeError, ImportError, SyntaxError):
+            return False
+        _path_policy = module
+    return bool(_path_policy.is_test_like_path(path.replace("\\", "/")))
 
 
 def is_governance_path(path: str) -> bool:

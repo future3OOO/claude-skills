@@ -94,13 +94,14 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("repo-context-forge", "passed")
         transitions = (
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
-            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed", "--findings", "none"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "pr2-replacement", "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
             ("set-phase", "--phase", "verification", "--status", "passed"),
         )
         for index, transition in enumerate(transitions):
-            if index == 3:
+            if index == 4:
                 self.owner_phase("tdd", "not-required")
             result = self.cli(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -110,9 +111,11 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(trivial_review.returncode, 0, trivial_review.stdout + trivial_review.stderr)
         final = self.cli(
             "advisor-result", "--stage", "final", "--source", "codex-advisor",
-            "--verdict", "commit-ready", "--findings", "none",
+            "--verdict", "commit-ready",
         )
         self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
+        disposed = self.cli("advisor-disposition", "--slug", "pr2-replacement", "--stage", "final", "--findings", "none")
+        self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
 
         completed = self.cli("complete")
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
@@ -136,6 +139,67 @@ class PassLifecycleTests(unittest.TestCase):
             shortcut = self.cli("set-phase", "--phase", phase, "--status", "passed")
             self.assertEqual(shortcut.returncode, 2, shortcut.stdout + shortcut.stderr)
             self.assertIn("lead-owned", shortcut.stderr)
+
+    def test_next_action_derives_from_the_complete_state(self) -> None:
+        begun = self.cli("begin", "--slug", "derived-next")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
+        for transition in (
+            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "derived-next", "--stage", "preflight", "--findings", "none"),
+            ("set-phase", "--phase", "preflight", "--status", "passed"),
+        ):
+            result = self.cli(*transition)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        rerecorded = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed")
+        self.assertEqual(rerecorded.returncode, 0, rerecorded.stdout + rerecorded.stderr)
+        self.assertEqual(
+            json.loads(rerecorded.stdout)["nextAction"], "tdd",
+            "re-recording an earlier phase rewound nextAction instead of deriving it",
+        )
+
+    def test_implementation_and_reviews_wait_for_green(self) -> None:
+        begun = self.cli("begin", "--slug", "tdd-gates")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
+        for transition in (
+            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "tdd-gates", "--stage", "preflight", "--findings", "none"),
+            ("set-phase", "--phase", "preflight", "--status", "passed"),
+        ):
+            result = self.cli(*transition)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        self.owner_phase("tdd", "in-progress")
+        started = self.cli("set-phase", "--phase", "implementation", "--status", "in-progress")
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+
+        premature = self.cli("set-phase", "--phase", "implementation", "--status", "passed")
+        self.assertEqual(premature.returncode, 2, premature.stdout + premature.stderr)
+        self.assertIn("tdd", premature.stderr)
+
+        early_verify = self.cli("set-phase", "--phase", "verification", "--status", "passed")
+        self.assertEqual(early_verify.returncode, 2, early_verify.stdout + early_verify.stderr)
+        self.assertIn("implementation", early_verify.stderr)
+
+        early_review = self.cli("set-phase", "--phase", "code-review", "--status", "not-required", "--findings", "none")
+        self.assertEqual(early_review.returncode, 2, early_review.stdout + early_review.stderr)
+        early_final = self.cli(
+            "advisor-result", "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready",
+        )
+        self.assertEqual(early_final.returncode, 2, early_final.stdout + early_final.stderr)
+
+        self.owner_phase("tdd", "passed")
+        landed = self.cli("set-phase", "--phase", "implementation", "--status", "passed")
+        self.assertEqual(landed.returncode, 0, landed.stdout + landed.stderr)
+
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
+        self.assertEqual(state["verification"], "pending")
 
     def test_preflight_advice_requires_a_measured_outage_or_disposed_findings(self) -> None:
         begun = self.cli("begin", "--slug", "advisor-preflight-contract")
@@ -161,10 +225,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(preflight.returncode, 2, preflight.stdout + preflight.stderr)
         self.assertIn("advisor-preflight", preflight.stderr)
 
-        addressed = self.cli(
-            "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
-            "--verdict", "completed", "--findings", "addressed",
-        )
+        addressed = self.cli("advisor-disposition", "--slug", "advisor-preflight-contract", "--stage", "preflight", "--findings", "addressed")
         self.assertEqual(addressed.returncode, 0, addressed.stdout + addressed.stderr)
         preflight = self.cli("set-phase", "--phase", "preflight", "--status", "passed")
         self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
@@ -192,13 +253,59 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(blocked.returncode, 2, blocked.stdout + blocked.stderr)
         self.assertIn("advisor-preflight", blocked.stderr)
 
-        addressed = self.cli(
-            "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
-            "--verdict", "completed", "--findings", "addressed",
-        )
+        addressed = self.cli("advisor-disposition", "--slug", "legacy-advisor-state", "--stage", "preflight", "--findings", "addressed")
         self.assertEqual(addressed.returncode, 0, addressed.stdout + addressed.stderr)
         resumed = self.cli("set-phase", "--phase", "preflight", "--status", "passed")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+
+    def test_advisor_disposition_cannot_create_or_alter_raw_results(self) -> None:
+        begun = self.cli("begin", "--slug", "producer-owned-advice")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        self.owner_phase("repo-context-forge", "passed")
+        gitnexus = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed")
+        self.assertEqual(gitnexus.returncode, 0, gitnexus.stdout + gitnexus.stderr)
+
+        orphan = self.cli("advisor-disposition", "--slug", "producer-owned-advice", "--stage", "preflight", "--findings", "addressed")
+        self.assertEqual(orphan.returncode, 2, orphan.stdout + orphan.stderr)
+        self.assertIn("cannot create", orphan.stderr)
+
+        direct = self.cli(
+            "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
+            "--verdict", "completed", "--findings", "addressed",
+        )
+        self.assertEqual(direct.returncode, 2, direct.stdout + direct.stderr)
+        self.assertIn("findings=pending", direct.stderr)
+
+        recorded = self.cli(
+            "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
+            "--verdict", "completed",
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        raw = json.loads(recorded.stdout)["advisorPreflight"]
+        self.assertEqual(raw, {"source": "codex-advisor", "status": "completed", "findings": "pending", "reason": None})
+
+        stale = self.cli(
+            "advisor-disposition", "--stage", "preflight", "--findings", "addressed",
+            "--slug", "some-other-pass",
+        )
+        self.assertEqual(stale.returncode, 2, stale.stdout + stale.stderr)
+        self.assertIn("does not match the active workflow", stale.stderr)
+        self.assertEqual(
+            json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "pending",
+            "a stale-slug disposition mutated the active workflow",
+        )
+
+        stale_pause = self.cli("pause", "--reason", "waiting", "--slug", "some-other-pass")
+        self.assertEqual(stale_pause.returncode, 2, stale_pause.stdout + stale_pause.stderr)
+        self.assertNotIn("paused", json.loads(self.cli("status").stdout))
+
+        disposed = self.cli(
+            "advisor-disposition", "--stage", "preflight", "--findings", "addressed",
+            "--slug", "producer-owned-advice",
+        )
+        self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
+        after = json.loads(disposed.stdout)["advisorPreflight"]
+        self.assertEqual(after, {"source": "codex-advisor", "status": "completed", "findings": "addressed", "reason": None})
 
     def test_rearm_adapter_restores_only_recorded_pass_state(self) -> None:
         begun = self.cli("begin", "--slug", "compact recovery")
@@ -223,13 +330,14 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("repo-context-forge", "passed")
         transitions = (
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
-            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed", "--findings", "none"),
+            ("advisor-result", "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "completion-contract", "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
             ("set-phase", "--phase", "verification", "--status", "passed"),
         )
         for index, transition in enumerate(transitions):
-            if index == 3:
+            if index == 4:
                 self.owner_phase("tdd", "not-required")
             result = self.cli(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -257,9 +365,13 @@ class PassLifecycleTests(unittest.TestCase):
 
         ready = self.cli(
             "advisor-result", "--stage", "final", "--source", "codex-advisor",
-            "--verdict", "commit-ready", "--findings", "addressed",
+            "--verdict", "commit-ready",
         )
         self.assertEqual(ready.returncode, 0, ready.stdout + ready.stderr)
+        undisposed = self.cli("complete")
+        self.assertEqual(undisposed.returncode, 2, undisposed.stdout + undisposed.stderr)
+        disposed = self.cli("advisor-disposition", "--slug", "completion-contract", "--stage", "final", "--findings", "addressed")
+        self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
         completed = self.cli("complete")
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
