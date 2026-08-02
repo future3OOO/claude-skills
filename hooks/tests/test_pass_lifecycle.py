@@ -445,6 +445,18 @@ class PassLifecycleTests(unittest.TestCase):
             self.assertEqual(stale.returncode, 2, f"{label}: {stale.stdout}{stale.stderr}")
             self.assertIn("does not match", stale.stderr, label)
 
+        # The cases above stop at the slug check, so each command also gets the
+        # replacement's slug with the stale id: that is the only input reaching
+        # the instance comparison.
+        for label, transition in (
+            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+                           "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
+            ("complete", ("complete", "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
+        ):
+            stale_instance = self.cli(*transition)
+            self.assertEqual(stale_instance.returncode, 2, f"{label}: {stale_instance.stdout}{stale_instance.stderr}")
+            self.assertIn("--workflow-id does not match", stale_instance.stderr, label)
+
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["workflowId"], replacement["workflowId"])
         self.assertEqual(state["gitnexus"], "pending",
