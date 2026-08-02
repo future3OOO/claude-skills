@@ -224,7 +224,7 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 Hook configuration lives in `~/.claude/settings.json`. Five facts govern how hooks change what you do:
 
 - Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded before-edit sequence through production preflight, and docs, scratch, and non-repository paths are exempt.
-- Every production or governance edit invalidates downstream review readiness before quality feedback returns, so review and final review must be earned again.
+- Every admitted production edit, and every governance edit, invalidates downstream review readiness before quality feedback returns, so review and final review must be earned again. A production edit against a completed workflow remains blocked and terminal.
 - `PreCompact` and `SessionStart(compact|resume)` preserve and restore the chain; compaction never advances or waives a step.
 - Incomplete work latches `Stop` with the exact `nextAction`; record an instance-bound `pause --slug <slug> --workflow-id <id> --reason` for a blocker the payload cannot show.
 - No hook parses Bash or authorizes Git.
