@@ -122,8 +122,20 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 Dispositions and `pause` are bound to the active workflow instance: a slug or
 workflowId that does not match is rejected without mutating state.
 
-Use `--findings addressed` when the consult produced findings that were fixed
-or rejected with evidence. For an unavailable consult, record the full
+Use `--findings addressed` with `--input <document>` when the consult produced
+findings. The document reuses the review recorder's shape: a `findings` array
+whose entries each carry a unique `id` and a `claim`, and a `dispositions` array
+with exactly one entry per finding and no extras. Each disposition is `fixed`,
+`rejected-with-evidence`, or `accepted-follow-up`: the first two carry
+`evidence` text, and `accepted-follow-up` carries a `reference` in its place,
+validated as present, not as true. Validation is structural — it proves every
+finding carries a dispositioned claim at a fixed path, never that the judgment
+is right. The document lands
+at `disposition-<stage>-<slug>.json` in the pass's state directory, written
+atomically with the transition, so a refusal changes neither. `--findings none`
+takes no document and clears any earlier one for that stage.
+
+For an unavailable consult, record the full
 slug- and instance-bound command; no disposition is needed and final review
 has no unavailable route:
 
@@ -139,5 +151,6 @@ way:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage final --findings none
+  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
+  --stage final --findings addressed --input <disposition.json>
 ```

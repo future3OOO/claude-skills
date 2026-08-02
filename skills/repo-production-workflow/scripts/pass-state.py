@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import utc_timestamp  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowError,
     advisor_disposition,
@@ -21,10 +22,13 @@ from hooks.lib.workflow_state import (  # noqa: E402
     pause,
     read_workflow,
     record_advisor_result,
+    safe_slug,
     set_phase,
     summary,
 )
 
+MEASURED = {"fixed", "rejected-with-evidence"}
+DISPOSITIONS = MEASURED | {"accepted-follow-up"}
 LEAD_PHASES = {"gitnexus", "implementation", "code-review"}
 PRODUCER_OWNED = {
     "preflight": "preflight is recorder-owned; record it with record-preflight.py and the skill's structured document",
@@ -47,6 +51,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--findings")
     result.add_argument("--reason")
     result.add_argument("--workflow-id")
+    result.add_argument("--input", help="disposition document JSON, or - for stdin")
     return result
 
 
@@ -58,6 +63,82 @@ def required(value: str | None, flag: str) -> str:
 
 def instance_args(args: argparse.Namespace) -> tuple[str, str]:
     return required(args.slug, "--slug"), required(args.workflow_id, "--workflow-id")
+
+
+def is_text(value: object) -> bool:
+    """A present, non-blank string. The document's fields are prose a human reads,
+    so a coerced number or object is a malformed field, not a terse one."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def dispositioned(value: dict[str, object]) -> tuple[list[object], list[object]]:
+    """The document's findings and their lead dispositions, or a refusal naming what is wrong.
+
+    Structure only, the same shape the review recorder already demands: it proves
+    every finding carries one verdict with text, never that the verdict is true.
+    """
+    findings = value.get("findings")
+    dispositions = value.get("dispositions")
+    if not isinstance(findings, list) or not isinstance(dispositions, list):
+        raise ValueError("disposition document requires findings and dispositions arrays")
+    if not findings:
+        raise ValueError("a document with no findings is --findings none, not addressed")
+    identifiers: set[str] = set()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise ValueError("each finding must be an object")
+        identifier = finding.get("id")
+        if not isinstance(identifier, str) or not identifier or identifier in identifiers:
+            raise ValueError("finding ids must be non-empty and unique")
+        if not is_text(finding.get("claim")):
+            raise ValueError(f"finding {identifier} requires a claim")
+        identifiers.add(identifier)
+    dispositioned_ids: set[str] = set()
+    for disposition in dispositions:
+        if not isinstance(disposition, dict):
+            raise ValueError("each disposition must reference a finding")
+        # Narrowed before the membership tests: `x in <set>` hashes x, so an
+        # unhashable JSON value would raise TypeError past main's refusal path.
+        identifier = disposition.get("finding_id")
+        status = disposition.get("status")
+        if not isinstance(identifier, str) or identifier not in identifiers:
+            raise ValueError("each disposition must reference a finding")
+        if identifier in dispositioned_ids or not isinstance(status, str) or status not in DISPOSITIONS:
+            raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
+        if disposition["status"] in MEASURED:
+            if not is_text(disposition.get("evidence")):
+                raise ValueError(f"finding {identifier} requires evidence")
+        elif not is_text(disposition.get("reference")):
+            raise ValueError(f"finding {identifier} follow-up requires a reference")
+        dispositioned_ids.add(identifier)
+    if dispositioned_ids != identifiers:
+        raise ValueError("every finding requires one lead disposition")
+    return findings, dispositions
+
+
+def disposition_document(path: str, slug: str, workflow_id: str, stage: str) -> dict[str, object]:
+    """The validated document wrapped in an envelope built here, never from the input.
+
+    Identity comes from the command and the state it was checked against, so the
+    artifact at the audit path cannot claim a slug or instance that is not its own.
+    """
+    try:
+        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+        value = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read disposition JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("disposition input must be a JSON object")
+    findings, dispositions = dispositioned(value)
+    return {
+        "schemaVersion": 1,
+        "slug": slug,
+        "workflowId": workflow_id,
+        "stage": stage,
+        "findings": findings,
+        "dispositions": dispositions,
+        "recordedAt": utc_timestamp(),
+    }
 
 
 def main() -> int:
@@ -102,7 +183,15 @@ def main() -> int:
         elif args.action == "advisor-disposition":
             slug, workflow_id = instance_args(args)
             stage = required(args.stage, "--stage")
-            state = advisor_disposition(identity, slug, workflow_id, stage, required(args.findings, "--findings"))
+            findings = required(args.findings, "--findings")
+            if findings == "addressed" and args.input is None:
+                raise ValueError("an addressed disposition requires --input with the lead's disposition document")
+            if findings == "none" and args.input is not None:
+                raise ValueError("--input records an addressed disposition; findings none carries no document")
+            state = advisor_disposition(
+                identity, slug, workflow_id, stage, findings,
+                document=disposition_document(args.input, safe_slug(slug), workflow_id, stage) if args.input else None,
+            )
         elif args.action == "pause":
             slug, workflow_id = instance_args(args)
             state = pause(identity, slug, workflow_id, required(args.reason, "--reason"))

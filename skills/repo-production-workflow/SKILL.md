@@ -73,7 +73,14 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 The active `workflowId` comes from `pass-state.py status`. A disposition is
 bound to the active workflow instance and can only move findings
 to `none` or `addressed`; it can never create a result or alter its source or
-verdict. An unavailable consult requires `--reason` with the measured
+verdict. `addressed` stays lead-owned but is now document-backed: it demands
+`--input` with the lead's structured document — the review recorder's
+findings-and-dispositions shape, every finding carrying one of `fixed`,
+`rejected-with-evidence`, or `accepted-follow-up`, the first two with their
+evidence and the follow-up with its reference. The
+document is validated structurally, then written to
+`disposition-<stage>-<slug>.json` atomically with the transition, so a refusal
+mutates nothing. An unavailable consult requires `--reason` with the measured
 transport failure and needs no disposition.
 
 ### 5. Production preflight
