@@ -209,10 +209,16 @@ def _gitlink_entries(identity: RepoIdentity) -> dict[str, str]:
     The index says which paths are gitlinks; what a gitlink currently points at
     lives in the submodule's own working tree, so an unstaged submodule move is
     visible here and would not be in the parent's staged object id. A submodule
-    that is not initialised has nothing checked out and stays absent.
+    that is not initialised has nothing checked out and stays absent, and one on
+    a path the reviewable classifier excludes never enters the manifest at all.
+
+    Only the commit is recorded. Uncommitted content inside an initialised
+    submodule belongs to that repository, not to this one's reviewable surface.
     """
     listing = _git(identity, "ls-files", "-s", "-z").split(b"\0")
-    paths = [os.fsdecode(entry.split(b"\t", 1)[1]) for entry in listing if entry.startswith(b"160000 ")]
+    paths = reviewable_paths(
+        os.fsdecode(entry.split(b"\t", 1)[1]) for entry in listing if entry.startswith(b"160000 ")
+    )
     entries = {}
     for path in paths:
         try:

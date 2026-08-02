@@ -257,6 +257,43 @@ class PassLifecycleTests(unittest.TestCase):
             f"an unstaged submodule move left the approval standing: {stale['missing']}",
         )
 
+    def add_submodule(self, at: str) -> Path:
+        source = self.tmp / f"sub-{at.replace('/', '-')}"
+        source.mkdir()
+        for args in (("init", "-q"), ("config", "user.email", "test@example.invalid"), ("config", "user.name", "Sub")):
+            subprocess.run(["git", *args], cwd=source, env=self.env, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (source / "a.txt").write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=source, env=self.env, check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=source, env=self.env, check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source), at)
+        self.git("-c", "protocol.file.allow=always", "commit", "-q", "-m", f"add submodule {at}")
+        checkout = self.repo / at
+        for args in (("user.email", "test@example.invalid"), ("user.name", "Sub")):
+            subprocess.run(["git", "-C", str(checkout), "config", *args], env=self.env, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return checkout
+
+    def test_a_submodule_on_an_excluded_path_stays_out_of_the_manifest(self) -> None:
+        checkout = self.add_submodule("docs/vendor")
+
+        wid = self.begin_slug("excluded-submodule")
+        self.advance_to_verification("excluded-submodule", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "moved"], cwd=checkout, env=self.env,
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertIn("docs/vendor", self.git("status", "--porcelain"),
+                      "the probe did not actually move the excluded submodule")
+
+        ready = self.checkpoint("final-review")
+        self.assertEqual(
+            [item for item in ready["missing"] if "review-manifest" in item], [],
+            f"a submodule on a documentation path invalidated the review: {ready['missing']}",
+        )
+
     def test_non_mutating_shell_work_after_review_keeps_the_approvals(self) -> None:
         wid = self.begin_slug("ordinary-landing")
         self.advance_to_verification("ordinary-landing", wid)
