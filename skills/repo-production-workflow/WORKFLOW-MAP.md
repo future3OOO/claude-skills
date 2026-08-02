@@ -96,9 +96,15 @@ mid-stream, and the pre-edit gate does not see that write either — an accepted
 gap, because the failure model is drift rather than deception. Freshness is
 recovered at the later gates instead. Recording the lead review stores a
 per-path manifest of the reviewable surface: each path's working-tree file mode
-and content hash (working-tree content, not staged object ids, which would miss
-an unstaged edit; the mode rides along because a content hash alone is blind to
-`chmod`). Each later gate recomputes it:
+and content hash, and for a tracked submodule the commit it currently points at.
+The index is read only to learn which paths are tracked and which of them are
+submodules; every recorded value comes from the working tree, never from an
+index object id, which records staged content and would miss an unstaged edit.
+Three things follow from that: the bytes are hashed unfiltered, so a normalising
+clean filter cannot hide a line-ending rewrite; the mode rides along, because a
+content hash alone is blind to `chmod`; and a submodule is read from its own
+checked-out `HEAD`, so an unstaged submodule move is visible. Each later gate
+recomputes it:
 
 ```text
 final advisor recording refuses -> the tree changed after the lead review
@@ -147,8 +153,8 @@ Repo Context Forge output, TDD runs, and code-review findings may be retained as
 bounded summaries for the next agent. They carry no HEAD/tree/hash identity and
 are never substitutes for the real packet, test command, or live review. The
 review-time manifest above is workflow state rather than one of these summaries,
-and it identifies working-tree file mode and content only — never a commit, and
-never an attestation.
+and it identifies working-tree file mode and content, plus each submodule's
+checked-out commit — never this repository's own HEAD, and never an attestation.
 
 ## Delivery is separate
 

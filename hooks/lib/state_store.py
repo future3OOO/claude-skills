@@ -189,9 +189,10 @@ def code_paths(paths: Iterable[str]) -> list[str]:
 def _file_mode(path: Path) -> str | None:
     """The Git file mode of a working-tree regular file, or None when it is not one.
 
-    A vanished, unreadable, or non-regular path (a directory, a submodule's
-    gitlink) has no mode here, so it is absent from the manifest and reads as
-    removed rather than silently unchanged.
+    A vanished, unreadable, or non-regular path has no mode here, so it is absent
+    from the manifest and reads as removed rather than silently unchanged.
+    Submodules are directories and land here as None; `_gitlink_entries` records
+    them instead.
     """
     try:
         info = path.stat()
@@ -202,21 +203,47 @@ def _file_mode(path: Path) -> str | None:
     return "100755" if info.st_mode & 0o111 else "100644"
 
 
+def _gitlink_entries(identity: RepoIdentity) -> dict[str, str]:
+    """Each tracked submodule's checked-out commit, as `160000 <sha>`.
+
+    The index says which paths are gitlinks; what a gitlink currently points at
+    lives in the submodule's own working tree, so an unstaged submodule move is
+    visible here and would not be in the parent's staged object id. A submodule
+    that is not initialised has nothing checked out and stays absent.
+    """
+    listing = _git(identity, "ls-files", "-s", "-z").split(b"\0")
+    paths = [os.fsdecode(entry.split(b"\t", 1)[1]) for entry in listing if entry.startswith(b"160000 ")]
+    entries = {}
+    for path in paths:
+        try:
+            head = _git(identity, "-C", path, "rev-parse", "HEAD").decode("utf-8").strip()
+        except RuntimeError:
+            continue
+        if head:
+            entries[path] = f"160000 {head}"
+    return entries
+
+
 def tree_manifest(identity: RepoIdentity) -> dict[str, str]:
     """Working-tree mode and content hash per reviewable path, tracked and untracked alike.
 
     Hashes what is on disk, not what is staged: an index object id represents
     staged content and would miss the unstaged shell edit this exists to catch.
     The mode rides along because a content hash alone is blind to `chmod`, which
-    is a shell mutation of a reviewed file like any other.
+    is a shell mutation of a reviewed file like any other, and a submodule is
+    recorded by the commit it currently points at.
     """
     candidates = reviewable_paths([*_paths(identity, "ls-files", "-z"), *untracked_paths(identity)])
     modes = {path: _file_mode(Path(identity.root) / path) for path in candidates}
     present = [path for path in candidates if modes[path]]
+    manifest = _gitlink_entries(identity)
     if not present:
-        return {}
-    hashes = _git(identity, "hash-object", "--", *present).decode("utf-8").split()
-    return {path: f"{modes[path]} {digest}" for path, digest in zip(present, hashes, strict=True)}
+        return manifest
+    # --no-filters: without it a configured clean filter normalises content before
+    # hashing, and a line-ending-only rewrite keeps the digest a reviewer already saw.
+    hashes = _git(identity, "hash-object", "--no-filters", "--", *present).decode("utf-8").split()
+    manifest.update({path: f"{modes[path]} {digest}" for path, digest in zip(present, hashes, strict=True)})
+    return manifest
 
 
 def manifest_diff(recorded: dict[str, str], current: dict[str, str]) -> dict[str, list[str]]:

@@ -201,6 +201,62 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
 
+    def test_a_line_ending_mutation_after_review_reopens_the_approval(self) -> None:
+        # Git attributes make hash-object normalise content before hashing, so a
+        # line-ending-only rewrite can leave a content digest identical.
+        (self.repo / ".gitattributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
+        self.git("add", ".gitattributes")
+        self.git("commit", "-q", "-m", "normalise line endings")
+
+        wid = self.begin_slug("normalised-drift")
+        self.advance_to_verification("normalised-drift", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        self.shell("import pathlib; pathlib.Path('app.py').write_bytes(b'value = 1\\r\\n')")
+        self.assertEqual((self.repo / "app.py").read_bytes(), b"value = 1\r\n", "the probe did not land CRLF on disk")
+
+        stale = self.checkpoint("final-review")
+        self.assertTrue(
+            any("review-manifest-stale" in item and "app.py" in item for item in stale["missing"]),
+            f"a normalised content change left the approval standing: {stale['missing']}",
+        )
+
+    def test_a_submodule_move_after_review_reopens_the_approval(self) -> None:
+        sub = self.tmp / "sub"
+        sub.mkdir()
+        for args in (("init", "-q"), ("config", "user.email", "test@example.invalid"), ("config", "user.name", "Sub")):
+            subprocess.run(["git", *args], cwd=sub, env=self.env, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (sub / "a.txt").write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=sub, env=self.env, check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=sub, env=self.env, check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "vendor")
+        self.git("-c", "protocol.file.allow=always", "commit", "-q", "-m", "add submodule")
+        for args in (("user.email", "test@example.invalid"), ("user.name", "Sub")):
+            subprocess.run(["git", "-C", str(self.repo / "vendor"), "config", *args], env=self.env,
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        wid = self.begin_slug("submodule-drift")
+        self.advance_to_verification("submodule-drift", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        # Move the submodule's checked-out HEAD without staging it in the parent:
+        # the parent's index gitlink still points at the reviewed commit.
+        vendor = self.repo / "vendor"
+        indexed_before = self.git("ls-files", "-s", "vendor")
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "moved"], cwd=vendor, env=self.env,
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(self.git("ls-files", "-s", "vendor"), indexed_before,
+                         "the probe staged the submodule move, so the index would have shown it")
+
+        stale = self.checkpoint("final-review")
+        self.assertTrue(
+            any("review-manifest-stale" in item and "vendor" in item for item in stale["missing"]),
+            f"an unstaged submodule move left the approval standing: {stale['missing']}",
+        )
+
     def test_non_mutating_shell_work_after_review_keeps_the_approvals(self) -> None:
         wid = self.begin_slug("ordinary-landing")
         self.advance_to_verification("ordinary-landing", wid)
