@@ -103,6 +103,27 @@ def main(argv: list[str] | None = None) -> int:
         if not command:
             raise ValueError("a command is required after --")
 
+        path = _path(identity, slug)
+        command_text = shlex.join(command)
+        # Candidate identity is a pre-run fact, so an unfinished cycle refuses a
+        # different candidate before the command costs anything. commit_tdd
+        # revalidates this same read under the lock.
+        existing = read_json(path)
+        same_instance = bool(existing) and existing.get("workflowId") == workflow_id
+        matches = same_instance and all(existing.get(key) == value for key, value in {
+            "slug": slug,
+            "behavior": behavior,
+            "seam": seam,
+            "command": command_text,
+        }.items())
+        completed_cycle = same_instance and existing.get("status") in {"passed", "not-required"}
+        if args.phase == "red" and same_instance and not matches and not completed_cycle:
+            print(
+                "error: candidate does not match the active cycle; finish or regress the current candidate first",
+                file=sys.stderr,
+            )
+            return 2
+
         try:
             result = subprocess.run(
                 command,
@@ -117,19 +138,8 @@ def main(argv: list[str] | None = None) -> int:
             raw = (exc.stdout or b"") + (exc.stderr or b"")
             exit_code, timed_out = 124, True
 
-        path = _path(identity, slug)
-        command_text = shlex.join(command)
         expected = args.expected_failure.strip()
         observed = bool(expected) and expected in raw.decode("utf-8", errors="replace")
-        existing = read_json(path)
-        same_instance = bool(existing) and existing.get("workflowId") == workflow_id
-        matches = same_instance and all(existing.get(key) == value for key, value in {
-            "slug": slug,
-            "behavior": behavior,
-            "seam": seam,
-            "command": command_text,
-        }.items())
-        completed_cycle = same_instance and existing.get("status") in {"passed", "not-required"}
         prior_runs = existing.get("runs") if matches and isinstance(existing.get("runs"), list) else []
         prior_red = any(isinstance(run, dict) and run.get("phase") == "red" and run.get("valid") is True for run in prior_runs)
         valid = (
@@ -141,12 +151,6 @@ def main(argv: list[str] | None = None) -> int:
         new_cycle = args.phase == "red" and valid and not matches and (not same_instance or completed_cycle)
         recorded = not preserved and (matches or new_cycle)
         regression = args.phase == "green" and matches and not valid
-        if args.phase == "red" and valid and not matches and same_instance and not completed_cycle:
-            print(
-                "error: candidate does not match the active cycle; finish or regress the current candidate first",
-                file=sys.stderr,
-            )
-            return 2
         run = {
             "phase": args.phase,
             "expectedFailure": expected or None,

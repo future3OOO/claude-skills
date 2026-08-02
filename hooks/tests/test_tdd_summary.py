@@ -310,8 +310,16 @@ class TddSummaryTests(unittest.TestCase):
         self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
         summary_path = Path(json.loads(third.stdout.splitlines()[-1])["summaryPath"])
         before = summary_path.read_text(encoding="utf-8")
-        switch = tracer("red", "fourth behavior mid-cycle", (sys.executable, "-c", "raise AssertionError('AssertionError: five')"), "AssertionError")
+        marker = self.tmp / "midcycle-command-ran"
+        switch = tracer(
+            "red", "fourth behavior mid-cycle",
+            (sys.executable, "-c",
+             f"open({str(marker)!r}, 'w').close(); raise AssertionError('AssertionError: five')"),
+            "AssertionError",
+        )
         self.assertEqual(switch.returncode, 2, "a mid-cycle candidate switch was accepted")
+        self.assertIn("candidate does not match the active cycle", switch.stderr)
+        self.assertFalse(marker.exists(), "the rejected switch executed its command")
         self.assertEqual(summary_path.read_text(encoding="utf-8"), before, "a rejected switch mutated the active candidate")
 
     def test_producer_commits_enforce_ordering_and_evidence_cas(self) -> None:
