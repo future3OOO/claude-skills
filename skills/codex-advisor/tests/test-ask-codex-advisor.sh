@@ -120,28 +120,30 @@ grep -q 'from hooks.lib.workflow_state import safe_slug' "$WRAPPER" \
 
 printf '== governed pre-consult gate (offline)\n'
 gatetmp=$(mktemp -d)
-mkdir -p "$gatetmp/home"
-git -C "$gatetmp" init -q
+# The state root stays outside the repo under test: workflow state written
+# inside it would drift the review manifest against the tree it describes.
+mkdir -p "$gatetmp/home" "$gatetmp/repo"
+git -C "$gatetmp/repo" init -q
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug orphan --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug orphan --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "governed consult without an active workflow refused" 2 "$status"
 check "no-workflow refusal names the cause" "requires an active workflow" "$out"
 CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/pass-state.py" \
-  begin --repo "$gatetmp" --slug real-pass >/dev/null 2>&1
+  begin --repo "$gatetmp/repo" --slug real-pass >/dev/null 2>&1
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug wrong-pass --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug wrong-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "mismatched-slug governed consult refused" 2 "$status"
 check "slug-mismatch refusal names both slugs" "does not match the active workflow" "$out"
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug real-pass --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug real-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "not-ready checkpoint refused before the consult" 2 "$status"
 check "checkpoint refusal names the missing steps" "missing: repo-context-forge,gitnexus" "$out"
 
 # Ineligible checkpoints must refuse before the expensive `claude` call. A refusal
 # naming the checkpoint (not the ~/.bashrc transport parse that follows it) is the
 # proof that the gate fired first.
-git -C "$gatetmp" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-workflow_py() { CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 -c "$1" "$ROOT" "$gatetmp" "$2"; }
+git -C "$gatetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
+workflow_py() { CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 -c "$1" "$ROOT" "$gatetmp/repo" "$2"; }
 workflow_py 'import sys
 sys.path.insert(0, sys.argv[1])
 from hooks.lib.repo_identity import resolve_repo_identity
@@ -161,7 +163,7 @@ w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-r
 w.advisor_disposition(identity, slug, wid, "final", "none")
 w.complete(identity)' completed-pass
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug completed-pass --phase final-review --base-ref HEAD --cwd "$gatetmp" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug completed-pass --phase final-review --base-ref HEAD --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "completed workflow refused before the final-review consult" 2 "$status"
 check "terminal refusal names the closed workflow" "open-workflow" "$out"
 
@@ -178,7 +180,7 @@ legacy = json.loads(path.read_text(encoding="utf-8"))
 legacy.pop("workflowId")
 path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")' legacy-pass
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug legacy-pass --phase preflight-advice --cwd "$gatetmp" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug legacy-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "workflow without an instance id refused before the consult" 2 "$status"
 check "instance-id refusal names the missing field" "workflowId" "$out"
 rm -rf "$gatetmp"

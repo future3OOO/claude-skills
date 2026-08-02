@@ -68,7 +68,8 @@ readiness for the advisor phases without mutating anything.
 - implementation and verification passed;
 - lead code review passed/not required with material findings addressed;
 - final review from `codex-advisor` with `commit-ready` and no pending material
-  findings.
+  findings;
+- the reviewable working tree unchanged since the recorded lead review.
 
 ## Edit invalidation
 
@@ -87,6 +88,41 @@ exempt; governance docs reset verification, code review, and final review, and
 resume at the first unsatisfied phase in the same ordered workflow. A
 governance-first pass therefore returns to TDD, while a completed
 implementation returns to verification.
+
+## Approval freshness
+
+A file written through the shell emits no editor event, so nothing invalidates
+mid-stream, and the pre-edit gate does not see that write either — an accepted
+gap, because the failure model is drift rather than deception. Freshness is
+recovered at the later gates instead. Recording the lead review stores a
+per-path manifest of the reviewable surface: each path's working-tree file mode
+and content hash, and for a tracked submodule the commit it currently points at.
+The index is read only to learn which paths are tracked and which of them are
+submodules; every recorded value comes from the working tree, never from an
+index object id, which records staged content and would miss an unstaged edit.
+Four things follow from that: the bytes are hashed unfiltered, so a normalising
+clean filter cannot hide a line-ending rewrite; the mode rides along — git's owner
+execute bit, the only one a tree entry records — because a content hash alone
+is blind to `chmod`; a symlink is recorded as the link rather
+than its referent, so re-pointing one is visible and a file outside the
+repository can never drift the manifest; and a submodule is read from its own
+checked-out `HEAD`, so an unstaged submodule move is visible. A submodule is
+recorded by that commit alone: uncommitted content inside it belongs to that
+repository's own review, not this one's. Each later gate recomputes it:
+
+```text
+final advisor recording refuses -> the tree changed after the lead review
+final-review checkpoint reports not ready -> same, before a paid consult is spent
+complete refuses -> the tree changed after the final review
+```
+
+The refusal site is the window attribution, and every refusal names the added,
+changed, and removed paths. Re-recording the lead review refreshes the manifest
+and resets the final review to pending, so a refreshed tree always costs a fresh
+final consult. A missing or uncomputable manifest is pending, never success: a
+pass in flight when this shipped cannot complete until its lead review is
+re-recorded. A mutation racing the completion call itself stays uncatchable —
+the state lock serializes state writers, not the filesystem.
 
 ## Hook roles
 
@@ -119,7 +155,10 @@ parser, candidate-tree gate, approval marker, nonce, or evidence graph.
 
 Repo Context Forge output, TDD runs, and code-review findings may be retained as
 bounded summaries for the next agent. They carry no HEAD/tree/hash identity and
-are never substitutes for the real packet, test command, or live review.
+are never substitutes for the real packet, test command, or live review. The
+review-time manifest above is workflow state rather than one of these summaries,
+and it identifies working-tree file mode and content, plus each submodule's
+checked-out commit — never this repository's own HEAD, and never an attestation.
 
 ## Delivery is separate
 

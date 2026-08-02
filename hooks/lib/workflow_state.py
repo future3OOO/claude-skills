@@ -11,9 +11,11 @@ from .state_store import (
     is_governance_path,
     is_reviewable_path,
     is_test_path,
+    manifest_diff,
     read_json,
     repo_state_dir,
     state_lock,
+    tree_manifest,
     utc_timestamp,
 )
 
@@ -48,6 +50,8 @@ SLUG_MISMATCH = "--slug does not match the active workflow"
 INSTANCE_MISMATCH = "--workflow-id does not match the active workflow instance"
 PREFLIGHT_CLOSED = "governance revalidation permits only re-verification and review; preflight consults are closed"
 TDD_CLOSED = "governance revalidation permits only re-verification and review; tdd is closed"
+MANIFEST_MISSING = "review-manifest-missing"
+MANIFEST_STALE = "review-manifest-stale"
 
 
 class WorkflowError(RuntimeError):
@@ -180,7 +184,39 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         return _persist(identity, state)
 
 
-def _apply_step(state: JsonObject, phase: str, status: str, findings: str | None = None) -> None:
+def _bind_review_to_tree(identity: RepoIdentity, state: JsonObject) -> None:
+    """Bind the recorded review to the tree it reviewed, and reopen the final review.
+
+    Without the reset a completion refused for a post-final mutation could be
+    answered by re-review alone: the manifest would refresh while the verdict
+    from the old tree survived. A computation failure stores no manifest and
+    drops any earlier one, so the later gates read missing rather than a
+    manifest describing a tree nobody reviewed.
+    """
+    try:
+        state["reviewManifest"] = tree_manifest(identity)
+    except RuntimeError:
+        state.pop("reviewManifest", None)
+    state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
+
+
+def _manifest_drift(identity: RepoIdentity, state: JsonObject) -> str | None:
+    """The freshness reason for the later gates, or None when the tree still matches."""
+    recorded = state.get("reviewManifest")
+    if not isinstance(recorded, dict):
+        return MANIFEST_MISSING
+    try:
+        current = tree_manifest(identity)
+    except RuntimeError as exc:
+        return f"{MANIFEST_MISSING} (uncomputable: {exc})"
+    difference = manifest_diff(recorded, current)
+    if not any(difference.values()):
+        return None
+    named = "; ".join(f"{kind}={', '.join(paths)}" for kind, paths in difference.items() if paths)
+    return f"{MANIFEST_STALE}: {named}"
+
+
+def _apply_step(identity: RepoIdentity, state: JsonObject, phase: str, status: str, findings: str | None = None) -> None:
     """Validated step mutation shared by every locked transition path."""
     if status not in STEP_STATUSES:
         raise ValueError(f"unsupported workflow status: {status}")
@@ -197,6 +233,7 @@ def _apply_step(state: JsonObject, phase: str, status: str, findings: str | None
         if findings not in FINDING_STATUSES:
             raise ValueError("code-review requires --findings pending, none, or addressed")
         state["codeReview"] = {"status": status, "findings": findings}
+        _bind_review_to_tree(identity, state)
     else:
         if findings is not None:
             raise ValueError(f"{phase} does not accept findings")
@@ -217,7 +254,7 @@ def set_phase(
     with state_lock(identity):
         state = _require(identity)
         _require_instance(state, slug, workflow_id)
-        _apply_step(state, phase, status, findings)
+        _apply_step(identity, state, phase, status, findings)
         return _persist(identity, state)
 
 
@@ -225,7 +262,7 @@ def producer_set_phase(identity: RepoIdentity, slug: str, workflow_id: str | Non
     """Instance-bound step transition for producers, under one lock hold."""
     with state_lock(identity):
         state = bound_instance(identity, slug, workflow_id)
-        _apply_step(state, phase, status)
+        _apply_step(identity, state, phase, status)
         return _persist(identity, state)
 
 
@@ -287,7 +324,7 @@ def commit_review(
     """
     with state_lock(identity):
         state = bound_instance(identity, slug, workflow_id)
-        _apply_step(state, "code-review", status, findings)
+        _apply_step(identity, state, "code-review", status, findings)
         atomic_write_json(path, summary_doc)
         return _persist(identity, state)
 
@@ -332,6 +369,10 @@ def record_advisor_result(
             _require_predecessor(state, "final-review")
             if verdict not in FINAL_VERDICTS:
                 raise ValueError(f"unsupported final-review verdict: {verdict}")
+            # Refused here, the tree changed between the lead review and this verdict.
+            drift = _manifest_drift(identity, state)
+            if drift:
+                raise WorkflowError(f"the reviewed tree changed after the lead review: {drift}")
             state["finalReview"] = {"source": source, "status": verdict, "findings": "pending"}
             state["phase"] = "final-review"
         else:
@@ -467,6 +508,8 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         ),
     )
     missing = [name for name, ready in requirements if not ready]
+    if phase == "final-review" and (drift := _manifest_drift(identity, state)):
+        missing.append(drift)
     review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
     return {
         "phase": phase,
@@ -488,6 +531,10 @@ def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: st
         missing = completion_missing(state)
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
+        # Refused here, the tree changed after the final review rather than before it.
+        drift = _manifest_drift(identity, state)
+        if drift:
+            raise WorkflowIncomplete(f"the reviewed tree changed after the final review: {drift}")
         state["phase"] = "complete"
         state["nextAction"] = "delivery-and-reviewer-completion"
         return _persist(identity, state)
