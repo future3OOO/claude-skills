@@ -484,12 +484,33 @@ def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: st
         return _persist(identity, state)
 
 
-def advisor_disposition(identity: RepoIdentity, slug: str, workflow_id: str | None, stage: str, findings: str) -> JsonObject:
-    """Lead-owned findings disposition over an existing producer-recorded result."""
+def advisor_disposition(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    stage: str,
+    findings: str,
+    *,
+    document: JsonObject | None = None,
+) -> JsonObject:
+    """Lead-owned findings disposition over an existing producer-recorded result.
+
+    `addressed` carries the lead's disposition document, written atomically with
+    the transition under the one lock hold, so a refusal leaves both the state and
+    any earlier document untouched. `none` claims no findings and therefore clears
+    the stage's document: a same-slug `begin` starts a new instance without
+    removing artifacts, so a surviving file would keep publishing a dead
+    instance's dispositions at the audit path this pass now answers for.
+    """
     if findings not in {"none", "addressed"}:
         raise ValueError("advisor disposition requires --findings none or addressed")
     if stage not in {"preflight", "final"}:
         raise ValueError(f"unsupported advisor stage: {stage}")
+    if findings == "addressed" and document is None:
+        raise ValueError("an addressed disposition requires the lead's disposition document")
+    if findings == "none" and document is not None:
+        raise ValueError("a findings-none disposition carries no document")
+    path = repo_state_dir(identity) / f"disposition-{stage}-{safe_slug(slug)}.json"
     with state_lock(identity):
         state = bound_instance(identity, slug, workflow_id)
         if stage == "preflight" and state.get("revalidation"):
@@ -505,6 +526,10 @@ def advisor_disposition(identity: RepoIdentity, slug: str, workflow_id: str | No
         if not recorded:
             raise WorkflowError("advisor disposition cannot create a result; record the consult first")
         record["findings"] = findings
+        if document is None:
+            path.unlink(missing_ok=True)
+        else:
+            atomic_write_json(path, document)
         state["phase"] = "advisor-preflight" if stage == "preflight" else "final-review"
         state["nextAction"] = _derive_next_action(state)
         return _persist(identity, state)

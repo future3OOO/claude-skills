@@ -53,6 +53,7 @@ class PassLifecycleTests(unittest.TestCase):
         (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
         self.git("add", "app.py")
         self.git("commit", "-q", "-m", "base")
+        self.documents = 0
 
     def tearDown(self) -> None:
         if self.previous_state_root is None:
@@ -83,6 +84,32 @@ class PassLifecycleTests(unittest.TestCase):
         begun = self.cli("begin", "--slug", slug)
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         return json.loads(begun.stdout)["workflowId"]
+
+    def disposition_path(self, stage: str, slug: str) -> Path:
+        state_dir = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / resolve_repo_identity(self.repo).key
+        return state_dir / f"disposition-{stage}-{slug}.json"
+
+    def disposition_document(self, status: str = "fixed", **overrides: object) -> str:
+        """A structurally valid one-finding disposition document, written to a file.
+
+        Each verdict defaults to exactly what it owes: measurement text for the
+        resolved two, a reference for the follow-up.
+        """
+        self.documents += 1
+        path = self.tmp / f"disposition-{self.documents}.json"
+        owed = ({"reference": "https://example.invalid/issues/1"} if status == "accepted-follow-up"
+                else {"evidence": "walked complete() with the fold applied"})
+        path.write_text(json.dumps({
+            "findings": [{"id": "ADV-1", "claim": "the fold could bypass completion"}],
+            "dispositions": [{"finding_id": "ADV-1", "status": status, **owed, **overrides}],
+        }), encoding="utf-8")
+        return str(path)
+
+    def dispose(self, slug: str, wid: str, stage: str, findings: str, *input_path: str) -> subprocess.CompletedProcess[str]:
+        return self.cli(
+            "advisor-disposition", "--slug", slug, "--workflow-id", wid,
+            "--stage", stage, "--findings", findings, *(("--input", *input_path) if input_path else ()),
+        )
 
     def checkpoint(self, phase: str) -> dict[str, object]:
         result = self.cli("checkpoint", "--phase", phase)
@@ -968,7 +995,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(preflight.returncode, 2, preflight.stdout + preflight.stderr)
         self.assertIn("advisor-preflight", preflight.stderr)
 
-        addressed = self.cli("advisor-disposition", "--slug", "advisor-preflight-contract", "--workflow-id", wid, "--stage", "preflight", "--findings", "addressed")
+        addressed = self.dispose("advisor-preflight-contract", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(addressed.returncode, 0, addressed.stdout + addressed.stderr)
         preflight = self.record_preflight(wid, self.preflight_document())
         self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
@@ -993,7 +1020,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(blocked.returncode, 2, blocked.stdout + blocked.stderr)
         self.assertIn("advisor-preflight", blocked.stderr)
 
-        addressed = self.cli("advisor-disposition", "--slug", "legacy-advisor-state", "--workflow-id", wid, "--stage", "preflight", "--findings", "addressed")
+        addressed = self.dispose("legacy-advisor-state", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(addressed.returncode, 0, addressed.stdout + addressed.stderr)
         resumed = self.record_preflight(wid, self.preflight_document())
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
@@ -1002,7 +1029,7 @@ class PassLifecycleTests(unittest.TestCase):
         wid = self.begin_slug("producer-owned-advice")
         self.advance_to_gitnexus()
 
-        orphan = self.cli("advisor-disposition", "--slug", "producer-owned-advice", "--workflow-id", wid, "--stage", "preflight", "--findings", "addressed")
+        orphan = self.dispose("producer-owned-advice", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(orphan.returncode, 2, orphan.stdout + orphan.stderr)
         self.assertIn("cannot create", orphan.stderr)
 
@@ -1021,10 +1048,7 @@ class PassLifecycleTests(unittest.TestCase):
         raw = json.loads(recorded.stdout)["advisorPreflight"]
         self.assertEqual(raw, {"source": "codex-advisor", "status": "completed", "findings": "pending", "reason": None})
 
-        stale = self.cli(
-            "advisor-disposition", "--stage", "preflight", "--findings", "addressed",
-            "--slug", "some-other-pass", "--workflow-id", wid,
-        )
+        stale = self.dispose("some-other-pass", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(stale.returncode, 2, stale.stdout + stale.stderr)
         self.assertIn("does not match the active workflow", stale.stderr)
         self.assertEqual(
@@ -1036,13 +1060,141 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(stale_pause.returncode, 2, stale_pause.stdout + stale_pause.stderr)
         self.assertNotIn("paused", json.loads(self.cli("status").stdout))
 
-        disposed = self.cli(
-            "advisor-disposition", "--stage", "preflight", "--findings", "addressed",
-            "--slug", "producer-owned-advice", "--workflow-id", wid,
-        )
+        disposed = self.dispose("producer-owned-advice", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
         after = json.loads(disposed.stdout)["advisorPreflight"]
         self.assertEqual(after, {"source": "codex-advisor", "status": "completed", "findings": "addressed", "reason": None})
+
+    def test_addressed_disposition_demands_a_structured_document(self) -> None:
+        wid = self.begin_slug("disposition-document")
+        self.advance_to_gitnexus()
+        self.run_cli((
+            "advisor-result", "--slug", "disposition-document", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+        ))
+        artifact = self.disposition_path("preflight", "disposition-document")
+
+        undocumented = self.dispose("disposition-document", wid, "preflight", "addressed")
+        unbacked = "an addressed disposition was recorded with no document"
+        self.assertEqual(undocumented.returncode, 2, unbacked)
+        self.assertEqual(json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "pending", unbacked)
+        self.assertFalse(artifact.exists(), unbacked)
+
+        malformed = self.tmp / "malformed.json"
+        for reason, body in (
+            ("requires findings and dispositions arrays", {"findings": []}),
+            ("no findings is --findings none", {"findings": [], "dispositions": []}),
+            ("ids must be non-empty and unique", {
+                "findings": [{"id": "", "claim": "c"}], "dispositions": []}),
+            ("requires a claim", {
+                "findings": [{"id": "ADV-1", "claim": "  "}], "dispositions": []}),
+            ("every finding requires one lead disposition", {
+                "findings": [{"id": "ADV-1", "claim": "c"}, {"id": "ADV-2", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "fixed", "evidence": "e"}]}),
+            ("must reference a finding", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "fixed", "evidence": "e"},
+                                 {"finding_id": "GHOST", "status": "fixed", "evidence": "e"}]}),
+            ("invalid or duplicate disposition", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "waived", "evidence": "e"}]}),
+            ("requires evidence", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "fixed", "evidence": " "}]}),
+            ("follow-up requires a reference", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "accepted-follow-up", "evidence": "e"}]}),
+            ("requires evidence", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "fixed",
+                                  "reference": "https://example.invalid/issues/1"}]}),
+            # The document's fields are text. A coerced number or object would
+            # satisfy a truthiness check and record a finding nobody can read.
+            ("requires a claim", {
+                "findings": [{"id": "ADV-1", "claim": 7}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "fixed", "evidence": "e"}]}),
+            ("requires evidence", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "fixed",
+                                  "evidence": {"measured": True}}]}),
+            ("follow-up requires a reference", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": "accepted-follow-up",
+                                  "reference": 42}]}),
+        ):
+            malformed.write_text(json.dumps(body), encoding="utf-8")
+            rejected = self.dispose("disposition-document", wid, "preflight", "addressed", str(malformed))
+            self.assertEqual(rejected.returncode, 2, f"a malformed document was accepted ({reason})")
+            self.assertIn(reason, rejected.stderr)
+            self.assertFalse(artifact.exists(), f"a document rejected for {reason} was still written")
+        self.assertEqual(json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "pending")
+
+        with_document = self.dispose(
+            "disposition-document", wid, "preflight", "none", self.disposition_document())
+        self.assertEqual(with_document.returncode, 2, with_document.stdout + with_document.stderr)
+        self.assertIn("findings none carries no document", with_document.stderr)
+
+        recorded = self.dispose(
+            "disposition-document", wid, "preflight", "addressed",
+            self.disposition_document("accepted-follow-up"))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.assertEqual(json.loads(recorded.stdout)["advisorPreflight"]["findings"], "addressed")
+        document = json.loads(artifact.read_text(encoding="utf-8"))
+        self.assertEqual(document["slug"], "disposition-document")
+        self.assertEqual(document["workflowId"], wid)
+        self.assertEqual(document["stage"], "preflight")
+        self.assertEqual([finding["id"] for finding in document["findings"]], ["ADV-1"])
+
+    def test_a_disposition_document_answers_only_for_its_own_stage_and_instance(self) -> None:
+        wid = self.begin_slug("disposition-lifetime")
+        self.advance_to_gitnexus()
+        self.run_cli((
+            "advisor-result", "--slug", "disposition-lifetime", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+        ))
+        preflight_artifact = self.disposition_path("preflight", "disposition-lifetime")
+        self.assertEqual(
+            self.dispose("disposition-lifetime", wid, "preflight", "addressed", self.disposition_document()).returncode,
+            0,
+        )
+        kept = preflight_artifact.read_text(encoding="utf-8")
+
+        stale_slug = self.dispose("some-other-pass", wid, "preflight", "addressed", self.disposition_document())
+        self.assertEqual(stale_slug.returncode, 2, stale_slug.stdout + stale_slug.stderr)
+        self.assertEqual(preflight_artifact.read_text(encoding="utf-8"), kept,
+                         "a rejected re-record overwrote the document it had no right to touch")
+
+        self.record_preflight(wid, self.preflight_document())
+        self.owner_phase("tdd", "not-required")
+        self.record_real_gate(wid)
+        self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
+        self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.run_cli((
+            "advisor-result", "--slug", "disposition-lifetime", "--workflow-id", wid,
+            "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready",
+        ))
+        self.assertEqual(
+            self.dispose("disposition-lifetime", wid, "final", "addressed", self.disposition_document()).returncode,
+            0,
+        )
+        self.assertEqual(preflight_artifact.read_text(encoding="utf-8"), kept,
+                         "the final disposition clobbered the preflight document")
+        self.assertTrue(self.disposition_path("final", "disposition-lifetime").exists())
+        self.assertEqual(self.cli("complete").returncode, 0)
+
+        # A same-slug begin starts a new instance without clearing artifacts, so a
+        # findings-none pass must stop publishing the dead instance's dispositions.
+        reused = self.begin_slug("disposition-lifetime")
+        self.advance_to_gitnexus()
+        self.run_cli(
+            ("advisor-result", "--slug", "disposition-lifetime", "--workflow-id", reused,
+             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "disposition-lifetime", "--workflow-id", reused,
+             "--stage", "preflight", "--findings", "none"),
+        )
+        self.assertFalse(preflight_artifact.exists(),
+                         "findings none left an earlier instance's document at the audit path")
 
     def test_advisor_results_bind_to_the_workflow_instance(self) -> None:
         begun = self.cli("begin", "--slug", "reused-slug")
@@ -1138,10 +1290,8 @@ class PassLifecycleTests(unittest.TestCase):
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
         )
         self.assertEqual(preflight_consult.returncode, 2, "a preflight consult was recorded during revalidation")
-        preflight_disposition = self.cli(
-            "advisor-disposition", "--slug", "terminal-state", "--workflow-id", wid,
-            "--stage", "preflight", "--findings", "addressed",
-        )
+        preflight_disposition = self.dispose(
+            "terminal-state", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(preflight_disposition.returncode, 2, "a preflight disposition landed during revalidation")
         self.assertIn("revalidation", preflight_disposition.stderr)
         closed = self.checkpoint("preflight-advice")
@@ -1376,7 +1526,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(ready.returncode, 0, ready.stdout + ready.stderr)
         undisposed = self.cli("complete")
         self.assertEqual(undisposed.returncode, 2, undisposed.stdout + undisposed.stderr)
-        disposed = self.cli("advisor-disposition", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--findings", "addressed")
+        disposed = self.dispose("completion-contract", wid, "final", "addressed", self.disposition_document())
         self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
         completed = self.cli("complete")
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)

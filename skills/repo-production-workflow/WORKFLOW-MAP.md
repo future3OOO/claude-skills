@@ -40,7 +40,8 @@ verify-run         # runner: executes the command it records; per-command-latest
 tdd-run            # runner: RED/GREEN evidence, refuses before preflight evidence
 record-review.py   # producer: structured findings with lead dispositions
 advisor-result     # producer-recorded raw consult, slug + workflowId bound
-advisor-disposition  # lead-owned findings disposition, instance bound
+advisor-disposition  # lead-owned findings disposition, instance bound;
+                   # addressed demands --input with the structured document
 pause              # instance-bound honest wait; releases the Stop latch
 checkpoint         # read-only consult readiness for the advisor phases
 complete           # terminal; same optional instance check; only begin
