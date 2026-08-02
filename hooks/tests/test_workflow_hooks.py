@@ -19,6 +19,7 @@ from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
+TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
 FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.sh"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.sh"
@@ -111,6 +112,7 @@ class WorkflowHookTests(unittest.TestCase):
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "preflight", "--status", "passed"),
+            ("set-phase", "--phase", "production-code", "--status", "passed"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
             ("set-phase", "--phase", "verification", "--status", "passed"),
         )
@@ -196,7 +198,65 @@ class WorkflowHookTests(unittest.TestCase):
         self.owner_phase("tdd", "in-progress")
         after_red = self.intake("app.py")
         self.assertEqual(after_red.returncode, 0, after_red.stdout + after_red.stderr)
-        self.assertEqual(after_red.stdout, "", "production edit after valid RED was denied")
+        cleared = json.loads(after_red.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertNotIn("TDD", cleared, "the TDD gate still blocked after a recorded RED")
+        self.assertIn("production-code", cleared, "the next missing step after RED is production-code")
+
+    def red(self, slug: str) -> subprocess.CompletedProcess[str]:
+        """Drive one real valid RED through the tdd-run recorder for this workflow."""
+        return subprocess.run(
+            [sys.executable, str(TDD_RUN), "--cwd", str(self.repo), "--slug", slug,
+             "--phase", "red", "--behavior", "app value must be 2",
+             "--seam", "app module import", "--expected-failure", "AssertionError",
+             "--", sys.executable, "-c",
+             "import app; assert app.value == 2, 'AssertionError: value must be 2'"],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    def test_production_edit_requires_the_recorded_production_code_step(self) -> None:
+        begun = self.state("begin", "--slug", "production-code-gate")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        self.owner_phase("repo-context-forge", "passed")
+        for transition in (
+            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
+            ("advisor-result", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
+            ("set-phase", "--phase", "preflight", "--status", "passed"),
+        ):
+            result = self.state(*transition)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        early_test = self.intake("tests/test_app.py")
+        self.assertEqual(early_test.stdout, "", "a test edit before RED and production-code was denied")
+        early_step = self.state("set-phase", "--phase", "production-code", "--status", "passed")
+        self.assertEqual(early_step.returncode, 2, "production-code was recorded before the TDD decision")
+
+        red = self.red("production-code-gate")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+
+        blocked = self.intake("app.py")
+        self.assertTrue(blocked.stdout, "a production edit was admitted before production-code")
+        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("production-code", decision["permissionDecisionReason"])
+        for status in ("in-progress", "passed"):
+            premature = self.state("set-phase", "--phase", "implementation", "--status", status)
+            self.assertEqual(premature.returncode, 2, f"implementation {status} bypassed production-code")
+            self.assertIn("production-code", premature.stderr)
+        self.assertIn("productionCode", self.state("complete").stderr)
+        latched = json.loads(self.stop().stdout)
+        self.assertEqual(latched.get("decision"), "block")
+        self.assertIn("production-code=pending", latched["reason"])
+
+        recorded = self.state("set-phase", "--phase", "production-code", "--status", "passed")
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.assertEqual(json.loads(recorded.stdout)["productionCode"], "passed")
+
+        admitted = self.intake("app.py")
+        self.assertEqual(admitted.stdout, "", "a production edit was denied after production-code was recorded")
+        started = self.state("set-phase", "--phase", "implementation", "--status", "in-progress")
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
 
     def test_completed_workflow_does_not_authorize_the_next_production_edit(self) -> None:
         self.complete_workflow()

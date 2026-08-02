@@ -12,7 +12,7 @@ from hooks.lib.hook_input import read_hook_payload, working_directory  # noqa: E
 from hooks.lib.repo_identity import try_resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import summary  # noqa: E402
 
-DISCIPLINE = """Discipline re-arm: each production pass runs Repo Context Forge, diagnosis when applicable, packet-scoped GitNexus, advisor preflight, production preflight, real-seam TDD when required, implementation and verification, fresh code review for non-trivial work, final Codex Advisor review, then workflow completion, followed by delivery when integration is intended. A production edit after review makes code review and final review pending again. The mock ban, demonstrated-risk rule, and root-cause-first rule remain hard. Compacted state is continuity context, never Git authorization or proof that an unrecorded step passed."""
+DISCIPLINE = """Discipline re-arm: each production pass runs Repo Context Forge, diagnosis when applicable, packet-scoped GitNexus, advisor preflight, production preflight, real-seam TDD when required, production-code before implementation edits, implementation and verification, lead structured code review when non-trivial, independent final Codex Advisor review, then workflow completion, followed by delivery when integration is intended. A production edit after review makes code review and final review pending again. The mock ban, demonstrated-risk rule, and root-cause-first rule remain hard. Compacted state is continuity context, never Git authorization or proof that an unrecorded step passed."""
 
 
 def main() -> int:

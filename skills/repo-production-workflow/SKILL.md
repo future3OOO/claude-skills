@@ -90,7 +90,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
   set-phase --repo "$PWD" --phase preflight --status passed
 ```
 
-### 6. TDD and implementation
+### 6. TDD RED or not-required
 
 For behavior changes invoke `tdd` and drive one real-Seam RED/GREEN tracer
 bullet at a time. In this governed workflow `tdd-run` is the required producer
@@ -110,18 +110,34 @@ production edits stay blocked until a valid RED (`in-progress`) or a recorded
 not-required decision, and `implementation` cannot be recorded `passed` until
 TDD is `passed` or `not-required`.
 
-Invoke `production-code`, implement the smallest direct change, and remove
-obsolete code created by the change. PostToolUse marks implementation
-in-progress and resets downstream readiness after every production edit;
-governance edits reset the downstream review steps without reopening production
-editing. When implementation is ready for verification:
+### 7. Production code
+
+Invoke `production-code` with the Skill tool, then record the step:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+  set-phase --repo "$PWD" --phase production-code --status passed
+```
+
+The phase accepts only `passed`, and only after the TDD decision. Begin
+production, configuration, and runtime implementation edits only once both TDD
+and production-code are ready. The `production-code` skill owns the standards
+themselves; this step owns only its place in the order.
+
+### 8. Implementation
+
+Implement the smallest direct change and remove obsolete code created by the
+change. PostToolUse marks implementation in-progress and resets downstream
+readiness after every production edit; governance edits reset the downstream
+review steps without reopening production editing. When implementation is ready
+for verification:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
   set-phase --repo "$PWD" --phase implementation --status passed
 ```
 
-### 7. Verification
+### 9. Verification
 
 Run focused tests, the integrated suite, lint/typecheck/build where applicable,
 the production quality gate, cleanup, named no-change checks, and GitNexus
@@ -133,28 +149,30 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
   set-phase --repo "$PWD" --phase verification --status passed
 ```
 
-### 8. Fresh code review
+### 10. Lead structured code review
 
-Invoke `code-review` in fresh independent context for non-trivial changes.
-Review Standards and Spec separately, verify every finding, and let the lead
-disposition it. In this governed workflow `record-review.py` is the required
-producer for non-trivial review state (`set-phase` cannot record a passed
-review); outside the governed workflow it stays optional. For a genuinely
-trivial change, record
+Invoke `code-review` for non-trivial changes. The implementation agent may
+perform it itself in the current session: it is the lead's structured
+Standards/Spec self-check, not an independent review. Review Standards and Spec
+separately, verify every finding, and disposition each one. In this governed
+workflow `record-review.py` is the required producer for non-trivial review
+state (`set-phase` cannot record a passed review); outside the governed
+workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
 Any correction returns to implementation and invalidates downstream readiness.
 
-### 9. Final review
+### 11. Independent final Codex Advisor review
 
-Invoke the final Codex Advisor review against the live diff. For
-the wrapper use phase `final-review`, the same slug, and the base ref. Address
-and disposition material findings. The wrapper leaves final findings pending;
-the lead explicitly records `none` or `addressed` only after validating the
-output. Any production edit repeats verification, code review where required,
-and final review.
+The final Codex Advisor review is the workflow's sole independent reviewer; do
+not spawn a second review agent. Invoke it against the live diff with wrapper
+phase `final-review`, the same slug, and the base ref. It challenges the lead's
+review rather than trusting it. Address and disposition material findings. The
+wrapper leaves final findings pending; the lead explicitly records `none` or
+`addressed` only after validating the output. Any production edit repeats
+verification, code review where required, and final review.
 
-### 10. Complete the workflow
+### 12. Complete the workflow
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
@@ -166,7 +184,7 @@ findings are dispositioned, and the final source is `codex-advisor` with
 `commit-ready`. It changes workflow state only. It does not
 inspect, intercept, authorize, or execute Git.
 
-### 11. Delivery and reviewer completion
+### 13. Delivery and reviewer completion
 
 Commit, push, and open/update the PR when intended for integration. Then run the
 PR Reviewer Completion Gate from `CLAUDE.md` on the current head. A reviewer-fix

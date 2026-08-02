@@ -154,7 +154,7 @@ for phase in ("repo-context-forge", "gitnexus"):
 w.record_advisor_result(identity, slug, wid, "preflight", "codex-advisor", "completed")
 w.advisor_disposition(identity, slug, wid, "preflight", "none")
 w.set_phase(identity, "preflight", "passed")
-for phase, status in (("tdd", "not-required"), ("implementation", "passed"), ("verification", "passed")):
+for phase, status in (("tdd", "not-required"), ("production-code", "passed"), ("implementation", "passed"), ("verification", "passed")):
     w.set_phase(identity, phase, status)
 w.set_phase(identity, "code-review", "passed", findings="none")
 w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-ready")

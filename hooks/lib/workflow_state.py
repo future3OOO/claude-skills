@@ -23,6 +23,7 @@ STEP_FIELDS = {
     "gitnexus": "gitnexus",
     "preflight": "preflight",
     "tdd": "tdd",
+    "production-code": "productionCode",
     "implementation": "implementation",
     "verification": "verification",
 }
@@ -32,6 +33,7 @@ WORKFLOW_SEQUENCE = (
     "advisor-preflight",
     "preflight",
     "tdd",
+    "production-code",
     "implementation",
     "verification",
     "code-review",
@@ -163,6 +165,7 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "advisorPreflight": {"source": None, "status": "pending", "findings": "pending", "reason": None},
         "preflight": "pending",
         "tdd": "pending",
+        "productionCode": "pending",
         "implementation": "pending",
         "verification": "pending",
         "codeReview": {"status": "pending", "findings": "pending"},
@@ -402,7 +405,7 @@ def advisor_disposition(identity: RepoIdentity, slug: str, workflow_id: str | No
 def completion_missing(state: JsonObject) -> list[str]:
     """The canonical completion-readiness check shared by complete() and the Stop latch."""
     missing: list[str] = [] if instance_id(state) else ["workflowId"]
-    for field in ("repoContextForge", "gitnexus", "preflight", "implementation", "verification"):
+    for field in ("repoContextForge", "gitnexus", "preflight", "productionCode", "implementation", "verification"):
         if state.get(field) != "passed":
             missing.append(field)
     if state.get("tdd") not in {"passed", "not-required"}:
@@ -512,8 +515,11 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
             ("production preflight", state.get("preflight") == "passed"),
         ) if not ready
     ]
-    if not is_test_path(path) and state.get("tdd") not in {"in-progress", "passed", "not-required"}:
-        missing.append("TDD RED or a recorded not-required decision (test-like edits stay open)")
+    if not is_test_path(path):
+        if state.get("tdd") not in {"in-progress", "passed", "not-required"}:
+            missing.append("TDD RED or a recorded not-required decision (test-like edits stay open)")
+        elif state.get("productionCode") != "passed":
+            missing.append("production-code")
     return not missing, missing
 
 
@@ -534,6 +540,7 @@ def summary(identity: RepoIdentity, limit: int = 1200) -> str:
         f"Active workflow: slug={state.get('slug')} phase={state.get('phase')} next={state.get('nextAction')}. "
         f"Steps: repo-context-forge={state.get('repoContextForge')}, gitnexus={state.get('gitnexus')}, "
         f"advisor-preflight={advisor.get('status')}/{advisor.get('findings')}, preflight={state.get('preflight')}, tdd={state.get('tdd')}, "
+        f"production-code={state.get('productionCode') or 'pending'}, "
         f"implementation={state.get('implementation')}, verification={state.get('verification')}, "
         f"code-review={code_review.get('status')}/{code_review.get('findings')}, "
         f"final-review={final_review.get('source')}/{final_review.get('status')}/{final_review.get('findings')}. "

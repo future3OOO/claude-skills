@@ -17,8 +17,9 @@ session hook, must survive an install.
 The estate records one repository-scoped production workflow:
 
 ```
-context -> preflight advice -> production preflight -> TDD/implementation
-        -> verification -> code review -> final review -> complete -> delivery
+context -> preflight advice -> production preflight -> TDD -> production-code
+        -> implementation -> verification -> lead structured code review
+        -> independent final Codex Advisor review -> complete -> delivery
 ```
 
 The state is continuity for the agent, not Git authorization. No shipped hook

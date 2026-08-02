@@ -13,10 +13,11 @@ flowchart LR
     G --> A1[advisor preflight]
     A1 --> P[production preflight]
     P --> T[TDD when required]
-    T --> I[implementation]
+    T --> PC[production-code]
+    PC --> I[implementation]
     I --> V[verification]
-    V --> CR[fresh code review when non-trivial]
-    CR --> A2[final Codex review]
+    V --> CR[lead structured code review when non-trivial]
+    CR --> A2[independent final Codex Advisor review]
     A2 --> C{commit-ready and findings addressed?}
     C -->|no| I
     C -->|yes| WC[workflow complete]
@@ -61,8 +62,9 @@ readiness for the advisor phases without mutating anything.
   unavailable with a measured reason;
 - production preflight completed;
 - TDD passed or not required;
+- production-code recorded;
 - implementation and verification passed;
-- code review passed/not required with material findings addressed;
+- lead code review passed/not required with material findings addressed;
 - final review from `codex-advisor` with `commit-ready` and no pending material
   findings.
 

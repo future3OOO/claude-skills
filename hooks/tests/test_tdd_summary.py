@@ -282,6 +282,7 @@ class TddSummaryTests(unittest.TestCase):
 
         identity = resolve_repo_identity(self.repo)
         wid = read_workflow(identity)["workflowId"]
+        set_phase(identity, "production-code", "passed")
         set_phase(identity, "implementation", "passed")
         set_phase(identity, "verification", "passed")
         pause(identity, "tdd-summary", wid, "waiting for the next tracer")
@@ -375,6 +376,7 @@ class TddSummaryTests(unittest.TestCase):
 
         identity = resolve_repo_identity(self.repo)
         wid = read_workflow(identity)["workflowId"]
+        set_phase(identity, "production-code", "passed")
         set_phase(identity, "implementation", "passed")
         set_phase(identity, "verification", "passed")
         set_phase(identity, "code-review", "passed", findings="none")
@@ -445,6 +447,7 @@ class TddSummaryTests(unittest.TestCase):
         summary_path = Path(json.loads(decision.stdout)["summaryPath"])
 
         identity = resolve_repo_identity(self.repo)
+        set_phase(identity, "production-code", "passed")
         set_phase(identity, "implementation", "passed")
         set_phase(identity, "verification", "passed")
         pause(identity, "tdd-summary", read_workflow(identity)["workflowId"], "waiting on the scope decision")

@@ -14,9 +14,13 @@ Record repository, branch, base ref/SHA, head SHA, dirty/staged state, task
 contract, and acceptance criteria. Review the actual diff and current files,
 not a prose summary. If the target changes, the review is stale.
 
-For a non-trivial diff, use a fresh independent context. Record the actual
-resolved model and a fresh context identifier; do not infer model identity from
-the caller's label.
+In a governed production workflow this is the lead implementation agent's
+structured Standards/Spec self-review, and it may run in the current
+implementation session. Inspect the live diff and current files, keep structured
+findings with lead-owned dispositions, and record the actual resolved model and
+context identifier as continuity metadata; do not infer model identity from the
+caller's label. Do not describe this review as independent, and do not spawn a
+separate review agent — the final Codex Advisor supplies the independent review.
 
 ## 2. Read the affected surface
 

@@ -23,7 +23,10 @@ the preflight artifact or approve implementation.
 
 ### `final-review`
 
-Run after implementation, verification, and fresh code review when required.
+Run after implementation, verification, and the lead's structured code-review
+pass when required. This is the workflow's independent review checkpoint: it
+challenges the lead's review rather than trusting it, loading the live diff plus
+the recorded TDD and review summaries.
 The wrapper attaches the live diff. The advisor reconciles the governed slice,
 real-seam proof, module shape, minimality, and regression coverage, ending with
 exactly one terminal line:

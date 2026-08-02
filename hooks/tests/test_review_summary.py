@@ -52,6 +52,7 @@ class ReviewSummaryTests(unittest.TestCase):
         advisor_disposition(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         set_phase(identity, "preflight", "passed")
         set_phase(identity, "tdd", "not-required")
+        set_phase(identity, "production-code", "passed")
         set_phase(identity, "implementation", "passed")
         set_phase(identity, "verification", "passed")
 

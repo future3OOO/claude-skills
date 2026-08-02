@@ -103,6 +103,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.advance_to_preflight(slug, wid)
         self.owner_phase("tdd", "not-required")
         self.run_cli(
+            ("set-phase", "--phase", "production-code", "--status", "passed"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
             ("set-phase", "--phase", "verification", "--status", "passed"),
         )
@@ -193,6 +194,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.advance_to_preflight("tdd-gates", wid)
 
         self.owner_phase("tdd", "in-progress")
+        self.run_cli(("set-phase", "--phase", "production-code", "--status", "passed"))
         started = self.cli("set-phase", "--phase", "implementation", "--status", "in-progress")
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
 
@@ -427,6 +429,66 @@ class PassLifecycleTests(unittest.TestCase):
 
         again = self.cli("set-phase", "--phase", "verification", "--status", "passed")
         self.assertEqual(again.returncode, 2, "completion did not restore the terminal state")
+
+    def test_production_code_records_once_and_survives_the_rest_of_the_pass(self) -> None:
+        from hooks.lib.workflow_state import flush, invalidate_after_edit, ready_for_edit
+
+        wid = self.begin_slug("production-code-lifetime")
+        self.advance_to_preflight("production-code-lifetime", wid)
+        self.owner_phase("tdd", "not-required")
+        identity = resolve_repo_identity(self.repo)
+
+        for status in ("pending", "in-progress", "not-required", "unavailable"):
+            rejected = self.cli("set-phase", "--phase", "production-code", "--status", status)
+            self.assertEqual(rejected.returncode, 2, f"production-code accepted {status}")
+            self.assertIn("only --status passed", rejected.stderr)
+        disposed = self.cli(
+            "set-phase", "--phase", "production-code", "--status", "passed", "--findings", "none",
+        )
+        self.assertEqual(disposed.returncode, 2, "production-code accepted a findings disposition")
+
+        self.assertIn("productionCode", self.cli("complete").stderr)
+        blocked, missing = ready_for_edit(identity, "app.py")
+        self.assertFalse(blocked, "a production edit was admitted before production-code")
+        self.assertIn("production-code", missing)
+
+        self.run_cli(("set-phase", "--phase", "production-code", "--status", "passed"))
+        admitted, missing = ready_for_edit(identity, "app.py")
+        self.assertTrue(admitted, missing)
+
+        invalidate_after_edit(identity, "app.py")
+        self.assertEqual(json.loads(self.cli("status").stdout)["productionCode"], "passed",
+                         "an ordinary production edit erased the production-code step")
+        flush(identity)
+        self.assertEqual(json.loads(self.cli("status").stdout)["productionCode"], "passed",
+                         "compaction erased the production-code step")
+
+        self.run_cli(
+            ("set-phase", "--phase", "implementation", "--status", "passed"),
+            ("set-phase", "--phase", "verification", "--status", "passed"),
+        )
+        self.owner_phase("code-review", "passed", findings="none")
+        self.run_cli(
+            ("advisor-result", "--slug", "production-code-lifetime", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
+            ("advisor-disposition", "--slug", "production-code-lifetime", "--workflow-id", wid, "--stage", "final", "--findings", "none"),
+            ("complete",),
+        )
+        invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
+        self.assertEqual(json.loads(self.cli("status").stdout)["productionCode"], "passed",
+                         "governance revalidation erased the production-code step")
+
+        rebegun = self.cli("begin", "--slug", "production-code-lifetime")
+        self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
+        self.assertEqual(json.loads(rebegun.stdout)["productionCode"], "pending",
+                         "a replacement pass inherited the previous production-code step")
+
+        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / identity.key / "workflow.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy.pop("productionCode")
+        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
+        self.assertIn("production-code=pending", self.cli("summary").stdout,
+                      "state predating the phase did not read as pending")
+        self.assertIn("productionCode", self.cli("complete").stderr)
 
     def test_legacy_state_without_an_instance_id_rejects_every_producer(self) -> None:
         wid = self.begin_slug("legacy-instance")

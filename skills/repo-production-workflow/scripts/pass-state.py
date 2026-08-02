@@ -25,7 +25,7 @@ from hooks.lib.workflow_state import (  # noqa: E402
     summary,
 )
 
-LEAD_PHASES = {"gitnexus", "preflight", "implementation", "verification", "code-review"}
+LEAD_PHASES = {"gitnexus", "preflight", "production-code", "implementation", "verification", "code-review"}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -65,9 +65,13 @@ def main() -> int:
             phase = required(args.phase, "--phase")
             if phase not in LEAD_PHASES:
                 raise ValueError(
-                    "set-phase is lead-owned only for gitnexus, preflight, implementation, and verification"
+                    "set-phase is lead-owned only for gitnexus, preflight, production-code, implementation, and verification"
                 )
             status = required(args.status, "--status")
+            if phase == "production-code" and (status != "passed" or args.findings is not None):
+                raise ValueError(
+                    "production-code records only --status passed: invoke the production-code skill, then record the step"
+                )
             if phase == "code-review" and (status != "not-required" or args.findings != "none"):
                 raise ValueError(
                     "code-review passed is recorder-owned; lead-owned set-phase permits only not-required with findings none"
