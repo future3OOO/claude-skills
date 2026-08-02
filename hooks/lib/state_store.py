@@ -118,9 +118,10 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _git(identity: RepoIdentity, *args: str) -> bytes:
+def _git(identity: RepoIdentity, *args: str, stdin: bytes | None = None) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(identity.root), *args],
+        input=stdin,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=30,
@@ -187,20 +188,38 @@ def code_paths(paths: Iterable[str]) -> list[str]:
 
 
 def _file_mode(path: Path) -> str | None:
-    """The Git file mode of a working-tree regular file, or None when it is not one.
+    """The Git file mode of a working-tree path, or None when it has none.
 
-    A vanished, unreadable, or non-regular path has no mode here, so it is absent
-    from the manifest and reads as removed rather than silently unchanged.
-    Submodules are directories and land here as None; `_gitlink_entries` records
-    them instead.
+    `lstat`, so a symlink is the link itself rather than whatever it resolves to:
+    re-pointing a reviewed link is then visible, and a referent outside the
+    repository can never drift the manifest. A vanished, unreadable, or otherwise
+    non-regular path has no mode here, so it is absent and reads as removed rather
+    than silently unchanged. Submodules are directories and land here as None;
+    `_gitlink_entries` records them instead.
     """
     try:
-        info = path.stat()
+        info = path.lstat()
     except OSError:
         return None
+    if stat.S_ISLNK(info.st_mode):
+        return "120000"
     if not stat.S_ISREG(info.st_mode):
         return None
     return "100755" if info.st_mode & 0o111 else "100644"
+
+
+def _symlink_entry(identity: RepoIdentity, path: str) -> str | None:
+    """A symlink's manifest entry: its target hashed the way Git stores it.
+
+    Git keeps the target path as the blob's content, so hashing those bytes over
+    stdin records the link without ever opening what it points at.
+    """
+    try:
+        target = os.readlink(Path(identity.root) / path)
+    except OSError:
+        return None
+    digest = _git(identity, "hash-object", "--stdin", stdin=os.fsencode(target)).decode("utf-8").strip()
+    return f"120000 {digest}"
 
 
 def _gitlink_entries(identity: RepoIdentity) -> dict[str, str]:
@@ -236,13 +255,18 @@ def tree_manifest(identity: RepoIdentity) -> dict[str, str]:
     Hashes what is on disk, not what is staged: an index object id represents
     staged content and would miss the unstaged shell edit this exists to catch.
     The mode rides along because a content hash alone is blind to `chmod`, which
-    is a shell mutation of a reviewed file like any other, and a submodule is
-    recorded by the commit it currently points at.
+    is a shell mutation of a reviewed file like any other, a symlink is recorded
+    as the link rather than its referent, and a submodule is recorded by the
+    commit it currently points at.
     """
     candidates = reviewable_paths([*_paths(identity, "ls-files", "-z"), *untracked_paths(identity)])
     modes = {path: _file_mode(Path(identity.root) / path) for path in candidates}
-    present = [path for path in candidates if modes[path]]
+    present = [path for path in candidates if modes[path] in {"100644", "100755"}]
     manifest = _gitlink_entries(identity)
+    for path in (path for path in candidates if modes[path] == "120000"):
+        entry = _symlink_entry(identity, path)
+        if entry:
+            manifest[path] = entry
     if not present:
         return manifest
     # --no-filters: without it a configured clean filter normalises content before

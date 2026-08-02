@@ -294,6 +294,39 @@ class PassLifecycleTests(unittest.TestCase):
             f"a submodule on a documentation path invalidated the review: {ready['missing']}",
         )
 
+    def test_a_symlink_is_recorded_as_the_link_not_its_referent(self) -> None:
+        outside = self.tmp / "outside.txt"
+        outside.write_text("external\n", encoding="utf-8")
+        for name in ("a.py", "b.py"):
+            (self.repo / name).write_text("same\n", encoding="utf-8")
+        (self.repo / "link.py").symlink_to("a.py")
+        (self.repo / "escape.py").symlink_to(outside)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "symlinks")
+
+        wid = self.begin_slug("symlink-drift")
+        self.advance_to_verification("symlink-drift", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        # A file outside the repository is not part of the reviewed tree, so
+        # changing it must not drift the manifest through a symlink.
+        outside.write_text("CHANGED OUTSIDE THE REPOSITORY\n", encoding="utf-8")
+        unaffected = self.checkpoint("final-review")
+        self.assertEqual(
+            [item for item in unaffected["missing"] if "review-manifest" in item], [],
+            f"a change outside the repository drifted the manifest: {unaffected['missing']}",
+        )
+
+        # Re-pointing a reviewed link is a change to the reviewed tree even when
+        # the new referent happens to hold identical bytes.
+        (self.repo / "link.py").unlink()
+        (self.repo / "link.py").symlink_to("b.py")
+        stale = self.checkpoint("final-review")
+        self.assertTrue(
+            any("review-manifest-stale" in item and "link.py" in item for item in stale["missing"]),
+            f"a re-pointed symlink left the approval standing: {stale['missing']}",
+        )
+
     def test_non_mutating_shell_work_after_review_keeps_the_approvals(self) -> None:
         wid = self.begin_slug("ordinary-landing")
         self.advance_to_verification("ordinary-landing", wid)
