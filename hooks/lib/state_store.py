@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +15,12 @@ from typing import Iterable, Iterator
 import fcntl
 
 from .repo_identity import RepoIdentity
+
+_PATH_POLICY_FILE = (
+    Path(__file__).resolve().parents[2]
+    / "skills" / "production-code" / "scripts" / "_quality_gate" / "path_policy.py"
+)
+_path_policy = None
 
 CODE_SUFFIXES = {
     ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".sh", ".bash",
@@ -86,6 +94,25 @@ def read_json(path: Path) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
+def stop_session_swap(identity: RepoIdentity, session: str, key: str, value: str) -> str | None:
+    """Compare-and-set one per-session Stop-feedback key under the state lock.
+
+    Returns the previous value. Fail-soft: Stop feedback must never break the
+    hook, so storage errors surface on stderr and read as no-previous-value.
+    """
+    try:
+        with state_lock(identity):
+            path = repo_state_dir(identity) / "stop" / f"{session}.json"
+            session_state = read_json(path) or {}
+            previous = session_state.get(key)
+            session_state.update({"schemaVersion": 1, key: value})
+            atomic_write_json(path, session_state)
+            return previous if isinstance(previous, str) else None
+    except OSError as exc:
+        print(f"Stop session state unavailable: {exc}", file=sys.stderr)
+        return None
+
+
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -121,6 +148,20 @@ def is_code_path(path: str) -> bool:
 
 def is_reviewable_path(path: str) -> bool:
     return not is_docs_or_scratch(path.replace("\\", "/"))
+
+
+def is_test_path(path: str) -> bool:
+    """Test-like per the quality gate's single classifier; unclassifiable fails closed as production."""
+    global _path_policy
+    if _path_policy is None:
+        try:
+            spec = importlib.util.spec_from_file_location("_workflow_path_policy", _PATH_POLICY_FILE)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except (OSError, AttributeError, ImportError, SyntaxError):
+            return False
+        _path_policy = module
+    return bool(_path_policy.is_test_like_path(path.replace("\\", "/")))
 
 
 def is_governance_path(path: str) -> bool:

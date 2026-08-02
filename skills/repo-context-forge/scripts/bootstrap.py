@@ -12,7 +12,14 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, read_workflow, safe_slug, set_phase  # noqa: E402
+from hooks.lib.workflow_state import (  # noqa: E402
+    NO_INSTANCE_ID,
+    WorkflowError,
+    instance_id,
+    producer_set_phase,
+    read_workflow,
+    safe_slug,
+)
 
 SOURCE_ROOT = Path("/home/prop_/projects/repo-context-forge")
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
@@ -61,6 +68,19 @@ def main(argv: list[str]) -> int:
         return 2
     if "--enforce-intake" not in args:
         args.append("--enforce-intake")
+    captured_workflow_id = None
+    if workflow_slug:
+        try:
+            identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
+            state = read_workflow(identity)
+            if state is None or state.get("slug") != safe_slug(workflow_slug):
+                raise WorkflowError("Repo Context Forge slug does not match the active workflow")
+            captured_workflow_id = instance_id(state)
+            if captured_workflow_id is None:
+                raise WorkflowError(NO_INSTANCE_ID)
+        except (WorkflowError, RepoIdentityError, ValueError) as exc:
+            sys.stderr.write(f"<blocker>cannot bind Repo Context Forge to the active workflow: {exc}</blocker>\n")
+            return 2
     result = subprocess.run(
         [sys.executable, str(BOOTSTRAP), *args],
         stdout=subprocess.PIPE,
@@ -73,11 +93,7 @@ def main(argv: list[str]) -> int:
         return result.returncode
     try:
         if workflow_slug:
-            identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
-            state = read_workflow(identity)
-            if state is None or state.get("slug") != safe_slug(workflow_slug):
-                raise WorkflowError("Repo Context Forge slug does not match the active workflow")
-            set_phase(identity, "repo-context-forge", "passed")
+            producer_set_phase(identity, safe_slug(workflow_slug), captured_workflow_id, "repo-context-forge", "passed")
     except (WorkflowError, RepoIdentityError, ValueError) as exc:
         sys.stderr.write(f"<blocker>cannot advance workflow after Repo Context Forge: {exc}</blocker>\n")
         return 2

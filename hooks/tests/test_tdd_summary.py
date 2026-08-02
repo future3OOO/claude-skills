@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import record_advisor_result, set_phase  # noqa: E402
+from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
@@ -47,7 +47,8 @@ class TddSummaryTests(unittest.TestCase):
         identity = resolve_repo_identity(self.repo)
         set_phase(identity, "repo-context-forge", "passed")
         set_phase(identity, "gitnexus", "passed")
-        record_advisor_result(identity, "preflight", "codex-advisor", "completed", findings="none")
+        record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
+        advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         set_phase(identity, "preflight", "passed")
 
     def tearDown(self) -> None:
@@ -108,6 +109,308 @@ class TddSummaryTests(unittest.TestCase):
         self.assertEqual(downgraded.returncode, 2, downgraded.stdout + downgraded.stderr)
         self.assertIn("cannot replace valid TDD evidence", downgraded.stderr)
 
+    def test_invalid_or_mismatched_runs_do_not_regress_recorded_tdd_state(self) -> None:
+        behavior_command = (
+            sys.executable, "-c",
+            "import app; assert app.value == 2, 'AssertionError: value must be 2'",
+        )
+        red = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
+
+        green_marker = self.tmp / "mismatched-green-ran"
+        mismatched = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "a different behavior",
+            "--seam", "tdd-run CLI subprocess boundary", "--", sys.executable, "-c",
+            f"open({str(green_marker)!r}, 'w').close()",
+        )
+        self.assertEqual(mismatched.returncode, 2, mismatched.stdout + mismatched.stderr)
+        self.assertFalse(green_marker.exists(), "a mismatched GREEN executed its command")
+
+        state = self.run_script(PASS_STATE, "status", "--repo", str(self.repo))
+        self.assertEqual(state.returncode, 0, state.stdout + state.stderr)
+        self.assertEqual(
+            json.loads(state.stdout)["tdd"], "passed",
+            "a mismatched candidate regressed the recorded TDD gate",
+        )
+        self.assertEqual(
+            json.loads(summary_path.read_text(encoding="utf-8"))["status"], "passed",
+        )
+
+    def test_rerun_semantics_preserve_passed_state_and_record_regressions(self) -> None:
+        behavior_command = (
+            sys.executable, "-c",
+            "import app; assert app.value == 2, 'AssertionError: value must be 2'",
+        )
+        red = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
+
+        red_after_green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red_after_green.returncode, 2, red_after_green.stdout + red_after_green.stderr)
+        self.assertEqual(
+            json.loads(summary_path.read_text(encoding="utf-8"))["status"], "passed",
+            "a matching RED that now passes overwrote completed GREEN evidence",
+        )
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "passed")
+
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        regressed = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(regressed.returncode, 2, regressed.stdout + regressed.stderr)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "pending")
+        self.assertFalse(summary["runs"][-1]["valid"], "the regression run was not recorded")
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "in-progress")
+        self.assertEqual(state["implementation"], "in-progress", "a recorded GREEN regression did not reopen implementation")
+        self.assertEqual(state["verification"], "pending")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+
+    def test_summaries_are_owned_by_one_workflow_instance(self) -> None:
+        behavior_command = (
+            sys.executable, "-c",
+            "import app; assert app.value == 2, 'AssertionError: value must be 2'",
+        )
+        red = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        summary_path = Path(json.loads(red.stdout.splitlines()[-1])["summaryPath"])
+        first_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        identity = resolve_repo_identity(self.repo)
+        self.assertEqual(
+            first_summary.get("workflowId"), read_workflow(identity)["workflowId"],
+            "the TDD summary does not record its owning workflow instance",
+        )
+
+        rebegun = self.run_script(PASS_STATE, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
+        self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
+        set_phase(identity, "repo-context-forge", "passed")
+        set_phase(identity, "gitnexus", "passed")
+        record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
+        advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
+        set_phase(identity, "preflight", "passed")
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        stale_green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(
+            stale_green.returncode, 2,
+            "a GREEN under a new workflow instance consumed the previous instance's RED evidence",
+        )
+        self.assertEqual(
+            json.loads(summary_path.read_text(encoding="utf-8")), first_summary,
+            "a new workflow instance mutated the previous instance's summary",
+        )
+
+    def test_producer_finishing_after_same_slug_replacement_is_rejected(self) -> None:
+        replace_and_fail = (
+            sys.executable, "-c",
+            "import subprocess, sys; "
+            f"subprocess.run([sys.executable, {str(PASS_STATE)!r}, 'begin', '--repo', {str(self.repo)!r}, '--slug', 'tdd-summary'], check=True, capture_output=True); "
+            "raise AssertionError('AssertionError: value must be 2')",
+        )
+        raced = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *replace_and_fail,
+        )
+        self.assertEqual(raced.returncode, 2, raced.stdout + raced.stderr)
+        self.assertIn(
+            "workflow instance", raced.stderr,
+            "a producer finishing after a same-slug replacement advanced the new workflow",
+        )
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "pending", "the replacement workflow inherited the raced producer's state")
+
+    def test_next_tracer_red_reopens_the_cycle_and_midcycle_switches_reject(self) -> None:
+        def tracer(phase, behavior, command, expected=None):
+            args = [
+                TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+                "--phase", phase, "--behavior", behavior,
+                "--seam", "tdd-run CLI subprocess boundary",
+            ]
+            if expected:
+                args += ["--expected-failure", expected]
+            return self.run_script(*args, "--", *command)
+
+        check_two = (sys.executable, "-c", "import app; assert app.value == 2, 'AssertionError: value must be 2'")
+        first = tracer("red", "first behavior", check_two, "AssertionError")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = tracer("green", "first behavior", check_two)
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+
+        identity = resolve_repo_identity(self.repo)
+        wid = read_workflow(identity)["workflowId"]
+        set_phase(identity, "production-code", "passed")
+        set_phase(identity, "implementation", "passed")
+        set_phase(identity, "verification", "passed")
+        pause(identity, "tdd-summary", wid, "waiting for the next tracer")
+        self.assertIn("paused", read_workflow(identity))
+
+        check_three = (sys.executable, "-c", "import app; assert app.value == 3, 'AssertionError: value must be 3'")
+        second = tracer("red", "second behavior", check_three, "AssertionError")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "in-progress")
+        self.assertEqual(state["implementation"], "in-progress", "a next-tracer RED did not reopen implementation")
+        self.assertEqual(state["verification"], "pending")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertNotIn("paused", state, "a next-tracer RED did not clear the pause")
+
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        second_green = tracer("green", "second behavior", check_three)
+        self.assertEqual(second_green.returncode, 0, second_green.stdout + second_green.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "passed")
+        self.assertEqual(state["verification"], "pending", "stale verification survived the next GREEN")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+
+        third = tracer("red", "third behavior", (sys.executable, "-c", "raise AssertionError('AssertionError: four')"), "AssertionError")
+        self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+        summary_path = Path(json.loads(third.stdout.splitlines()[-1])["summaryPath"])
+        before = summary_path.read_text(encoding="utf-8")
+        marker = self.tmp / "midcycle-command-ran"
+        switch = tracer(
+            "red", "fourth behavior mid-cycle",
+            (sys.executable, "-c",
+             f"open({str(marker)!r}, 'w').close(); raise AssertionError('AssertionError: five')"),
+            "AssertionError",
+        )
+        self.assertEqual(switch.returncode, 2, "a mid-cycle candidate switch was accepted")
+        self.assertIn("candidate does not match the active cycle", switch.stderr)
+        self.assertFalse(marker.exists(), "the rejected switch executed its command")
+        self.assertEqual(summary_path.read_text(encoding="utf-8"), before, "a rejected switch mutated the active candidate")
+
+    def test_producer_commits_enforce_ordering_and_evidence_cas(self) -> None:
+        rebegun = self.run_script(PASS_STATE, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
+        self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
+        premature = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "too early",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", sys.executable, "-c", "raise AssertionError('AssertionError: early')",
+        )
+        self.assertEqual(premature.returncode, 2, "a RED at intake bypassed the ordering gate")
+        self.assertIn("requires", premature.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual((state["tdd"], state["implementation"]), ("pending", "pending"))
+
+        identity = resolve_repo_identity(self.repo)
+        set_phase(identity, "repo-context-forge", "passed")
+        set_phase(identity, "gitnexus", "passed")
+        record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
+        advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
+        set_phase(identity, "preflight", "passed")
+
+        # Contract pin (not seam proof): the read-to-lock window is not drivable
+        # through the CLI, so the compare-and-swap is pinned at the commit boundary.
+        from hooks.lib.workflow_state import WorkflowError, commit_tdd
+        summary_file = self.tmp / "state" / read_workflow(identity)["repo"]["key"] / "tdd-tdd-summary.json"
+        summary_file.write_text(json.dumps({"schemaVersion": 1, "interleaved": True}), encoding="utf-8")
+        with self.assertRaises(WorkflowError) as raced:
+            commit_tdd(
+                identity, "tdd-summary", read_workflow(identity)["workflowId"],
+                summary_file, {"schemaVersion": 1, "stale": True}, "in-progress",
+                expected_evidence=None,
+            )
+        self.assertIn("evidence changed during the run", str(raced.exception))
+        self.assertEqual(
+            json.loads(summary_file.read_text(encoding="utf-8")), {"schemaVersion": 1, "interleaved": True},
+            "the interleaved evidence write was clobbered by the stale producer",
+        )
+
+    def test_terminal_workflow_rejects_reruns_before_touching_evidence(self) -> None:
+        behavior_command = (
+            sys.executable, "-c",
+            "import app; assert app.value == 2, 'AssertionError: value must be 2'",
+        )
+        red = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
+        before = summary_path.read_text(encoding="utf-8")
+
+        identity = resolve_repo_identity(self.repo)
+        wid = read_workflow(identity)["workflowId"]
+        set_phase(identity, "production-code", "passed")
+        set_phase(identity, "implementation", "passed")
+        set_phase(identity, "verification", "passed")
+        set_phase(identity, "code-review", "passed", findings="none")
+        record_advisor_result(identity, "tdd-summary", wid, "final", "codex-advisor", "commit-ready")
+        advisor_disposition(identity, "tdd-summary", wid, "final", "none")
+        completed = self.run_script(PASS_STATE, "complete", "--repo", str(self.repo))
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        rerun = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "captures command outcome",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(rerun.returncode, 2, rerun.stdout + rerun.stderr)
+        self.assertIn("terminal", rerun.stderr)
+        self.assertEqual(
+            summary_path.read_text(encoding="utf-8"), before,
+            "a rerun against a terminal workflow mutated its evidence summary",
+        )
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual((state["phase"], state["tdd"]), ("complete", "passed"))
+
     def test_only_the_declared_failure_and_seam_count(self) -> None:
         silent = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
@@ -145,6 +448,53 @@ class TddSummaryTests(unittest.TestCase):
             "--seam", "different interface", "--", sys.executable, "-c", "import app; assert app.value == 2, 'AssertionError: value must be 2'",
         )
         self.assertEqual(wrong_seam.returncode, 2, wrong_seam.stdout + wrong_seam.stderr)
+
+    def test_a_valid_red_replaces_a_not_required_decision_and_reopens_the_cycle(self) -> None:
+        decision = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--not-required", "no production behavior changed",
+        )
+        self.assertEqual(decision.returncode, 0, decision.stdout + decision.stderr)
+        summary_path = Path(json.loads(decision.stdout)["summaryPath"])
+
+        identity = resolve_repo_identity(self.repo)
+        set_phase(identity, "production-code", "passed")
+        set_phase(identity, "implementation", "passed")
+        set_phase(identity, "verification", "passed")
+        pause(identity, "tdd-summary", read_workflow(identity)["workflowId"], "waiting on the scope decision")
+
+        behavior_command = (
+            sys.executable, "-c",
+            "import app; assert app.value == 2, 'AssertionError: value must be 2'",
+        )
+        red = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "red", "--behavior", "scope changed after the not-required decision",
+            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--", *behavior_command,
+        )
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "pending")
+        self.assertNotIn("reason", summary, "the not-required decision survived the replacing RED")
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual((state["tdd"], state["implementation"]), ("in-progress", "in-progress"))
+        self.assertEqual(state["verification"], "pending")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertNotIn("paused", state, "the replacing RED did not clear the pause")
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.run_script(
+            TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
+            "--phase", "green", "--behavior", "scope changed after the not-required decision",
+            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "passed")
+        self.assertEqual(state["verification"], "pending", "stale verification survived the replaced cycle")
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 
     def test_not_required_decision_is_recorded_in_pass_state(self) -> None:
         (self.repo / "notes.md").write_text("documentation only\n", encoding="utf-8")

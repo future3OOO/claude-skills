@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import record_advisor_result, set_phase  # noqa: E402
+from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 RECORDER = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
@@ -45,11 +45,14 @@ class ReviewSummaryTests(unittest.TestCase):
         begun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         identity = resolve_repo_identity(self.repo)
+        self.wid = read_workflow(identity)["workflowId"]
         set_phase(identity, "repo-context-forge", "passed")
         set_phase(identity, "gitnexus", "passed")
-        record_advisor_result(identity, "preflight", "codex-advisor", "completed", findings="none")
+        record_advisor_result(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
+        advisor_disposition(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         set_phase(identity, "preflight", "passed")
         set_phase(identity, "tdd", "not-required")
+        set_phase(identity, "production-code", "passed")
         set_phase(identity, "implementation", "passed")
         set_phase(identity, "verification", "passed")
 
@@ -84,14 +87,14 @@ class ReviewSummaryTests(unittest.TestCase):
         path = self.tmp / "review.json"
         path.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
         missing_identity = self.run_script(
-            RECORDER, "--slug", "review-summary", "--resolved-model", "",
+            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "",
             "--review-context-id", "", "--input", str(path),
         )
         self.assertEqual(missing_identity.returncode, 2, missing_identity.stdout + missing_identity.stderr)
         self.assertIn("resolved model", missing_identity.stderr)
         path.write_text(json.dumps(review), encoding="utf-8")
         missing_consequence = self.run_script(
-            RECORDER, "--slug", "review-summary", "--resolved-model", "gpt-5",
+            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
             "--review-context-id", "fresh-review-1", "--input", str(path),
         )
         self.assertEqual(
@@ -104,7 +107,7 @@ class ReviewSummaryTests(unittest.TestCase):
         review["findings"][0]["consequence"] = "The production result would remain incorrect."
         path.write_text(json.dumps(review), encoding="utf-8")
         pending = self.run_script(
-            RECORDER, "--slug", "review-summary", "--resolved-model", "gpt-5",
+            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
             "--review-context-id", "fresh-review-1", "--input", str(path),
         )
         self.assertEqual(pending.returncode, 2, pending.stdout + pending.stderr)
@@ -114,7 +117,7 @@ class ReviewSummaryTests(unittest.TestCase):
         review["dispositions"][0] = {"finding_id": "SPEC-1", "status": "fixed", "evidence": "verified correction"}
         path.write_text(json.dumps(review), encoding="utf-8")
         recorded = self.run_script(
-            RECORDER, "--slug", "review-summary", "--resolved-model", "gpt-5",
+            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
             "--review-context-id", "fresh-review-1", "--input", str(path),
         )
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
@@ -125,6 +128,26 @@ class ReviewSummaryTests(unittest.TestCase):
             self.assertNotIn(removed, summary)
         state = json.loads(self.run_script(PASS_STATE, "status").stdout)
         self.assertEqual(state["codeReview"], {"status": "passed", "findings": "addressed"})
+
+
+    def test_rejected_recorder_calls_leave_evidence_untouched(self) -> None:
+        rebegun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
+        self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
+        identity = resolve_repo_identity(self.repo)
+        new_wid = read_workflow(identity)["workflowId"]
+        review_file = self.tmp / "state" / read_workflow(identity)["repo"]["key"] / "review-review-summary.json"
+        before = review_file.read_text(encoding="utf-8") if review_file.exists() else None
+
+        payload = self.tmp / "premature.json"
+        payload.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
+        premature = self.run_script(
+            RECORDER, "--slug", "review-summary", "--workflow-id", new_wid,
+            "--resolved-model", "gpt-5", "--review-context-id", "fresh-review-2",
+            "--input", str(payload),
+        )
+        self.assertEqual(premature.returncode, 2, "a premature recorder call was accepted before verification")
+        after = review_file.read_text(encoding="utf-8") if review_file.exists() else None
+        self.assertEqual(after, before, "a rejected recorder call wrote review evidence")
 
 
 if __name__ == "__main__":

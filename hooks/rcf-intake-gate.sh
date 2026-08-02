@@ -43,7 +43,7 @@ def main() -> int:
     if not is_reviewable_path(relative):
         return 0
 
-    ready, missing = ready_for_edit(identity)
+    ready, missing = ready_for_edit(identity, relative)
     if not ready:
         deny(
             "BLOCKED by workflow intake: production edits require an active workflow "

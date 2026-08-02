@@ -8,6 +8,12 @@ description: Enforce production-only implementation standards for this repo. Use
 Apply this skill before writing any repository code or file content change, keep it active while implementing, and run its bundled gate before finalizing.
 Use the production-preflight skill first on before-edit turns that require explicit preflight. `code-quality` owns the seven quality principles and wins on conflict; this skill extends them with implementation procedure.
 
+In a governed production workflow, invoke this skill after the RED or
+not-required TDD decision and before production, configuration, or runtime
+implementation edits; the test edit that establishes RED may precede it. Record
+the step with `set-phase --phase production-code --status passed`, then keep
+this doctrine active through implementation and final verification.
+
 Before editing, use the standards below to choose the smallest production-safe implementation path. Run the bundled non-mutating gate from the target repository before finalizing:
 
 ```bash

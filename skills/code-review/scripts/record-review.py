@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import atomic_write_json, repo_state_dir, state_lock, utc_timestamp  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, read_workflow, safe_slug, set_phase  # noqa: E402
+from hooks.lib.state_store import repo_state_dir, utc_timestamp  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, commit_review, safe_slug  # noqa: E402
 
 RESOLVED = {"fixed", "rejected-with-evidence"}
 DISPOSITIONS = RESOLVED | {"accepted-follow-up"}
@@ -73,6 +73,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=".")
     parser.add_argument("--slug", required=True)
+    parser.add_argument("--workflow-id", required=True)
     parser.add_argument("--resolved-model", required=True)
     parser.add_argument("--review-context-id", required=True)
     parser.add_argument("--input", required=True)
@@ -84,15 +85,14 @@ def main() -> int:
             raise ValueError("resolved model and review context id must be non-empty")
         identity = resolve_repo_identity(args.repo)
         slug = safe_slug(args.slug)
-        state = read_workflow(identity)
-        if state is None or state.get("slug") != slug:
-            raise WorkflowError("--slug does not match the active workflow")
         findings, dispositions, unresolved = _validated(_load(args.input))
         status = "pending" if unresolved else "passed"
         finding_status = "pending" if unresolved else "addressed" if findings else "none"
+        path = repo_state_dir(identity) / f"review-{slug}.json"
         summary = {
             "schemaVersion": 1,
             "slug": slug,
+            "workflowId": args.workflow_id,
             "status": status,
             "resolvedModel": resolved_model,
             "reviewContextId": review_context_id,
@@ -100,10 +100,7 @@ def main() -> int:
             "dispositions": dispositions,
             "recordedAt": utc_timestamp(),
         }
-        path = repo_state_dir(identity) / f"review-{slug}.json"
-        with state_lock(identity):
-            atomic_write_json(path, summary)
-        set_phase(identity, "code-review", status, findings=finding_status)
+        commit_review(identity, slug, args.workflow_id, path, summary, status, finding_status)
         print(json.dumps({"summaryPath": str(path), "status": status}, sort_keys=True))
         if unresolved:
             print("error: material review findings remain unresolved", file=sys.stderr)

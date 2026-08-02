@@ -14,20 +14,23 @@ if str(ROOT) not in sys.path:
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowError,
+    advisor_disposition,
     begin,
+    checkpoint,
     complete,
+    pause,
     read_workflow,
     record_advisor_result,
     set_phase,
     summary,
 )
 
-LEAD_PHASES = {"gitnexus", "preflight", "implementation", "verification", "code-review"}
+LEAD_PHASES = {"gitnexus", "preflight", "production-code", "implementation", "verification", "code-review"}
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
-    result.add_argument("action", choices=("begin", "set-phase", "advisor-result", "complete", "summary", "status"))
+    result.add_argument("action", choices=("begin", "set-phase", "advisor-result", "advisor-disposition", "pause", "checkpoint", "complete", "summary", "status"))
     result.add_argument("--repo", default=".")
     result.add_argument("--slug")
     result.add_argument("--intent", default="")
@@ -38,6 +41,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--verdict")
     result.add_argument("--findings")
     result.add_argument("--reason")
+    result.add_argument("--workflow-id")
     return result
 
 
@@ -45,6 +49,10 @@ def required(value: str | None, flag: str) -> str:
     if value is None:
         raise ValueError(f"{flag} is required")
     return value
+
+
+def instance_args(args: argparse.Namespace) -> tuple[str, str]:
+    return required(args.slug, "--slug"), required(args.workflow_id, "--workflow-id")
 
 
 def main() -> int:
@@ -57,9 +65,13 @@ def main() -> int:
             phase = required(args.phase, "--phase")
             if phase not in LEAD_PHASES:
                 raise ValueError(
-                    "set-phase is lead-owned only for gitnexus, preflight, implementation, and verification"
+                    "set-phase is lead-owned only for gitnexus, preflight, production-code, implementation, and verification"
                 )
             status = required(args.status, "--status")
+            if phase == "production-code" and (status != "passed" or args.findings is not None):
+                raise ValueError(
+                    "production-code records only --status passed: invoke the production-code skill, then record the step"
+                )
             if phase == "code-review" and (status != "not-required" or args.findings != "none"):
                 raise ValueError(
                     "code-review passed is recorder-owned; lead-owned set-phase permits only not-required with findings none"
@@ -69,18 +81,33 @@ def main() -> int:
                 phase,
                 status,
                 findings=args.findings,
+                slug=args.slug,
+                workflow_id=args.workflow_id,
             )
         elif args.action == "advisor-result":
+            slug, workflow_id = instance_args(args)
             state = record_advisor_result(
                 identity,
+                slug,
+                workflow_id,
                 required(args.stage, "--stage"),
                 required(args.source, "--source"),
                 required(args.verdict, "--verdict"),
                 findings=args.findings,
                 reason=args.reason,
             )
+        elif args.action == "advisor-disposition":
+            slug, workflow_id = instance_args(args)
+            stage = required(args.stage, "--stage")
+            state = advisor_disposition(identity, slug, workflow_id, stage, required(args.findings, "--findings"))
+        elif args.action == "pause":
+            slug, workflow_id = instance_args(args)
+            state = pause(identity, slug, workflow_id, required(args.reason, "--reason"))
+        elif args.action == "checkpoint":
+            print(json.dumps(checkpoint(identity, required(args.phase, "--phase")), sort_keys=True))
+            return 0
         elif args.action == "complete":
-            state = complete(identity)
+            state = complete(identity, slug=args.slug, workflow_id=args.workflow_id)
         elif args.action == "summary":
             print(summary(identity))
             return 0

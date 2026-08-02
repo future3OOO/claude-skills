@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 
 from .repo_identity import RepoIdentity
@@ -9,6 +10,7 @@ from .state_store import (
     atomic_write_json,
     is_governance_path,
     is_reviewable_path,
+    is_test_path,
     read_json,
     repo_state_dir,
     state_lock,
@@ -21,6 +23,7 @@ STEP_FIELDS = {
     "gitnexus": "gitnexus",
     "preflight": "preflight",
     "tdd": "tdd",
+    "production-code": "productionCode",
     "implementation": "implementation",
     "verification": "verification",
 }
@@ -30,16 +33,21 @@ WORKFLOW_SEQUENCE = (
     "advisor-preflight",
     "preflight",
     "tdd",
+    "production-code",
     "implementation",
     "verification",
     "code-review",
     "final-review",
 )
-NEXT_ACTIONS = dict(zip(WORKFLOW_SEQUENCE, WORKFLOW_SEQUENCE[1:]))
 STEP_STATUSES = {"pending", "in-progress", "passed", "not-required", "unavailable"}
 FINDING_STATUSES = {"pending", "none", "addressed"}
 REVIEW_SOURCES = {"codex-advisor"}
-FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch", "unavailable"}
+FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
+NO_INSTANCE_ID = "this state predates workflow instance identity and can no longer advance; begin a new workflow"
+SLUG_MISMATCH = "--slug does not match the active workflow"
+INSTANCE_MISMATCH = "--workflow-id does not match the active workflow instance"
+PREFLIGHT_CLOSED = "governance revalidation permits only re-verification and review; preflight consults are closed"
+TDD_CLOSED = "governance revalidation permits only re-verification and review; tdd is closed"
 
 
 class WorkflowError(RuntimeError):
@@ -129,6 +137,19 @@ def _next_incomplete_phase(state: JsonObject) -> str:
     )
 
 
+def _derive_next_action(state: JsonObject) -> str:
+    phase = _next_incomplete_phase(state)
+    if phase == "advisor-preflight":
+        advisor = state.get("advisorPreflight")
+        if isinstance(advisor, dict) and advisor.get("status") == "completed":
+            return "address-advisor-findings"
+    if phase == "final-review":
+        review = state.get("finalReview")
+        if isinstance(review, dict) and review.get("status") not in {None, "pending"}:
+            return "address-review-findings"
+    return phase
+
+
 def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
     normalized = safe_slug(slug)
     if normalized == "unnamed-workflow":
@@ -138,6 +159,7 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "schemaVersion": 1,
         "repo": identity.as_dict(),
         "slug": normalized,
+        "workflowId": uuid.uuid4().hex,
         "intent": intent.strip(),
         "phase": "intake",
         "nextAction": "repo-context-forge",
@@ -146,6 +168,7 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "advisorPreflight": {"source": None, "status": "pending", "findings": "pending", "reason": None},
         "preflight": "pending",
         "tdd": "pending",
+        "productionCode": "pending",
         "implementation": "pending",
         "verification": "pending",
         "codeReview": {"status": "pending", "findings": "pending"},
@@ -157,37 +180,122 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         return _persist(identity, state)
 
 
+def _apply_step(state: JsonObject, phase: str, status: str, findings: str | None = None) -> None:
+    """Validated step mutation shared by every locked transition path."""
+    if status not in STEP_STATUSES:
+        raise ValueError(f"unsupported workflow status: {status}")
+    if phase not in STEP_FIELDS and phase != "code-review":
+        raise ValueError(f"unsupported workflow phase: {phase}")
+    _require_open(state)
+    if state.get("revalidation") and phase not in {"verification", "code-review"}:
+        raise WorkflowError(f"governance revalidation permits only re-verification and review; {phase} is closed")
+    state.pop("paused", None)
+    _require_predecessor(state, phase)
+    if phase == "implementation" and status == "passed" and state.get("tdd") not in {"passed", "not-required"}:
+        raise WorkflowIncomplete("implementation passed requires tdd passed or not-required")
+    if phase == "code-review":
+        if findings not in FINDING_STATUSES:
+            raise ValueError("code-review requires --findings pending, none, or addressed")
+        state["codeReview"] = {"status": status, "findings": findings}
+    else:
+        if findings is not None:
+            raise ValueError(f"{phase} does not accept findings")
+        state[STEP_FIELDS[phase]] = status
+    state["phase"] = phase
+    state["nextAction"] = _derive_next_action(state)
+
+
 def set_phase(
     identity: RepoIdentity,
     phase: str,
     status: str,
     *,
     findings: str | None = None,
+    slug: str | None = None,
+    workflow_id: str | None = None,
 ) -> JsonObject:
-    if status not in STEP_STATUSES:
-        raise ValueError(f"unsupported workflow status: {status}")
-    if phase not in STEP_FIELDS and phase != "code-review":
-        raise ValueError(f"unsupported workflow phase: {phase}")
     with state_lock(identity):
         state = _require(identity)
-        _require_predecessor(state, phase)
-        if phase == "code-review":
-            if findings not in FINDING_STATUSES:
-                raise ValueError("code-review requires --findings pending, none, or addressed")
-            state["codeReview"] = {"status": status, "findings": findings}
-        elif phase in STEP_FIELDS:
-            if findings is not None:
-                raise ValueError(f"{phase} does not accept findings")
-            state[STEP_FIELDS[phase]] = status
+        _require_instance(state, slug, workflow_id)
+        _apply_step(state, phase, status, findings)
+        return _persist(identity, state)
+
+
+def producer_set_phase(identity: RepoIdentity, slug: str, workflow_id: str | None, phase: str, status: str) -> JsonObject:
+    """Instance-bound step transition for producers, under one lock hold."""
+    with state_lock(identity):
+        state = bound_instance(identity, slug, workflow_id)
+        _apply_step(state, phase, status)
+        return _persist(identity, state)
+
+
+TDD_ACTIONS = {"reopen", "in-progress", "passed", "not-required"}
+
+
+def commit_tdd(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    path: Path,
+    summary_doc: JsonObject | None,
+    action: str,
+    *,
+    expected_evidence: JsonObject | None = None,
+) -> JsonObject:
+    """Atomically persist TDD evidence and its workflow transition under one lock hold.
+
+    The caller's pre-run evidence read is revalidated under the lock: a summary
+    that changed since then aborts the commit instead of losing the interleaved run.
+    """
+    if action not in TDD_ACTIONS:
+        raise ValueError(f"unsupported tdd action: {action}")
+    with state_lock(identity):
+        state = bound_instance(identity, slug, workflow_id)
+        if state.get("revalidation"):
+            raise WorkflowError(TDD_CLOSED)
+        _require_predecessor(state, "tdd")
+        if read_json(path) != expected_evidence:
+            raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
+        if summary_doc is not None:
+            atomic_write_json(path, summary_doc)
+        state.pop("paused", None)
+        if action == "reopen":
+            state["tdd"] = "in-progress"
+            state["phase"] = "implementation"
+            state["implementation"] = "in-progress"
+            _reset_downstream(state)
         else:
-            raise ValueError(f"unsupported workflow phase: {phase}")
-        state["phase"] = phase
-        state["nextAction"] = NEXT_ACTIONS[phase]
+            state["tdd"] = action
+            state["phase"] = "tdd"
+            state["nextAction"] = _derive_next_action(state)
+        return _persist(identity, state)
+
+
+def commit_review(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    path: Path,
+    summary_doc: JsonObject,
+    status: str,
+    findings: str,
+) -> JsonObject:
+    """Atomically persist the review summary and its workflow transition under one lock hold.
+
+    The transition is validated before the summary is written, so a rejected
+    recorder call leaves the persisted evidence untouched.
+    """
+    with state_lock(identity):
+        state = bound_instance(identity, slug, workflow_id)
+        _apply_step(state, "code-review", status, findings)
+        atomic_write_json(path, summary_doc)
         return _persist(identity, state)
 
 
 def record_advisor_result(
     identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
     stage: str,
     source: str,
     verdict: str,
@@ -197,74 +305,199 @@ def record_advisor_result(
 ) -> JsonObject:
     if source not in REVIEW_SOURCES:
         raise ValueError(f"unsupported reviewer source: {source}")
+    if findings not in {None, "pending"}:
+        raise ValueError("advisor-result records findings=pending; disposition findings with advisor-disposition")
     with state_lock(identity):
-        state = _require(identity)
+        state = bound_instance(identity, slug, workflow_id)
+        state.pop("paused", None)
         if stage == "preflight":
+            if state.get("revalidation"):
+                raise WorkflowError(PREFLIGHT_CLOSED)
             _require_predecessor(state, "advisor-preflight")
             if source != "codex-advisor":
                 raise ValueError("preflight advisor source must be codex-advisor")
             if verdict not in {"completed", "unavailable"}:
                 raise ValueError("preflight verdict must be completed or unavailable")
-            if verdict == "unavailable":
-                measured_reason = str(reason or "").strip()
-                if not measured_reason:
-                    raise ValueError("preflight unavailable requires --reason")
-                state["advisorPreflight"] = {
-                    "source": source,
-                    "status": verdict,
-                    "findings": "none",
-                    "reason": measured_reason,
-                }
-            else:
-                finding_status = findings or "pending"
-                if finding_status not in FINDING_STATUSES:
-                    raise ValueError("preflight review requires --findings pending, none, or addressed")
-                state["advisorPreflight"] = {
-                    "source": source,
-                    "status": verdict,
-                    "findings": finding_status,
-                    "reason": None,
-                }
+            measured_reason = str(reason or "").strip() or None
+            if verdict == "unavailable" and not measured_reason:
+                raise ValueError("preflight unavailable requires --reason")
+            state["advisorPreflight"] = {
+                "source": source,
+                "status": verdict,
+                "findings": "none" if verdict == "unavailable" else "pending",
+                "reason": measured_reason if verdict == "unavailable" else None,
+            }
             state["phase"] = "advisor-preflight"
-            state["nextAction"] = (
-                "production-preflight" if _allows_next(state, "advisor-preflight")
-                else "address-advisor-findings"
-            )
         elif stage == "final":
             _require_predecessor(state, "final-review")
             if verdict not in FINAL_VERDICTS:
                 raise ValueError(f"unsupported final-review verdict: {verdict}")
-            if findings not in FINDING_STATUSES:
-                raise ValueError("final review requires --findings pending, none, or addressed")
-            state["finalReview"] = {"source": source, "status": verdict, "findings": findings}
+            state["finalReview"] = {"source": source, "status": verdict, "findings": "pending"}
             state["phase"] = "final-review"
-            state["nextAction"] = "complete-workflow" if verdict == "commit-ready" and findings != "pending" else "address-review-findings"
         else:
             raise ValueError(f"unsupported advisor stage: {stage}")
+        state["nextAction"] = _derive_next_action(state)
         return _persist(identity, state)
 
 
-def complete(identity: RepoIdentity) -> JsonObject:
+def _require_open(state: JsonObject) -> None:
+    if state.get("phase") == "complete" and not state.get("revalidation"):
+        raise WorkflowError("workflow is terminal after completion; begin a new pass")
+
+
+def _require_instance(state: JsonObject, slug: str | None, workflow_id: str | None) -> None:
+    """Validate supplied identity against the active instance; omitted values are not checked.
+
+    Lead commands may name the instance they mean. Callers hold the state lock and
+    pass the state they are about to mutate, so this cannot become check-then-mutate.
+    """
+    if slug is not None and state.get("slug") != safe_slug(str(slug)):
+        raise WorkflowError(SLUG_MISMATCH)
+    if workflow_id is not None and instance_id(state) != workflow_id:
+        raise WorkflowError(INSTANCE_MISMATCH)
+
+
+def bound_state(identity: RepoIdentity, slug: str) -> JsonObject:
+    """Active state for a slug-bound mutation; a stale or concurrent slug is rejected."""
+    state = _require(identity)
+    _require_open(state)
+    _require_instance(state, slug or "", None)
+    return state
+
+
+def instance_id(state: JsonObject) -> str | None:
+    """The active workflow's instance id, or None when the state predates instance identity."""
+    value = state.get("workflowId")
+    return value if isinstance(value, str) and value else None
+
+
+def bound_instance(identity: RepoIdentity, slug: str, workflow_id: str | None) -> JsonObject:
+    """bound_state plus strict instance equality; producers call this under the state lock before writing."""
+    state = bound_state(identity, slug)
+    if instance_id(state) is None:
+        raise WorkflowError(NO_INSTANCE_ID)
+    _require_instance(state, None, workflow_id or "")
+    return state
+
+
+def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: str) -> JsonObject:
+    """Record an honest wait (an external blocker the Stop payload cannot see) that releases the latch."""
+    cleaned = reason.strip()
+    if not cleaned:
+        raise ValueError("pause requires a non-empty --reason")
+    with state_lock(identity):
+        state = bound_instance(identity, slug, workflow_id)
+        state["paused"] = {"reason": cleaned, "at": utc_timestamp()}
+        return _persist(identity, state)
+
+
+def advisor_disposition(identity: RepoIdentity, slug: str, workflow_id: str | None, stage: str, findings: str) -> JsonObject:
+    """Lead-owned findings disposition over an existing producer-recorded result."""
+    if findings not in {"none", "addressed"}:
+        raise ValueError("advisor disposition requires --findings none or addressed")
+    if stage not in {"preflight", "final"}:
+        raise ValueError(f"unsupported advisor stage: {stage}")
+    with state_lock(identity):
+        state = bound_instance(identity, slug, workflow_id)
+        if stage == "preflight" and state.get("revalidation"):
+            raise WorkflowError(PREFLIGHT_CLOSED)
+        state.pop("paused", None)
+        field = "advisorPreflight" if stage == "preflight" else "finalReview"
+        record = state.get(field)
+        recorded = (
+            isinstance(record, dict)
+            and record.get("source") in REVIEW_SOURCES
+            and (record.get("status") == "completed" if stage == "preflight" else record.get("status") in FINAL_VERDICTS)
+        )
+        if not recorded:
+            raise WorkflowError("advisor disposition cannot create a result; record the consult first")
+        record["findings"] = findings
+        state["phase"] = "advisor-preflight" if stage == "preflight" else "final-review"
+        state["nextAction"] = _derive_next_action(state)
+        return _persist(identity, state)
+
+
+def completion_missing(state: JsonObject) -> list[str]:
+    """The canonical completion-readiness check shared by complete() and the Stop latch."""
+    missing: list[str] = [] if instance_id(state) else ["workflowId"]
+    for field in ("repoContextForge", "gitnexus", "preflight", "productionCode", "implementation", "verification"):
+        if state.get(field) != "passed":
+            missing.append(field)
+    if state.get("tdd") not in {"passed", "not-required"}:
+        missing.append("tdd")
+    if not _allows_next(state, "advisor-preflight"):
+        missing.append("advisorPreflight")
+    if not _allows_next(state, "code-review"):
+        missing.append("codeReview")
+    if not _allows_next(state, "final-review"):
+        missing.append("finalReview")
+    return missing
+
+
+CHECKPOINT_PHASES = {"preflight-advice", "final-review"}
+
+
+def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:
+    """The intake steps that gate both a preflight consult and any tracked production edit."""
+    return (
+        ("repo-context-forge", state.get("repoContextForge") == "passed"),
+        ("gitnexus", state.get("gitnexus") == "passed"),
+    )
+
+
+def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
+    """Read-only consult-readiness query used before an expensive advisor call."""
+    if phase not in CHECKPOINT_PHASES:
+        raise ValueError(f"unsupported checkpoint phase: {phase}")
+    state = _require(identity)
+    revalidation = bool(state.get("revalidation"))
+    # A terminal workflow rejects every consult; revalidation reopens only final review.
+    terminal = state.get("phase") == "complete" and not revalidation
+    open_for_phase = not terminal and not (phase == "preflight-advice" and revalidation)
+    requirements = (
+        ("workflowId", instance_id(state) is not None),
+        ("open-workflow", open_for_phase),
+        *(
+            _context_steps(state)
+            if phase == "preflight-advice"
+            else (
+                ("verification", state.get("verification") == "passed"),
+                ("code-review", _allows_next(state, "code-review")),
+            )
+        ),
+    )
+    missing = [name for name, ready in requirements if not ready]
+    review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
+    return {
+        "phase": phase,
+        "ready": not missing,
+        "missing": missing,
+        "slug": state.get("slug"),
+        "workflowId": state.get("workflowId"),
+        "tdd": state.get("tdd"),
+        "codeReviewStatus": review.get("status"),
+    }
+
+
+def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: str | None = None) -> JsonObject:
     with state_lock(identity):
         state = _require(identity)
-        missing: list[str] = []
-        for field in ("repoContextForge", "gitnexus", "preflight", "implementation", "verification"):
-            if state.get(field) != "passed":
-                missing.append(field)
-        if state.get("tdd") not in {"passed", "not-required"}:
-            missing.append("tdd")
-        advisor = state.get("advisorPreflight")
-        if not _allows_next(state, "advisor-preflight"):
-            missing.append("advisorPreflight")
-        if not _allows_next(state, "code-review"):
-            missing.append("codeReview")
-        if not _allows_next(state, "final-review"):
-            missing.append("finalReview")
+        _require_instance(state, slug, workflow_id)
+        state.pop("paused", None)
+        state.pop("revalidation", None)
+        missing = completion_missing(state)
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
         state["phase"] = "complete"
         state["nextAction"] = "delivery-and-reviewer-completion"
         return _persist(identity, state)
+
+
+def _reset_downstream(state: JsonObject) -> None:
+    state["verification"] = "pending"
+    state["codeReview"] = {"status": "pending", "findings": "pending"}
+    state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
+    state["nextAction"] = _derive_next_action(state)
 
 
 def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | None:
@@ -275,30 +508,40 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
         state = read_workflow(identity)
         if state is None:
             return None
+        if reviewable and state.get("phase") == "complete" and not state.get("revalidation"):
+            # A completed pass stays terminal: a stray production edit is reported
+            # through the Stop changed-code context, never absorbed into the pass.
+            # Further production work requires begin; only a governance edit opens
+            # the revalidation window.
+            return state
+        state.pop("paused", None)
         if reviewable:
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
-        state["verification"] = "pending"
-        state["codeReview"] = {"status": "pending", "findings": "pending"}
-        state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
-        state["nextAction"] = _next_incomplete_phase(state)
+        elif state.get("phase") == "complete":
+            state["revalidation"] = True
+        _reset_downstream(state)
         return _persist(identity, state)
 
 
-def ready_for_edit(identity: RepoIdentity) -> tuple[bool, list[str]]:
+def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
     state = read_workflow(identity)
     if state is None:
         return False, ["active workflow"]
-    if state.get("phase") == "complete":
-        return False, ["new active workflow"]
+    if state.get("phase") == "complete" or state.get("revalidation"):
+        return False, ["new active workflow (governance revalidation keeps production editing closed)"]
     missing = [
         name for name, ready in (
-            ("Repo Context Forge", state.get("repoContextForge") == "passed"),
-            ("GitNexus", state.get("gitnexus") == "passed"),
+            *_context_steps(state),
             ("advisor preflight", _allows_next(state, "advisor-preflight")),
             ("production preflight", state.get("preflight") == "passed"),
         ) if not ready
     ]
+    if not is_test_path(path):
+        if state.get("tdd") not in {"in-progress", "passed", "not-required"}:
+            missing.append("TDD RED or a recorded not-required decision (test-like edits stay open)")
+        elif state.get("productionCode") != "passed":
+            missing.append("production-code")
     return not missing, missing
 
 
@@ -319,10 +562,16 @@ def summary(identity: RepoIdentity, limit: int = 1200) -> str:
         f"Active workflow: slug={state.get('slug')} phase={state.get('phase')} next={state.get('nextAction')}. "
         f"Steps: repo-context-forge={state.get('repoContextForge')}, gitnexus={state.get('gitnexus')}, "
         f"advisor-preflight={advisor.get('status')}/{advisor.get('findings')}, preflight={state.get('preflight')}, tdd={state.get('tdd')}, "
+        f"production-code={state.get('productionCode') or 'pending'}, "
         f"implementation={state.get('implementation')}, verification={state.get('verification')}, "
         f"code-review={code_review.get('status')}/{code_review.get('findings')}, "
         f"final-review={final_review.get('source')}/{final_review.get('status')}/{final_review.get('findings')}. "
         + (f" Advisor outage: {advisor.get('reason')}." if advisor.get("status") == "unavailable" else "")
+        + (
+            f" Paused: {str(paused.get('reason'))[:160]}."
+            if isinstance(paused := state.get("paused"), dict)
+            else ""
+        )
         + " Missing state is pending, never success."
     )
     return text[:limit]
