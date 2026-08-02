@@ -20,6 +20,10 @@ from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, 
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
+RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
+QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
 
 
 class TddSummaryTests(unittest.TestCase):
@@ -387,9 +391,26 @@ class TddSummaryTests(unittest.TestCase):
 
         identity = resolve_repo_identity(self.repo)
         wid = read_workflow(identity)["workflowId"]
-        set_phase(identity, "production-code", "passed")
+        sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan",
+                    "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
+                    "verify", "update", "modularityPlan", "riskChecks", "openQuestions")
+        doc = {name: "none" if name == "openQuestions" else "concrete content" for name in sections}
+        doc_path = self.tmp / "preflight-doc.json"
+        doc_path.write_text(json.dumps(doc), encoding="utf-8")
+        recorded = self.run_script(RECORD_PREFLIGHT, "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--workflow-id", wid, "--input", str(doc_path))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        gate = self.run_script(QUALITY_GATE, "check", "--repo", str(self.repo), "--json")
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        gate_path = self.tmp / "gate-verdict.json"
+        gate_path.write_text(gate.stdout, encoding="utf-8")
+        recorded = self.run_script(RECORD_PRODUCTION_CODE, "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--workflow-id", wid, "--input", str(gate_path))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         set_phase(identity, "implementation", "passed")
-        set_phase(identity, "verification", "passed")
+        verified = self.run_script(VERIFY_RUN, "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--", sys.executable, "-c", "pass")
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
         set_phase(identity, "code-review", "passed", findings="none")
         record_advisor_result(identity, "tdd-summary", wid, "final", "codex-advisor", "commit-ready")
         advisor_disposition(identity, "tdd-summary", wid, "final", "none")

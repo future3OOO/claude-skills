@@ -329,6 +329,39 @@ def commit_review(
         return _persist(identity, state)
 
 
+_NO_CAS = object()
+
+
+def commit_evidence_phase(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    phase: str,
+    path: Path,
+    evidence_doc: JsonObject,
+    *,
+    status: str = "passed",
+    expected_evidence: object = _NO_CAS,
+) -> JsonObject:
+    """Atomically persist a phase's validated evidence and its transition under one lock hold.
+
+    The adapter owns the evidence's structural validation; this owns ordering,
+    instance binding, and atomicity, so a rejected recording mutates nothing.
+    A runner passes its pre-run evidence read as `expected_evidence`, which is
+    revalidated under the lock so an interleaved run aborts the commit instead
+    of being silently overwritten, and may honestly regress `status` to
+    pending: a red run must never leave an earlier green standing.
+    """
+    with state_lock(identity):
+        state = bound_instance(identity, slug, workflow_id)
+        if expected_evidence is not _NO_CAS and read_json(path) != expected_evidence:
+            raise WorkflowError(f"{phase} evidence changed during the run; re-read and re-run the command")
+        _apply_step(identity, state, phase, status)
+        state[f"{STEP_FIELDS[phase]}Evidence"] = str(path)
+        atomic_write_json(path, evidence_doc)
+        return _persist(identity, state)
+
+
 def record_advisor_result(
     identity: RepoIdentity,
     slug: str,
@@ -464,6 +497,11 @@ def completion_missing(state: JsonObject) -> list[str]:
     for field in ("repoContextForge", "gitnexus", "preflight", "productionCode", "implementation", "verification"):
         if state.get(field) != "passed":
             missing.append(field)
+    # A passed evidence phase without its producer's evidence reference is a
+    # bare claim - legacy or hand-set state reads pending, never success.
+    for field in ("preflight", "productionCode", "verification"):
+        if state.get(field) == "passed" and not state.get(f"{field}Evidence"):
+            missing.append(f"{field}Evidence")
     if state.get("tdd") not in {"passed", "not-required"}:
         missing.append("tdd")
     if not _allows_next(state, "advisor-preflight"):

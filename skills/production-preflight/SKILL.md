@@ -274,6 +274,14 @@ finding rejected without a measurement is indistinguishable from one ignored.
 - Do not pause for approval unless the user explicitly asked for approval or `openQuestions` contains a real blocker that prevents safe editing.
 - If new facts invalidate the preflight after editing has started, stop, refresh the affected sections, and then continue from the corrected preflight.
 
+## Recording
+
+In the governed workflow this preflight records only through
+`scripts/record-preflight.py`, which demands the full thirteen-section document
+as JSON (every section non-empty, `openQuestions` exactly `none`) and refuses
+without mutating state. Write the document to a file and pass it with
+`--input`; response prose is not evidence.
+
 ## Output Shape
 
 Use this compact structure:

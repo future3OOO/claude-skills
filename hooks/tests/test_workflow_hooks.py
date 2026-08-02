@@ -20,6 +20,10 @@ from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
+RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
+QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
 FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.sh"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.sh"
@@ -99,6 +103,53 @@ class WorkflowHookTests(unittest.TestCase):
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
 
+    PREFLIGHT_SECTIONS = (
+        "affectedSurface", "authoritativeContract", "invariants", "proofPlan",
+        "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
+        "verify", "update", "modularityPlan", "riskChecks", "openQuestions",
+    )
+
+    def record_preflight_evidence(self, slug: str, wid: str) -> None:
+        document = {
+            name: "none" if name == "openQuestions" else f"{name}: concrete content"
+            for name in self.PREFLIGHT_SECTIONS
+        }
+        doc_path = self.tmp / "preflight-doc.json"
+        doc_path.write_text(json.dumps(document), encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_PREFLIGHT), "--repo", str(self.repo),
+             "--slug", slug, "--workflow-id", wid, "--input", str(doc_path)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+
+    def record_gate_evidence(self, slug: str, wid: str) -> None:
+        gate = subprocess.run(
+            [sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        gate_path = self.tmp / "gate-verdict.json"
+        gate_path.write_text(gate.stdout, encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo),
+             "--slug", slug, "--workflow-id", wid, "--input", str(gate_path)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+
+    def run_verification(self, slug: str) -> None:
+        verified = subprocess.run(
+            [sys.executable, str(VERIFY_RUN), "--repo", str(self.repo), "--slug", slug,
+             "--", sys.executable, "-c", "pass"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+
     def complete_workflow(self, slug: str = "hook-sequence", *, resume: bool = False, finish: bool = True) -> None:
         if resume:
             wid = json.loads(self.state("status").stdout)["workflowId"]
@@ -111,16 +162,19 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
-            ("set-phase", "--phase", "production-code", "--status", "passed"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
-            ("set-phase", "--phase", "verification", "--status", "passed"),
         )
         for index, transition in enumerate(transitions):
-            if index == 4:
+            if index == 3:
+                # These tests exercise the hooks, not the recording seam; the
+                # producer contracts are proven in test_pass_lifecycle, so the
+                # sanctioned library owner path advances the evidence phases here.
+                self.record_preflight_evidence(slug, wid)
                 self.owner_phase("tdd", "not-required")
+                self.record_gate_evidence(slug, wid)
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.run_verification(slug)
         self.owner_phase("code-review", "passed", findings="none")
         tail = [
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
@@ -159,11 +213,11 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         )
         for transition in transitions:
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.owner_phase("preflight", "passed")
 
         still_blocked = self.intake("app.py")
         self.assertEqual(still_blocked.returncode, 0, still_blocked.stdout + still_blocked.stderr)
@@ -181,10 +235,10 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.owner_phase("preflight", "passed")
 
         blocked = self.intake("app.py")
         self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
@@ -225,16 +279,24 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.owner_phase("preflight", "passed")
 
         early_test = self.intake("tests/test_app.py")
         self.assertEqual(early_test.returncode, 0, early_test.stdout + early_test.stderr)
         self.assertEqual(early_test.stdout, "", "a test edit before RED and production-code was denied")
-        early_step = self.state("set-phase", "--phase", "production-code", "--status", "passed")
+        gate_json = self.tmp / "gate.json"
+        gate_json.write_text(json.dumps({"ok": True, "gateVersion": "hook-test", "checks": []}), encoding="utf-8")
+        early_step = subprocess.run(
+            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo),
+             "--slug", "production-code-gate", "--workflow-id", wid, "--input", str(gate_json)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
         self.assertEqual(early_step.returncode, 2, "production-code was recorded before the TDD decision")
+        self.assertIn("tdd", early_step.stderr)
 
         red = self.red("production-code-gate")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -253,9 +315,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(latched.get("decision"), "block")
         self.assertIn("production-code=pending", latched["reason"])
 
-        recorded = self.state("set-phase", "--phase", "production-code", "--status", "passed")
-        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
-        self.assertEqual(json.loads(recorded.stdout)["productionCode"], "passed")
+        self.owner_phase("production-code", "passed")
+        self.assertEqual(json.loads(self.state("status").stdout)["productionCode"], "passed")
 
         admitted = self.intake("app.py")
         self.assertEqual(admitted.returncode, 0, admitted.stdout + admitted.stderr)
@@ -342,10 +403,10 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.owner_phase("preflight", "passed")
 
         governance = self.repo / "CLAUDE.md"
         governance.write_text("updated agent behavior\n", encoding="utf-8")
