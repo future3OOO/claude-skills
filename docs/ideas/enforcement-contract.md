@@ -6,8 +6,6 @@ An idea file — copy-paste it to your own LLM agent and build it together. We b
 
 The failure mode of AI coding isn't wrong code. Wrong code fails loudly and gets fixed. The failure mode is *shallow* code — thin helper modules, wrappers around wrappers, each fine in isolation, compounding into a codebase where one small change breaks everything. Models paper over it with mock tests that never touch a real seam. Some invent a *fake* seam just so the mock has something to pass. Green tests, done-looking PR, invisible debt.
 
-It took us thirteen governed passes and 97 reviewer findings to get one small subsystem actually right. Every one of those defects existed before we started measuring. We just couldn't see them.
-
 The attempts before this idea are everywhere right now: workflow loops in markdown, agent "constitutions", glorified skill packs — instruction files telling the agent what process to follow. They all fail the same way: **no enforcement**. People cry that Opus 5 ignores instructions, that it's useless after compaction — which is amusing, because you were expecting a Claude model to be governed by md files. The agent reads the rules, sincerely agrees with them, and drifts anyway — gradually, then completely. Compaction just finishes the job. CI doesn't save you either; CI catches wrong code, not shallow code.
 
 Here is what we propose. We call it the Enforcement Contract, because that is the whole idea: everyone already writes contracts for their agents — the instruction files, the constitutions. Nobody enforces them. This is the enforcement.
@@ -50,23 +48,22 @@ The principle is rivalry, not a particular model — families share blind spots 
 7. **review** — second advisor consult; its verdict plus your disposition gate the finish
 8. **land** — complete the ledger, push, answer every reviewer finding with evidence
 
-A fix round is a new ritual, not a patch on the old one.
+Nothing in this list is new. It's the process every good engineer already claims to follow. The invention is only the forcing: the gates make the agent invoke every step and prove it before the next one opens. A fix round is a new ritual, not a patch on the old one.
 
 ## The honest cost
 
 Slower, and more tokens. A straightforward fix can take a full pass with two paid consults. That's the trade, taken with open eyes: the objective is code quality — not speed, not token efficiency.
 
-A single task is also the wrong place to measure the cost. Shallow code is cheap today and expensive forever; the debt lands on every task after this one. Measure across the life of the codebase or don't measure at all. The signal worth watching is what the reviewers find: across our thirteen passes the findings shrank from state-corrupting bugs to wording nits. If yours aren't shrinking, the contract isn't working.
+A single task is also the wrong place to measure the cost. Shallow code is cheap today and expensive forever; the debt lands on every task after this one. Measure across the life of the codebase or don't measure at all. Don't take our word for any of this. Run it on one of your own repos and watch what the reviewers find.
 
 ## What do you actually need to build?
 
-Minimum viable: the ledger, a pre-edit gate hook, a post-edit invalidation hook, one runner. That's an afternoon, and it delivers most of the value.
+The whole loop. The gates only work as a chain — every gap is where the drift comes back in.
 
-Ours, in full: five hooks [2][8], three producer scripts [4][5][6], nine clause files [1], one advisor wrapper [7], and the map. Every piece is a file you can read.
+Ours: five hooks [2][8], three producer scripts [4][5][6], nine clause files [1], one advisor wrapper [7], and the map. Every piece is a file you can read.
 
 ## Tips
 
-- If you build only one piece, build the post-edit invalidation. It closes the quick-fix-after-review hole without trusting the agent at all.
 - Prefer runners that do the work as they record. Where a recorder only validates an artifact, audit the artifact separately.
 - A pause is a claim too. Audit pauses like any other claim.
 - Invalidate on edit, mechanically. Stale approvals are worse than none.
