@@ -1121,6 +1121,14 @@ class PassLifecycleTests(unittest.TestCase):
                 "findings": [{"id": "ADV-1", "claim": "c"}],
                 "dispositions": [{"finding_id": "ADV-1", "status": "accepted-follow-up",
                                   "reference": 42}]}),
+            # An unhashable value must refuse, not reach a set membership test:
+            # `x in <set>` raises TypeError, which escapes main() as exit 1.
+            ("each disposition must reference a finding", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": [], "status": "fixed", "evidence": "e"}]}),
+            ("invalid or duplicate disposition", {
+                "findings": [{"id": "ADV-1", "claim": "c"}],
+                "dispositions": [{"finding_id": "ADV-1", "status": {}, "evidence": "e"}]}),
         ):
             malformed.write_text(json.dumps(body), encoding="utf-8")
             rejected = self.dispose("disposition-document", wid, "preflight", "addressed", str(malformed))

@@ -95,10 +95,15 @@ def dispositioned(value: dict[str, object]) -> tuple[list[object], list[object]]
         identifiers.add(identifier)
     dispositioned_ids: set[str] = set()
     for disposition in dispositions:
-        if not isinstance(disposition, dict) or disposition.get("finding_id") not in identifiers:
+        if not isinstance(disposition, dict):
             raise ValueError("each disposition must reference a finding")
-        identifier = str(disposition["finding_id"])
-        if identifier in dispositioned_ids or disposition.get("status") not in DISPOSITIONS:
+        # Narrowed before the membership tests: `x in <set>` hashes x, so an
+        # unhashable JSON value would raise TypeError past main's refusal path.
+        identifier = disposition.get("finding_id")
+        status = disposition.get("status")
+        if not isinstance(identifier, str) or identifier not in identifiers:
+            raise ValueError("each disposition must reference a finding")
+        if identifier in dispositioned_ids or not isinstance(status, str) or status not in DISPOSITIONS:
             raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
         if disposition["status"] in MEASURED:
             if not is_text(disposition.get("evidence")):
