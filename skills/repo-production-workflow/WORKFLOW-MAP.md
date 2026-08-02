@@ -101,8 +101,9 @@ The index is read only to learn which paths are tracked and which of them are
 submodules; every recorded value comes from the working tree, never from an
 index object id, which records staged content and would miss an unstaged edit.
 Four things follow from that: the bytes are hashed unfiltered, so a normalising
-clean filter cannot hide a line-ending rewrite; the mode rides along, because a
-content hash alone is blind to `chmod`; a symlink is recorded as the link rather
+clean filter cannot hide a line-ending rewrite; the mode rides along — git's owner
+execute bit, the only one a tree entry records — because a content hash alone
+is blind to `chmod`; a symlink is recorded as the link rather
 than its referent, so re-pointing one is visible and a file outside the
 repository can never drift the manifest; and a submodule is read from its own
 checked-out `HEAD`, so an unstaged submodule move is visible. A submodule is

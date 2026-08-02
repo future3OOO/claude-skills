@@ -192,10 +192,13 @@ def _file_mode(path: Path) -> str | None:
 
     `lstat`, so a symlink is the link itself rather than whatever it resolves to:
     re-pointing a reviewed link is then visible, and a referent outside the
-    repository can never drift the manifest. A vanished, unreadable, or otherwise
-    non-regular path has no mode here, so it is absent and reads as removed rather
-    than silently unchanged. Submodules are directories and land here as None;
-    `_gitlink_entries` records them instead.
+    repository can never drift the manifest. A vanished or otherwise non-regular
+    path has no mode here, so it is absent and reads as removed rather than
+    silently unchanged. Submodules are directories and land here as None;
+    `_gitlink_entries` records them instead. A regular file that exists but
+    cannot be read still has a mode — the later `hash-object` fails and the pass
+    stays pending, deliberately: omitting it would let a path clear the gates
+    with no content identity at all.
     """
     try:
         info = path.lstat()
@@ -205,7 +208,9 @@ def _file_mode(path: Path) -> str | None:
         return "120000"
     if not stat.S_ISREG(info.st_mode):
         return None
-    return "100755" if info.st_mode & 0o111 else "100644"
+    # Owner execute bit only: that is git's own rule for 100755, so a group or
+    # other execute flip — which git will never record — cannot drift the manifest.
+    return "100755" if info.st_mode & stat.S_IXUSR else "100644"
 
 
 def _symlink_entry(identity: RepoIdentity, path: str) -> str | None:

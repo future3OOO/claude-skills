@@ -327,6 +327,26 @@ class PassLifecycleTests(unittest.TestCase):
             f"a re-pointed symlink left the approval standing: {stale['missing']}",
         )
 
+    def test_a_group_execute_chmod_after_review_keeps_the_approvals(self) -> None:
+        wid = self.begin_slug("group-execute-noise")
+        self.advance_to_verification("group-execute-noise", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        # Git's regular-file mode is decided by the owner execute bit alone, so a
+        # group-execute flip is a change git will never record and cannot land.
+        before = (self.repo / "app.py").read_bytes()
+        self.shell("import os, stat; os.chmod('app.py', os.stat('app.py').st_mode | stat.S_IXGRP)")
+        self.assertEqual((self.repo / "app.py").read_bytes(), before, "the probe changed content, not just mode")
+        self.assertIn("app.py", self.git("ls-files", "-s", "app.py"), "probe sanity")
+        self.assertIn("100644", self.git("ls-files", "-s", "app.py"),
+                      "git itself considers the file executable now, so the premise fails")
+
+        ready = self.checkpoint("final-review")
+        self.assertEqual(
+            [item for item in ready["missing"] if "review-manifest" in item], [],
+            f"a mode change git will never record invalidated the review: {ready['missing']}",
+        )
+
     def test_non_mutating_shell_work_after_review_keeps_the_approvals(self) -> None:
         wid = self.begin_slug("ordinary-landing")
         self.advance_to_verification("ordinary-landing", wid)
