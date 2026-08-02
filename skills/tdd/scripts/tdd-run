@@ -117,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
             "command": command_text,
         }.items())
         completed_cycle = same_instance and existing.get("status") in {"passed", "not-required"}
-        if args.phase == "red" and same_instance and not matches and not completed_cycle:
+        drifted = same_instance and not matches
+        if drifted and (args.phase == "green" or not completed_cycle):
             print(
                 "error: candidate does not match the active cycle; finish or regress the current candidate first",
                 file=sys.stderr,

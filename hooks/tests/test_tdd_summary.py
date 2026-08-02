@@ -130,12 +130,15 @@ class TddSummaryTests(unittest.TestCase):
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
 
+        green_marker = self.tmp / "mismatched-green-ran"
         mismatched = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "a different behavior",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run CLI subprocess boundary", "--", sys.executable, "-c",
+            f"open({str(green_marker)!r}, 'w').close()",
         )
         self.assertEqual(mismatched.returncode, 2, mismatched.stdout + mismatched.stderr)
+        self.assertFalse(green_marker.exists(), "a mismatched GREEN executed its command")
 
         state = self.run_script(PASS_STATE, "status", "--repo", str(self.repo))
         self.assertEqual(state.returncode, 0, state.stdout + state.stderr)

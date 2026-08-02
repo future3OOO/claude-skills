@@ -508,6 +508,12 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
         state = read_workflow(identity)
         if state is None:
             return None
+        if reviewable and state.get("phase") == "complete" and not state.get("revalidation"):
+            # A completed pass stays terminal: a stray production edit is reported
+            # through the Stop changed-code context, never absorbed into the pass.
+            # Further production work requires begin; only a governance edit opens
+            # the revalidation window.
+            return state
         state.pop("paused", None)
         if reviewable:
             state["phase"] = "implementation"

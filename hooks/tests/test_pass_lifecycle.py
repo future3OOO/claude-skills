@@ -371,8 +371,17 @@ class PassLifecycleTests(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2, mutation[0] + ": " + rejected.stdout + rejected.stderr)
             self.assertIn("terminal", rejected.stderr, mutation[0])
 
-        from hooks.lib.workflow_state import invalidate_after_edit
-        invalidate_after_edit(resolve_repo_identity(self.repo), "skills/diagnose/SKILL.md")
+        from hooks.lib.workflow_state import invalidate_after_edit, ready_for_edit
+        identity = resolve_repo_identity(self.repo)
+        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / identity.key / "workflow.json"
+        terminal = state_path.read_text(encoding="utf-8")
+        invalidate_after_edit(identity, "app.py")
+        self.assertEqual(state_path.read_text(encoding="utf-8"), terminal,
+                         "a reviewable edit resurrected a completed workflow")
+        blocked, _ = ready_for_edit(identity, "app.py")
+        self.assertFalse(blocked, "a reviewable edit reopened production editing on a completed pass")
+
+        invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["verification"], "pending")
 

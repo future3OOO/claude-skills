@@ -99,7 +99,7 @@ class WorkflowHookTests(unittest.TestCase):
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
 
-    def complete_workflow(self, slug: str = "hook-sequence", *, resume: bool = False) -> None:
+    def complete_workflow(self, slug: str = "hook-sequence", *, resume: bool = False, finish: bool = True) -> None:
         if resume:
             wid = json.loads(self.state("status").stdout)["workflowId"]
         else:
@@ -122,11 +122,13 @@ class WorkflowHookTests(unittest.TestCase):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.owner_phase("code-review", "passed", findings="none")
-        for transition in (
+        tail = [
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--findings", "none"),
-            ("complete",),
-        ):
+        ]
+        if finish:
+            tail.append(("complete",))
+        for transition in tail:
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -272,7 +274,9 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("new active workflow", decision["permissionDecisionReason"])
 
     def test_review_readiness_is_reset_before_failed_quality_feedback(self) -> None:
-        self.complete_workflow()
+        # Not completed: a terminal pass is no longer reopened by an edit, so the
+        # reset this test is about is only observable on a live workflow.
+        self.complete_workflow(finish=False)
         escape = "TO" + "DO"
         (self.repo / "app.py").write_text(f"value = 2  # {escape}: invalid production escape\n", encoding="utf-8")
 
@@ -289,7 +293,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 
     def test_non_code_production_edit_invalidates_but_docs_do_not(self) -> None:
-        self.complete_workflow()
+        self.complete_workflow(finish=False)
         (self.repo / "requirements.txt").write_text("package==1\n", encoding="utf-8")
         changed = self.post_edit("requirements.txt")
         self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
