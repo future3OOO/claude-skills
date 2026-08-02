@@ -32,12 +32,14 @@ statuses, code-review disposition state, and final-review result.
 
 ```text
 begin              # assigns the pass's random workflowId
-set-phase          # lead-owned step recording (ordered, slug-scoped)
+set-phase          # lead-owned step recording (ordered; --slug/--workflow-id
+                   # optional, and validated against the active instance)
 advisor-result     # producer-recorded raw consult, slug + workflowId bound
 advisor-disposition  # lead-owned findings disposition, instance bound
 pause              # instance-bound honest wait; releases the Stop latch
 checkpoint         # read-only consult readiness for the advisor phases
-complete           # terminal; only begin starts another pass
+complete           # terminal; same optional instance check; only begin
+                   # starts another pass
 summary
 status
 ```

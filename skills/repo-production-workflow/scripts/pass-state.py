@@ -81,6 +81,8 @@ def main() -> int:
                 phase,
                 status,
                 findings=args.findings,
+                slug=args.slug,
+                workflow_id=args.workflow_id,
             )
         elif args.action == "advisor-result":
             slug, workflow_id = instance_args(args)
@@ -105,7 +107,7 @@ def main() -> int:
             print(json.dumps(checkpoint(identity, required(args.phase, "--phase")), sort_keys=True))
             return 0
         elif args.action == "complete":
-            state = complete(identity)
+            state = complete(identity, slug=args.slug, workflow_id=args.workflow_id)
         elif args.action == "summary":
             print(summary(identity))
             return 0

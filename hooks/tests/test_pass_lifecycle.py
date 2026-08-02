@@ -430,6 +430,32 @@ class PassLifecycleTests(unittest.TestCase):
         again = self.cli("set-phase", "--phase", "verification", "--status", "passed")
         self.assertEqual(again.returncode, 2, "completion did not restore the terminal state")
 
+    def test_optional_lead_identity_is_validated_against_the_active_instance(self) -> None:
+        stale_wid = self.begin_slug("lead-identity")
+        self.owner_phase("repo-context-forge", "passed")
+        replacement = json.loads(self.cli("begin", "--slug", "lead-identity-replacement").stdout)
+        self.owner_phase("repo-context-forge", "passed")
+
+        for label, transition in (
+            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+                           "--slug", "lead-identity", "--workflow-id", stale_wid)),
+            ("complete", ("complete", "--slug", "lead-identity", "--workflow-id", stale_wid)),
+        ):
+            stale = self.cli(*transition)
+            self.assertEqual(stale.returncode, 2, f"{label}: {stale.stdout}{stale.stderr}")
+            self.assertIn("does not match", stale.stderr, label)
+
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual(state["workflowId"], replacement["workflowId"])
+        self.assertEqual(state["gitnexus"], "pending",
+                         "a stale lead command advanced the replacement workflow")
+
+        matching = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed",
+                            "--slug", "lead-identity-replacement",
+                            "--workflow-id", replacement["workflowId"])
+        self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
+        self.run_cli(("set-phase", "--phase", "gitnexus", "--status", "passed"))
+
     def test_production_code_records_once_and_survives_the_rest_of_the_pass(self) -> None:
         from hooks.lib.workflow_state import flush, invalidate_after_edit, ready_for_edit
 

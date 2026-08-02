@@ -44,6 +44,8 @@ FINDING_STATUSES = {"pending", "none", "addressed"}
 REVIEW_SOURCES = {"codex-advisor"}
 FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
 NO_INSTANCE_ID = "this state predates workflow instance identity and can no longer advance; begin a new workflow"
+SLUG_MISMATCH = "--slug does not match the active workflow"
+INSTANCE_MISMATCH = "--workflow-id does not match the active workflow instance"
 PREFLIGHT_CLOSED = "governance revalidation permits only re-verification and review; preflight consults are closed"
 
 
@@ -208,9 +210,12 @@ def set_phase(
     status: str,
     *,
     findings: str | None = None,
+    slug: str | None = None,
+    workflow_id: str | None = None,
 ) -> JsonObject:
     with state_lock(identity):
         state = _require(identity)
+        _require_instance(state, slug, workflow_id)
         _apply_step(state, phase, status, findings)
         return _persist(identity, state)
 
@@ -339,12 +344,23 @@ def _require_open(state: JsonObject) -> None:
         raise WorkflowError("workflow is terminal after completion; begin a new pass")
 
 
+def _require_instance(state: JsonObject, slug: str | None, workflow_id: str | None) -> None:
+    """Validate supplied identity against the active instance; omitted values are not checked.
+
+    Lead commands may name the instance they mean. Callers hold the state lock and
+    pass the state they are about to mutate, so this cannot become check-then-mutate.
+    """
+    if slug is not None and state.get("slug") != safe_slug(str(slug)):
+        raise WorkflowError(SLUG_MISMATCH)
+    if workflow_id is not None and instance_id(state) != workflow_id:
+        raise WorkflowError(INSTANCE_MISMATCH)
+
+
 def bound_state(identity: RepoIdentity, slug: str) -> JsonObject:
     """Active state for a slug-bound mutation; a stale or concurrent slug is rejected."""
     state = _require(identity)
     _require_open(state)
-    if state.get("slug") != safe_slug(str(slug or "")):
-        raise WorkflowError("--slug does not match the active workflow")
+    _require_instance(state, slug or "", None)
     return state
 
 
@@ -357,11 +373,9 @@ def instance_id(state: JsonObject) -> str | None:
 def bound_instance(identity: RepoIdentity, slug: str, workflow_id: str | None) -> JsonObject:
     """bound_state plus strict instance equality; producers call this under the state lock before writing."""
     state = bound_state(identity, slug)
-    active = instance_id(state)
-    if active is None:
+    if instance_id(state) is None:
         raise WorkflowError(NO_INSTANCE_ID)
-    if active != workflow_id:
-        raise WorkflowError("--workflow-id does not match the active workflow instance")
+    _require_instance(state, None, workflow_id or "")
     return state
 
 
@@ -464,9 +478,10 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
     }
 
 
-def complete(identity: RepoIdentity) -> JsonObject:
+def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: str | None = None) -> JsonObject:
     with state_lock(identity):
         state = _require(identity)
+        _require_instance(state, slug, workflow_id)
         state.pop("paused", None)
         state.pop("revalidation", None)
         missing = completion_missing(state)
