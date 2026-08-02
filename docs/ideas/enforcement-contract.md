@@ -22,7 +22,7 @@ In exchange, the process becomes a contract with three pieces — markdown, one 
 - **Ledger** — one JSON file per repo recording each claimed step, in order [4]. It lives in Claude Code's state directory, not in the repo — the checkout stays clean, and a new repo just gets a new ledger. Most steps are recorded claims; ordering alone kills most drift. But the load-bearing steps go through a *runner* that executes the work as it records [5], or a *recorder* that demands a real artifact [6]. A step an agent can mark done without doing anything will eventually be marked done without anything being done.
 - **Enforcement** — five lifecycle hooks reading the ledger [2][3][8]. Before an edit: production files are refused until the chain has caught up (test files stay open, so the failing test comes first). After an edit: every change automatically un-approves everything downstream — a "quick fix" after review makes the review pending again, mechanically. Across compaction: the chain survives. At turn end: the agent can't stop with work incomplete; it finishes, or records an honest, named pause.
 
-One disclaimer, because it matters: the ledger is honest memory, not security. It's agent-writable. No hook parses Git or authorizes commits — the moment you build that, you've built theater. A lying agent is caught by reading its transcript against the ledger, and that audit is one grep.
+One disclaimer, because it matters: this is a system against drift, not against deception. The ledger is honest memory, not security — it's agent-writable, the edit gate only sees the editor's own tools (a shell heredoc walks straight past it), and "test file" is a naming convention. Don't close those holes; closing them means parsing shell and authorizing Git, and the moment you build that, you've built theater. Drift is the failure that actually happens, and the mechanisms kill it. Deception is caught by reading the transcript against the ledger, and that audit is one grep.
 
 ## Architecture
 
@@ -56,7 +56,7 @@ A fix round is a new ritual, not a patch on the old one.
 
 Slower, and more tokens. A straightforward fix can take a full pass with two paid consults. That's the trade, taken with open eyes: the objective is code quality — not speed, not token efficiency.
 
-A single task is also the wrong place to measure the cost. Shallow code is cheap today and expensive forever; the debt lands on every task after this one. Measure across the life of the codebase or don't measure at all.
+A single task is also the wrong place to measure the cost. Shallow code is cheap today and expensive forever; the debt lands on every task after this one. Measure across the life of the codebase or don't measure at all. The signal worth watching is what the reviewers find: across our thirteen passes the findings shrank from state-corrupting bugs to wording nits. If yours aren't shrinking, the contract isn't working.
 
 ## What do you actually need to build?
 
@@ -66,7 +66,9 @@ Ours, in full: five hooks [2][8], three producer scripts [4][5][6], nine clause 
 
 ## Tips
 
+- If you build only one piece, build the post-edit invalidation. It closes the quick-fix-after-review hole without trusting the agent at all.
 - Prefer runners that do the work as they record. Where a recorder only validates an artifact, audit the artifact separately.
+- A pause is a claim too. Audit pauses like any other claim.
 - Invalidate on edit, mechanically. Stale approvals are worse than none.
 - Re-measure every recurring reviewer finding fresh. Cached dispositions rot; we learned this the hard way.
 - Docs describing runtime behavior: the code is the owner, the doc is the defect when they disagree.
