@@ -202,17 +202,11 @@ Missing or corrupt workflow state is pending, never success. Preflight advisor
 transport may be recorded `unavailable` only with the measured reason; final
 review has no unavailable exception. Ordinary documentation, scratch, and
 non-repository work keeps the lightweight exception; governance docs still
-reset downstream review readiness. Stop surfaces the active workflow summary
-whenever its state has changed (identical repeats are deduplicated per
-session); it blocks with the exact `nextAction` while completion readiness is
-missing and no pause is recorded. It permits stopping for ready workflows,
-non-empty `background_tasks`/`session_crons` in the real Stop payload,
-recorded `pause --slug <slug> --workflow-id <id> --reason` waits for blockers
-the payload cannot see, and `CODEX_ADVISOR_ACTIVE` delegate sessions. Any
-advancing update — including an edit-triggered invalidation — clears a
-recorded pause. A `stop_hook_active` re-stop blocks again only when the
-workflow progressed since the last block and otherwise releases with the
-summary. Unavailable blast-radius impact is reported as `unknown`.
+reset downstream review readiness. Stop blocks with the exact `nextAction`
+while completion readiness is missing and no pause is recorded; any advancing
+update — including an edit-triggered invalidation — clears a recorded pause.
+[WORKFLOW-MAP.md](WORKFLOW-MAP.md) owns the full permit and re-stop
+conditions. Unavailable blast-radius impact is reported as `unknown`.
 
 ## Final response
 

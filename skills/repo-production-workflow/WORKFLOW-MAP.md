@@ -90,6 +90,12 @@ implementation returns to verification.
 
 ## Hook roles
 
+This section is the canonical operational documentation for hook behavior.
+`~/.claude/settings.json` and the hook scripts remain the executable Interface:
+where they disagree with this table, the code is correct and the table is the
+defect. `CLAUDE.md` §9 keeps only the facts that change lead action each
+session and defers the rest here.
+
 | Hook | Role |
 |---|---|
 | `PreToolUse(Edit\|Write\|NotebookEdit)` | Require the recorded before-edit sequence through production preflight |
@@ -97,6 +103,14 @@ implementation returns to verification.
 | `PreCompact(manual\|auto)` | Atomically flush existing state without advancing it |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary |
 | `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block (progress on that instance re-latches); surfaces the bounded summary otherwise |
+
+After latch handling, the ordinary feedback path emits bounded context
+containing changed-code status and the workflow summary, and deduplicates
+identical rendered context per session. When Git reports no changed code and no
+workflow state exists, that path emits nothing. The
+payload it reads was captured on Claude Code 2.1.220 and is kept as a test
+fixture; the delegate release is the `CODEX_ADVISOR_ACTIVE` environment
+variable.
 
 There is no Bash command matcher, Git hook, command classifier, protected-path
 parser, candidate-tree gate, approval marker, nonce, or evidence graph.
