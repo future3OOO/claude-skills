@@ -197,12 +197,25 @@ printf '== session identity (offline)\n'
 idtmp=$(mktemp -d)
 mkdir -p "$idtmp/home" "$idtmp/repo/sub"
 git -C "$idtmp/repo" init -q
-run_offline() { HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$1" -- "q" >/dev/null 2>&1; }
-run_offline "$idtmp/repo" || :
-run_offline "$idtmp/repo/sub" || :
-( cd "$idtmp/repo" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd ./sub -- "q" >/dev/null 2>&1 ) || :
+# Each invocation must get past SID creation and fail at the later alias-parse stage.
+# Discarding the status instead would let an early death leave the first SID file in
+# place, so the one-file assertion below would pass without proving path equivalence.
+offline_invoke() { # label, wrapper --cwd value, optional directory to run from
+  local out status
+  if [[ -n "${3:-}" ]]; then
+    out=$(cd "$3" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+  else
+    out=$(HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+  fi
+  status=$?
+  check_status "session identity ($1) reaches the alias-parse stage" 2 "$status"
+  check "session identity ($1) names the parse failure" "could not parse the claudex alias env" "$out"
+}
+offline_invoke "root" "$idtmp/repo"
+offline_invoke "subdir" "$idtmp/repo/sub"
+offline_invoke "relative" "./sub" "$idtmp/repo"
 ln -s "$idtmp/repo" "$idtmp/link"
-run_offline "$idtmp/link" || :
+offline_invoke "symlink" "$idtmp/link"
 sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
 check_status "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
 rm -rf "$idtmp"

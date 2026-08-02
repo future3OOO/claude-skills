@@ -99,7 +99,10 @@ else
 fi
 
 block=$(sed -n '/^alias claudex=/,/^claude --model/p' "$HOME/.bashrc" 2>/dev/null || :)
-val() { printf '%s\n' "$block" | grep -o "$1=[^ '\\\\]*" | head -1 | cut -d= -f2-; }
+# A missing key is the empty case the next check reports, not a pipeline failure:
+# without this, `set -e` plus `pipefail` kills the script at the assignment below
+# and the operator gets a silent exit instead of the named error.
+val() { printf '%s\n' "$block" | { grep -o "$1=[^ '\\\\]*" || :; } | head -1 | cut -d= -f2-; }
 base_url=$(val ANTHROPIC_BASE_URL); token=$(val ANTHROPIC_AUTH_TOKEN); model=$(val CLAUDE_CODE_SUBAGENT_MODEL)
 if [[ -z "$base_url" || -z "$token" || -z "$model" ]]; then
   printf 'error: could not parse the claudex alias env from ~/.bashrc\n' >&2

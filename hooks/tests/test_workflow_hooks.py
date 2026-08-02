@@ -195,7 +195,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(test_edit.returncode, 0, test_edit.stdout + test_edit.stderr)
         self.assertEqual(test_edit.stdout, "", "test-file edit before RED was denied")
 
-        self.owner_phase("tdd", "in-progress")
+        red = self.red("tdd-ordering")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
         after_red = self.intake("app.py")
         self.assertEqual(after_red.returncode, 0, after_red.stdout + after_red.stderr)
         cleared = json.loads(after_red.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
