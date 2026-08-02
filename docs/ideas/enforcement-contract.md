@@ -54,7 +54,9 @@ A fix round is a new ritual, not a patch on the old one.
 
 ## The honest cost
 
-Slower, and more tokens. A one-line fix can take a full pass with two paid consults. That's the trade, taken with open eyes: the objective is code quality, not iteration speed. And you can't measure the real cost on a single task anyway — shallow code's cost is paid later, by every task that wades through it. Benchmarking this on single-task speed is itself a fake mock test: it never touches the real seam, which is your codebase six months from now.
+Slower, and more tokens. A straightforward fix can take a full pass with two paid consults. That's the trade, taken with open eyes: the objective is code quality — not speed, not token efficiency.
+
+A single task is also the wrong place to measure the cost. Shallow code is cheap today and expensive forever; the debt lands on every task after this one. Measure across the life of the codebase or don't measure at all.
 
 ## What do you actually need to build?
 
