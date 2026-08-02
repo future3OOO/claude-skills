@@ -22,7 +22,9 @@ Suppose we just write the rules down as markdown clauses [1][9][10]: deepen modu
 
 So we add a ledger: one JSON file per repo recording each step, in order [4], living in Claude Code's state directory so the checkout stays clean, and five lifecycle hooks that read it [2][3][8]. Production edits are refused until the chain catches up; test files open once preflight is ready, so RED comes first. Every production edit resets verification and both reviews to pending, before quality feedback returns. The chain survives compaction. The turn cannot end with work incomplete unless an honest, named pause is recorded. Now the order is physics.
 
-But a step is still just a mark, and a step an agent can mark done without doing anything will eventually be marked done without anything being done. So the load-bearing steps stop being marks: the TDD runner executes the command it records and refuses a RED that didn't fail for the product reason [5]; the review recorder demands the findings artifact [6]; the advisor wrapper records its own raw result [7]. The ordinary phase command cannot substitute for any of them.
+But a step is still just a mark, and a step an agent can mark done without doing anything will eventually be marked done without anything being done. We watched it happen: ledgers saying passed, transcripts showing the skill invoked and nothing produced. Nothing malicious. The contract simply permitted a recorded phase to reference a document that never existed. So the steps stop being marks, uniformly: **a phase records only with its skill's own output as the evidence.** Every step already produces a native byproduct, so nothing new is invented. The TDD runner executes the command it records and refuses a RED that didn't fail for the product reason [5]; the review recorder demands the findings artifact [6]; the advisor wrapper records its own raw result [7]; preflight records only with its structured document, every section present and no open question left standing; the standards step records only with the quality gate's real verdict; verification records only through a runner that executes each command it records, and any command whose latest run failed holds the phase pending. The ordinary phase command cannot substitute for any of them. The evidence lands at a fixed path beside the ledger, keyed to the pass, so checking claims against actions becomes a state read instead of transcript archaeology.
+
+Two limits, kept on purpose. The validation is structural: it proves the document exists with every section filled, not that the thinking was good; substance stays with the reviewers. And a step whose native output is a tool call with no durable receipt stays a bare mark, because a pasted summary would be the agent's own claim wearing a producer's clothing. Laundered evidence is worse than an honest mark.
 
 Now the steps are real, but the approvals still don't know what tree they approved. A shell edit after review leaves every approval standing. So when the review is recorded, the ledger snapshots a manifest, a content hash per reviewable file, and the later gates recompute and refuse on mismatch, naming what changed. And now we have an agreement that binds!
 
@@ -36,12 +38,12 @@ Four layers. Keep the role, replace the contents.
 
 1. **The map** (ours: RepoContextForge + GitNexus). An index that ranks what matters for this change, and a code graph that answers callers/callees/blast-radius for any symbol. The difference between editing a file that *looks* right and the seam that *is* right. Grep finds names; the graph finds the second writer to the same row, the callee your change actually breaks.
 2. **The clauses** (ours: nine skill files [1] - seven load every pass, one joins for bugs, one for interface changes). Your standards as markdown the agent loads per pass. Write them once, they compound forever.
-3. **The ledger + producers** (ours: one JSON file, three producer scripts [4][5][6][7]). Our chain: map → advisor scope check → preflight → failing test → standards loaded → implement → verify → self-review → independent review → done. The state machine refuses out-of-order phases. TDD, structured review, and advisor results enter through separate producer interfaces; the ordinary phase command cannot substitute for them. `complete` refuses unless every required phase is ready, material lead-review findings are resolved, and the final source is the rival advisor with `commit-ready` and no pending findings. Yours can differ; the ordering enforcement can't.
+3. **The ledger + producers** (ours: one JSON file and a runner or recorder per load-bearing step [4][5][6][7]). Our chain: map → advisor scope check → preflight → failing test → standards loaded → implement → verify → self-review → independent review → done. The state machine refuses out-of-order phases. Preflight, TDD, the standards gate, verification, structured review, and advisor results enter through separate producer interfaces. `complete` refuses unless every required phase is ready and carries its evidence, material lead-review findings are resolved, and the final source is the rival advisor with `commit-ready` and no pending findings. Yours can differ; the ordering enforcement can't.
 4. **The hooks** (ours: five Claude Code lifecycle hooks [2][8]). Gate, invalidate, preserve, latch. The layer that turns the other three from advice into physics.
 
 ## The advisor - twice, not once
 
-A different model family reviews the work at two points. Before any code: it challenges the plan - scope, design, what already exists. After implementation and lead review: it receives the current unstaged, staged, untracked, and base-to-HEAD diff, plus the recorded TDD and lead-review summaries [7]. It is read-only and must end with an exact terminal verdict. The wrapper records the raw result; the lead records a separate disposition. A `commit-ready` verdict with cleared findings is the last gate before the ledger completes.
+A different model family reviews the work at two points. Before any code: it challenges the plan - scope, design, what already exists. After implementation and lead review: it receives the current unstaged, staged, untracked, and base-to-HEAD diff, plus the recorded TDD and lead-review summaries [7]. It is read-only and must end with exactly one terminal verdict. Ours has taken to preceding the verdict with a machine-readable findings block, severity and a material flag on each finding; only the verdict is enforced and the ledger keeps just the source and verdict, so the block is a habit worth demanding, not yet a contract. The wrapper records the raw result; the lead records a separate disposition. A material finding is a trap, not a comment: the advisor withholds `commit-ready`, completion refuses, and the fix re-earns verification, the self-review, and a fresh consult against the new evidence. A `commit-ready` verdict with cleared findings is the last gate before the ledger completes.
 
 The principle is rivalry, not a particular model. Families share blind spots internally. Our pick (GPT-5.6 at max reasoning) over-engineers theoretical edge cases when it *writes* code, which is exactly the trait you want in an adversary *reading* code. Every finding gets a measured disposition: fixed with proof, rejected with the measurement quoted, or carried explicitly as follow-up. Material findings keep the gate open until fixed or rejected. Never argued, always measured.
 
@@ -58,7 +60,7 @@ The principle is rivalry, not a particular model. Families share blind spots int
 
 It is done.
 
-Nothing in this list is new. It's the process every good engineer already claims to follow. The invention is only the forcing: the state machine refuses the next phase until its predecessor is ready; producer-owned steps cannot be replaced by a bare status update; every production edit rewinds downstream proof. A fix round is a new ritual, not a patch on the old one.
+Nothing in this list is new. It's the process every good engineer already claims to follow. The invention is only the forcing: the state machine refuses the next phase until its predecessor is ready; every production edit rewinds downstream proof. A fix round is a new ritual, not a patch on the old one.
 
 ## The honest cost
 
@@ -72,7 +74,7 @@ A single task is also the wrong place to measure the cost. Shallow code is cheap
 
 The whole enforcement core. The chain may record a step as not required; it cannot silently omit one. Every gap is where the drift comes back in.
 
-Ours: five hooks [2][8], three producer scripts [4][5][6], nine clause files [1], one advisor wrapper [7], and the map. Every piece is a file you can read.
+Ours: five hooks [2][8], the ledger with a producer per load-bearing step [4][5][6], nine clause files [1], one advisor wrapper [7], and the map. Every piece is a file you can read, and every producer-backed phase leaves an evidence file you can check.
 
 ## Tips
 
@@ -88,7 +90,7 @@ Ours: five hooks [2][8], three producer scripts [4][5][6], nine clause files [1]
 
 ## TLDR
 
-Instruction files don't govern agents; enforced transactions do. Write the process as a binding agreement: markdown clauses for the rules, an ordered state machine, producer-owned runners and recorders for load-bearing steps, hooks that gate edits and invalidate downstream proof, validated reviewer dispositions, one readiness check shared by completion and stopping, and a rival model family consulted twice, once to challenge the plan and once to gate the landing. Slow and steady by design. Every piece is a file. The cost is paid per task; the intended return is less rework and less debt across the life of the codebase.
+Instruction files don't govern agents; enforced transactions do. Write the process as a binding agreement: markdown clauses for the rules, an ordered state machine, runners and recorders that let each phase record only with its skill's own output as evidence, hooks that gate edits and invalidate downstream proof, validated reviewer dispositions, one readiness check shared by completion and stopping, and a rival model family consulted twice, once to challenge the plan and once to gate the landing with machine-readable findings and an exact verdict. Slow and steady by design. Every piece is a file. The cost is paid per task; the intended return is less rework and less debt across the life of the codebase.
 
 ## References (our implementation)
 
@@ -108,9 +110,9 @@ Instruction files don't govern agents; enforced transactions do. Write the proce
 Things we know are unfinished. If you build this, you'll hit them too.
 
 - The manifest's hashes are unsigned by design - evidence, not proof. That's the right economy while the failure model is drift. But as agents get more capable, blind trust thins, and "the transcript audit covers deception" may stop being enough. The clean extension, when that day comes: the harness signs the ledger once at begin and once at complete, two signatures with nothing new in between, and tamper-evidence graduates to verifiable proof. We haven't built it; we've kept the seam.
-- The final gate closes on a bare "findings addressed" flag. The judgment can't be mechanized, but the claim could be forced to carry its evidence - a structured disposition document, same pattern as the review recorder.
+- The final gate closes on a bare "findings addressed" flag. The advisor's findings arrive machine-readable but unpersisted, and the lead's answer is still a flag; the ledger keeps only the source and verdict. The judgment can't be mechanized, but both claims could be forced to carry their evidence - a structured disposition document, same pattern as the review recorder.
 - The rival advisor sometimes serializes its findings across consults, one more discovery per paid round, instead of enumerating everything in the first pass. Reviewer calibration is a real cost lever.
 - The production path is still heavier than some changes deserve. We have explicit not-required and documentation paths, but not yet a lighter production lane that cannot become the default escape hatch.
-- The transcript audit is manual and sampled. The day the harness surfaces tool-invocation counts natively, checking claims against actions becomes mechanical.
+- The audit for produced evidence is now a state read. What remains manual is the fabrication check, whether the artifact came from the work. The day the harness surfaces tool-invocation counts natively, that too becomes mechanical.
 - We haven't ablated the layers. We believe the chain only works whole; we haven't proven which piece carries the most weight.
 - This has only governed the estate that built it. The real test is a codebase that isn't about the contract.
