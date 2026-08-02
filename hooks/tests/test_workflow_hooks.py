@@ -463,12 +463,7 @@ class WorkflowHookTests(unittest.TestCase):
 
         stalled = self.stop(shape="active")
         self.assertEqual(stalled.returncode, 0, stalled.stdout + stalled.stderr)
-        stalled_payload = json.loads(stalled.stdout) if stalled.stdout else {}
-        self.assertNotIn("decision", stalled_payload, "no-progress re-stop was latched forever")
-        self.assertIn(
-            "released", stalled_payload.get("hookSpecificOutput", {}).get("additionalContext", ""),
-            "the progress-aware release is not documented in the surfaced context",
-        )
+        self.assertEqual(stalled.stdout, "", "no-progress re-stop must be silent, not re-prompt")
 
         progressed = self.state("set-phase", "--phase", "gitnexus", "--status", "passed")
         self.assertEqual(progressed.returncode, 0, progressed.stdout + progressed.stderr)
@@ -578,6 +573,83 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(
             json.loads(relatched.stdout).get("decision"), "block",
             "a new workflow instance inherited the previous instance's latch block",
+        )
+
+    def test_latch_firings_and_outcomes_are_logged(self) -> None:
+        # The latch's successes are otherwise invisible; the ablation question
+        # resolves on this log: latched -> spun -> resolved, with the outcome.
+        begun = self.state("begin", "--slug", "latch-log")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        self.assertEqual(json.loads(self.stop().stdout).get("decision"), "block")
+        repeat = self.stop(shape="active")
+        self.assertEqual(repeat.stdout, "", repeat.stdout + repeat.stderr)
+        paused = self.state("pause", "--slug", "latch-log", "--workflow-id", wid,
+                            "--reason", "waiting on an external review window")
+        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
+        released = self.stop()
+        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
+
+        log = next((self.tmp / "state").glob("*/stop-latch-log.jsonl"), None)
+        self.assertIsNotNone(log, "the latch left no telemetry")
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e["event"] for e in events], ["latched", "spun", "resolved"])
+        self.assertEqual(events[-1]["how"], "paused")
+        self.assertTrue(all(e["slug"] == "latch-log" and e["at"] for e in events), events)
+
+        self.owner_phase("repo-context-forge", "passed")
+        relatched = self.stop()
+        self.assertEqual(json.loads(relatched.stdout).get("decision"), "block",
+                         "a resolved fingerprint must not suppress the next fresh latch")
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e["event"] for e in events], ["latched", "spun", "resolved", "latched"])
+
+    def test_a_revalidation_release_logs_other_not_completed(self) -> None:
+        # An open revalidation window retains phase=complete while remaining
+        # non-terminal; a running-work release must not record it as completed.
+        self.complete_workflow("reval-outcome")
+        (self.repo / "CLAUDE.md").write_text("# governance\n", encoding="utf-8")
+        reopened = self.post_edit("CLAUDE.md")
+        self.assertEqual(reopened.returncode, 0, reopened.stdout + reopened.stderr)
+        self.assertEqual(json.loads(self.stop().stdout).get("decision"), "block",
+                         "an open revalidation window must still latch")
+        released = self.stop(shape="natural-with-background-task")
+        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
+        log = next((self.tmp / "state").glob("*/stop-latch-log.jsonl"))
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(events[-1]["event"], "resolved")
+        self.assertEqual(events[-1]["how"], "other",
+                         "an open revalidation window was logged as completed")
+
+    def test_a_no_progress_repeat_stop_is_silent(self) -> None:
+        # Any Stop stdout re-prompts the model; the no-progress repeat must be
+        # a bare success so the latch cannot spin to the harness block cap.
+        begun = self.state("begin", "--slug", "silent-release")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        blocked = self.stop()
+        self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
+
+        repeat = self.stop(shape="active")
+        self.assertEqual(repeat.returncode, 0, repeat.stdout + repeat.stderr)
+        self.assertEqual(repeat.stdout, "", "the no-progress release wrote to stdout, which re-prompts")
+
+    def test_a_legacy_terminal_pass_never_latches_stop(self) -> None:
+        # A pass completed before the evidence upgrade carries passed statuses
+        # without producer references. PRD #30 scopes the pending-reading to
+        # legacy IN-FLIGHT passes; a completed pass is terminal everywhere.
+        self.complete_workflow("legacy-terminal")
+        workflow_file = next((self.tmp / "state").glob("*/workflow.json"))
+        state = json.loads(workflow_file.read_text(encoding="utf-8"))
+        for field in ("preflightEvidence", "productionCodeEvidence", "verificationEvidence"):
+            state.pop(field)
+        workflow_file.write_text(json.dumps(state), encoding="utf-8")
+
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        payload = json.loads(stopped.stdout) if stopped.stdout else {}
+        self.assertNotIn(
+            "decision", payload,
+            "a completed pass recorded before the evidence upgrade latched Stop",
         )
 
     def test_stop_latch_holds_across_natural_stops_and_keys_to_completion_readiness(self) -> None:
