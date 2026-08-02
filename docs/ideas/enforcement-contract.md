@@ -1,4 +1,4 @@
-# The Governed Repo Workflow
+# The Enforcement Contract
 
 An idea file — copy-paste it to your own LLM agent and build it together. We built ours on Claude Code; any harness with lifecycle hooks can do the same. The specific skills, models, and scripts are ours — swap in your own. The contract is what transfers.
 
@@ -10,13 +10,13 @@ It took us thirteen governed passes and 97 reviewer findings to get one small su
 
 The attempts before this idea are everywhere right now: workflow loops in markdown, agent "constitutions", glorified skill packs — instruction files telling the agent what process to follow. They all fail the same way: **no enforcement**. The agent reads the rules, agrees with them, and drifts anyway — gradually, then completely. CI doesn't save you either; CI catches wrong code, not shallow code.
 
-Here is what we propose.
+Here is what we propose. We call it the Enforcement Contract, because that is the whole idea: everyone already writes contracts for their agents — the instruction files, the constitutions. Nobody enforces them. This is the enforcement.
 
 ## The contract
 
 The first thing we give up is speed. This is sad, but speed is what was producing the shallow code.
 
-In exchange, the process becomes a contract with three pieces, all plain files:
+In exchange, the process becomes a contract with three pieces — markdown, one JSON file, and a handful of small scripts. Nothing hidden: no app, no dashboard, no database. You can read every piece:
 
 - **Clauses** — markdown files stating the rules [1]. Deepen modules instead of spawning new ones; a new module must earn its interface by hiding complexity. Check the existing tests before writing more. Mocks that don't cross a real production seam are banned; if a failure path genuinely can't be driven, *say so* — an admitted proof gap beats manufactured green. One owner per rule; every other file points at the owner.
 - **Ledger** — one JSON file per repo recording each claimed step, in order [4]. It lives in Claude Code's state directory, not in the repo — the checkout stays clean, and a new repo just gets a new ledger. Most steps are recorded claims; ordering alone kills most drift. But the load-bearing steps go through a *runner* that executes the work as it records [5], or a *recorder* that demands a real artifact [6]. A step an agent can mark done without doing anything will eventually be marked done without anything being done.
