@@ -8,7 +8,7 @@ The failure mode of AI coding isn't wrong code. Wrong code fails loudly and gets
 
 It took us thirteen governed passes and 97 reviewer findings to get one small subsystem actually right. Every one of those defects existed before we started measuring. We just couldn't see them.
 
-The attempts before this idea are everywhere right now: workflow loops in markdown, agent "constitutions", glorified skill packs — instruction files telling the agent what process to follow. They all fail the same way: **no enforcement**. The agent reads the rules, agrees with them, and drifts anyway — gradually, then completely. CI doesn't save you either; CI catches wrong code, not shallow code.
+The attempts before this idea are everywhere right now: workflow loops in markdown, agent "constitutions", glorified skill packs — instruction files telling the agent what process to follow. They all fail the same way: **no enforcement**. People cry that Opus 5 ignores instructions, that it's useless after compaction — which is amusing, because you were expecting a Claude model to be governed by md files. The agent reads the rules, sincerely agrees with them, and drifts anyway — gradually, then completely. Compaction just finishes the job. CI doesn't save you either; CI catches wrong code, not shallow code.
 
 Here is what we propose. We call it the Enforcement Contract, because that is the whole idea: everyone already writes contracts for their agents — the instruction files, the constitutions. Nobody enforces them. This is the enforcement.
 
