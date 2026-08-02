@@ -221,4 +221,12 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 
 ### Hooks
 
-Hook configuration lives in `~/.claude/settings.json`. `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded before-edit sequence through production preflight; docs, scratch, and non-repository paths are exempt. `PostToolUse` resets downstream review readiness for production and governance edits before returning quality feedback. `PreCompact` flushes only existing state, and `SessionStart(compact|resume)` restores the full chain and current next action. `Stop` surfaces the active workflow summary whenever its state has changed (identical repeats are deduplicated per session); while completion readiness is missing and no pause is recorded it blocks with the exact `nextAction`. It permits stopping for ready workflows, non-empty `background_tasks` or `session_crons` in the real Stop payload (captured on 2.1.220 and kept as a fixture), an explicit instance-bound `pause --slug <slug> --workflow-id <id> --reason` for blockers the payload cannot see, and `CODEX_ADVISOR_ACTIVE` delegate sessions. A `stop_hook_active` re-stop reevaluates readiness: it blocks again only when the workflow progressed since the last block, otherwise it releases with the summary — a documented progress-aware release, not an unconditional permit. No hook parses Bash or authorizes Git.
+Hook configuration lives in `~/.claude/settings.json`. Five facts govern how hooks change what you do:
+
+- Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded before-edit sequence through production preflight, and docs, scratch, and non-repository paths are exempt.
+- Every admitted production edit, and every governance edit, invalidates downstream review readiness before quality feedback returns, so review and final review must be earned again. A production edit against a completed workflow remains blocked and terminal.
+- `PreCompact` and `SessionStart(compact|resume)` preserve and restore the chain; compaction never advances or waives a step.
+- Incomplete work latches `Stop` with the exact `nextAction`; record an instance-bound `pause --slug <slug> --workflow-id <id> --reason` for a blocker the payload cannot show.
+- No hook parses Bash or authorizes Git.
+
+The `repo-production-workflow` skill's `WORKFLOW-MAP.md` is the canonical operational documentation for per-hook roles, Stop permit conditions, and re-stop semantics.
