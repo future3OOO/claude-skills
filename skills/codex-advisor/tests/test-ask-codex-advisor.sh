@@ -155,9 +155,29 @@ for phase in ("repo-context-forge", "gitnexus"):
     w.set_phase(identity, phase, "passed")
 w.record_advisor_result(identity, slug, wid, "preflight", "codex-advisor", "completed")
 w.advisor_disposition(identity, slug, wid, "preflight", "none")
-w.set_phase(identity, "preflight", "passed")
-for phase, status in (("tdd", "not-required"), ("production-code", "passed"), ("implementation", "passed"), ("verification", "passed")):
-    w.set_phase(identity, phase, status)
+import json as j, subprocess as sp, tempfile as tf, os as o
+root = sys.argv[1]
+def producer(script, *extra):
+    r = sp.run([sys.executable, script, "--repo", sys.argv[2], "--slug", slug, "--workflow-id", wid, *extra],
+               capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan", "reusePath",
+            "chosenApproach", "rejectedAlternatives", "touchpoints", "verify", "update",
+            "modularityPlan", "riskChecks", "openQuestions")
+doc = {n: "none" if n == "openQuestions" else "content" for n in sections}
+fd, doc_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, j.dumps(doc).encode()); o.close(fd)
+producer(root + "/skills/production-preflight/scripts/record-preflight.py", "--input", doc_path)
+w.set_phase(identity, "tdd", "not-required")
+gate = sp.run([sys.executable, root + "/skills/production-code/scripts/code_quality_gate.py",
+               "check", "--repo", sys.argv[2], "--json"], capture_output=True, text=True)
+assert gate.returncode == 0, gate.stdout + gate.stderr
+fd, gate_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, gate.stdout.encode()); o.close(fd)
+producer(root + "/skills/production-code/scripts/record-production-code.py", "--input", gate_path)
+w.set_phase(identity, "implementation", "passed")
+vr = sp.run([sys.executable, root + "/skills/repo-production-workflow/scripts/verify-run",
+             "--repo", sys.argv[2], "--slug", slug, "--", sys.executable, "-c", "pass"],
+            capture_output=True, text=True)
+assert vr.returncode == 0, vr.stdout + vr.stderr
 w.set_phase(identity, "code-review", "passed", findings="none")
 w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-ready")
 w.advisor_disposition(identity, slug, wid, "final", "none")

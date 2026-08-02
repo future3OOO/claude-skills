@@ -16,10 +16,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
+RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
+QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
 FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.sh"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.sh"
@@ -99,6 +104,44 @@ class WorkflowHookTests(unittest.TestCase):
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
 
+    def record_preflight_evidence(self, slug: str, wid: str) -> None:
+        document = build_document("hook-suite setup")
+        doc_path = self.tmp / "preflight-doc.json"
+        doc_path.write_text(json.dumps(document), encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_PREFLIGHT), "--repo", str(self.repo),
+             "--slug", slug, "--workflow-id", wid, "--input", str(doc_path)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+
+    def record_gate_evidence(self, slug: str, wid: str) -> None:
+        gate = subprocess.run(
+            [sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        gate_path = self.tmp / "gate-verdict.json"
+        gate_path.write_text(gate.stdout, encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo),
+             "--slug", slug, "--workflow-id", wid, "--input", str(gate_path)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+
+    def run_verification(self, slug: str) -> None:
+        verified = subprocess.run(
+            [sys.executable, str(VERIFY_RUN), "--repo", str(self.repo), "--slug", slug,
+             "--", sys.executable, "-c", "pass"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+
     def complete_workflow(self, slug: str = "hook-sequence", *, resume: bool = False, finish: bool = True) -> None:
         if resume:
             wid = json.loads(self.state("status").stdout)["workflowId"]
@@ -111,16 +154,19 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
-            ("set-phase", "--phase", "production-code", "--status", "passed"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
-            ("set-phase", "--phase", "verification", "--status", "passed"),
         )
         for index, transition in enumerate(transitions):
-            if index == 4:
+            if index == 3:
+                # These tests exercise the hooks; the evidence phases advance
+                # through the real producers, whose contracts are proven in
+                # test_pass_lifecycle.
+                self.record_preflight_evidence(slug, wid)
                 self.owner_phase("tdd", "not-required")
+                self.record_gate_evidence(slug, wid)
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.run_verification(slug)
         self.owner_phase("code-review", "passed", findings="none")
         tail = [
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
@@ -159,11 +205,11 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         )
         for transition in transitions:
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.record_preflight_evidence("hook-sequence", wid)
 
         still_blocked = self.intake("app.py")
         self.assertEqual(still_blocked.returncode, 0, still_blocked.stdout + still_blocked.stderr)
@@ -181,10 +227,10 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.record_preflight_evidence("tdd-ordering", wid)
 
         blocked = self.intake("app.py")
         self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
@@ -225,16 +271,24 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.record_preflight_evidence("production-code-gate", wid)
 
         early_test = self.intake("tests/test_app.py")
         self.assertEqual(early_test.returncode, 0, early_test.stdout + early_test.stderr)
         self.assertEqual(early_test.stdout, "", "a test edit before RED and production-code was denied")
-        early_step = self.state("set-phase", "--phase", "production-code", "--status", "passed")
+        gate_json = self.tmp / "gate.json"
+        gate_json.write_text(json.dumps({"ok": True, "gateVersion": "hook-test", "checks": []}), encoding="utf-8")
+        early_step = subprocess.run(
+            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo),
+             "--slug", "production-code-gate", "--workflow-id", wid, "--input", str(gate_json)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
         self.assertEqual(early_step.returncode, 2, "production-code was recorded before the TDD decision")
+        self.assertIn("tdd", early_step.stderr)
 
         red = self.red("production-code-gate")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -253,9 +307,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(latched.get("decision"), "block")
         self.assertIn("production-code=pending", latched["reason"])
 
-        recorded = self.state("set-phase", "--phase", "production-code", "--status", "passed")
-        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
-        self.assertEqual(json.loads(recorded.stdout)["productionCode"], "passed")
+        self.record_gate_evidence("production-code-gate", wid)
+        self.assertEqual(json.loads(self.state("status").stdout)["productionCode"], "passed")
 
         admitted = self.intake("app.py")
         self.assertEqual(admitted.returncode, 0, admitted.stdout + admitted.stderr)
@@ -342,10 +395,10 @@ class WorkflowHookTests(unittest.TestCase):
             ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-            ("set-phase", "--phase", "preflight", "--status", "passed"),
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.record_preflight_evidence("governance-sequence", wid)
 
         governance = self.repo / "CLAUDE.md"
         governance.write_text("updated agent behavior\n", encoding="utf-8")
@@ -410,12 +463,7 @@ class WorkflowHookTests(unittest.TestCase):
 
         stalled = self.stop(shape="active")
         self.assertEqual(stalled.returncode, 0, stalled.stdout + stalled.stderr)
-        stalled_payload = json.loads(stalled.stdout) if stalled.stdout else {}
-        self.assertNotIn("decision", stalled_payload, "no-progress re-stop was latched forever")
-        self.assertIn(
-            "released", stalled_payload.get("hookSpecificOutput", {}).get("additionalContext", ""),
-            "the progress-aware release is not documented in the surfaced context",
-        )
+        self.assertEqual(stalled.stdout, "", "no-progress re-stop must be silent, not re-prompt")
 
         progressed = self.state("set-phase", "--phase", "gitnexus", "--status", "passed")
         self.assertEqual(progressed.returncode, 0, progressed.stdout + progressed.stderr)
@@ -525,6 +573,83 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(
             json.loads(relatched.stdout).get("decision"), "block",
             "a new workflow instance inherited the previous instance's latch block",
+        )
+
+    def test_latch_firings_and_outcomes_are_logged(self) -> None:
+        # The latch's successes are otherwise invisible; the ablation question
+        # resolves on this log: latched -> spun -> resolved, with the outcome.
+        begun = self.state("begin", "--slug", "latch-log")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        self.assertEqual(json.loads(self.stop().stdout).get("decision"), "block")
+        repeat = self.stop(shape="active")
+        self.assertEqual(repeat.stdout, "", repeat.stdout + repeat.stderr)
+        paused = self.state("pause", "--slug", "latch-log", "--workflow-id", wid,
+                            "--reason", "waiting on an external review window")
+        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
+        released = self.stop()
+        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
+
+        log = next((self.tmp / "state").glob("*/stop-latch-log.jsonl"), None)
+        self.assertIsNotNone(log, "the latch left no telemetry")
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e["event"] for e in events], ["latched", "spun", "resolved"])
+        self.assertEqual(events[-1]["how"], "paused")
+        self.assertTrue(all(e["slug"] == "latch-log" and e["at"] for e in events), events)
+
+        self.owner_phase("repo-context-forge", "passed")
+        relatched = self.stop()
+        self.assertEqual(json.loads(relatched.stdout).get("decision"), "block",
+                         "a resolved fingerprint must not suppress the next fresh latch")
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e["event"] for e in events], ["latched", "spun", "resolved", "latched"])
+
+    def test_a_revalidation_release_logs_other_not_completed(self) -> None:
+        # An open revalidation window retains phase=complete while remaining
+        # non-terminal; a running-work release must not record it as completed.
+        self.complete_workflow("reval-outcome")
+        (self.repo / "CLAUDE.md").write_text("# governance\n", encoding="utf-8")
+        reopened = self.post_edit("CLAUDE.md")
+        self.assertEqual(reopened.returncode, 0, reopened.stdout + reopened.stderr)
+        self.assertEqual(json.loads(self.stop().stdout).get("decision"), "block",
+                         "an open revalidation window must still latch")
+        released = self.stop(shape="natural-with-background-task")
+        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
+        log = next((self.tmp / "state").glob("*/stop-latch-log.jsonl"))
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(events[-1]["event"], "resolved")
+        self.assertEqual(events[-1]["how"], "other",
+                         "an open revalidation window was logged as completed")
+
+    def test_a_no_progress_repeat_stop_is_silent(self) -> None:
+        # Any Stop stdout re-prompts the model; the no-progress repeat must be
+        # a bare success so the latch cannot spin to the harness block cap.
+        begun = self.state("begin", "--slug", "silent-release")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        blocked = self.stop()
+        self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
+
+        repeat = self.stop(shape="active")
+        self.assertEqual(repeat.returncode, 0, repeat.stdout + repeat.stderr)
+        self.assertEqual(repeat.stdout, "", "the no-progress release wrote to stdout, which re-prompts")
+
+    def test_a_legacy_terminal_pass_never_latches_stop(self) -> None:
+        # A pass completed before the evidence upgrade carries passed statuses
+        # without producer references. PRD #30 scopes the pending-reading to
+        # legacy IN-FLIGHT passes; a completed pass is terminal everywhere.
+        self.complete_workflow("legacy-terminal")
+        workflow_file = next((self.tmp / "state").glob("*/workflow.json"))
+        state = json.loads(workflow_file.read_text(encoding="utf-8"))
+        for field in ("preflightEvidence", "productionCodeEvidence", "verificationEvidence"):
+            state.pop(field)
+        workflow_file.write_text(json.dumps(state), encoding="utf-8")
+
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        payload = json.loads(stopped.stdout) if stopped.stdout else {}
+        self.assertNotIn(
+            "decision", payload,
+            "a completed pass recorded before the evidence upgrade latched Stop",
         )
 
     def test_stop_latch_holds_across_natural_stops_and_keys_to_completion_readiness(self) -> None:

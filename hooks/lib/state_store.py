@@ -114,6 +114,19 @@ def stop_session_swap(identity: RepoIdentity, session: str, key: str, value: str
         return None
 
 
+def append_stop_latch_event(identity: RepoIdentity, record: dict) -> None:
+    """Append one latch-telemetry event. Fail-soft: the log answers whether the
+    latch earns its keep; it must never change a Stop decision or exit code."""
+    try:
+        with state_lock(identity):
+            path = repo_state_dir(identity) / "stop-latch-log.jsonl"
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"at": utc_timestamp(), **record}, sort_keys=True) + "\n")
+            path.chmod(0o600)
+    except OSError as exc:
+        print(f"stop-latch-log unavailable: {exc}", file=sys.stderr)
+
+
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

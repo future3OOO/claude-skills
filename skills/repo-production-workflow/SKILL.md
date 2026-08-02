@@ -83,11 +83,13 @@ packet, graph, advisor findings, and governing artifact. Resolve, interview, or
 block on every material unknown. For transaction-sensitive work, load the
 [transaction doctrine](../production-code/references/transaction-doctrine.md).
 
-Record a completed preflight only after its `openQuestions` are clear:
+Record a completed preflight only through its recorder, which demands the
+skill's structured document (all thirteen sections, `openQuestions` exactly
+`none`) and refuses without mutating state:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  set-phase --repo "$PWD" --phase preflight --status passed
+python3 "$HOME/.claude/skills/production-preflight/scripts/record-preflight.py" \
+  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input <preflight.json>
 ```
 
 ### 6. TDD RED or not-required
@@ -112,14 +114,19 @@ TDD is `passed` or `not-required`.
 
 ### 7. Production code
 
-Invoke `production-code` with the Skill tool, then record the step:
+Invoke `production-code` with the Skill tool, run its bundled gate, then
+record the step through its recorder with the gate's JSON verdict — a
+clean-baseline proof over the pre-implementation tree:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  set-phase --repo "$PWD" --phase production-code --status passed
+python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" \
+  check --repo "$PWD" --json > gate.json
+python3 "$HOME/.claude/skills/production-code/scripts/record-production-code.py" \
+  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input gate.json
 ```
 
-The phase accepts only `passed`, and only after the TDD decision. Begin
+The recorder refuses anything but the gate's parseable `ok: true` verdict, and
+only after the TDD decision. Begin
 production, configuration, and runtime implementation edits only once both TDD
 and production-code are ready. The `production-code` skill owns the standards
 themselves; this step owns only its place in the order.
@@ -141,13 +148,18 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 
 Run focused tests, the integrated suite, lint/typecheck/build where applicable,
 the production quality gate, cleanup, named no-change checks, and GitNexus
-reanalysis/detect-changes when required. Record verification only after the
-current change passes:
+reanalysis/detect-changes when required. Verification records only through the
+runner, which executes the command it records and derives status
+per-command-latest — any distinct command whose latest run failed keeps
+verification pending until that same command reruns green:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  set-phase --repo "$PWD" --phase verification --status passed
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/verify-run" \
+  --repo "$PWD" --slug "<task>" -- <verification command>
 ```
+
+Which commands constitute sufficient verification stays lead judgment; that
+they ran does not.
 
 ### 10. Lead structured code review
 
@@ -183,8 +195,10 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 
 `complete` refuses unless required phases are ready, material code-review
 findings are dispositioned, the final source is `codex-advisor` with
-`commit-ready`, and the reviewable working tree still matches the manifest
-recorded by the lead review. It changes workflow state only. It does not
+`commit-ready`, the reviewable working tree still matches the manifest
+recorded by the lead review, and every evidence phase carries its producer's
+evidence reference — a passed phase without one is a bare claim and reads
+pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not
 inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion

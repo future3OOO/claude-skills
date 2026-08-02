@@ -116,7 +116,7 @@ Use the `repo-production-workflow` skill as the default first skill for producti
 
 The full chain, in order — every named skill is INVOKED with the Skill tool by exact name (reading its `SKILL.md` does not satisfy the step):
 
-`repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `set-phase --phase production-code --status passed`) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
+`repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `record-production-code.py` and the gate's JSON verdict) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
 
 Invocation policy:
 

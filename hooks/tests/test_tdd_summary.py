@@ -15,11 +15,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
+RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
+QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
 
 
 class TddSummaryTests(unittest.TestCase):
@@ -49,7 +54,7 @@ class TddSummaryTests(unittest.TestCase):
         set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
-        set_phase(identity, "preflight", "passed")
+        self.record_preflight_evidence()
 
     def tearDown(self) -> None:
         if self.previous_state_root is None:
@@ -71,6 +76,27 @@ class TddSummaryTests(unittest.TestCase):
             [sys.executable, str(script), *args], cwd=self.repo, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
+
+    def record_preflight_evidence(self) -> None:
+        identity = resolve_repo_identity(self.repo)
+        doc_path = self.tmp / "setup-preflight.json"
+        doc_path.write_text(json.dumps(build_document("suite setup")), encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_PREFLIGHT), "--repo", str(self.repo), "--slug", "tdd-summary",
+             "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(doc_path)],
+            cwd=str(ROOT), env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
+
+    def record_gate_evidence(self) -> None:
+        identity = resolve_repo_identity(self.repo)
+        gate = self.run_script(QUALITY_GATE, "check", "--repo", str(self.repo), "--json")
+        assert gate.returncode == 0, gate.stdout + gate.stderr
+        gate_path = self.tmp / "setup-gate.json"
+        gate_path.write_text(gate.stdout, encoding="utf-8")
+        recorded = self.run_script(RECORD_PRODUCTION_CODE, "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(gate_path))
+        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
 
     def test_red_and_green_are_bound_to_one_real_seam_and_candidate(self) -> None:
         behavior_command = (
@@ -227,7 +253,7 @@ class TddSummaryTests(unittest.TestCase):
         set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
-        set_phase(identity, "preflight", "passed")
+        self.record_preflight_evidence()
 
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
         stale_green = self.run_script(
@@ -285,7 +311,7 @@ class TddSummaryTests(unittest.TestCase):
 
         identity = resolve_repo_identity(self.repo)
         wid = read_workflow(identity)["workflowId"]
-        set_phase(identity, "production-code", "passed")
+        self.record_gate_evidence()
         set_phase(identity, "implementation", "passed")
         set_phase(identity, "verification", "passed")
         pause(identity, "tdd-summary", wid, "waiting for the next tracer")
@@ -344,7 +370,7 @@ class TddSummaryTests(unittest.TestCase):
         set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
-        set_phase(identity, "preflight", "passed")
+        self.record_preflight_evidence()
 
         # Contract pin (not seam proof): the read-to-lock window is not drivable
         # through the CLI, so the compare-and-swap is pinned at the commit boundary.
@@ -387,9 +413,26 @@ class TddSummaryTests(unittest.TestCase):
 
         identity = resolve_repo_identity(self.repo)
         wid = read_workflow(identity)["workflowId"]
-        set_phase(identity, "production-code", "passed")
+        sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan",
+                    "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
+                    "verify", "update", "modularityPlan", "riskChecks", "openQuestions")
+        doc = {name: "none" if name == "openQuestions" else "concrete content" for name in sections}
+        doc_path = self.tmp / "preflight-doc.json"
+        doc_path.write_text(json.dumps(doc), encoding="utf-8")
+        recorded = self.run_script(RECORD_PREFLIGHT, "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--workflow-id", wid, "--input", str(doc_path))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        gate = self.run_script(QUALITY_GATE, "check", "--repo", str(self.repo), "--json")
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        gate_path = self.tmp / "gate-verdict.json"
+        gate_path.write_text(gate.stdout, encoding="utf-8")
+        recorded = self.run_script(RECORD_PRODUCTION_CODE, "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--workflow-id", wid, "--input", str(gate_path))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         set_phase(identity, "implementation", "passed")
-        set_phase(identity, "verification", "passed")
+        verified = self.run_script(VERIFY_RUN, "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--", sys.executable, "-c", "pass")
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
         set_phase(identity, "code-review", "passed", findings="none")
         record_advisor_result(identity, "tdd-summary", wid, "final", "codex-advisor", "commit-ready")
         advisor_disposition(identity, "tdd-summary", wid, "final", "none")
@@ -458,7 +501,7 @@ class TddSummaryTests(unittest.TestCase):
         summary_path = Path(json.loads(decision.stdout)["summaryPath"])
 
         identity = resolve_repo_identity(self.repo)
-        set_phase(identity, "production-code", "passed")
+        self.record_gate_evidence()
         set_phase(identity, "implementation", "passed")
         set_phase(identity, "verification", "passed")
         pause(identity, "tdd-summary", read_workflow(identity)["workflowId"], "waiting on the scope decision")

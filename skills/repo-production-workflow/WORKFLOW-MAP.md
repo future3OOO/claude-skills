@@ -32,8 +32,13 @@ statuses, code-review disposition state, and final-review result.
 
 ```text
 begin              # assigns the pass's random workflowId
-set-phase          # lead-owned step recording (ordered; --slug/--workflow-id
-                   # optional, and validated against the active instance)
+set-phase          # lead-owned step recording for gitnexus, implementation,
+                   # and code-review not-required only (ordered; instance-checked)
+record-preflight   # producer: demands the preflight skill's 13-section document
+record-production-code  # producer: demands the bundled gate's ok:true JSON verdict
+verify-run         # runner: executes the command it records; per-command-latest
+tdd-run            # runner: RED/GREEN evidence, refuses before preflight evidence
+record-review.py   # producer: structured findings with lead dispositions
 advisor-result     # producer-recorded raw consult, slug + workflowId bound
 advisor-disposition  # lead-owned findings disposition, instance bound
 pause              # instance-bound honest wait; releases the Stop latch
@@ -43,6 +48,21 @@ complete           # terminal; same optional instance check; only begin
 summary
 status
 ```
+
+Preflight, production-code, and verification record only with their skill's
+native output as evidence, validated structurally and written atomically with
+the transition; a refusal names the missing evidence and mutates nothing, and
+a recorder's exit 2 always means nothing was recorded (the verification
+runner's exit 2 has one further documented meaning: the command itself failed
+after being recorded). An evidence reference lives only while its phase stands
+producer-recorded as passed — every other transition of that phase drops it,
+so a bare replay can never resurrect prior evidence — and tdd entry demands
+the recorded preflight evidence, not just its status. Each
+producer stamps the workflow instance into its evidence and the ledger keeps an
+evidence reference, so a passed phase without one — legacy state, or a bare
+library claim — reads pending at completion, never success. Evidence proves the
+output exists, not that the analysis is good; fabrication remains deception and
+stays covered by the transcript audit.
 
 The state file is atomic, private, and agent-writable. It provides continuity
 after compaction; it is not tamper-proof and does not authorize Git. A normal
@@ -66,6 +86,8 @@ readiness for the advisor phases without mutating anything.
 - TDD passed or not required;
 - production-code recorded;
 - implementation and verification passed;
+- preflight, production-code, and verification each carrying their producer's
+  evidence reference;
 - lead code review passed/not required with material findings addressed;
 - final review from `codex-advisor` with `commit-ready` and no pending material
   findings;
@@ -138,7 +160,7 @@ session and defers the rest here.
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, then return quality feedback |
 | `PreCompact(manual\|auto)` | Atomically flush existing state without advancing it |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary |
-| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block (progress on that instance re-latches); surfaces the bounded summary otherwise |
+| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success, because any Stop output re-prompts the model (progress on that instance re-latches); surfaces the bounded summary otherwise. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data |
 
 After latch handling, the ordinary feedback path emits bounded context
 containing changed-code status and the workflow summary, and deduplicates

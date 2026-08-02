@@ -15,11 +15,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 RECORDER = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
+RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
+RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
+QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
 
 
 class ReviewSummaryTests(unittest.TestCase):
@@ -50,11 +55,35 @@ class ReviewSummaryTests(unittest.TestCase):
         set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "none")
-        set_phase(identity, "preflight", "passed")
+        doc_path = self.tmp / "setup-preflight.json"
+        doc_path.write_text(json.dumps(build_document("suite setup")), encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_PREFLIGHT), "--repo", str(self.repo), "--slug", "review-summary",
+             "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(doc_path)],
+            cwd=str(Path(__file__).resolve().parents[2]), env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
         set_phase(identity, "tdd", "not-required")
-        set_phase(identity, "production-code", "passed")
+        gate = subprocess.run(
+            [sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
+            cwd=str(ROOT), env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert gate.returncode == 0, gate.stdout + gate.stderr
+        gate_path = self.tmp / "setup-gate.json"
+        gate_path.write_text(gate.stdout, encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo), "--slug", "review-summary",
+             "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(gate_path)],
+            cwd=str(ROOT), env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
         set_phase(identity, "implementation", "passed")
-        set_phase(identity, "verification", "passed")
+        verified = subprocess.run(
+            [sys.executable, str(VERIFY_RUN), "--repo", str(self.repo), "--slug", "review-summary",
+             "--", sys.executable, "-c", "pass"],
+            cwd=str(ROOT), env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert verified.returncode == 0, verified.stdout + verified.stderr
 
     def tearDown(self) -> None:
         if self.previous_state_root is None:

@@ -40,6 +40,8 @@ def _active_candidate(identity: RepoIdentity, value: str) -> tuple[str, str]:
     # window from paying for the command first.
     if state.get("revalidation"):
         raise WorkflowError(TDD_CLOSED)
+    if state.get("preflight") != "passed" or not state.get("preflightEvidence"):
+        raise WorkflowError("tdd requires recorded preflight evidence")
     workflow_id = instance_id(state)
     if workflow_id is None:
         raise WorkflowError(NO_INSTANCE_ID)

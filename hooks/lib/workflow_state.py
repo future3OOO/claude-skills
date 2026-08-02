@@ -99,10 +99,22 @@ def _persist(identity: RepoIdentity, state: JsonObject) -> JsonObject:
     return state
 
 
+EVIDENCE_PHASES = ("preflight", "production-code", "verification")
+
+
+def _evidence_ready(state: JsonObject, phase: str) -> bool:
+    """A producer-recorded passed: status alone is a bare claim for evidence phases."""
+    field = STEP_FIELDS[phase]
+    return state.get(field) == "passed" and (
+        phase not in EVIDENCE_PHASES or bool(state.get(f"{field}Evidence"))
+    )
+
+
 def _allows_next(state: JsonObject, phase: str) -> bool:
     if phase in STEP_FIELDS:
-        status = state.get(STEP_FIELDS[phase])
-        return status in ({"in-progress", "passed", "not-required"} if phase == "tdd" else {"passed"})
+        if phase == "tdd":
+            return state.get("tdd") in {"in-progress", "passed", "not-required"}
+        return _evidence_ready(state, phase)
     if phase == "advisor-preflight":
         advisor = state.get("advisorPreflight")
         if not isinstance(advisor, dict):
@@ -238,6 +250,10 @@ def _apply_step(identity: RepoIdentity, state: JsonObject, phase: str, status: s
         if findings is not None:
             raise ValueError(f"{phase} does not accept findings")
         state[STEP_FIELDS[phase]] = status
+        # An evidence reference lives only while its phase stands producer-
+        # recorded: every transition drops it, and only the producer commit
+        # re-adds it, so a bare replay can never resurrect prior evidence.
+        state.pop(f"{STEP_FIELDS[phase]}Evidence", None)
     state["phase"] = phase
     state["nextAction"] = _derive_next_action(state)
 
@@ -291,6 +307,8 @@ def commit_tdd(
         if state.get("revalidation"):
             raise WorkflowError(TDD_CLOSED)
         _require_predecessor(state, "tdd")
+        if not state.get("preflightEvidence"):
+            raise WorkflowError("tdd requires recorded preflight evidence")
         if read_json(path) != expected_evidence:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
         if summary_doc is not None:
@@ -326,6 +344,40 @@ def commit_review(
         state = bound_instance(identity, slug, workflow_id)
         _apply_step(identity, state, "code-review", status, findings)
         atomic_write_json(path, summary_doc)
+        return _persist(identity, state)
+
+
+_NO_CAS = object()
+
+
+def commit_evidence_phase(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    phase: str,
+    path: Path,
+    evidence_doc: JsonObject,
+    *,
+    status: str = "passed",
+    expected_evidence: object = _NO_CAS,
+) -> JsonObject:
+    """Atomically persist a phase's validated evidence and its transition under one lock hold.
+
+    The adapter owns the evidence's structural validation; this owns ordering,
+    instance binding, and atomicity, so a rejected recording mutates nothing.
+    A runner passes its pre-run evidence read as `expected_evidence`, which is
+    revalidated under the lock so an interleaved run aborts the commit instead
+    of being silently overwritten, and may honestly regress `status` to
+    pending: a red run must never leave an earlier green standing.
+    """
+    with state_lock(identity):
+        state = bound_instance(identity, slug, workflow_id)
+        if expected_evidence is not _NO_CAS and read_json(path) != expected_evidence:
+            raise WorkflowError(f"{phase} evidence changed during the run; re-read and re-run the command")
+        _apply_step(identity, state, phase, status)
+        if status == "passed":
+            state[f"{STEP_FIELDS[phase]}Evidence"] = str(path)
+        atomic_write_json(path, evidence_doc)
         return _persist(identity, state)
 
 
@@ -464,6 +516,11 @@ def completion_missing(state: JsonObject) -> list[str]:
     for field in ("repoContextForge", "gitnexus", "preflight", "productionCode", "implementation", "verification"):
         if state.get(field) != "passed":
             missing.append(field)
+    # A passed evidence phase without its producer's evidence reference is a
+    # bare claim - legacy or hand-set state reads pending, never success.
+    for field in ("preflight", "productionCode", "verification"):
+        if state.get(field) == "passed" and not state.get(f"{field}Evidence"):
+            missing.append(f"{field}Evidence")
     if state.get("tdd") not in {"passed", "not-required"}:
         missing.append("tdd")
     if not _allows_next(state, "advisor-preflight"):
@@ -502,7 +559,7 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
             _context_steps(state)
             if phase == "preflight-advice"
             else (
-                ("verification", state.get("verification") == "passed"),
+                ("verification evidence", _evidence_ready(state, "verification")),
                 ("code-review", _allows_next(state, "code-review")),
             )
         ),
@@ -542,6 +599,7 @@ def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: st
 
 def _reset_downstream(state: JsonObject) -> None:
     state["verification"] = "pending"
+    state.pop("verificationEvidence", None)
     state["codeReview"] = {"status": "pending", "findings": "pending"}
     state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
     state["nextAction"] = _derive_next_action(state)
@@ -581,14 +639,14 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
         name for name, ready in (
             *_context_steps(state),
             ("advisor preflight", _allows_next(state, "advisor-preflight")),
-            ("production preflight", state.get("preflight") == "passed"),
+            ("production preflight", _evidence_ready(state, "preflight")),
         ) if not ready
     ]
     if not is_test_path(path):
         if state.get("tdd") not in {"in-progress", "passed", "not-required"}:
             missing.append("TDD RED or a recorded not-required decision (test-like edits stay open)")
-        elif state.get("productionCode") != "passed":
-            missing.append("production-code")
+        elif not _evidence_ready(state, "production-code"):
+            missing.append("production-code evidence")
     return not missing, missing
 
 
