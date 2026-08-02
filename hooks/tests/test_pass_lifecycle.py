@@ -159,11 +159,20 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("code-review", "passed", findings="none")
         self.finalize("landing-window", wid)
 
+        reviewed = (self.repo / "app.py").read_bytes()
         self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 3\\n')")
         refused = self.cli("complete")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
         self.assertIn("after the final review", refused.stderr, "the refusal did not attribute the window")
         self.assertIn("app.py", refused.stderr, "the refusal did not name the changed path")
+
+        # Restore the reviewed bytes and prove the workflow is fresh again, so the
+        # next refusal can only come from the edit inside the combined call: a probe
+        # against a still-stale workflow would refuse whether or not completion
+        # recomputes after the same-call edit.
+        (self.repo / "app.py").write_bytes(reviewed)
+        self.assertTrue(self.checkpoint("final-review")["ready"],
+                        "restoring the reviewed bytes did not restore freshness")
 
         # The same edit and the completion inside one shell call: completion
         # recomputes after the edit has already landed, so it is still caught.
