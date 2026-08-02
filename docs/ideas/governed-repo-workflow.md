@@ -43,10 +43,12 @@ The principle is rivalry, not a particular model — families share blind spots 
 
 1. **map** — index the repo, walk the graph, fix the real target seams
 2. **ask** — first advisor consult: challenge the plan before any code exists
-3. **prove** — one failing test at a real seam, then the smallest change that passes
-4. **check** — verify, then a structured self-review against the clauses
-5. **review** — second advisor consult; its verdict plus your disposition gate the finish
-6. **land** — complete the ledger, push, answer every reviewer finding with evidence
+3. **prepare** — the preflight: name the affected surface, the contract that must hold, the proof plan, and every open question
+4. **prove** — one failing test at a real seam
+5. **build** — load the standards, then the smallest change that makes the test pass
+6. **check** — verify, then a structured self-review against the clauses
+7. **review** — second advisor consult; its verdict plus your disposition gate the finish
+8. **land** — complete the ledger, push, answer every reviewer finding with evidence
 
 A fix round is a new ritual, not a patch on the old one.
 
