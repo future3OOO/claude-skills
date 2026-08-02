@@ -2,7 +2,7 @@
 
 **Instruction files don't govern coding agents; enforced transactions do.**
 
-An idea file — copy-paste it to your own LLM agent and build it together. This is a prototype: it runs in production on our own estate, and it is still being sanded down in the open. We built ours on Claude Code; any harness with lifecycle hooks can do the same. The specific skills, models, and scripts are ours — swap in your own. The agreement is what transfers.
+An idea file — copy-paste it to your own LLM agent and build it together. It runs our own production workflow loop — but we're not trying to convince you to use ours; it's purely an example. We built it on Claude Code; any harness with lifecycle hooks can do the same. The specific skills, models, and scripts are ours — swap in your own. The agreement is what transfers.
 
 ## The problem
 
