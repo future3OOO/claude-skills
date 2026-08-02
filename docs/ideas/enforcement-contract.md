@@ -29,7 +29,7 @@ One disclaimer, because it matters: the ledger is honest memory, not security. I
 Four layers. Keep the role, replace the contents.
 
 1. **The map** (ours: RepoContextForge + GitNexus). An index that ranks what matters for this change, and a code graph that answers callers/callees/blast-radius for any symbol. The difference between editing a file that *looks* right and the seam that *is* right. Grep finds names; the graph finds the second writer to the same row, the callee your change actually breaks.
-2. **The clauses** (ours: a dozen skill files [1]). Your standards as markdown the agent loads per pass. Write them once, they compound forever.
+2. **The clauses** (ours: nine skill files [1] — seven load every pass, one joins for bugs, one for interface changes). Your standards as markdown the agent loads per pass. Write them once, they compound forever.
 3. **The ledger + producers** (ours: one JSON file, three producer scripts [4][5][6][7]). Our chain: map → advisor scope check → preflight → failing test → standards loaded → implement → verify → self-review → independent review → done. Yours can differ; the ordering enforcement can't.
 4. **The hooks** (ours: five Claude Code lifecycle hooks [2][8]). Gate, invalidate, preserve, latch. The layer that turns the other three from advice into physics.
 
@@ -60,7 +60,7 @@ Slower, and more tokens. A one-line fix can take a full pass with two paid consu
 
 Minimum viable: the ledger, a pre-edit gate hook, a post-edit invalidation hook, one runner. That's an afternoon, and it delivers most of the value.
 
-Ours, in full: five hooks [2][8], three producer scripts [4][5][6], a dozen clause files [1], one advisor wrapper [7], and the map. Every piece is a file you can read.
+Ours, in full: five hooks [2][8], three producer scripts [4][5][6], nine clause files [1], one advisor wrapper [7], and the map. Every piece is a file you can read.
 
 ## Tips
 
