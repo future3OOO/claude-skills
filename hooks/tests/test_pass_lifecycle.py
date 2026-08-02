@@ -24,11 +24,8 @@ RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "reco
 VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
-PREFLIGHT_SECTIONS = (
-    "affectedSurface", "authoritativeContract", "invariants", "proofPlan",
-    "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
-    "verify", "update", "modularityPlan", "riskChecks", "openQuestions",
-)
+from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
+from hooks.tests.support import build_document  # noqa: E402
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
@@ -481,10 +478,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def preflight_document(self) -> dict[str, str]:
-        return {
-            name: "none" if name == "openQuestions" else f"{name}: concrete content for this pass"
-            for name in PREFLIGHT_SECTIONS
-        }
+        return build_document("concrete content for this pass")
 
     def record_preflight(self, wid: str, document: dict[str, str]) -> subprocess.CompletedProcess[str]:
         payload = self.tmp / "preflight-input.json"
@@ -496,6 +490,15 @@ class PassLifecycleTests(unittest.TestCase):
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
+
+    def test_the_preflight_contract_names_the_skills_thirteen_sections(self) -> None:
+        # Independent literal pin: the shared fixture derives from SECTIONS, so
+        # this assertion is the one place the contract cannot drift silently.
+        self.assertEqual(PREFLIGHT_SECTIONS, (
+            "affectedSurface", "authoritativeContract", "invariants", "proofPlan",
+            "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
+            "verify", "update", "modularityPlan", "riskChecks", "openQuestions",
+        ))
 
     def test_preflight_records_only_with_its_document(self) -> None:
         wid = self.begin_slug("evidence-preflight")
@@ -628,7 +631,7 @@ class PassLifecycleTests(unittest.TestCase):
         wid = self.begin_slug("evidence-verification")
         self.advance_to_preflight("evidence-verification", wid)
         self.owner_phase("tdd", "not-required")
-        self.owner_phase("production-code", "passed")
+        self.record_real_gate(wid)
         self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
 
         bare = self.cli("set-phase", "--phase", "verification", "--status", "passed")
@@ -638,7 +641,7 @@ class PassLifecycleTests(unittest.TestCase):
 
         # Command A fails until the flag file exists — the same command text later passes.
         flag = self.repo / "flag"
-        command_a = f"import sys, pathlib; sys.exit(0 if pathlib.Path('flag').exists() else 1)"
+        command_a = "import sys, pathlib; sys.exit(0 if pathlib.Path('flag').exists() else 1)"
         a_red = self.verify_run(sys.executable, "-c", command_a)
         self.assertNotEqual(a_red.returncode, 0, "the runner reported success for a failing command")
         self.assertEqual(json.loads(self.cli("status").stdout)["verification"], "pending")
@@ -667,20 +670,18 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_legacy_passed_phases_without_evidence_cannot_complete(self) -> None:
         # A pass recorded under the pre-evidence regime: phases read passed but
-        # no producer ever wrote evidence. Unknown is not green - it must not land.
+        # no evidence references exist. Simulated by stripping the refs from a
+        # real producer-recorded pass - the ordered writers themselves no
+        # longer construct such state. Unknown is not green - it must not land.
         wid = self.begin_slug("legacy-evidence")
-        self.advance_to_gitnexus()
-        self.run_cli(
-            ("advisor-result", "--slug", "legacy-evidence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", "legacy-evidence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-        )
-        self.owner_phase("preflight", "passed")
-        self.owner_phase("tdd", "not-required")
-        self.owner_phase("production-code", "passed")
-        self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
-        self.owner_phase("verification", "passed")
+        self.advance_to_verification("legacy-evidence", wid)
         self.owner_phase("code-review", "passed", findings="none")
         self.finalize("legacy-evidence", wid)
+        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / resolve_repo_identity(self.repo).key / "workflow.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        for field in ("preflightEvidence", "productionCodeEvidence", "verificationEvidence"):
+            legacy.pop(field)
+        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
 
         blocked = self.cli("complete")
         self.assertEqual(blocked.returncode, 2, "a pass with bare phase claims and no evidence completed: " + blocked.stdout)
@@ -743,6 +744,105 @@ class PassLifecycleTests(unittest.TestCase):
             json.loads(first_evidence.read_text(encoding="utf-8"))["workflowId"], new_wid,
             "the fix round's evidence does not carry the new instance",
         )
+
+    def test_a_bare_transition_cannot_resurrect_prior_verification_evidence(self) -> None:
+        wid = self.begin_slug("ref-replay")
+        self.advance_to_verification("ref-replay", wid)
+
+        # A bare library round-trip over the same phase: the ref from the real
+        # runner must not survive, so the very next ordered transition refuses.
+        self.owner_phase("verification", "pending")
+        self.owner_phase("verification", "passed")
+        self.assertNotIn("verificationEvidence", json.loads(self.cli("status").stdout),
+                         "a bare pending-to-passed replay resurrected prior evidence")
+        with self.assertRaises(Exception) as blocked:
+            self.owner_phase("code-review", "passed", findings="none")
+        self.assertIn("verification", str(blocked.exception))
+
+        # The real runner re-records and completion proceeds.
+        verified = self.verify_run(sys.executable, "-c", "pass")
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.finalize("ref-replay", wid)
+        self.assertEqual(self.cli("complete").returncode, 0)
+
+    def test_tdd_demands_preflight_evidence_not_just_status(self) -> None:
+        wid = self.begin_slug("bare-preflight-tdd")
+        self.advance_to_gitnexus()
+        self.run_cli(
+            ("advisor-result", "--slug", "bare-preflight-tdd", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "bare-preflight-tdd", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
+        )
+        self.owner_phase("preflight", "passed")  # bare claim: status without evidence
+
+        marker = self.tmp / "bare-preflight-red-ran"
+        red = subprocess.run(
+            [sys.executable, str(TDD_RUN), "--cwd", str(self.repo), "--slug", "bare-preflight-tdd",
+             "--phase", "red", "--behavior", "evidence gate", "--seam", "pass-state CLI",
+             "--expected-failure", "AssertionError", "--", sys.executable, "-c",
+             f"open({str(marker)!r}, 'w').close(); raise AssertionError('AssertionError: bare')"],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(red.returncode, 2, "tdd-run accepted a bare preflight claim: " + red.stdout + red.stderr)
+        self.assertIn("preflight evidence", red.stderr)
+        self.assertFalse(marker.exists(), "tdd-run executed its command on a bare preflight claim")
+
+    def test_exit_codes_reflect_the_recording_not_the_reporting(self) -> None:
+        wid = self.begin_slug("exit-honesty")
+        self.advance_to_gitnexus()
+        self.run_cli(
+            ("advisor-result", "--slug", "exit-honesty", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "exit-honesty", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
+        )
+
+        # A successful recording whose success line cannot be written must not
+        # report refusal: exit 2 means nothing was recorded.
+        payload = self.tmp / "preflight-input.json"
+        payload.write_text(json.dumps(self.preflight_document()), encoding="utf-8")
+        with open("/dev/full", "w") as full:
+            recorded = subprocess.run(
+                [sys.executable, str(RECORD_PREFLIGHT), "--repo", str(self.repo),
+                 "--slug", "exit-honesty", "--workflow-id", wid, "--input", str(payload)],
+                cwd=ROOT, env=self.env, text=True,
+                stdout=full, stderr=subprocess.PIPE, check=False,
+            )
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual(state["preflight"], "passed", "the recording itself failed under a full stdout")
+        self.assertEqual(recorded.returncode, 0,
+                         "a successful recording reported refusal because its success line could not be written: "
+                         + recorded.stderr)
+
+    def test_midpass_gates_demand_evidence_not_just_status(self) -> None:
+        wid = self.begin_slug("midpass-evidence")
+        self.advance_to_preflight("midpass-evidence", wid)
+        self.owner_phase("tdd", "not-required")
+
+        # Bare production-code status must not admit production edits.
+        from hooks.lib.workflow_state import ready_for_edit
+        identity = resolve_repo_identity(self.repo)
+        self.owner_phase("production-code", "passed")
+        admitted, missing = ready_for_edit(identity, "app.py")
+        self.assertFalse(admitted, "a bare production-code claim admitted production edits")
+        self.assertTrue(any("production-code" in item for item in missing), missing)
+
+        # Bare verification status must not open the paid final-review consult.
+        self.record_real_gate(wid)
+        self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
+        self.owner_phase("verification", "passed")
+        with self.assertRaises(Exception) as blocked:
+            self.owner_phase("code-review", "passed", findings="none")
+        self.assertIn("verification", str(blocked.exception),
+                      "a bare verification claim admitted the code-review recording")
+        ready = self.checkpoint("final-review")
+        self.assertFalse(ready["ready"],
+                         "a bare verification claim opened the final-review consult: " + json.dumps(ready))
+        self.assertTrue(any("verification" in item for item in ready["missing"]), ready["missing"])
+
+        # The real runner restores readiness.
+        verified = self.verify_run(sys.executable, "-c", "pass")
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.assertTrue(self.checkpoint("final-review")["ready"])
 
     def test_workflow_completion_survives_an_ordinary_commit(self) -> None:
         missing = self.cli("status")
@@ -819,7 +919,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.advance_to_preflight("tdd-gates", wid)
 
         self.owner_phase("tdd", "in-progress")
-        self.owner_phase("production-code", "passed")
+        self.record_real_gate(wid)
         started = self.cli("set-phase", "--phase", "implementation", "--status", "in-progress")
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
 
@@ -1125,7 +1225,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertIn("productionCode", self.cli("complete").stderr)
         blocked, missing = ready_for_edit(identity, "app.py")
         self.assertFalse(blocked, "a production edit was admitted before production-code")
-        self.assertIn("production-code", missing)
+        self.assertTrue(any("production-code" in item for item in missing), missing)
 
         self.record_real_gate(wid)
         admitted, missing = ready_for_edit(identity, "app.py")

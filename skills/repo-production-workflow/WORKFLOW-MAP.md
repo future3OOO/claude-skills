@@ -51,7 +51,13 @@ status
 
 Preflight, production-code, and verification record only with their skill's
 native output as evidence, validated structurally and written atomically with
-the transition; a refusal names the missing evidence and mutates nothing. Each
+the transition; a refusal names the missing evidence and mutates nothing, and
+a recorder's exit 2 always means nothing was recorded (the verification
+runner's exit 2 has one further documented meaning: the command itself failed
+after being recorded). An evidence reference lives only while its phase stands
+producer-recorded as passed — every other transition of that phase drops it,
+so a bare replay can never resurrect prior evidence — and tdd entry demands
+the recorded preflight evidence, not just its status. Each
 producer stamps the workflow instance into its evidence and the ledger keeps an
 evidence reference, so a passed phase without one — legacy state, or a bare
 library claim — reads pending at completion, never success. Evidence proves the

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Callable
 
@@ -42,8 +43,15 @@ def recorder_main(
             key: evidence,
             "recordedAt": utc_timestamp(),
         })
-        print(json.dumps({"evidencePath": str(path), "status": "passed"}, sort_keys=True))
-        return 0
     except (RepoIdentityError, WorkflowError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    try:
+        print(json.dumps({"evidencePath": str(path), "status": "passed"}, sort_keys=True), flush=True)
+    except OSError:
+        # Reporting failure is not recording failure: the commit above is
+        # durable, and exit 2 must always mean nothing was recorded. The
+        # unwritable buffer would raise again at interpreter shutdown, so
+        # stdout is pointed at devnull for the remaining flush.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    return 0

@@ -100,19 +100,27 @@ def main(argv: list[str] | None = None) -> int:
             "updatedAt": utc_timestamp(),
         }, status=status, expected_evidence=existing)
 
+    except (RepoIdentityError, WorkflowError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    # The run is recorded; reporting failures below must not disguise that.
+    # Exit 2 here carries the runner's second, documented meaning: the command
+    # itself failed after being recorded, distinct from a refusal that
+    # recorded nothing (which never reaches this point).
+    try:
         output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
         if output:
             print(output, end="" if output.endswith("\n") else "\n")
         print(json.dumps({
             "evidencePath": str(path), "exitCode": exit_code, "verification": status,
-        }, sort_keys=True))
+        }, sort_keys=True), flush=True)
         if exit_code != 0 or timed_out:
             print("verification command failed; verification stays pending until its rerun is green", file=sys.stderr)
-            return 2
-        return 0
-    except (RepoIdentityError, WorkflowError, ValueError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    except OSError:
+        # The run is durably recorded; the unwritable buffer would raise again
+        # at interpreter shutdown, so stdout is pointed at devnull instead.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    return 0 if exit_code == 0 and not timed_out else 2
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
@@ -103,17 +104,8 @@ class WorkflowHookTests(unittest.TestCase):
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
 
-    PREFLIGHT_SECTIONS = (
-        "affectedSurface", "authoritativeContract", "invariants", "proofPlan",
-        "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
-        "verify", "update", "modularityPlan", "riskChecks", "openQuestions",
-    )
-
     def record_preflight_evidence(self, slug: str, wid: str) -> None:
-        document = {
-            name: "none" if name == "openQuestions" else f"{name}: concrete content"
-            for name in self.PREFLIGHT_SECTIONS
-        }
+        document = build_document("hook-suite setup")
         doc_path = self.tmp / "preflight-doc.json"
         doc_path.write_text(json.dumps(document), encoding="utf-8")
         recorded = subprocess.run(
@@ -166,9 +158,9 @@ class WorkflowHookTests(unittest.TestCase):
         )
         for index, transition in enumerate(transitions):
             if index == 3:
-                # These tests exercise the hooks, not the recording seam; the
-                # producer contracts are proven in test_pass_lifecycle, so the
-                # sanctioned library owner path advances the evidence phases here.
+                # These tests exercise the hooks; the evidence phases advance
+                # through the real producers, whose contracts are proven in
+                # test_pass_lifecycle.
                 self.record_preflight_evidence(slug, wid)
                 self.owner_phase("tdd", "not-required")
                 self.record_gate_evidence(slug, wid)
@@ -217,7 +209,7 @@ class WorkflowHookTests(unittest.TestCase):
         for transition in transitions:
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.owner_phase("preflight", "passed")
+        self.record_preflight_evidence("hook-sequence", wid)
 
         still_blocked = self.intake("app.py")
         self.assertEqual(still_blocked.returncode, 0, still_blocked.stdout + still_blocked.stderr)
@@ -238,7 +230,7 @@ class WorkflowHookTests(unittest.TestCase):
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.owner_phase("preflight", "passed")
+        self.record_preflight_evidence("tdd-ordering", wid)
 
         blocked = self.intake("app.py")
         self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
@@ -282,7 +274,7 @@ class WorkflowHookTests(unittest.TestCase):
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.owner_phase("preflight", "passed")
+        self.record_preflight_evidence("production-code-gate", wid)
 
         early_test = self.intake("tests/test_app.py")
         self.assertEqual(early_test.returncode, 0, early_test.stdout + early_test.stderr)
@@ -315,7 +307,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(latched.get("decision"), "block")
         self.assertIn("production-code=pending", latched["reason"])
 
-        self.owner_phase("production-code", "passed")
+        self.record_gate_evidence("production-code-gate", wid)
         self.assertEqual(json.loads(self.state("status").stdout)["productionCode"], "passed")
 
         admitted = self.intake("app.py")
@@ -406,7 +398,7 @@ class WorkflowHookTests(unittest.TestCase):
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.owner_phase("preflight", "passed")
+        self.record_preflight_evidence("governance-sequence", wid)
 
         governance = self.repo / "CLAUDE.md"
         governance.write_text("updated agent behavior\n", encoding="utf-8")
