@@ -1,6 +1,6 @@
 # The Enforcement Contract
 
-An idea file — copy-paste it to your own LLM agent and build it together. We built ours on Claude Code; any harness with lifecycle hooks can do the same. The specific skills, models, and scripts are ours — swap in your own. The contract is what transfers.
+An idea file — copy-paste it to your own LLM agent and build it together. This is a prototype: it runs in production on our own estate, and it is still being sanded down in the open. We built ours on Claude Code; any harness with lifecycle hooks can do the same. The specific skills, models, and scripts are ours — swap in your own. The contract is what transfers.
 
 ## The problem
 
@@ -86,3 +86,15 @@ Instruction files don't govern agents; enforcement does. Write the process as a 
 6. [`skills/code-review/scripts/record-review.py`](../../skills/code-review/scripts/record-review.py) — the recorder: demands a structured findings document
 7. [`skills/codex-advisor/scripts/ask-codex-advisor.sh`](../../skills/codex-advisor/scripts/ask-codex-advisor.sh) — the advisor wrapper: read-only rival-family consult, exact terminal verdict
 8. [`settings.json`](../../settings.json) — where the hooks are registered
+
+## Open questions
+
+Things we know are unfinished. If you build this, you'll hit them too.
+
+- Approvals record that a review happened — not that the tree still matches what was reviewed. A shell edit after review is only surfaced as turn-end context today. The likely fix: fingerprint the reviewable files when the review is recorded, and have completion refuse on mismatch, naming what changed.
+- The final gate closes on a bare "findings addressed" flag. The judgment can't be mechanized, but the claim could be forced to carry its evidence — a structured disposition document, same pattern as the review recorder.
+- The rival advisor sometimes serializes its findings across consults — one more discovery per paid round — instead of enumerating everything in the first pass. Reviewer calibration is a real cost lever.
+- Every step of the ritual weighs the same regardless of the change. A one-sentence docs fix and a state-machine change pay the same toll. Where's the honest lighter lane, and where does a lighter lane become the hole everything drifts through?
+- The transcript audit is manual and sampled. The day the harness surfaces tool-invocation counts natively, checking claims against actions becomes mechanical.
+- We haven't ablated the layers. We believe the chain only works whole; we haven't proven which piece carries the most weight.
+- This has only governed the estate that built it. The real test is a codebase that isn't about the contract.
