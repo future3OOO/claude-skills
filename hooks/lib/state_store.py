@@ -117,7 +117,7 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _paths(identity: RepoIdentity, *args: str) -> list[str]:
+def _git(identity: RepoIdentity, *args: str) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(identity.root), *args],
         stdout=subprocess.PIPE,
@@ -128,7 +128,11 @@ def _paths(identity: RepoIdentity, *args: str) -> list[str]:
     if result.returncode:
         message = (result.stderr or result.stdout or b"git command failed").decode("utf-8", errors="replace").strip()
         raise RuntimeError(message)
-    return sorted(os.fsdecode(item) for item in result.stdout.split(b"\0") if item)
+    return result.stdout
+
+
+def _paths(identity: RepoIdentity, *args: str) -> list[str]:
+    return sorted(os.fsdecode(item) for item in _git(identity, *args).split(b"\0") if item)
 
 
 def untracked_paths(identity: RepoIdentity) -> list[str]:
@@ -179,3 +183,28 @@ def reviewable_paths(paths: Iterable[str]) -> list[str]:
 
 def code_paths(paths: Iterable[str]) -> list[str]:
     return sorted({path for path in paths if is_code_path(path)})
+
+
+def tree_manifest(identity: RepoIdentity) -> dict[str, str]:
+    """Working-tree content hash per reviewable path, tracked and untracked alike.
+
+    Hashes what is on disk, not what is staged: an index object id represents
+    staged content and would miss the unstaged shell edit this exists to catch.
+    A path that no longer exists in the working tree is absent, so a deletion
+    reads as removed rather than unchanged.
+    """
+    candidates = reviewable_paths([*_paths(identity, "ls-files", "-z"), *untracked_paths(identity)])
+    present = [path for path in candidates if (Path(identity.root) / path).is_file()]
+    if not present:
+        return {}
+    hashes = _git(identity, "hash-object", "--", *present).decode("utf-8").split()
+    return dict(zip(present, hashes, strict=True))
+
+
+def manifest_diff(recorded: dict[str, str], current: dict[str, str]) -> dict[str, list[str]]:
+    """Bidirectional comparison; a for-each-current-path loop would miss deletions."""
+    return {
+        "added": sorted(set(current) - set(recorded)),
+        "changed": sorted(path for path in set(recorded) & set(current) if recorded[path] != current[path]),
+        "removed": sorted(set(recorded) - set(current)),
+    }

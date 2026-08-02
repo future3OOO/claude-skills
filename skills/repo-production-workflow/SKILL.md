@@ -160,7 +160,9 @@ state (`set-phase` cannot record a passed review); outside the governed
 workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
-Any correction returns to implementation and invalidates downstream readiness.
+Recording the review also binds it to the tree it reviewed, so re-recording it
+refreshes that binding and returns the final review to pending. Any correction
+returns to implementation and invalidates downstream readiness.
 
 ### 11. Independent final Codex Advisor review
 
@@ -180,8 +182,9 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 ```
 
 `complete` refuses unless required phases are ready, material code-review
-findings are dispositioned, and the final source is `codex-advisor` with
-`commit-ready`. It changes workflow state only. It does not
+findings are dispositioned, the final source is `codex-advisor` with
+`commit-ready`, and the reviewable working tree still matches the manifest
+recorded by the lead review. It changes workflow state only. It does not
 inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion

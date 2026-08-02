@@ -130,6 +130,29 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertEqual(state["codeReview"], {"status": "passed", "findings": "addressed"})
 
 
+    def test_a_shell_mutation_after_the_recorded_review_stops_the_consult_before_it_is_spent(self) -> None:
+        path = self.tmp / "review.json"
+        path.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
+        recorded = self.run_script(
+            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
+            "--review-context-id", "fresh-review-3", "--input", str(path),
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        ready = json.loads(self.run_script(PASS_STATE, "checkpoint", "--phase", "final-review").stdout)
+        self.assertTrue(ready["ready"], ready)
+
+        subprocess.run(
+            [sys.executable, "-c", "import pathlib; pathlib.Path('app.py').write_text('value = 2\\n')"],
+            cwd=self.repo, env=self.env, check=True,
+        )
+
+        stale = json.loads(self.run_script(PASS_STATE, "checkpoint", "--phase", "final-review").stdout)
+        self.assertFalse(stale["ready"], "the wrapper would have spent a paid consult against a stale tree")
+        self.assertTrue(
+            any("review-manifest-stale" in item and "app.py" in item for item in stale["missing"]),
+            stale["missing"],
+        )
+
     def test_rejected_recorder_calls_leave_evidence_untouched(self) -> None:
         rebegun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
         self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)

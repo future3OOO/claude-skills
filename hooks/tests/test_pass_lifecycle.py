@@ -119,6 +119,178 @@ class PassLifecycleTests(unittest.TestCase):
         )
         return wid
 
+    def shell(self, script: str, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run code in the repo the way the defect does: through the shell, with no editor tool."""
+        return subprocess.run(
+            [sys.executable, "-c", script, *args], cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    def finalize(self, slug: str, wid: str) -> None:
+        """The final consult and its lead disposition. Recording the review is left to
+        each test: it refreshes the manifest, so where it happens is the behavior."""
+        self.run_cli(
+            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+             "--source", "codex-advisor", "--verdict", "commit-ready"),
+            ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--findings", "none"),
+        )
+
+    def test_a_shell_mutation_after_review_refuses_the_final_recording(self) -> None:
+        wid = self.begin_slug("review-to-final-window")
+        self.advance_to_verification("review-to-final-window", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 999  # never reviewed\\n')")
+
+        refused = self.cli(
+            "advisor-result", "--slug", "review-to-final-window", "--workflow-id", wid,
+            "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready",
+        )
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("app.py", refused.stderr, "the refusal did not name the changed path")
+        self.assertEqual(
+            json.loads(self.cli("status").stdout)["finalReview"]["status"], "pending",
+            "a verdict from before the mutation was recorded against the changed tree",
+        )
+
+    def test_completion_refuses_a_shell_mutation_that_lands_after_the_final_review(self) -> None:
+        wid = self.begin_slug("landing-window")
+        self.advance_to_verification("landing-window", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.finalize("landing-window", wid)
+
+        self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 3\\n')")
+        refused = self.cli("complete")
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("after the final review", refused.stderr, "the refusal did not attribute the window")
+        self.assertIn("app.py", refused.stderr, "the refusal did not name the changed path")
+
+        # The same edit and the completion inside one shell call: completion
+        # recomputes after the edit has already landed, so it is still caught.
+        combined = self.shell(
+            "import pathlib, subprocess, sys\n"
+            "pathlib.Path('app.py').write_text('value = 4\\n')\n"
+            "raise SystemExit(subprocess.run([sys.executable, sys.argv[1], 'complete', '--repo', sys.argv[2]]).returncode)",
+            str(PASS_STATE), str(self.repo),
+        )
+        self.assertEqual(combined.returncode, 2, combined.stdout + combined.stderr)
+        self.assertEqual(
+            json.loads(self.cli("status").stdout)["phase"], "final-review",
+            "an edit-and-complete shell call landed the pass",
+        )
+
+    def test_non_mutating_shell_work_after_review_keeps_the_approvals(self) -> None:
+        wid = self.begin_slug("ordinary-landing")
+        self.advance_to_verification("ordinary-landing", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        # Ordinary landing work: read the tree, query Git. Nothing is written.
+        self.shell("import pathlib; pathlib.Path('app.py').read_text()")
+        self.git("status", "--porcelain")
+        self.git("log", "--oneline")
+
+        self.finalize("ordinary-landing", wid)
+        completed = self.cli("complete")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_additions_deletions_and_multi_file_mutations_are_each_named(self) -> None:
+        (self.repo / "lib.py").write_text("helper = True\n", encoding="utf-8")
+        self.git("add", "lib.py")
+        self.git("commit", "-q", "-m", "second production file")
+
+        wid = self.begin_slug("named-drift")
+        self.advance_to_verification("named-drift", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.finalize("named-drift", wid)
+
+        # One formatter-shaped call touching three paths in three different ways.
+        self.shell(
+            "import pathlib\n"
+            "pathlib.Path('new_module.py').write_text('created = True\\n')\n"
+            "pathlib.Path('lib.py').unlink()\n"
+            "pathlib.Path('app.py').write_text('value = 5\\n')\n"
+        )
+        refused = self.cli("complete")
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("added=new_module.py", refused.stderr)
+        self.assertIn("changed=app.py", refused.stderr)
+        self.assertIn("removed=lib.py", refused.stderr)
+
+    def test_state_without_a_manifest_refuses_until_the_review_is_re_recorded(self) -> None:
+        wid = self.begin_slug("legacy-manifest")
+        self.advance_to_verification("legacy-manifest", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.finalize("legacy-manifest", wid)
+
+        # A pass already in flight when this contract shipped carries no manifest.
+        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / resolve_repo_identity(self.repo).key / "workflow.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertIn("reviewManifest", legacy, "the recorded review persisted no manifest")
+        legacy.pop("reviewManifest")
+        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
+
+        blocked = self.cli("complete")
+        self.assertEqual(blocked.returncode, 2, blocked.stdout + blocked.stderr)
+        self.assertIn("review-manifest-missing", blocked.stderr, "an unknown tree read as green")
+
+        refused_final = self.cli(
+            "advisor-result", "--slug", "legacy-manifest", "--workflow-id", wid, "--stage", "final",
+            "--source", "codex-advisor", "--verdict", "commit-ready",
+        )
+        self.assertEqual(refused_final.returncode, 2, refused_final.stdout + refused_final.stderr)
+        self.assertIn("review-manifest-missing", refused_final.stderr)
+
+        self.owner_phase("code-review", "passed", findings="none")
+        self.finalize("legacy-manifest", wid)
+        unblocked = self.cli("complete")
+        self.assertEqual(unblocked.returncode, 0, unblocked.stdout + unblocked.stderr)
+
+    def test_re_recording_the_review_requires_a_fresh_final_consult(self) -> None:
+        wid = self.begin_slug("stale-verdict")
+        self.advance_to_verification("stale-verdict", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.finalize("stale-verdict", wid)
+
+        self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 6\\n')")
+        self.assertEqual(self.cli("complete").returncode, 2)
+
+        # Re-verifying and re-reviewing refreshes the manifest; the verdict from
+        # the old tree must not survive that refresh.
+        self.run_cli(("set-phase", "--phase", "verification", "--status", "passed"))
+        self.owner_phase("code-review", "passed", findings="none")
+        self.assertEqual(
+            json.loads(self.cli("status").stdout)["finalReview"],
+            {"source": None, "status": "pending", "findings": "pending"},
+            "a commit-ready verdict from the pre-mutation tree survived the re-review",
+        )
+        still_blocked = self.cli("complete")
+        self.assertEqual(still_blocked.returncode, 2, still_blocked.stdout + still_blocked.stderr)
+        self.assertIn("finalReview", still_blocked.stderr)
+
+        self.finalize("stale-verdict", wid)
+        self.assertEqual(self.cli("complete").returncode, 0)
+
+    def test_governance_revalidation_completes_against_the_refreshed_manifest(self) -> None:
+        from hooks.lib.workflow_state import invalidate_after_edit
+
+        wid = self.complete_slug("revalidated-manifest")
+        identity = resolve_repo_identity(self.repo)
+        invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
+        self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 7\\n')")
+
+        self.run_cli(("set-phase", "--phase", "verification", "--status", "passed"))
+        stale = self.checkpoint("final-review")
+        self.assertTrue(
+            any("review-manifest-stale" in item and "app.py" in item for item in stale["missing"]),
+            f"revalidation reported readiness without naming the drifted tree: {stale['missing']}",
+        )
+
+        self.owner_phase("code-review", "passed", findings="none")
+        self.assertTrue(self.checkpoint("final-review")["ready"], "the refreshed manifest did not reopen the consult")
+        self.finalize("revalidated-manifest", wid)
+        completed = self.cli("complete")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_workflow_completion_survives_an_ordinary_commit(self) -> None:
         missing = self.cli("status")
         self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
