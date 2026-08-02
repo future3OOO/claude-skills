@@ -228,6 +228,7 @@ class WorkflowHookTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
         early_test = self.intake("tests/test_app.py")
+        self.assertEqual(early_test.returncode, 0, early_test.stdout + early_test.stderr)
         self.assertEqual(early_test.stdout, "", "a test edit before RED and production-code was denied")
         early_step = self.state("set-phase", "--phase", "production-code", "--status", "passed")
         self.assertEqual(early_step.returncode, 2, "production-code was recorded before the TDD decision")
@@ -254,6 +255,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(json.loads(recorded.stdout)["productionCode"], "passed")
 
         admitted = self.intake("app.py")
+        self.assertEqual(admitted.returncode, 0, admitted.stdout + admitted.stderr)
         self.assertEqual(admitted.stdout, "", "a production edit was denied after production-code was recorded")
         started = self.state("set-phase", "--phase", "implementation", "--status", "in-progress")
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
@@ -390,6 +392,7 @@ class WorkflowHookTests(unittest.TestCase):
             self.assertNotIn("decision", payload, f"{label} did not permit Stop")
 
         delegate = self.stop(env_extra={"CODEX_ADVISOR_ACTIVE": "1"})
+        self.assertEqual(delegate.returncode, 0, delegate.stdout + delegate.stderr)
         self.assertEqual(delegate.stdout, "", "CODEX_ADVISOR_ACTIVE delegate was latched")
         shared_only = self.stop(env_extra={"ADVISOR_ACTIVE": "1"})
         self.assertEqual(

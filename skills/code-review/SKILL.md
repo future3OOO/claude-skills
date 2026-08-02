@@ -22,6 +22,10 @@ context identifier as continuity metadata; do not infer model identity from the
 caller's label. Do not describe this review as independent, and do not spawn a
 separate review agent — the final Codex Advisor supplies the independent review.
 
+Outside a governed production workflow — a standalone PR, branch, or WIP review
+with no final advisor to supply independence — run a non-trivial review in a
+fresh context.
+
 ## 2. Read the affected surface
 
 Use the Repo Context Forge packet and GitNexus evidence already gathered by the
@@ -92,7 +96,7 @@ After lead disposition, record the ordinary workflow summary:
 <review-json-producer> | python3 "$HOME/.claude/skills/code-review/scripts/record-review.py" \
   --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
   --resolved-model "<actual-model>" \
-  --review-context-id "<fresh-context-id>" --input -
+  --review-context-id "<review-context-id>" --input -
 ```
 
 The summary is agent-writable continuity state. It is not a certificate, Git
