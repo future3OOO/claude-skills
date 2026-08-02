@@ -18,6 +18,7 @@ from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_rep
 from hooks.lib.state_store import read_json, repo_state_dir, utc_timestamp  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     NO_INSTANCE_ID,
+    TDD_CLOSED,
     WorkflowError,
     bound_state,
     commit_tdd,
@@ -33,8 +34,12 @@ def _path(identity: RepoIdentity, slug: str) -> Path:
 
 
 def _active_candidate(identity: RepoIdentity, value: str) -> tuple[str, str]:
-    """The active slug and instance id; a workflow without an instance id refuses before the run."""
+    """The active slug and instance id; a workflow that cannot record a run refuses before it."""
     state = bound_state(identity, safe_slug(value))
+    # commit_tdd re-checks this under the lock; refusing here keeps a closed
+    # window from paying for the command first.
+    if state.get("revalidation"):
+        raise WorkflowError(TDD_CLOSED)
     workflow_id = instance_id(state)
     if workflow_id is None:
         raise WorkflowError(NO_INSTANCE_ID)

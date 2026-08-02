@@ -381,16 +381,19 @@ class PassLifecycleTests(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2, f"{phase} mutation was accepted during revalidation")
         self.assertIn("revalidation", self.cli("set-phase", "--phase", "preflight", "--status", "passed").stderr)
 
+        marker = self.tmp / "revalidation-command-ran"
         raced_tdd = subprocess.run(
-            [sys.executable, str(ROOT / "skills" / "tdd" / "scripts" / "tdd-run"),
+            [sys.executable, str(TDD_RUN),
              "--cwd", str(self.repo), "--slug", "terminal-state",
              "--phase", "red", "--behavior", "revalidation escape",
              "--seam", "pass-state CLI", "--expected-failure", "AssertionError",
-             "--", sys.executable, "-c", "raise AssertionError('AssertionError: escape')"],
+             "--", sys.executable, "-c",
+             f"open({str(marker)!r}, 'w').close(); raise AssertionError('AssertionError: escape')"],
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(raced_tdd.returncode, 2, "TDD recording escaped the revalidation window")
         self.assertIn("revalidation", raced_tdd.stderr)
+        self.assertFalse(marker.exists(), "tdd-run launched the command for a closed revalidation window")
         preflight_consult = self.cli(
             "advisor-result", "--slug", "terminal-state", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",

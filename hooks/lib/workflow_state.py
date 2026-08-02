@@ -47,6 +47,7 @@ NO_INSTANCE_ID = "this state predates workflow instance identity and can no long
 SLUG_MISMATCH = "--slug does not match the active workflow"
 INSTANCE_MISMATCH = "--workflow-id does not match the active workflow instance"
 PREFLIGHT_CLOSED = "governance revalidation permits only re-verification and review; preflight consults are closed"
+TDD_CLOSED = "governance revalidation permits only re-verification and review; tdd is closed"
 
 
 class WorkflowError(RuntimeError):
@@ -251,7 +252,7 @@ def commit_tdd(
     with state_lock(identity):
         state = bound_instance(identity, slug, workflow_id)
         if state.get("revalidation"):
-            raise WorkflowError("governance revalidation permits only re-verification and review; tdd is closed")
+            raise WorkflowError(TDD_CLOSED)
         _require_predecessor(state, "tdd")
         if read_json(path) != expected_evidence:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
