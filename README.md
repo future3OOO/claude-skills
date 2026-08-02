@@ -25,7 +25,7 @@ context -> preflight advice -> production preflight -> TDD -> production-code
 The state is continuity for the agent, not Git authorization. No shipped hook
 parses Bash or intercepts commits. Edit hooks admit governed work and invalidate
 stale downstream review state; compaction/resume hooks preserve the next action;
-the Stop hook is a completion latch plus context: it blocks ending the turn while completion readiness is missing, and permits stopping for ready workflows, running background tasks or scheduled wakeups reported in the real Stop payload, recorded instance-bound pauses, Codex Advisor delegate sessions, and a hook-triggered re-stop that shows no workflow progress since the previous block — any subsequent progress on that same workflow instance re-latches it — surfacing the bounded workflow summary otherwise.
+the Stop hook is a completion latch plus context: it blocks ending the turn while completion readiness is missing, and permits stopping otherwise. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns the full permit and re-stop conditions.
 
 ## Install or update
 
