@@ -56,9 +56,17 @@ wait for the process rather than polling with repeated sleeps.
 
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase final-review \
-  --cwd "$PWD" --base-ref "<base>" --budget 350 -- \
-  "<focused completion question>"
+  --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" --gitnexus "<gitnexus-json>" \
+  --budget 350 -- "<focused completion question>"
 ```
+
+Carry `--packet` and `--gitnexus` on **both** checkpoints. The delegate is
+isolated: it sees the diff and the repository, but not the packet you read or
+the graph calls you already made, so evidence you gathered and did not attach
+does not exist for it. A final review that cannot check consumer completeness
+independently answers `context-mismatch`, and the paid consult buys a re-run
+rather than a review. The GitNexus file should carry `context` for each edited
+symbol plus `impact` in both directions with `includeTests`.
 
 Before the expensive consult the wrapper runs the read-only
 `pass-state.py checkpoint --phase <phase>` query and refuses when the
