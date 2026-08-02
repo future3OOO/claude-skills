@@ -179,6 +179,28 @@ class PassLifecycleTests(unittest.TestCase):
             "an edit-and-complete shell call landed the pass",
         )
 
+    def test_a_chmod_after_review_reopens_the_approval(self) -> None:
+        wid = self.begin_slug("mode-drift")
+        self.advance_to_verification("mode-drift", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+
+        # A mode-only shell mutation: the bytes are untouched, so a content-only
+        # hash sees nothing, but the reviewed file is now executable.
+        before = (self.repo / "app.py").read_bytes()
+        self.shell("import os, stat; os.chmod('app.py', os.stat('app.py').st_mode | stat.S_IXUSR)")
+        self.assertEqual((self.repo / "app.py").read_bytes(), before, "the probe changed content, not just mode")
+
+        stale = self.checkpoint("final-review")
+        self.assertTrue(
+            any("review-manifest-stale" in item and "app.py" in item for item in stale["missing"]),
+            f"a chmod on a reviewed file left the approval standing: {stale['missing']}",
+        )
+        refused = self.cli(
+            "advisor-result", "--slug", "mode-drift", "--workflow-id", wid,
+            "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready",
+        )
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+
     def test_non_mutating_shell_work_after_review_keeps_the_approvals(self) -> None:
         wid = self.begin_slug("ordinary-landing")
         self.advance_to_verification("ordinary-landing", wid)

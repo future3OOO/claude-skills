@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -185,20 +186,37 @@ def code_paths(paths: Iterable[str]) -> list[str]:
     return sorted({path for path in paths if is_code_path(path)})
 
 
+def _file_mode(path: Path) -> str | None:
+    """The Git file mode of a working-tree regular file, or None when it is not one.
+
+    A vanished, unreadable, or non-regular path (a directory, a submodule's
+    gitlink) has no mode here, so it is absent from the manifest and reads as
+    removed rather than silently unchanged.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return "100755" if info.st_mode & 0o111 else "100644"
+
+
 def tree_manifest(identity: RepoIdentity) -> dict[str, str]:
-    """Working-tree content hash per reviewable path, tracked and untracked alike.
+    """Working-tree mode and content hash per reviewable path, tracked and untracked alike.
 
     Hashes what is on disk, not what is staged: an index object id represents
     staged content and would miss the unstaged shell edit this exists to catch.
-    A path that no longer exists in the working tree is absent, so a deletion
-    reads as removed rather than unchanged.
+    The mode rides along because a content hash alone is blind to `chmod`, which
+    is a shell mutation of a reviewed file like any other.
     """
     candidates = reviewable_paths([*_paths(identity, "ls-files", "-z"), *untracked_paths(identity)])
-    present = [path for path in candidates if (Path(identity.root) / path).is_file()]
+    modes = {path: _file_mode(Path(identity.root) / path) for path in candidates}
+    present = [path for path in candidates if modes[path]]
     if not present:
         return {}
     hashes = _git(identity, "hash-object", "--", *present).decode("utf-8").split()
-    return dict(zip(present, hashes, strict=True))
+    return {path: f"{modes[path]} {digest}" for path, digest in zip(present, hashes, strict=True)}
 
 
 def manifest_diff(recorded: dict[str, str], current: dict[str, str]) -> dict[str, list[str]]:
