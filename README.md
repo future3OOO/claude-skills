@@ -91,12 +91,20 @@ does not need the executable bit. A non-executable hook fails silently, so the
 mode is worth its own line.
 
 Absence from the checkout does not make a file an orphan. `herdr-agent-state.sh`
-is absent and live. Classify each `Only in ~/.claude/` line by its registration:
-a path named in `settings.json` is live whatever the checkout holds, and
-retiring it breaks the hook it serves. Everything else is an orphan of a rename
-or deletion. Retire orphans rather than leaving them, because an orphan keeps
-its executable bit and `ls` does not distinguish it from a live hook. PR #55
-renamed seven python-shebang files and orphaned all seven at once.
+is absent and live, and because the install never deletes, `~/.claude/hooks/`
+also keeps files this repo has never tracked. Classify each unexplained
+`Only in ~/.claude/` line by positive evidence, in this order:
+
+- a path named in `settings.json` is live, whatever the checkout holds;
+- a path this repo tracked and then removed is an orphan of that rename or
+  deletion; `git log --all --diff-filter=D -- hooks/<name>` names the commit;
+- anything else has an owner you have not identified yet. Leave it in place
+  until you have, because a machine integration may invoke its own file
+  without registering that path here.
+
+Retire orphans rather than leaving them, because an orphan keeps its executable
+bit and `ls` does not distinguish it from a live hook. PR #55 renamed seven
+python-shebang files and orphaned all seven at once.
 
 ```bash
 mv ~/.claude/hooks/<old-file> ~/.claude/hooks/<old-file>.deprecated
