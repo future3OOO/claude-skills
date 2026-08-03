@@ -172,11 +172,32 @@ and a storage failure only prints to stderr, never changing a hook's exit
 status, its review invalidation, or the quality gate it runs. Those associations
 replace the candidate set rather than extending it: the session `cwd` slot is
 consulted only by a session that recorded no association at all, whose behaviour
-is unchanged. A payload carrying no `session_id` belongs to no session, so it
-records no association and reads none, and therefore keeps that `cwd` fallback —
+is unchanged. A payload whose `session_id` is missing, null, not a string, empty,
+or only whitespace belongs to no session: it is rejected before any key is
+derived, so it records no association and reads none, and therefore keeps that
+`cwd` fallback —
 the association key is never defaulted to a shared literal, because every
 anonymous payload would then share one identity and one repository's pass could
-reach another's Stop. The repository-scoped per-session feedback file and the
+reach another's Stop.
+
+For an admitted non-blank string id the key is `safe_slug(session_id)[:40]`, and
+that transform is lossy rather than injective. In order it trims surrounding
+whitespace, replaces each run of characters outside `[A-Za-z0-9._-]` with a
+single `-`, strips leading and trailing `-`, `.` and `_`, lowercases, caps at 80
+characters, substitutes the literal `unnamed-workflow` when nothing survives, and
+is then cut to 40. Distinct ids therefore **can** collide — by case, by any
+character outside that allowed set (`.`, `_` and internal `-` are preserved), by
+edge characters alone, beyond 40 characters, and, for non-blank ids whose whole
+content is removed by that replacement and edge stripping, on the
+`unnamed-workflow` literal itself. A blank id never reaches this transform at
+all; it is refused by the admission check above.
+
+Per-session isolation is thus a property of the ids this harness supplies, not a
+guarantee of the key: they are lowercase hexadecimal UUIDs and so are fixed
+points of the whole transform — measured across 644 recorded sessions, none
+altered by it and none sharing a key. Any future id source must be injective
+under the transform exactly as written above, or introduce a collision-resistant
+encoding here before it is trusted. The repository-scoped per-session feedback file and the
 latch telemetry keep their own `unknown` display name, which cannot cross
 repositories.
 
