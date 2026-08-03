@@ -58,7 +58,10 @@ rm -f ~/.claude/hooks/repoforge-commit-gate.sh
 
 The two removed files are obsolete PR #2 commit gates. Their deletion is
 intentional. Do not use `--delete` for the directory copies: HerdR and other
-machine integrations may own additional live files.
+machine integrations may own additional live files. The cost of that choice is
+that a file renamed or deleted upstream is left behind in `~/.claude`, still
+executable and still matched by the `chmod` globs above, so every rename or
+deletion orphans the old name until someone retires it.
 
 Verify the installed estate itself, not only the checkout:
 
@@ -75,6 +78,22 @@ The final hooks diff should report only deliberate externally managed files
 (currently `herdr-agent-state.sh`). Any other difference needs reconciliation.
 Git records executable modes, but verify them after installation because a
 non-executable hook fails silently.
+
+An `Only in ~/.claude/` line naming a file the checkout no longer carries is an
+orphan of a rename or deletion, not an external integration. Retire it rather
+than leaving it: an orphan keeps its executable bit, and `ls` does not
+distinguish it from a live hook. PR #55 renamed seven python-shebang files and
+orphaned all seven at once.
+
+```bash
+mv ~/.claude/hooks/<old-name>.sh ~/.claude/hooks/<old-name>.sh.deprecated
+chmod -x ~/.claude/hooks/<old-name>.sh.deprecated
+```
+
+Append the suffix; do not prefix the name. A `DEPRECATED-` prefix still ends in
+`.sh`, so the install's `chmod` would restore its executable bit on the next
+run. Delete the retired files once the replacements have carried a full
+session.
 
 ## External dependencies
 
