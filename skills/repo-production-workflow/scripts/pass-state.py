@@ -33,7 +33,7 @@ LEAD_PHASES = {"gitnexus", "implementation", "code-review"}
 PRODUCER_OWNED = {
     "preflight": "preflight is recorder-owned; record it with record-preflight.py and the skill's structured document",
     "production-code": "production-code is recorder-owned; record it with record-production-code.py and the bundled gate's JSON verdict",
-    "verification": "verification is runner-owned; record it with verify-run, which executes the command it records",
+    "verification": "verification is runner-owned; record it with verify-run.py, which executes the command it records",
 }
 
 

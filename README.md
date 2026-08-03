@@ -51,7 +51,7 @@ rsync -a skills/ ~/.claude/skills/
 rsync -a hooks/ ~/.claude/hooks/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
-chmod +x ~/.claude/hooks/*.sh
+chmod +x ~/.claude/hooks/*.py ~/.claude/hooks/*.sh
 rm -f ~/.claude/hooks/codex-challenge-commit-gate.sh
 rm -f ~/.claude/hooks/repoforge-commit-gate.sh
 ```
@@ -80,7 +80,7 @@ non-executable hook fails silently.
 
 This estate is **not self-contained**. `CLAUDE.md` mandates these tools and the
 hooks refuse work without them, but none of them live here. Install it onto a
-machine without them and the estate bricks itself: `rcf-intake-gate.sh`
+machine without them and the estate bricks itself: `rcf-intake-gate.py`
 blocks every code edit until a Repo Context Forge intake and a fresh GitNexus
 index exist, and neither tool would be present to produce one.
 

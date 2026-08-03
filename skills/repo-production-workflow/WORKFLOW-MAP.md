@@ -36,8 +36,8 @@ set-phase          # lead-owned step recording for gitnexus, implementation,
                    # and code-review not-required only (ordered; instance-checked)
 record-preflight   # producer: demands the preflight skill's 13-section document
 record-production-code  # producer: demands the bundled gate's ok:true JSON verdict
-verify-run         # runner: executes the command it records; per-command-latest
-tdd-run            # runner: RED/GREEN evidence, refuses before preflight evidence
+verify-run.py         # runner: executes the command it records; per-command-latest
+tdd-run.py            # runner: RED/GREEN evidence, refuses before preflight evidence
 record-review.py   # producer: structured findings with lead dispositions
 advisor-result     # producer-recorded raw consult, slug + workflowId bound
 advisor-disposition  # lead-owned findings disposition, instance bound;

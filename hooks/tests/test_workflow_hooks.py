@@ -20,16 +20,16 @@ from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
-TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run.py"
 RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
 RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
-VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
 FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
-INTAKE = ROOT / "hooks" / "rcf-intake-gate.sh"
-POST_EDIT = ROOT / "hooks" / "code-quality-gate.sh"
-PRE_COMPACT = ROOT / "hooks" / "pre-compact-flush.sh"
-STOP = ROOT / "hooks" / "post-edit-blast-radius.sh"
+INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
+POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
+PRE_COMPACT = ROOT / "hooks" / "pre-compact-flush.py"
+STOP = ROOT / "hooks" / "post-edit-blast-radius.py"
 
 
 class WorkflowHookTests(unittest.TestCase):
@@ -252,7 +252,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("production-code", cleared, "the next missing step after RED is production-code")
 
     def red(self, slug: str) -> subprocess.CompletedProcess[str]:
-        """Drive one real valid RED through the tdd-run recorder for this workflow."""
+        """Drive one real valid RED through the tdd-run.py recorder for this workflow."""
         return subprocess.run(
             [sys.executable, str(TDD_RUN), "--cwd", str(self.repo), "--slug", slug,
              "--phase", "red", "--behavior", "app value must be 2",

@@ -16,12 +16,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
-REARM = ROOT / "hooks" / "skill-discipline-rearm.sh"
-TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+REARM = ROOT / "hooks" / "skill-discipline-rearm.py"
+TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run.py"
 RECORD_REVIEW = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
 RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
 RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
-VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
@@ -666,7 +666,7 @@ class PassLifecycleTests(unittest.TestCase):
 
         bare = self.cli("set-phase", "--phase", "verification", "--status", "passed")
         self.assertEqual(bare.returncode, 2, "a bare verification claim was accepted: " + bare.stdout + bare.stderr)
-        self.assertIn("verify-run", bare.stderr, "the refusal did not name the runner")
+        self.assertIn("verify-run.py", bare.stderr, "the refusal did not name the runner")
         self.assertEqual(json.loads(self.cli("status").stdout)["verification"], "pending")
 
         # Command A fails until the flag file exists — the same command text later passes.
@@ -750,7 +750,7 @@ class PassLifecycleTests(unittest.TestCase):
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(early_red.returncode, 2, early_red.stdout + early_red.stderr)
-        self.assertFalse(marker.exists(), "tdd-run executed a command while preflight evidence was absent")
+        self.assertFalse(marker.exists(), "tdd-run.py executed a command while preflight evidence was absent")
 
         recorded = self.record_preflight(wid, self.preflight_document())
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
@@ -816,9 +816,9 @@ class PassLifecycleTests(unittest.TestCase):
              f"open({str(marker)!r}, 'w').close(); raise AssertionError('AssertionError: bare')"],
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
-        self.assertEqual(red.returncode, 2, "tdd-run accepted a bare preflight claim: " + red.stdout + red.stderr)
+        self.assertEqual(red.returncode, 2, "tdd-run.py accepted a bare preflight claim: " + red.stdout + red.stderr)
         self.assertIn("preflight evidence", red.stderr)
-        self.assertFalse(marker.exists(), "tdd-run executed its command on a bare preflight claim")
+        self.assertFalse(marker.exists(), "tdd-run.py executed its command on a bare preflight claim")
 
     def test_exit_codes_reflect_the_recording_not_the_reporting(self) -> None:
         wid = self.begin_slug("exit-honesty")
@@ -1298,7 +1298,7 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(raced_tdd.returncode, 2, "TDD recording escaped the revalidation window")
         self.assertIn("revalidation", raced_tdd.stderr)
-        self.assertFalse(marker.exists(), "tdd-run launched the command for a closed revalidation window")
+        self.assertFalse(marker.exists(), "tdd-run.py launched the command for a closed revalidation window")
         preflight_consult = self.cli(
             "advisor-result", "--slug", "terminal-state", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
@@ -1467,7 +1467,7 @@ class PassLifecycleTests(unittest.TestCase):
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(red.returncode, 2, red.stdout + red.stderr)
-        self.assertFalse(marker.exists(), "tdd-run ran the test command for a workflow with no instance id")
+        self.assertFalse(marker.exists(), "tdd-run.py ran the test command for a workflow with no instance id")
 
         review_input = self.tmp / "review.json"
         review_input.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
