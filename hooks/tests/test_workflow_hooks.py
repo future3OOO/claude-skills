@@ -30,6 +30,7 @@ INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
 PRE_COMPACT = ROOT / "hooks" / "pre-compact-flush.py"
 STOP = ROOT / "hooks" / "post-edit-blast-radius.py"
+SESSION = "real-hook-session"
 
 
 class WorkflowHookTests(unittest.TestCase):
@@ -60,16 +61,28 @@ class WorkflowHookTests(unittest.TestCase):
             os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.previous_state_root
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def git(self, *args: str) -> None:
+    def git(self, *args: str, repo: Path | None = None) -> None:
         result = subprocess.run(
-            ["git", *args], cwd=self.repo, env=self.env, text=True,
+            ["git", *args], cwd=repo or self.repo, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
-    def state(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def second_repo(self, name: str) -> Path:
+        """A committed Git repository that is not the one the session edits."""
+        repo = self.tmp / name
+        repo.mkdir()
+        self.git("init", "-q", repo=repo)
+        self.git("config", "user.email", "test@example.invalid", repo=repo)
+        self.git("config", "user.name", "Workflow Harness", repo=repo)
+        (repo / "other.py").write_text("value = 2\n", encoding="utf-8")
+        self.git("add", "other.py", repo=repo)
+        self.git("commit", "-q", "-m", "base", repo=repo)
+        return repo
+
+    def state(self, *args: str, repo: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(PASS_STATE), *args, "--repo", str(self.repo)],
+            [sys.executable, str(PASS_STATE), *args, "--repo", str(repo or self.repo)],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
@@ -81,18 +94,29 @@ class WorkflowHookTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
-    def post_edit(self, relative: str) -> subprocess.CompletedProcess[str]:
+    def post_edit(self, relative: str, *, repo: Path | None = None,
+                  session: str | None = SESSION) -> subprocess.CompletedProcess[str]:
+        target = repo or self.repo
+        # session=None omits the field entirely rather than blanking it: an
+        # anonymous payload is one that never carried the key.
+        payload: dict[str, object] = {"tool_input": {"file_path": str(target / relative)}}
+        if session is not None:
+            payload["session_id"] = session
         return subprocess.run(
-            [str(POST_EDIT)], cwd=self.repo, env=self.env, text=True,
-            input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
+            [str(POST_EDIT)], cwd=target, env=self.env, text=True, input=json.dumps(payload),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
     def stop(self, *, shape: str = "natural", env_extra: dict[str, str] | None = None,
-             session_crons: list | None = None) -> subprocess.CompletedProcess[str]:
+             session_crons: list | None = None, cwd: Path | None = None,
+             session: str | None = SESSION) -> subprocess.CompletedProcess[str]:
         env = {**self.env, **(env_extra or {})}
         payload = dict(json.loads(FIXTURE.read_text(encoding="utf-8"))["shapes"][shape])
-        payload.update({"cwd": str(self.repo), "session_id": "real-hook-session"})
+        payload.update({"cwd": str(cwd or self.repo)})
+        # An anonymous payload never carried the key, so drop it rather than blank it.
+        payload.pop("session_id", None)
+        if session is not None:
+            payload["session_id"] = session
         if session_crons is not None:
             payload["session_crons"] = session_crons
         return subprocess.run(
@@ -537,6 +561,209 @@ class WorkflowHookTests(unittest.TestCase):
         done = json.loads(completed.stdout)
         self.assertNotIn("decision", done)
         self.assertIn("slug=stop-latch phase=complete", done["hookSpecificOutput"]["additionalContext"])
+
+    def test_stop_follows_the_sessions_edited_repository_not_the_cwd_slot(self) -> None:
+        # Issue #44: Stop resolved its slot from the session cwd, so a pass in a
+        # worktree the session was not launched from was never consulted and its
+        # incomplete work could not latch.
+        elsewhere = self.second_repo("elsewhere")
+        begun = self.state("begin", "--slug", "worktree-pass")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+
+        edited = self.post_edit("app.py")
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+        blocked = self.stop(cwd=elsewhere)
+        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertTrue(blocked.stdout, "the edited repository's incomplete pass was never consulted")
+        decision = json.loads(blocked.stdout)
+        self.assertEqual(decision.get("decision"), "block")
+        self.assertIn("slug=worktree-pass", decision["reason"])
+
+        key = resolve_repo_identity(self.repo).key
+        log = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / key / "stop-latch-log.jsonl"
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            [event["repo"] for event in events], [key],
+            "the latch telemetry does not name the slot it fired against",
+        )
+
+    def test_an_unrelated_cwd_pass_is_not_reported_to_a_session_working_elsewhere(self) -> None:
+        # The other half of #44: a session launched in a checkout that happens to
+        # hold a pass was given that pass's completion feedback instead of its own.
+        elsewhere = self.second_repo("elsewhere")
+        unrelated = self.state("begin", "--slug", "unrelated-cwd-pass", repo=elsewhere)
+        self.assertEqual(unrelated.returncode, 0, unrelated.stdout + unrelated.stderr)
+        self.complete_workflow("associated-pass")
+        edited = self.post_edit("app.py")
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+        stopped = self.stop(cwd=elsewhere)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertNotIn(
+            "unrelated-cwd-pass", stopped.stdout,
+            "the unrelated cwd slot leaked into a session that works elsewhere",
+        )
+        payload = json.loads(stopped.stdout) if stopped.stdout else {}
+        self.assertNotIn("decision", payload, "an unrelated cwd pass latched a session working elsewhere")
+        self.assertIn("slug=associated-pass", payload["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_latch_the_association_rule_suppresses_is_counted(self) -> None:
+        # The cost of consulting associations exclusively is a latch that would
+        # have fired on the cwd slot. Counting it is the only way that cost is
+        # ever observable: the payload's cwd is written to no state file, so an
+        # audit after the fact cannot reconstruct which slot was passed over.
+        elsewhere = self.second_repo("elsewhere")
+        unrelated = self.state("begin", "--slug", "unrelated-cwd-pass", repo=elsewhere)
+        self.assertEqual(unrelated.returncode, 0, unrelated.stdout + unrelated.stderr)
+        self.complete_workflow("associated-pass")
+        edited = self.post_edit("app.py")
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+        stopped = self.stop(cwd=elsewhere)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertNotIn(
+            "decision", json.loads(stopped.stdout) if stopped.stdout else {},
+            "counting the suppressed latch must not start latching it",
+        )
+
+        key = resolve_repo_identity(elsewhere).key
+        log = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / key / "stop-latch-log.jsonl"
+        events = [
+            json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+        ] if log.exists() else []
+        suppressed = [event for event in events if event["event"] == "cwd-suppressed"]
+        self.assertEqual(
+            [(event["repo"], event["slug"]) for event in suppressed], [(key, "unrelated-cwd-pass")],
+            "the latch the association rule cost was not counted against the slot it was cost in",
+        )
+
+    def test_running_work_releases_stop_without_reading_completion(self) -> None:
+        # The permit for running work is checked before readiness, so a workflow
+        # whose recorded state cannot be evaluated still releases. Ordering, not
+        # exception handling: swallowing the error here would hide exactly the
+        # readiness failures the latch exists to enforce.
+        begun = self.state("begin", "--slug", "running-work-release")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        state_path = (
+            Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
+            / resolve_repo_identity(self.repo).key / "workflow.json"
+        )
+        stored = json.loads(state_path.read_text(encoding="utf-8"))
+        # JSON-valid but unhashable, which the read path accepts and the readiness
+        # check cannot test for membership; the recorder refuses to write it, an
+        # older or hand-edited file can still hold it.
+        stored["codeReview"] = {"status": "passed", "findings": []}
+        state_path.write_text(json.dumps(stored, sort_keys=True), encoding="utf-8")
+
+        released = self.stop(shape="natural-with-background-task")
+        self.assertEqual(
+            released.returncode, 0,
+            "a stop permitted by running work evaluated readiness and died: " + released.stderr,
+        )
+        # Exit zero alone would also describe a block, which is the outcome this
+        # permit exists to prevent, so the decision itself is what is asserted.
+        self.assertNotIn(
+            "decision", json.loads(released.stdout) if released.stdout else {},
+            "running work did not release the stop",
+        )
+
+    def test_a_payload_without_a_session_id_associates_nothing(self) -> None:
+        # A session key is per-session by definition. Defaulting a missing id to a
+        # shared literal made every anonymous invocation share one association
+        # bucket, so one anonymous session's repository blocked another's Stop —
+        # issue #44's cross-talk, reintroduced one level up.
+        elsewhere = self.second_repo("elsewhere")
+        mine = self.state("begin", "--slug", "anon-edited")
+        self.assertEqual(mine.returncode, 0, mine.stdout + mine.stderr)
+        theirs = self.state("begin", "--slug", "anon-cwd-pass", repo=elsewhere)
+        self.assertEqual(theirs.returncode, 0, theirs.stdout + theirs.stderr)
+
+        edited = self.post_edit("app.py", session=None)
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+        stopped = self.stop(cwd=elsewhere, session=None)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertNotIn(
+            "anon-edited", stopped.stdout,
+            "an anonymous payload reached another anonymous session's repository",
+        )
+        # Blocking specifically: non-blocking context would also carry the slug,
+        # so naming it is not evidence the cwd pass was actually latched.
+        decision = json.loads(stopped.stdout)
+        self.assertEqual(decision.get("decision"), "block", "the anonymous Stop lost its own cwd fallback")
+        self.assertIn("slug=anon-cwd-pass", decision["reason"])
+
+        sessions = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions"
+        self.assertEqual(
+            sorted(path.name for path in sessions.iterdir()) if sessions.exists() else [], [],
+            "a payload with no session id recorded an association anyway",
+        )
+        # The association is the only thing withheld. Invalidation is visible in
+        # the phase; the gate is only proven by a payload it must reject, since a
+        # clean tree exits zero whether the gate ran or not.
+        self.assertEqual(json.loads(self.state("status").stdout)["phase"], "implementation")
+        escape = "TO" + "DO"
+        (self.repo / "app.py").write_text(f"value = 2  # {escape}: invalid production escape\n", encoding="utf-8")
+        gated = self.post_edit("app.py", session=None)
+        self.assertEqual(gated.returncode, 2, gated.stdout + gated.stderr)
+        self.assertIn("production-code gate FAILED", gated.stderr)
+
+    def test_only_a_repository_with_a_pass_is_recorded_as_an_association(self) -> None:
+        elsewhere = self.second_repo("elsewhere")
+        begun = self.state("begin", "--slug", "associated-pass")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        unpassed = self.post_edit("other.py", repo=elsewhere)
+        self.assertEqual(unpassed.returncode, 0, unpassed.stdout + unpassed.stderr)
+        edited = self.post_edit("app.py")
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+        # Globbed rather than named: the directory is the normalised session key,
+        # and spelling it as the raw constant would assert against a path that
+        # simply would not exist the moment that constant stopped being its own
+        # slug, which passes for the wrong reason.
+        sessions = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions"
+        self.assertEqual(
+            sorted(path.name for path in sessions.glob("*/*.json")),
+            [f"{resolve_repo_identity(self.repo).key}.json"],
+            "a repository with no pass was recorded as an association",
+        )
+        # The shared parent too: securing only the leaf leaves every session id
+        # in the estate world-listable, which an install proved is what a bare
+        # parents=True mkdir does.
+        self.assertEqual(
+            [oct(path.stat().st_mode & 0o777) for path in (sessions, *sorted(sessions.iterdir()))],
+            ["0o700", "0o700"],
+            "an association directory is not private to its owner",
+        )
+
+    def test_an_unusable_association_store_changes_no_hook_outcome(self) -> None:
+        # Fault injected at the real filesystem seam rather than substituted: the
+        # association directory's parent is a file, so the storage call fails for
+        # its own reason while every other outcome must stay exactly as it was.
+        self.complete_workflow(finish=False)
+        (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions").write_text("not a directory\n", encoding="utf-8")
+        escape = "TO" + "DO"
+        (self.repo / "app.py").write_text(f"value = 2  # {escape}: invalid production escape\n", encoding="utf-8")
+
+        result = self.post_edit("app.py")
+        self.assertIn("session association unavailable", result.stderr)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("production-code gate FAILED", result.stderr)
+        state = json.loads(self.state("status").stdout)
+        self.assertEqual(state["phase"], "implementation")
+        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
+
+        # Stop reads the same store, and reaching the markers secures their
+        # parent before globbing, so the read fails for its own reason well
+        # before the empty-glob behaviour a reader might assume protects it.
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertIn("session associations unavailable", stopped.stderr)
+        self.assertEqual(
+            json.loads(stopped.stdout).get("decision"), "block",
+            "an unusable association store cost the session its cwd fallback",
+        )
 
     def test_legacy_state_without_an_instance_id_is_latched_with_a_begin_instruction(self) -> None:
         begun = self.state("begin", "--slug", "stop-legacy")

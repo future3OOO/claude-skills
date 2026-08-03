@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+from .workflow_state import safe_slug
+
 
 def read_hook_payload() -> dict[str, object]:
     try:
@@ -26,3 +28,22 @@ def edited_path(payload: dict[str, object]) -> Path | None:
 def working_directory(payload: dict[str, object]) -> str:
     value = payload.get("cwd")
     return value if isinstance(value, str) and value else os.getcwd()
+
+
+def session_key(payload: dict[str, object]) -> str | None:
+    """The session identifier as one state path segment, or None when absent.
+
+    Derived here so the hook that records an association and the hook that reads
+    it cannot drift, and so a hostile `session_id` is bounded to a single safe
+    segment before it ever reaches the filesystem.
+
+    Absence is returned rather than defaulted. A session key names a per-session
+    set, so defaulting a missing id to any shared literal would file every
+    anonymous payload under one identity and let one repository's pass reach
+    another's Stop. Callers that want a display name for repository-scoped
+    storage supply their own fallback.
+    """
+    value = payload.get("session_id")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return safe_slug(value)[:40]

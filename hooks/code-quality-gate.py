@@ -10,16 +10,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.lib.hook_input import edited_path, read_hook_payload  # noqa: E402
+from hooks.lib.hook_input import edited_path, read_hook_payload, session_key  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import is_code_path  # noqa: E402
+from hooks.lib.state_store import is_code_path, record_session_association  # noqa: E402
 from hooks.lib.workflow_state import invalidate_after_edit  # noqa: E402
 
 GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 
 def main() -> int:
-    path = edited_path(read_hook_payload())
+    payload = read_hook_payload()
+    path = edited_path(payload)
     if path is None:
         return 0
     try:
@@ -28,7 +29,13 @@ def main() -> int:
     except (RepoIdentityError, ValueError):
         return 0
 
-    invalidate_after_edit(identity, relative)
+    # Only where a pass exists: a repository the session merely touched has no
+    # workflow for Stop to consult, so a marker for it would be noise. The
+    # association is the only thing an anonymous payload withholds — invalidation
+    # above and the quality gate below still run for it.
+    session = session_key(payload)
+    if invalidate_after_edit(identity, relative) is not None and session is not None:
+        record_session_association(session, identity)
     if not is_code_path(relative):
         return 0
 
