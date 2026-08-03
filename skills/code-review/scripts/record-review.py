@@ -55,10 +55,15 @@ def _validated(value: dict[str, object]) -> tuple[list[dict[str, object]], list[
 
     disposition_by_id: dict[str, dict[str, object]] = {}
     for disposition in dispositions:
-        if not isinstance(disposition, dict) or disposition.get("finding_id") not in finding_ids:
+        if not isinstance(disposition, dict):
             raise ValueError("each disposition must reference a finding")
-        identifier = str(disposition["finding_id"])
-        if identifier in disposition_by_id or disposition.get("status") not in DISPOSITIONS:
+        # Narrowed before the membership test: `x in <set>` hashes x, so an
+        # unhashable value would raise TypeError past main's refusal path.
+        identifier = disposition.get("finding_id")
+        if not isinstance(identifier, str) or identifier not in finding_ids:
+            raise ValueError("each disposition must reference a finding")
+        status = disposition.get("status")
+        if identifier in disposition_by_id or not isinstance(status, str) or status not in DISPOSITIONS:
             raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
         if disposition.get("status") == "rejected-with-evidence" and not str(disposition.get("evidence") or "").strip():
             raise ValueError(f"finding {identifier} rejection requires evidence")

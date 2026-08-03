@@ -377,6 +377,9 @@ def commit_evidence_phase(
         _apply_step(identity, state, phase, status)
         if status == "passed":
             state[f"{STEP_FIELDS[phase]}Evidence"] = str(path)
+            # _apply_step derived nextAction before this reference existed, so the
+            # phase it just recorded still read incomplete and named itself next.
+            state["nextAction"] = _derive_next_action(state)
         atomic_write_json(path, evidence_doc)
         return _persist(identity, state)
 

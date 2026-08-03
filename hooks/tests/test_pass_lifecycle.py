@@ -587,6 +587,8 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["preflight"], "passed")
+        # The persisted value is what the Stop payload and resume banner instruct.
+        self.assertEqual(state["nextAction"], "tdd", "a recorded phase was named as the next action")
         evidence = json.loads(Path(json.loads(recorded.stdout)["evidencePath"]).read_text(encoding="utf-8"))
         self.assertEqual(evidence["workflowId"], wid, "evidence is not bound to the workflow instance")
 
@@ -642,6 +644,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["productionCode"], "passed")
+        self.assertEqual(state["nextAction"], "implementation", "a recorded phase was named as the next action")
         evidence = json.loads(Path(json.loads(recorded.stdout)["evidencePath"]).read_text(encoding="utf-8"))
         self.assertEqual(evidence["workflowId"], wid)
         self.assertTrue(evidence["gate"]["ok"], "the recorded evidence is not the gate verdict")
@@ -671,7 +674,9 @@ class PassLifecycleTests(unittest.TestCase):
         command_a = "import sys, pathlib; sys.exit(0 if pathlib.Path('flag').exists() else 1)"
         a_red = self.verify_run(sys.executable, "-c", command_a)
         self.assertNotEqual(a_red.returncode, 0, "the runner reported success for a failing command")
-        self.assertEqual(json.loads(self.cli("status").stdout)["verification"], "pending")
+        red_state = json.loads(self.cli("status").stdout)
+        self.assertEqual(red_state["verification"], "pending")
+        self.assertEqual(red_state["nextAction"], "verification", "a red run advertised progress it had not made")
 
         # An unrelated green command must not mask A's latest red result.
         b_ok = self.verify_run(sys.executable, "-c", "print('ok')")
@@ -687,6 +692,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(a_green.returncode, 0, a_green.stdout + a_green.stderr)
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["verification"], "passed")
+        self.assertEqual(state["nextAction"], "code-review", "a recorded phase was named as the next action")
 
         evidence = json.loads(
             (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / resolve_repo_identity(self.repo).key
