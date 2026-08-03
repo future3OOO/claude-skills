@@ -102,14 +102,14 @@ python3 "$HOME/.claude/skills/production-preflight/scripts/record-preflight.py" 
 ### 6. TDD RED or not-required
 
 For behavior changes invoke `tdd` and drive one real-Seam RED/GREEN tracer
-bullet at a time. In this governed workflow `tdd-run` is the required producer
+bullet at a time. In this governed workflow `tdd-run.py` is the required producer
 for behavior-change TDD state (`set-phase` does not accept the `tdd` phase);
 outside the governed workflow it stays optional. It keeps a bounded summary
 and advances the TDD state; it is not proof by itself. For genuinely
 non-behavioral work record the decision with the full producer command:
 
 ```bash
-python3 "$HOME/.claude/skills/tdd/scripts/tdd-run" --repo "$PWD" \
+python3 "$HOME/.claude/skills/tdd/scripts/tdd-run.py" --repo "$PWD" \
   --slug "<task>" --not-required "<specific non-behavioral reason>"
 ```
 
@@ -161,7 +161,7 @@ per-command-latest — any distinct command whose latest run failed keeps
 verification pending until that same command reruns green:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/verify-run" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/verify-run.py" \
   --repo "$PWD" --slug "<task>" -- <verification command>
 ```
 

@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/code-quality-gate.sh"
+            "command": "/home/prop_/.claude/hooks/code-quality-gate.py"
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/rcf-intake-gate.sh",
+            "command": "/home/prop_/.claude/hooks/rcf-intake-gate.py",
             "timeout": 30,
             "statusMessage": "Checking Repo Context Forge intake gate"
           }
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/skill-discipline-rearm.sh",
+            "command": "/home/prop_/.claude/hooks/skill-discipline-rearm.py",
             "timeout": 10
           }
         ]
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/pre-compact-flush.sh",
+            "command": "/home/prop_/.claude/hooks/pre-compact-flush.py",
             "timeout": 10
           }
         ]
@@ -96,7 +96,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/prop_/.claude/hooks/post-edit-blast-radius.sh"
+            "command": "/home/prop_/.claude/hooks/post-edit-blast-radius.py"
           }
         ]
       }

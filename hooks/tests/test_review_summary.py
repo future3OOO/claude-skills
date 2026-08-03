@@ -24,7 +24,7 @@ RECORDER = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
 RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
 RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
-VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
 
 
 class ReviewSummaryTests(unittest.TestCase):

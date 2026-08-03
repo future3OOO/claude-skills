@@ -20,11 +20,11 @@ from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
-TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run"
+TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run.py"
 RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
 RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
-VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run"
+VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
 
 
 class TddSummaryTests(unittest.TestCase):
@@ -106,7 +106,7 @@ class TddSummaryTests(unittest.TestCase):
         red = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *behavior_command,
         )
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -115,7 +115,7 @@ class TddSummaryTests(unittest.TestCase):
         green = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         self.git("add", "app.py")
@@ -124,7 +124,7 @@ class TddSummaryTests(unittest.TestCase):
         valid_runs = [entry for entry in summary["runs"] if entry["valid"]]
         self.assertEqual([entry["phase"] for entry in valid_runs], ["red", "green"])
         self.assertEqual(summary["status"], "passed")
-        self.assertEqual(summary["seam"], "tdd-run CLI subprocess boundary")
+        self.assertEqual(summary["seam"], "tdd-run.py CLI subprocess boundary")
         for removed in ("head", "startingHead", "candidateChangeFingerprint", "commandSha256"):
             self.assertNotIn(removed, summary)
 
@@ -143,7 +143,7 @@ class TddSummaryTests(unittest.TestCase):
         red = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *behavior_command,
         )
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -151,7 +151,7 @@ class TddSummaryTests(unittest.TestCase):
         green = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
@@ -160,7 +160,7 @@ class TddSummaryTests(unittest.TestCase):
         mismatched = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "a different behavior",
-            "--seam", "tdd-run CLI subprocess boundary", "--", sys.executable, "-c",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", sys.executable, "-c",
             f"open({str(green_marker)!r}, 'w').close()",
         )
         self.assertEqual(mismatched.returncode, 2, mismatched.stdout + mismatched.stderr)
@@ -184,7 +184,7 @@ class TddSummaryTests(unittest.TestCase):
         red = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *behavior_command,
         )
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -192,7 +192,7 @@ class TddSummaryTests(unittest.TestCase):
         green = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
@@ -200,7 +200,7 @@ class TddSummaryTests(unittest.TestCase):
         red_after_green = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *behavior_command,
         )
         self.assertEqual(red_after_green.returncode, 2, red_after_green.stdout + red_after_green.stderr)
@@ -215,7 +215,7 @@ class TddSummaryTests(unittest.TestCase):
         regressed = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(regressed.returncode, 2, regressed.stdout + regressed.stderr)
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -235,7 +235,7 @@ class TddSummaryTests(unittest.TestCase):
         red = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *behavior_command,
         )
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -259,7 +259,7 @@ class TddSummaryTests(unittest.TestCase):
         stale_green = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(
             stale_green.returncode, 2,
@@ -280,7 +280,7 @@ class TddSummaryTests(unittest.TestCase):
         raced = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *replace_and_fail,
         )
         self.assertEqual(raced.returncode, 2, raced.stdout + raced.stderr)
@@ -296,7 +296,7 @@ class TddSummaryTests(unittest.TestCase):
             args = [
                 TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
                 "--phase", phase, "--behavior", behavior,
-                "--seam", "tdd-run CLI subprocess boundary",
+                "--seam", "tdd-run.py CLI subprocess boundary",
             ]
             if expected:
                 args += ["--expected-failure", expected]
@@ -357,7 +357,7 @@ class TddSummaryTests(unittest.TestCase):
         premature = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "too early",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", sys.executable, "-c", "raise AssertionError('AssertionError: early')",
         )
         self.assertEqual(premature.returncode, 2, "a RED at intake bypassed the ordering gate")
@@ -397,7 +397,7 @@ class TddSummaryTests(unittest.TestCase):
         red = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *behavior_command,
         )
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -405,7 +405,7 @@ class TddSummaryTests(unittest.TestCase):
         green = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         summary_path = Path(json.loads(green.stdout.splitlines()[-1])["summaryPath"])
@@ -443,7 +443,7 @@ class TddSummaryTests(unittest.TestCase):
         rerun = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(rerun.returncode, 2, rerun.stdout + rerun.stderr)
         self.assertIn("terminal", rerun.stderr)
@@ -458,7 +458,7 @@ class TddSummaryTests(unittest.TestCase):
         silent = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", sys.executable, "-c", "raise SystemExit(1)",
         )
         self.assertEqual(silent.returncode, 2, silent.stdout + silent.stderr)
@@ -466,7 +466,7 @@ class TddSummaryTests(unittest.TestCase):
         timed_out = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--timeout", "1", "--", sys.executable, "-c", "import time; print('AssertionError'); time.sleep(30)",
         )
         self.assertEqual(timed_out.returncode, 2, timed_out.stdout + timed_out.stderr)
@@ -474,7 +474,7 @@ class TddSummaryTests(unittest.TestCase):
         genuine = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", sys.executable, "-c", "import app; assert app.value == 2, 'AssertionError: value must be 2'",
         )
         self.assertEqual(genuine.returncode, 0, genuine.stdout + genuine.stderr)
@@ -482,7 +482,7 @@ class TddSummaryTests(unittest.TestCase):
         wrong_command = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "captures command outcome",
-            "--seam", "tdd-run CLI subprocess boundary", "--", sys.executable, "-c", "import app; assert app.value == 2",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", sys.executable, "-c", "import app; assert app.value == 2",
         )
         self.assertEqual(wrong_command.returncode, 2, wrong_command.stdout + wrong_command.stderr)
         wrong_seam = self.run_script(
@@ -513,7 +513,7 @@ class TddSummaryTests(unittest.TestCase):
         red = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "red", "--behavior", "scope changed after the not-required decision",
-            "--seam", "tdd-run CLI subprocess boundary", "--expected-failure", "AssertionError",
+            "--seam", "tdd-run.py CLI subprocess boundary", "--expected-failure", "AssertionError",
             "--", *behavior_command,
         )
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -530,7 +530,7 @@ class TddSummaryTests(unittest.TestCase):
         green = self.run_script(
             TDD_RUN, "--cwd", str(self.repo), "--slug", "tdd-summary",
             "--phase", "green", "--behavior", "scope changed after the not-required decision",
-            "--seam", "tdd-run CLI subprocess boundary", "--", *behavior_command,
+            "--seam", "tdd-run.py CLI subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         state = json.loads(self.run_script(PASS_STATE, "status", "--repo", str(self.repo)).stdout)

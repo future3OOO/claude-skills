@@ -174,7 +174,7 @@ assert gate.returncode == 0, gate.stdout + gate.stderr
 fd, gate_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, gate.stdout.encode()); o.close(fd)
 producer(root + "/skills/production-code/scripts/record-production-code.py", "--input", gate_path)
 w.set_phase(identity, "implementation", "passed")
-vr = sp.run([sys.executable, root + "/skills/repo-production-workflow/scripts/verify-run",
+vr = sp.run([sys.executable, root + "/skills/repo-production-workflow/scripts/verify-run.py",
              "--repo", sys.argv[2], "--slug", slug, "--", sys.executable, "-c", "pass"],
             capture_output=True, text=True)
 assert vr.returncode == 0, vr.stdout + vr.stderr
