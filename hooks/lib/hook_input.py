@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+from .workflow_state import safe_slug
+
 
 def read_hook_payload() -> dict[str, object]:
     try:
@@ -26,3 +28,13 @@ def edited_path(payload: dict[str, object]) -> Path | None:
 def working_directory(payload: dict[str, object]) -> str:
     value = payload.get("cwd")
     return value if isinstance(value, str) and value else os.getcwd()
+
+
+def session_key(payload: dict[str, object]) -> str:
+    """The session identifier, normalised for use as one state path segment.
+
+    Derived here so the hooks that record an association and the hook that reads
+    it cannot drift, and so a hostile `session_id` is bounded to a single safe
+    segment before it ever reaches the filesystem.
+    """
+    return safe_slug(str(payload.get("session_id") or "unknown"))[:40]

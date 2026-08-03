@@ -15,7 +15,7 @@ from typing import Iterable, Iterator
 
 import fcntl
 
-from .repo_identity import RepoIdentity
+from .repo_identity import CanonicalRoot, RepoIdentity
 
 _PATH_POLICY_FILE = (
     Path(__file__).resolve().parents[2]
@@ -49,6 +49,19 @@ def state_root() -> Path:
 
 def repo_state_dir(identity: RepoIdentity) -> Path:
     return secure_dir(state_root() / identity.key)
+
+
+def _session_dir(session: str) -> Path:
+    """Where one session's repository associations live.
+
+    The shared parent is secured here rather than left to the atomic writer:
+    that writer secures only the directory it writes into, and `mkdir` with
+    `parents=True` would create `sessions` itself under the process umask,
+    leaving every session id in this estate world-listable. Repository keys are
+    numeric checksums, so the literal name cannot collide with a
+    `repo_state_dir`.
+    """
+    return secure_dir(state_root() / "sessions") / session
 
 
 def atomic_write_bytes(path: Path, value: bytes) -> None:
@@ -112,6 +125,51 @@ def stop_session_swap(identity: RepoIdentity, session: str, key: str, value: str
     except OSError as exc:
         print(f"Stop session state unavailable: {exc}", file=sys.stderr)
         return None
+
+
+def record_session_association(session: str, identity: RepoIdentity) -> None:
+    """Record that this session edited in this repository, once.
+
+    One file per repository per session, so every write has a single writer and
+    needs no lock. The marker is never rewritten: it says the session worked
+    here, which cannot become less true, and rewriting it on every edit would
+    churn the file for nothing. Fail-soft like all Stop feedback: an association
+    only routes that feedback, so a storage failure must never change the edit
+    hook's exit status, its review invalidation, or the quality gate it runs.
+    """
+    try:
+        path = _session_dir(session) / f"{identity.key}.json"
+        if not path.exists():
+            atomic_write_json(path, {"schemaVersion": 1, "repo": identity.as_dict(), "at": utc_timestamp()})
+    except OSError as exc:
+        print(f"session association unavailable: {exc}", file=sys.stderr)
+
+
+def session_associations(session: str) -> list[RepoIdentity]:
+    """Every repository this session recorded an edit in.
+
+    The identity is read back from the marker rather than re-derived, so no
+    reader needs Git. A marker that does not parse is skipped rather than
+    raising: it can only cost this repository its Stop feedback, and one
+    unreadable file must not silence the others.
+
+    Fail-soft on the directory too, symmetrically with the writer. Reaching the
+    markers has to secure their parent first, which is a real filesystem call
+    that can fail for reasons of its own, and this is the first thing Stop does:
+    an unreadable store must degrade to the no-association fallback, never take
+    the hook down with it.
+    """
+    try:
+        markers = sorted(_session_dir(session).glob("*.json"))
+    except OSError as exc:
+        print(f"session associations unavailable: {exc}", file=sys.stderr)
+        return []
+    identities = []
+    for marker in markers:
+        repo = (read_json(marker) or {}).get("repo")
+        if isinstance(repo, dict) and isinstance(repo.get("root"), str) and isinstance(repo.get("key"), str):
+            identities.append(RepoIdentity(CanonicalRoot(repo["root"]), repo["key"]))
+    return identities
 
 
 def append_stop_latch_event(identity: RepoIdentity, record: dict) -> None:

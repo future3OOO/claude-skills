@@ -158,15 +158,37 @@ session and defers the rest here.
 | Hook | Role |
 |---|---|
 | `PreToolUse(Edit\|Write\|NotebookEdit)` | Require the recorded before-edit sequence through production preflight |
-| `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, then return quality feedback |
+| `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback |
 | `PreCompact(manual\|auto)` | Atomically flush existing state without advancing it |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary |
 | `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success, because any Stop output re-prompts the model (progress on that instance re-latches); surfaces the bounded summary otherwise. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data |
 
+`Stop` consults the workflows the session actually edited in, not the directory
+it was launched from. `PostToolUse` records one immutable marker per repository
+per session under `sessions/<session>/<repo-key>.json` in the state root,
+written only where a workflow already exists, and identity comes from the edited
+path through the same resolver the edit gate uses — no hook gains Git awareness,
+and a storage failure only prints to stderr, never changing a hook's exit
+status, its review invalidation, or the quality gate it runs. Those associations
+replace the candidate set rather than extending it: the session `cwd` slot is
+consulted only by a session that recorded no association at all, whose behaviour
+is unchanged. Markers are not retired. Retiring the last one would make a
+session indistinguishable from one that never recorded any, returning it to the
+`cwd` slot and re-opening the cross-talk this design removes; general state
+cleanup belongs to its own issue.
+
+**Release note — the latch telemetry population changed.** Events now carry the
+`repo` key of the slot they fired against, and the population they describe has
+moved: it gains worktree sessions the hook previously never visited and loses
+firings against unrelated session-`cwd` slots. Counts recorded before and after
+this change are not comparable, and any earlier conclusion about the latch's
+value was drawn from firings against session-directory slots rather than the
+passes actually being run.
+
 After latch handling, the ordinary feedback path emits bounded context
-containing changed-code status and the workflow summary, and deduplicates
-identical rendered context per session. When Git reports no changed code and no
-workflow state exists, that path emits nothing. The
+containing changed-code status and the workflow summary per consulted slot, and
+deduplicates identical rendered context per session and slot. When Git reports
+no changed code and no workflow state exists, that path emits nothing. The
 payload it reads was captured on Claude Code 2.1.220 and is kept as a test
 fixture; the delegate release is the `CODEX_ADVISOR_ACTIVE` environment
 variable.
