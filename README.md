@@ -97,7 +97,9 @@ also keeps files this repo has never tracked. Classify each unexplained
 
 - a path named in `settings.json` is live, whatever the checkout holds;
 - a path this repo tracked and then removed is an orphan of that rename or
-  deletion; `git log --all --diff-filter=D -- hooks/<name>` names the commit;
+  deletion, unless an integration has since claimed it;
+  `git log --all --diff-filter=D -- hooks/<name>` names the removing commit,
+  which is this repo's history rather than current ownership;
 - anything else has an owner you have not identified yet. Leave it in place
   until you have, because a machine integration may invoke its own file
   without registering that path here.
