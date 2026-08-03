@@ -54,7 +54,24 @@ def _terminal(state: JsonObject) -> bool:
     return state.get("phase") == "complete" and not state.get("revalidation")
 
 
-def _candidates(payload: dict[str, object], session: str) -> list[tuple[RepoIdentity, JsonObject | None]]:
+def _latchable(state: JsonObject | None) -> bool:
+    """A pass with work genuinely outstanding, ignoring this stop's transient conditions.
+
+    One predicate for both the latch decision and the measurement below, so the
+    condition that withholds a latch cannot drift from the condition that counts
+    one as withheld.
+    """
+    return (
+        state is not None
+        and not _terminal(state)
+        and not state.get("paused")
+        and bool(completion_missing(state))
+    )
+
+
+def _candidates(
+    payload: dict[str, object], session: str, running_work: bool,
+) -> list[tuple[RepoIdentity, JsonObject | None]]:
     """The slots this Stop consults: the repositories the session edited in.
 
     Associations replace the candidate set; they never extend it. The payload's
@@ -63,12 +80,31 @@ def _candidates(payload: dict[str, object], session: str) -> list[tuple[RepoIden
     pass's state to another pass's agent. It stays the fallback for a session
     that recorded no association at all, where it remains the best guess
     available and today's behaviour is preserved unchanged.
+
+    That rule has a price: a pass begun or inherited at `cwd` and never edited by
+    this session is not consulted, so it goes unwatched until its first file
+    write. The price is counted here rather than argued, because this is the only
+    place that knows `cwd` was passed over — the payload's `cwd` reaches no state
+    file, so nothing downstream could reconstruct it. Recording only: the
+    returned candidates are exactly what they were.
     """
-    associated = session_associations(session)
-    if associated:
-        return [(identity, read_workflow(identity)) for identity in associated]
-    identity = try_resolve_repo_identity(working_directory(payload))
-    return [] if identity is None else [(identity, read_workflow(identity))]
+    associated = [(identity, read_workflow(identity)) for identity in session_associations(session)]
+    if not associated:
+        identity = try_resolve_repo_identity(working_directory(payload))
+        return [] if identity is None else [(identity, read_workflow(identity))]
+    if not running_work and not any(_latchable(state) for _, state in associated):
+        # Only a latch this rule actually cost: with work running, or with an
+        # association still able to latch, the baseline would not have blocked
+        # here either, and counting that would overstate the gap.
+        identity = try_resolve_repo_identity(working_directory(payload))
+        if identity is not None and all(identity.key != other.key for other, _ in associated):
+            suppressed = read_workflow(identity)
+            if _latchable(suppressed):
+                append_stop_latch_event(identity, {
+                    "event": "cwd-suppressed", "session": session, "repo": identity.key,
+                    "slug": suppressed.get("slug"), "workflowId": instance_id(suppressed),
+                })
+    return associated
 
 
 def _context(identity: RepoIdentity, state: JsonObject | None) -> str | None:
@@ -107,13 +143,13 @@ def main() -> int:
     if os.environ.get("CODEX_ADVISOR_ACTIVE"):
         return 0
     session = session_key(payload)
-    candidates = _candidates(payload, session)
     running_work = bool(payload.get("background_tasks")) or bool(payload.get("session_crons"))
+    candidates = _candidates(payload, session, running_work)
     repeat = payload.get("stop_hook_active") is True
 
     already_shown = False
     for identity, state in candidates:
-        if state is None or _terminal(state) or state.get("paused") or running_work or not completion_missing(state):
+        if not _latchable(state) or running_work:
             continue
         latch_summary = summary(identity)
         workflow_id = instance_id(state)

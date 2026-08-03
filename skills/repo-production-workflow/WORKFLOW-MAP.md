@@ -161,7 +161,7 @@ session and defers the rest here.
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback |
 | `PreCompact(manual\|auto)` | Atomically flush existing state without advancing it |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary |
-| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success, because any Stop output re-prompts the model (progress on that instance re-latches); surfaces the bounded summary otherwise. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data |
+| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success, because any Stop output re-prompts the model (progress on that instance re-latches); surfaces the bounded summary otherwise. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there, and is not a firing or an outcome: it is a per-Stop selection event counting one latch the association rule withheld, so it counts stops rather than distinct passes or sessions |
 
 `Stop` consults the workflows the session actually edited in, not the directory
 it was launched from. `PostToolUse` records one immutable marker per repository
@@ -172,7 +172,19 @@ and a storage failure only prints to stderr, never changing a hook's exit
 status, its review invalidation, or the quality gate it runs. Those associations
 replace the candidate set rather than extending it: the session `cwd` slot is
 consulted only by a session that recorded no association at all, whose behaviour
-is unchanged. Markers are not retired. Retiring the last one would make a
+is unchanged.
+
+That rule has a price, and it is the reason a `cwd-suppressed` event exists. Once
+a session records any marker, its `cwd` slot is never consulted again, so a pass
+**begun or inherited at `cwd` and never edited by this session goes unwatched
+until its first file write** — it cannot latch, and it is not reported. The
+baseline behaviour was to latch it. Both cases are indistinguishable at the hook:
+this session's own unedited `cwd` pass and another session's incomplete `cwd`
+pass present the same terminal-marker-plus-incomplete-`cwd` state, and no
+predicate over markers and workflow contents separates them, so the suppression
+is deliberate rather than an oversight. It is counted rather than only accepted,
+because the payload's `cwd` reaches no state file and an audit after the fact
+could never recover which slot was passed over. Markers are not retired. Retiring the last one would make a
 session indistinguishable from one that never recorded any, returning it to the
 `cwd` slot and re-opening the cross-talk this design removes; general state
 cleanup belongs to its own issue.

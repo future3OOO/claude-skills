@@ -600,6 +600,36 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertNotIn("decision", payload, "an unrelated cwd pass latched a session working elsewhere")
         self.assertIn("slug=associated-pass", payload["hookSpecificOutput"]["additionalContext"])
 
+    def test_a_latch_the_association_rule_suppresses_is_counted(self) -> None:
+        # The cost of consulting associations exclusively is a latch that would
+        # have fired on the cwd slot. Counting it is the only way that cost is
+        # ever observable: the payload's cwd is written to no state file, so an
+        # audit after the fact cannot reconstruct which slot was passed over.
+        elsewhere = self.second_repo("elsewhere")
+        unrelated = self.state("begin", "--slug", "unrelated-cwd-pass", repo=elsewhere)
+        self.assertEqual(unrelated.returncode, 0, unrelated.stdout + unrelated.stderr)
+        self.complete_workflow("associated-pass")
+        edited = self.post_edit("app.py")
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+        stopped = self.stop(cwd=elsewhere)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertNotIn(
+            "decision", json.loads(stopped.stdout) if stopped.stdout else {},
+            "counting the suppressed latch must not start latching it",
+        )
+
+        key = resolve_repo_identity(elsewhere).key
+        log = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / key / "stop-latch-log.jsonl"
+        events = [
+            json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+        ] if log.exists() else []
+        suppressed = [event for event in events if event["event"] == "cwd-suppressed"]
+        self.assertEqual(
+            [(event["repo"], event["slug"]) for event in suppressed], [(key, "unrelated-cwd-pass")],
+            "the latch the association rule cost was not counted against the slot it was cost in",
+        )
+
     def test_only_a_repository_with_a_pass_is_recorded_as_an_association(self) -> None:
         elsewhere = self.second_repo("elsewhere")
         begun = self.state("begin", "--slug", "associated-pass")
