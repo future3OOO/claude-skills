@@ -51,7 +51,7 @@ rsync -a skills/ ~/.claude/skills/
 rsync -a hooks/ ~/.claude/hooks/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
-chmod +x ~/.claude/hooks/*.py ~/.claude/hooks/*.sh
+chmod +x ~/.claude/hooks/*.py
 rm -f ~/.claude/hooks/codex-challenge-commit-gate.sh
 rm -f ~/.claude/hooks/repoforge-commit-gate.sh
 ```
@@ -59,9 +59,14 @@ rm -f ~/.claude/hooks/repoforge-commit-gate.sh
 The two removed files are obsolete PR #2 commit gates. Their deletion is
 intentional. Do not use `--delete` for the directory copies: HerdR and other
 machine integrations may own additional live files. The cost of that choice is
-that a file renamed or deleted upstream is left behind in `~/.claude`, still
-executable and still matched by the `chmod` globs above, so every rename or
-deletion orphans the old name until someone retires it.
+that a file renamed or deleted upstream is left behind in `~/.claude`, so every
+rename or deletion orphans the old name until someone retires it.
+
+The `chmod` covers `*.py` only. Every tracked top-level hook is Python, and the
+one live shell hook is registered as `bash '<path>' session`, so its executable
+bit is never read. Adding `*.sh` back would grant nothing to that hook and would
+re-arm every orphaned `.sh` on each install — the install would maintain the
+files it should be ignoring.
 
 Verify the installed estate itself, not only the checkout:
 
@@ -91,9 +96,9 @@ chmod -x ~/.claude/hooks/<old-name>.sh.deprecated
 ```
 
 Append the suffix; do not prefix the name. A `DEPRECATED-` prefix still ends in
-`.sh`, so the install's `chmod` would restore its executable bit on the next
-run. Delete the retired files once the replacements have carried a full
-session.
+`.sh`, so the file keeps matching every extension glob and keeps reading as a
+shell hook. The suffix takes it out of that matching entirely. Delete the
+retired files once the replacements have carried a full session.
 
 ## External dependencies
 
