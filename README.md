@@ -90,21 +90,24 @@ compares content only, and both test scripts are launched through `bash`, which
 does not need the executable bit. A non-executable hook fails silently, so the
 mode is worth its own line.
 
-An `Only in ~/.claude/` line naming a file the checkout no longer carries is an
-orphan of a rename or deletion, not an external integration. Retire it rather
-than leaving it: an orphan keeps its executable bit, and `ls` does not
-distinguish it from a live hook. PR #55 renamed seven python-shebang files and
-orphaned all seven at once.
+Absence from the checkout does not make a file an orphan. `herdr-agent-state.sh`
+is absent and live. Classify each `Only in ~/.claude/` line by its registration:
+a path named in `settings.json` is live whatever the checkout holds, and
+retiring it breaks the hook it serves. Everything else is an orphan of a rename
+or deletion. Retire orphans rather than leaving them, because an orphan keeps
+its executable bit and `ls` does not distinguish it from a live hook. PR #55
+renamed seven python-shebang files and orphaned all seven at once.
 
 ```bash
-mv ~/.claude/hooks/<old-name>.sh ~/.claude/hooks/<old-name>.sh.deprecated
-chmod -x ~/.claude/hooks/<old-name>.sh.deprecated
+mv ~/.claude/hooks/<old-file> ~/.claude/hooks/<old-file>.deprecated
+chmod -x ~/.claude/hooks/<old-file>.deprecated
 ```
 
-Append the suffix; do not prefix the name. A `DEPRECATED-` prefix still ends in
-`.sh` and still matches `*.sh`; the suffix matches neither `*.sh` nor `*.py`.
-Delete the retired files once the replacements have carried a full session, and
-expect them in the hooks diff until then.
+`<old-file>` is the whole existing name, whatever its extension: `.sh`, `.py`,
+or none. Append; do not prefix. A prefixed file keeps its original extension and
+still matches `*.sh` or `*.py`, while an appended one matches neither. Delete
+the retired files once the replacements have carried a full session, and expect
+them in the hooks diff until then.
 
 ## External dependencies
 
