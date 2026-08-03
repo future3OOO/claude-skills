@@ -42,7 +42,8 @@ def _validated(value: dict[str, object]) -> tuple[list[dict[str, object]], list[
         identifier = finding.get("id")
         if not isinstance(identifier, str) or not identifier or identifier in finding_ids:
             raise ValueError("finding ids must be non-empty and unique")
-        if finding.get("axis") not in {"Standards", "Spec"}:
+        axis = finding.get("axis")
+        if not isinstance(axis, str) or axis not in {"Standards", "Spec"}:
             raise ValueError(f"finding {identifier} has an invalid axis")
         for field in ("severity", "location", "claim", "evidence", "consequence", "smallest_action"):
             if not isinstance(finding.get(field), str) or not finding.get(field):
