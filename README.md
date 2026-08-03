@@ -77,12 +77,18 @@ diff -u CLAUDE.md ~/.claude/CLAUDE.md
 diff -u settings.json ~/.claude/settings.json
 diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
 diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
+find ~/.claude/hooks -maxdepth 1 -name '*.py' ! -perm -u+x
 ```
 
 The final hooks diff should report only deliberate externally managed files
-(currently `herdr-agent-state.sh`). Any other difference needs reconciliation.
-Git records executable modes, but verify them after installation because a
-non-executable hook fails silently.
+(currently `herdr-agent-state.sh`) and files retired under the procedure below.
+Any other difference needs reconciliation.
+
+The `find` prints nothing when every installed hook is executable. It is a
+separate command because neither of the checks above covers modes: `diff -qr`
+compares content only, and both test scripts are launched through `bash`, which
+does not need the executable bit. A non-executable hook fails silently, so the
+mode is worth its own line.
 
 An `Only in ~/.claude/` line naming a file the checkout no longer carries is an
 orphan of a rename or deletion, not an external integration. Retire it rather
@@ -96,9 +102,9 @@ chmod -x ~/.claude/hooks/<old-name>.sh.deprecated
 ```
 
 Append the suffix; do not prefix the name. A `DEPRECATED-` prefix still ends in
-`.sh`, so the file keeps matching every extension glob and keeps reading as a
-shell hook. The suffix takes it out of that matching entirely. Delete the
-retired files once the replacements have carried a full session.
+`.sh` and still matches `*.sh`; the suffix matches neither `*.sh` nor `*.py`.
+Delete the retired files once the replacements have carried a full session, and
+expect them in the hooks diff until then.
 
 ## External dependencies
 
