@@ -51,14 +51,22 @@ rsync -a skills/ ~/.claude/skills/
 rsync -a hooks/ ~/.claude/hooks/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
-chmod +x ~/.claude/hooks/*.py ~/.claude/hooks/*.sh
+chmod +x ~/.claude/hooks/*.py
 rm -f ~/.claude/hooks/codex-challenge-commit-gate.sh
 rm -f ~/.claude/hooks/repoforge-commit-gate.sh
 ```
 
 The two removed files are obsolete PR #2 commit gates. Their deletion is
 intentional. Do not use `--delete` for the directory copies: HerdR and other
-machine integrations may own additional live files.
+machine integrations may own additional live files. The cost of that choice is
+that a file renamed or deleted upstream is left behind in `~/.claude`, so every
+rename or deletion orphans the old name until someone retires it.
+
+The `chmod` covers `*.py` only. Every tracked top-level hook is Python, and the
+one live shell hook is registered as `bash '<path>' session`, so its executable
+bit is never read. Adding `*.sh` back would grant nothing to that hook and would
+re-arm every orphaned `.sh` on each install — the install would maintain the
+files it should be ignoring.
 
 Verify the installed estate itself, not only the checkout:
 
@@ -69,12 +77,47 @@ diff -u CLAUDE.md ~/.claude/CLAUDE.md
 diff -u settings.json ~/.claude/settings.json
 diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
 diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
+find ~/.claude/hooks -maxdepth 1 -name '*.py' ! -perm -u+x
 ```
 
 The final hooks diff should report only deliberate externally managed files
-(currently `herdr-agent-state.sh`). Any other difference needs reconciliation.
-Git records executable modes, but verify them after installation because a
-non-executable hook fails silently.
+(currently `herdr-agent-state.sh`) and files retired under the procedure below.
+Any other difference needs reconciliation.
+
+The `find` prints nothing when every installed hook is executable. It is a
+separate command because neither of the checks above covers modes: `diff -qr`
+compares content only, and both test scripts are launched through `bash`, which
+does not need the executable bit. A non-executable hook fails silently, so the
+mode is worth its own line.
+
+Absence from the checkout does not make a file an orphan. `herdr-agent-state.sh`
+is absent and live, and because the install never deletes, `~/.claude/hooks/`
+also keeps files this repo has never tracked. Classify each unexplained
+`Only in ~/.claude/` line by positive evidence, in this order:
+
+- a path named in `settings.json` is live, whatever the checkout holds;
+- a path this repo tracked and then removed is an orphan of that rename or
+  deletion, unless an integration has since claimed it;
+  `git log --all --diff-filter=D -- hooks/<name>` names the removing commit,
+  which is this repo's history rather than current ownership;
+- anything else has an owner you have not identified yet. Leave it in place
+  until you have, because a machine integration may invoke its own file
+  without registering that path here.
+
+Retire orphans rather than leaving them, because an orphan keeps its executable
+bit and `ls` does not distinguish it from a live hook. PR #55 renamed seven
+python-shebang files and orphaned all seven at once.
+
+```bash
+mv ~/.claude/hooks/<old-file> ~/.claude/hooks/<old-file>.deprecated
+chmod -x ~/.claude/hooks/<old-file>.deprecated
+```
+
+`<old-file>` is the whole existing name, whatever its extension: `.sh`, `.py`,
+or none. Append; do not prefix. A prefixed file keeps its original extension and
+still matches `*.sh` or `*.py`, while an appended one matches neither. Delete
+the retired files once the replacements have carried a full session, and expect
+them in the hooks diff until then.
 
 ## External dependencies
 
