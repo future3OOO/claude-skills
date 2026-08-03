@@ -85,7 +85,7 @@ Ours: five hooks [2][8], the ledger with a producer per load-bearing step [4][5]
 - Invalidate on edit, mechanically. Stale approvals are worse than none.
 - Re-measure every recurring reviewer finding fresh. Cached dispositions rot; we learned this the hard way.
 - Docs describing runtime behavior: the code is the owner, the doc is the defect when they disagree.
-- Name every executable by extension, not by shebang. A code graph selects on the name, so an extensionless runner never appears as a caller, and a blast-radius answer that misses it is shaped exactly like a correct one. The convention that reads best in a shell is the one that blinds your map.
+- Name every executable by extension, not by shebang. A code graph selects on the name, so an extensionless runner never appears as a caller in it.
 - Keep enforcement out of Git. Ledger and hooks, nothing else.
 - Audit the transcript against the ledger sometimes. Count what was invoked versus what was recorded. It's the only check that catches a liar.
 
