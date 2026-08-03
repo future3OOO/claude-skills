@@ -70,7 +70,7 @@ def _latchable(state: JsonObject | None) -> bool:
 
 
 def _candidates(
-    payload: dict[str, object], session: str, running_work: bool,
+    payload: dict[str, object], session: str | None, running_work: bool,
 ) -> list[tuple[RepoIdentity, JsonObject | None]]:
     """The slots this Stop consults: the repositories the session edited in.
 
@@ -88,7 +88,13 @@ def _candidates(
     file, so nothing downstream could reconstruct it. Recording only: the
     returned candidates are exactly what they were.
     """
-    associated = [(identity, read_workflow(identity)) for identity in session_associations(session)]
+    # No session, no associations: a payload that carries no id belongs to no
+    # session, so it reads nothing and takes the cwd fallback below, which is
+    # exactly what it did before associations existed.
+    associated = (
+        [(identity, read_workflow(identity)) for identity in session_associations(session)]
+        if session is not None else []
+    )
     if not associated:
         identity = try_resolve_repo_identity(working_directory(payload))
         return [] if identity is None else [(identity, read_workflow(identity))]
@@ -143,27 +149,34 @@ def main() -> int:
     if os.environ.get("CODEX_ADVISOR_ACTIVE"):
         return 0
     session = session_key(payload)
+    # Repository-scoped storage only, so a shared name here cannot cross repositories
+    # the way a shared association key would; the existing default is kept so the
+    # dedupe file and the telemetry stay comparable with what they already hold.
+    feedback_session = session or "unknown"
     running_work = bool(payload.get("background_tasks")) or bool(payload.get("session_crons"))
     candidates = _candidates(payload, session, running_work)
     repeat = payload.get("stop_hook_active") is True
 
     already_shown = False
     for identity, state in candidates:
-        if not _latchable(state) or running_work:
+        # running_work first: it is the cheap release the original guard
+        # short-circuited on, and evaluating the readiness check ahead of it would
+        # run completion_missing on a stop that is being permitted anyway.
+        if running_work or not _latchable(state):
             continue
         latch_summary = summary(identity)
         workflow_id = instance_id(state)
         # A replacement pass can reproduce the previous summary verbatim, so the
         # release compares the instance too and never inherits another pass's block.
         fingerprint = f"{workflow_id}:{latch_summary}"
-        previous_fingerprint = stop_session_swap(identity, session, "blockFingerprint", fingerprint)
+        previous_fingerprint = stop_session_swap(identity, feedback_session, "blockFingerprint", fingerprint)
         if repeat and previous_fingerprint == fingerprint:
             # Any stdout at Stop re-prompts the model, so the no-progress repeat
             # must be a bare success or the latch spins to the cap. It continues
             # rather than returns: a second incomplete pass this session has not
             # been shown yet, and one already-shown slot must not starve it.
             append_stop_latch_event(identity, {
-                "event": "spun", "session": session, "repo": identity.key,
+                "event": "spun", "session": feedback_session, "repo": identity.key,
                 "slug": state.get("slug"), "workflowId": workflow_id,
             })
             already_shown = True
@@ -181,7 +194,7 @@ def main() -> int:
             + recovery
         )[:3600]
         append_stop_latch_event(identity, {
-            "event": "latched", "session": session, "repo": identity.key, "slug": state.get("slug"),
+            "event": "latched", "session": feedback_session, "repo": identity.key, "slug": state.get("slug"),
             "workflowId": workflow_id, "nextAction": state.get("nextAction"),
         })
         print(json.dumps({"decision": "block", "reason": reason}))
@@ -196,14 +209,14 @@ def main() -> int:
         # fingerprint so the next incomplete pass latches fresh. Guarded on state
         # so the clean no-workflow path persists nothing, and classified by the
         # terminal predicate: an open revalidation window is pending, not done.
-        if state is not None and (previous_block := stop_session_swap(identity, session, "blockFingerprint", "")):
+        if state is not None and (previous_block := stop_session_swap(identity, feedback_session, "blockFingerprint", "")):
             how = "paused" if state.get("paused") else ("completed" if _terminal(state) else "other")
             append_stop_latch_event(identity, {
-                "event": "resolved", "how": how, "session": session, "repo": identity.key,
+                "event": "resolved", "how": how, "session": feedback_session, "repo": identity.key,
                 "slug": state.get("slug"), "workflowId": instance_id(state),
             })
         context = _context(identity, state)
-        if context is not None and stop_session_swap(identity, session, "message", context) != context:
+        if context is not None and stop_session_swap(identity, feedback_session, "message", context) != context:
             sections.append(context)
 
     if not sections:

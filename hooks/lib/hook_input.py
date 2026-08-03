@@ -30,11 +30,20 @@ def working_directory(payload: dict[str, object]) -> str:
     return value if isinstance(value, str) and value else os.getcwd()
 
 
-def session_key(payload: dict[str, object]) -> str:
-    """The session identifier, normalised for use as one state path segment.
+def session_key(payload: dict[str, object]) -> str | None:
+    """The session identifier as one state path segment, or None when absent.
 
-    Derived here so the hooks that record an association and the hook that reads
+    Derived here so the hook that records an association and the hook that reads
     it cannot drift, and so a hostile `session_id` is bounded to a single safe
     segment before it ever reaches the filesystem.
+
+    Absence is returned rather than defaulted. A session key names a per-session
+    set, so defaulting a missing id to any shared literal would file every
+    anonymous payload under one identity and let one repository's pass reach
+    another's Stop. Callers that want a display name for repository-scoped
+    storage supply their own fallback.
     """
-    return safe_slug(str(payload.get("session_id") or "unknown"))[:40]
+    value = payload.get("session_id")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return safe_slug(value)[:40]

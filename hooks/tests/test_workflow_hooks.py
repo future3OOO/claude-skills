@@ -95,20 +95,28 @@ class WorkflowHookTests(unittest.TestCase):
         )
 
     def post_edit(self, relative: str, *, repo: Path | None = None,
-                  session: str = SESSION) -> subprocess.CompletedProcess[str]:
+                  session: str | None = SESSION) -> subprocess.CompletedProcess[str]:
         target = repo or self.repo
+        # session=None omits the field entirely rather than blanking it: an
+        # anonymous payload is one that never carried the key.
+        payload: dict[str, object] = {"tool_input": {"file_path": str(target / relative)}}
+        if session is not None:
+            payload["session_id"] = session
         return subprocess.run(
-            [str(POST_EDIT)], cwd=target, env=self.env, text=True,
-            input=json.dumps({"session_id": session, "tool_input": {"file_path": str(target / relative)}}),
+            [str(POST_EDIT)], cwd=target, env=self.env, text=True, input=json.dumps(payload),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
     def stop(self, *, shape: str = "natural", env_extra: dict[str, str] | None = None,
              session_crons: list | None = None, cwd: Path | None = None,
-             session: str = SESSION) -> subprocess.CompletedProcess[str]:
+             session: str | None = SESSION) -> subprocess.CompletedProcess[str]:
         env = {**self.env, **(env_extra or {})}
         payload = dict(json.loads(FIXTURE.read_text(encoding="utf-8"))["shapes"][shape])
-        payload.update({"cwd": str(cwd or self.repo), "session_id": session})
+        payload.update({"cwd": str(cwd or self.repo)})
+        # An anonymous payload never carried the key, so drop it rather than blank it.
+        payload.pop("session_id", None)
+        if session is not None:
+            payload["session_id"] = session
         if session_crons is not None:
             payload["session_crons"] = session_crons
         return subprocess.run(
@@ -629,6 +637,77 @@ class WorkflowHookTests(unittest.TestCase):
             [(event["repo"], event["slug"]) for event in suppressed], [(key, "unrelated-cwd-pass")],
             "the latch the association rule cost was not counted against the slot it was cost in",
         )
+
+    def test_running_work_releases_stop_without_reading_completion(self) -> None:
+        # The permit for running work is checked before readiness, so a workflow
+        # whose recorded state cannot be evaluated still releases. Ordering, not
+        # exception handling: swallowing the error here would hide exactly the
+        # readiness failures the latch exists to enforce.
+        begun = self.state("begin", "--slug", "running-work-release")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        state_path = (
+            Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
+            / resolve_repo_identity(self.repo).key / "workflow.json"
+        )
+        stored = json.loads(state_path.read_text(encoding="utf-8"))
+        # JSON-valid but unhashable, which the read path accepts and the readiness
+        # check cannot test for membership; the recorder refuses to write it, an
+        # older or hand-edited file can still hold it.
+        stored["codeReview"] = {"status": "passed", "findings": []}
+        state_path.write_text(json.dumps(stored, sort_keys=True), encoding="utf-8")
+
+        released = self.stop(shape="natural-with-background-task")
+        self.assertEqual(
+            released.returncode, 0,
+            "a stop permitted by running work evaluated readiness and died: " + released.stderr,
+        )
+        # Exit zero alone would also describe a block, which is the outcome this
+        # permit exists to prevent, so the decision itself is what is asserted.
+        self.assertNotIn(
+            "decision", json.loads(released.stdout) if released.stdout else {},
+            "running work did not release the stop",
+        )
+
+    def test_a_payload_without_a_session_id_associates_nothing(self) -> None:
+        # A session key is per-session by definition. Defaulting a missing id to a
+        # shared literal made every anonymous invocation share one association
+        # bucket, so one anonymous session's repository blocked another's Stop —
+        # issue #44's cross-talk, reintroduced one level up.
+        elsewhere = self.second_repo("elsewhere")
+        mine = self.state("begin", "--slug", "anon-edited")
+        self.assertEqual(mine.returncode, 0, mine.stdout + mine.stderr)
+        theirs = self.state("begin", "--slug", "anon-cwd-pass", repo=elsewhere)
+        self.assertEqual(theirs.returncode, 0, theirs.stdout + theirs.stderr)
+
+        edited = self.post_edit("app.py", session=None)
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+        stopped = self.stop(cwd=elsewhere, session=None)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertNotIn(
+            "anon-edited", stopped.stdout,
+            "an anonymous payload reached another anonymous session's repository",
+        )
+        # Blocking specifically: non-blocking context would also carry the slug,
+        # so naming it is not evidence the cwd pass was actually latched.
+        decision = json.loads(stopped.stdout)
+        self.assertEqual(decision.get("decision"), "block", "the anonymous Stop lost its own cwd fallback")
+        self.assertIn("slug=anon-cwd-pass", decision["reason"])
+
+        sessions = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions"
+        self.assertEqual(
+            sorted(path.name for path in sessions.iterdir()) if sessions.exists() else [], [],
+            "a payload with no session id recorded an association anyway",
+        )
+        # The association is the only thing withheld. Invalidation is visible in
+        # the phase; the gate is only proven by a payload it must reject, since a
+        # clean tree exits zero whether the gate ran or not.
+        self.assertEqual(json.loads(self.state("status").stdout)["phase"], "implementation")
+        escape = "TO" + "DO"
+        (self.repo / "app.py").write_text(f"value = 2  # {escape}: invalid production escape\n", encoding="utf-8")
+        gated = self.post_edit("app.py", session=None)
+        self.assertEqual(gated.returncode, 2, gated.stdout + gated.stderr)
+        self.assertIn("production-code gate FAILED", gated.stderr)
 
     def test_only_a_repository_with_a_pass_is_recorded_as_an_association(self) -> None:
         elsewhere = self.second_repo("elsewhere")

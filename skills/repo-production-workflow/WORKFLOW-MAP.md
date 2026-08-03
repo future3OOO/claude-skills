@@ -172,7 +172,13 @@ and a storage failure only prints to stderr, never changing a hook's exit
 status, its review invalidation, or the quality gate it runs. Those associations
 replace the candidate set rather than extending it: the session `cwd` slot is
 consulted only by a session that recorded no association at all, whose behaviour
-is unchanged.
+is unchanged. A payload carrying no `session_id` belongs to no session, so it
+records no association and reads none, and therefore keeps that `cwd` fallback —
+the association key is never defaulted to a shared literal, because every
+anonymous payload would then share one identity and one repository's pass could
+reach another's Stop. The repository-scoped per-session feedback file and the
+latch telemetry keep their own `unknown` display name, which cannot cross
+repositories.
 
 That rule has a price, and it is the reason a `cwd-suppressed` event exists. Once
 a session records any marker, its `cwd` slot is never consulted again, so a pass

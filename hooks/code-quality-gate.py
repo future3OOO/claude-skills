@@ -30,9 +30,12 @@ def main() -> int:
         return 0
 
     # Only where a pass exists: a repository the session merely touched has no
-    # workflow for Stop to consult, so a marker for it would be noise.
-    if invalidate_after_edit(identity, relative) is not None:
-        record_session_association(session_key(payload), identity)
+    # workflow for Stop to consult, so a marker for it would be noise. The
+    # association is the only thing an anonymous payload withholds — invalidation
+    # above and the quality gate below still run for it.
+    session = session_key(payload)
+    if invalidate_after_edit(identity, relative) is not None and session is not None:
+        record_session_association(session, identity)
     if not is_code_path(relative):
         return 0
 
