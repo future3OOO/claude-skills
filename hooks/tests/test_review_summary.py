@@ -182,6 +182,46 @@ class ReviewSummaryTests(unittest.TestCase):
             stale["missing"],
         )
 
+    def test_an_unhashable_disposition_field_is_refused_not_crashed(self) -> None:
+        """A complete finding is needed to reach the membership tests, which is why
+        this went unnoticed: every earlier required-field check refuses first."""
+        finding = {
+            "id": "F1", "axis": "Standards", "severity": "high", "material": True,
+            "location": "app.py:1", "claim": "c", "evidence": "e",
+            "consequence": "k", "smallest_action": "s",
+        }
+        identity = resolve_repo_identity(self.repo)
+        artifact = self.tmp / "state" / identity.key / "review-review-summary.json"
+        path = self.tmp / "unhashable.json"
+        path.write_text(json.dumps({
+            "findings": [finding],
+            "dispositions": [{"finding_id": [], "status": "fixed", "evidence": "x"}],
+        }), encoding="utf-8")
+
+        refused = self.run_script(
+            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid,
+            "--resolved-model", "gpt-5", "--review-context-id", "unhashable-1", "--input", str(path),
+        )
+        self.assertEqual(refused.returncode, 2, "an unhashable finding_id crashed instead of refusing")
+        self.assertIn("must reference a finding", refused.stderr)
+        self.assertFalse(artifact.exists(), "a refused document wrote review evidence")
+        state = json.loads(self.run_script(PASS_STATE, "status").stdout)
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+
+        path.write_text(json.dumps({
+            "findings": [finding],
+            "dispositions": [{"finding_id": "F1", "status": {}, "evidence": "x"}],
+        }), encoding="utf-8")
+        refused = self.run_script(
+            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid,
+            "--resolved-model", "gpt-5", "--review-context-id", "unhashable-2", "--input", str(path),
+        )
+        self.assertEqual(refused.returncode, 2, "an unhashable status crashed instead of refusing")
+        self.assertIn("invalid or duplicate disposition", refused.stderr)
+        self.assertFalse(artifact.exists(), "a refused document wrote review evidence")
+        state = json.loads(self.run_script(PASS_STATE, "status").stdout)
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
+
     def test_rejected_recorder_calls_leave_evidence_untouched(self) -> None:
         rebegun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
         self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
