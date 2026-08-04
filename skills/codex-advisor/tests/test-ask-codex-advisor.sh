@@ -278,6 +278,16 @@ out=$(env_invoke "$envtmp/evidence.json"); status=$?
 check_status "malformed gitnexus JSON refused" 2 "$status"
 check "malformed refusal names invalid JSON" "gitnexus evidence is not valid JSON" "$out"
 
+# RFC 8259 has no NaN/Infinity constants; Python's default decoder accepts all
+# three, so each token must land in the same invalid-JSON refusal class.
+for constant in NaN Infinity -Infinity; do
+  printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":%s}}' \
+    "$env_root" "$env_head" "$constant" > "$envtmp/evidence.json"
+  out=$(env_invoke "$envtmp/evidence.json"); status=$?
+  check_status "non-RFC constant $constant refused" 2 "$status"
+  check "non-RFC constant $constant refuses as invalid JSON" "gitnexus evidence is not valid JSON" "$out"
+done
+
 printf '[1, 2]' > "$envtmp/evidence.json"
 out=$(env_invoke "$envtmp/evidence.json"); status=$?
 check_status "non-object gitnexus top level refused" 2 "$status"

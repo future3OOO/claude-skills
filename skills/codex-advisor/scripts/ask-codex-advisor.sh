@@ -76,9 +76,12 @@ def refuse(message):
     print(f"error: {message}")
     raise SystemExit(2)
 
+def non_rfc_constant(token):
+    raise ValueError(f"non-RFC constant {token}")
+
 try:
     with open(sys.argv[1], encoding="utf-8") as handle:
-        envelope = json.load(handle)
+        envelope = json.load(handle, parse_constant=non_rfc_constant)
 except (OSError, ValueError) as exc:
     refuse(f"--gitnexus evidence is not valid JSON: {exc}")
 if not isinstance(envelope, dict):
