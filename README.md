@@ -126,12 +126,11 @@ run it from a divergent branch. To install a verified but unmerged slice,
 install only the branch's changed-path set —
 `git diff --name-status origin/main...HEAD` — and within it only paths with a
 live target in the mapping above; repository-only paths such as `README.md`
-have none. Update a live path when it matches either current `main` or the
-same PR's previously installed version: copy an added or modified candidate,
+have none. Update a live path when it matches current `main`, the candidate,
+or what this PR last installed there: copy an added or modified candidate,
 retire a deleted one with the procedure above, and treat a rename as that
-retirement plus a copy. If it matches neither the candidate nor either
-trusted source, stop because another slice may own it. Every installed
-change is carried by the installing branch's PR; when
+retirement plus a copy. Anything else means another slice may own it - stop.
+Every installed change is carried by the installing branch's PR; when
 another slice's installed contract refuses scratch input, mechanically
 re-encode existing evidence only and keep the adaptation out of the PR. When
 another slice merges, rebase onto the new `main` and repeat verification and
