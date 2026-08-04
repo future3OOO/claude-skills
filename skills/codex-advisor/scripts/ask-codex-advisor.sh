@@ -64,6 +64,51 @@ if [[ -n "$base_ref" ]] && ! git -C "$repo_root" rev-parse --verify --quiet "$ba
   exit 2
 fi
 
+if [[ -n "$gitnexus_file" ]]; then
+  expected_head=$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || {
+    printf 'error: cannot resolve HEAD in %s to validate --gitnexus evidence\n' "$repo_root" >&2
+    exit 2
+  }
+  python3 - "$gitnexus_file" "$repo_root" "$expected_head" >&2 <<'PY' || exit 2
+import json, os, re, sys
+
+def refuse(message):
+    print(f"error: {message}")
+    raise SystemExit(2)
+
+def non_rfc_constant(token):
+    raise ValueError(f"non-RFC constant {token}")
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        envelope = json.load(handle, parse_constant=non_rfc_constant)
+except (OSError, ValueError) as exc:
+    refuse(f"--gitnexus evidence is not valid JSON: {exc}")
+if not isinstance(envelope, dict):
+    refuse("--gitnexus evidence must be a JSON object envelope")
+version = envelope.get("schemaVersion")
+if type(version) is not int or version != 1:
+    refuse(f"--gitnexus envelope requires schemaVersion 1, got: {json.dumps(version)}")
+root = envelope.get("repositoryRoot")
+if not isinstance(root, str) or not root:
+    refuse("--gitnexus envelope repositoryRoot must be the canonical repository root path")
+expected_root = sys.argv[2]
+if os.path.realpath(root) != expected_root:
+    refuse(f"--gitnexus evidence is for repository {root}, expected {expected_root}")
+head = envelope.get("headSha")
+if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+    refuse("--gitnexus envelope headSha must be the full 40-hex commit sha")
+expected_head = sys.argv[3]
+if head != expected_head:
+    refuse(f"--gitnexus evidence head {head} does not match the current HEAD {expected_head}")
+evidence = envelope.get("graphEvidence")
+if not isinstance(evidence, dict):
+    refuse("--gitnexus envelope graphEvidence must be a JSON object")
+if not evidence:
+    refuse("--gitnexus envelope graphEvidence is empty")
+PY
+fi
+
 pass_state="$script_dir/../../repo-production-workflow/scripts/pass-state.py"
 producer_slug=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.workflow_state import safe_slug; print(safe_slug(sys.argv[2]))' "$script_dir/../../.." "$slug")
 active_wid=""; active_tdd=""; active_review=""

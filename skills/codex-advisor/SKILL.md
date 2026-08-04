@@ -75,8 +75,8 @@ isolated: it sees the diff and the repository, but not the packet you read or
 the graph calls you already made, so evidence you gathered and did not attach
 does not exist for it. A final review that cannot check consumer completeness
 independently answers `context-mismatch`, and the paid consult buys a re-run
-rather than a review. The GitNexus file should carry `context` for each edited
-symbol plus `impact` in both directions with `includeTests`.
+rather than a review. The envelope's `graphEvidence` should carry `context`
+for each edited symbol plus `impact` in both directions with `includeTests`.
 
 Before the expensive consult the wrapper runs the read-only
 `pass-state.py checkpoint --phase <phase>` query and refuses when the
@@ -87,7 +87,32 @@ recording time.
 
 `--base-ref` is required for `final-review` and must resolve in the repository.
 `--packet` and `--gitnexus` are optional bounded read-only files appended to
-the evidence. The wrapper derives the repository root and session identity
+the evidence. A supplied `--gitnexus` file must be a schema-version-1 envelope
+binding the evidence to the consultation checkout:
+
+```json
+{
+  "schemaVersion": 1,
+  "repositoryRoot": "/canonical/absolute/git/toplevel",
+  "headSha": "full-40-hex-commit-sha",
+  "graphEvidence": {
+    "context": "lead-authored bounded graph evidence"
+  }
+}
+```
+
+The wrapper validates the envelope before the provider starts: `repositoryRoot`
+must resolve to the same canonical directory as the checkout's Git top level,
+`headSha` must equal the checkout's current full `HEAD`, and `graphEvidence`
+must be a non-empty JSON object. Malformed JSON, a missing field, a wrong
+type, an unknown schema version, empty evidence, or a repository/head mismatch
+refuses with exit 2 before a paid consultation begins, naming the failed
+condition and the expected repository or head where useful. Validation proves
+checkout binding only — never the truth, completeness, or machine provenance
+of the hand-authored graph evidence. Accepted evidence is appended under the
+existing bounded-input policy.
+
+The wrapper derives the repository root and session identity
 from `hooks/lib/repo_identity.py`, so one stable slug resumes the same session
 from the root, a subdirectory, a relative path, or a symlinked path, and it
 automatically attaches the active pass's recorded TDD and code-review
