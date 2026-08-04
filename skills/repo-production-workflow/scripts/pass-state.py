@@ -144,7 +144,10 @@ def disposition_document(path: str, slug: str, workflow_id: str, stage: str) -> 
 
 
 def main() -> int:
-    args = parser().parse_args()
+    arguments = parser()
+    args = arguments.parse_args()
+    if args.apply and args.action != "prune":
+        arguments.error("--apply is only valid with prune")
     # Estate-wide and repository-free, so it answers before the repository is
     # resolved: prune retires state for slots whose repository is long gone.
     if args.action == "prune":

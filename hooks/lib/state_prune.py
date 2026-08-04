@@ -42,9 +42,14 @@ def _stamp(document: dict[str, object]) -> datetime | None:
         value = document.get(field)
         if isinstance(value, str):
             try:
-                return datetime.fromisoformat(value)
+                parsed = datetime.fromisoformat(value)
             except ValueError:
                 continue
+            # Every current writer emits offset-aware UTC. A naive time cannot
+            # be ordered against those, so it reads as no stamp at all and the
+            # artifact is preserved rather than ranked by guess.
+            if parsed.tzinfo is not None:
+                return parsed
     return None
 
 
@@ -70,24 +75,44 @@ def _referenced(workflow: dict[str, object]) -> set[str]:
     }
 
 
-def _live(slot: Path) -> dict[str, object] | None:
-    """The slot's active workflow, or None when the slot is dead.
+# A snapshot that exists but cannot be read as this schema. It may be
+# corruption or a newer estate's data, so it confirms nothing about the slot.
+INDETERMINATE = "indeterminate"
 
-    Dead means no valid snapshot or a recorded repository root that is gone.
+
+def _live(slot: Path) -> dict[str, object] | str | None:
+    """The slot's active workflow, None when dead, INDETERMINATE when untrusted.
+
+    Dead means no snapshot at all, or a valid snapshot whose recorded
+    repository root is confirmed gone; only those authorize dead-slot pruning.
     Read directly rather than through `read_workflow`, whose identity check
     needs a resolvable repository this deliberately does not require.
     """
-    workflow = read_json(slot / WORKFLOW)
-    if not isinstance(workflow, dict) or workflow.get("schemaVersion") != 1:
+    snapshot = slot / WORKFLOW
+    if snapshot.is_symlink():
+        # No writer creates a symlinked snapshot; wherever it points, it is
+        # untrusted state and must not classify the slot.
+        return INDETERMINATE
+    if not snapshot.exists():
         return None
+    workflow = read_json(snapshot)
+    if not isinstance(workflow, dict) or workflow.get("schemaVersion") != 1:
+        return INDETERMINATE
     repo = workflow.get("repo")
     if not isinstance(repo, dict) or not isinstance(repo.get("root"), str):
-        return None
+        return INDETERMINATE
     return workflow if Path(repo["root"]).exists() else None
 
 
-def _classify(slot: Path, workflow: dict[str, object] | None) -> list[dict[str, str]]:
+def _classify(slot: Path, workflow: dict[str, object] | str | None) -> list[dict[str, str]]:
     """Every file in one slot, decided but not yet acted on."""
+    if workflow is INDETERMINATE:
+        # Nothing in the slot can be trusted as retired, so nothing is decided
+        # file by file: the whole slot is preserved under one named reason.
+        return [
+            {"path": path.name, "decision": "retained", "reason": "indeterminate-workflow"}
+            for path in sorted(slot.iterdir())
+        ]
     referenced = _referenced(workflow) if workflow else set()
     active = workflow.get("workflowId") if workflow else None
     owners: dict[Path, tuple[str, datetime]] = {}
@@ -101,8 +126,9 @@ def _classify(slot: Path, workflow: dict[str, object] | None) -> list[dict[str, 
         elif path.name == LOCK:
             entries.append({"path": path.name, "decision": "retained", "reason": "lock"})
         elif path.name == WORKFLOW:
-            entries.append({"path": path.name, "decision": "retained",
-                            "reason": "active-workflow" if workflow else "unparsable-workflow"})
+            entries.append({"path": path.name, "decision": "retained", "reason": "active-workflow"}
+                           if workflow else
+                           {"path": path.name, "decision": "removable", "reason": "dead-slot"})
         elif str(path) in referenced:
             entries.append({"path": path.name, "decision": "retained", "reason": "referenced-by-active-workflow"})
         elif path.name == ACTIVE_PASS:
@@ -212,8 +238,10 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
 
     for slot in sorted(root.iterdir()):
         # `sessions` and `_advisor-sessions` are shared across repositories and
-        # owned by no single workflow; this slice does not retire them.
-        if not slot.is_dir() or slot.name.startswith("_") or slot.name == "sessions":
+        # owned by no single workflow; this slice does not retire them. A
+        # symlink is rejected before is_dir would follow it: no writer creates
+        # one, and traversing it could delete outside the root.
+        if slot.is_symlink() or not slot.is_dir() or slot.name.startswith("_") or slot.name == "sessions":
             continue
         entries = _classify(slot, _live(slot))
         planned = {

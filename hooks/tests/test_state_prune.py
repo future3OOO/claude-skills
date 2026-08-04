@@ -171,10 +171,39 @@ class StatePruneTests(unittest.TestCase):
 
         decisions = self.decisions(self.prune("--apply"), "dead-slot")
         self.assertEqual(decisions["preflight-old.json"], "removed")
+        self.assertEqual(decisions["workflow.json"], "removed",
+                         "a valid snapshot whose repository is gone is itself a dead workflow artifact")
         self.assertEqual(decisions["stop-latch-log.jsonl"], "retained")
         self.assertEqual(decisions["quality-deadbeef.json"], "retained")
         self.assertEqual(digests(slot)["stop-latch-log.jsonl"], telemetry_before, "telemetry is never removed")
         self.assertEqual(digests(slot)["quality-deadbeef.json"], unknown_before, "unknown files are never removed")
+
+    def test_a_present_but_invalid_snapshot_preserves_the_whole_slot(self) -> None:
+        """A snapshot that exists but cannot be trusted is indeterminate, not dead.
+
+        Unparsable data may be corruption; an unknown schema may be a newer
+        estate. Neither confirms the slot is retired, so nothing in it is
+        deletable - dead-slot pruning is reserved for an absent snapshot or a
+        valid one whose repository root is confirmed gone.
+        """
+        for name, snapshot in (
+            ("indeterminate-malformed", "{ corrupted"),
+            ("indeterminate-newer-schema", json.dumps(
+                {"schemaVersion": 2, "repo": {"root": str(self.tmp)}})),
+        ):
+            slot = self.root / name
+            slot.mkdir(mode=0o700)
+            (slot / "workflow.json").write_text(snapshot, encoding="utf-8")
+            self.evidence(slot, "review", "old", "w-old", "2026-01-01T00:00:00+00:00")
+            (slot / "active-pass.json").write_text(json.dumps({"slug": "p"}), encoding="utf-8")
+            before = digests(slot)
+
+            report = self.prune("--apply")
+            entries = next(item for item in report["slots"] if item["slot"] == name)["entries"]
+            self.assertEqual({entry["decision"] for entry in entries}, {"retained"},
+                             f"{name}: an untrusted snapshot must retain every artifact")
+            self.assertEqual({entry["reason"] for entry in entries}, {"indeterminate-workflow"})
+            self.assertEqual(digests(slot), before, f"{name}: the slot must stay byte-identical")
 
     def test_a_live_slot_keeps_the_active_pass_and_four_recent_histories(self) -> None:
         """The active workflow, what it references, and the four newest survive."""
@@ -238,6 +267,8 @@ class StatePruneTests(unittest.TestCase):
         oldest = slot / "review-pass-0.json"
         self.assertEqual(self.decisions(self.prune(), "unreadable-slot")[oldest.name], "removable")
 
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("permission-denied behavior requires an unprivileged user")
         oldest.chmod(0o000)
         try:
             decision = self.decisions(self.prune("--apply"), "unreadable-slot")[oldest.name]
@@ -267,6 +298,101 @@ class StatePruneTests(unittest.TestCase):
         self.assertEqual(self.decisions(report, "marker-dead")["active-pass.json"], "removed")
         self.assertTrue((live / "active-pass.json").exists())
         self.assertFalse((dead / "active-pass.json").exists())
+
+    def test_retention_decides_whole_instances_and_breaks_ties_by_id(self) -> None:
+        """An instance's artifacts share one fate, and tied stamps order by id.
+
+        Every artifact of a retained instance survives and every artifact of a
+        retired one goes, ranked by the instance's newest stamp; identical
+        stamps fall back to the workflow id so the order is total and
+        independent of directory iteration.
+        """
+        slot = self.slot("grouped-slot", workflow_id="w-active")
+        stamp = "2026-08-01T00:00:00+00:00"
+        # Six instances, deliberately unsorted ids, all tied on the same stamp;
+        # each carries two artifact kinds so grouping is observable.
+        for identifier in ("w-b", "w-f", "w-a", "w-d", "w-c", "w-e"):
+            self.evidence(slot, "review", identifier, identifier, stamp)
+            self.evidence(slot, "tdd", identifier, identifier, stamp)
+
+        decisions = self.decisions(self.prune("--apply"), "grouped-slot")
+        for identifier in ("w-f", "w-e", "w-d", "w-c"):
+            self.assertEqual(decisions[f"review-{identifier}.json"], "retained", identifier)
+            self.assertEqual(decisions[f"tdd-{identifier}.json"], "retained", identifier)
+        for identifier in ("w-b", "w-a"):
+            self.assertEqual(decisions[f"review-{identifier}.json"], "removed", identifier)
+            self.assertEqual(decisions[f"tdd-{identifier}.json"], "removed", identifier)
+
+    def test_a_naive_timestamp_is_preserved_not_crashed_on(self) -> None:
+        """An offset-less stamp cannot be ordered against the aware ones every
+        current writer emits; the artifact is preserved, and prune still runs.
+        """
+        slot = self.slot("naive-slot", workflow_id="w-active")
+        for index in range(RETAINED_HISTORIES + 1):
+            self.evidence(slot, "review", f"pass-{index}", f"w-{index}",
+                          f"2026-07-{index + 1:02d}T00:00:00+00:00")
+        naive = slot / "review-naive.json"
+        naive.write_text(json.dumps({
+            "schemaVersion": 1, "slug": "naive", "workflowId": "w-naive",
+            "recordedAt": "2026-07-20T00:00:00",
+        }), encoding="utf-8")
+
+        decisions = self.decisions(self.prune("--apply"), "naive-slot")
+        self.assertEqual(decisions["review-naive.json"], "retained",
+                         "an unorderable stamp must preserve the artifact")
+        self.assertTrue(naive.exists())
+
+    def test_a_symlinked_slot_is_never_traversed(self) -> None:
+        """Apply must not follow a slot symlink and delete outside the root."""
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        for index in range(RETAINED_HISTORIES + 1):
+            (outside / f"review-out-{index}.json").write_text(json.dumps({
+                "workflowId": f"w-{index}", "recordedAt": f"2026-06-{index + 1:02d}T00:00:00+00:00",
+            }), encoding="utf-8")
+        (self.root / "linked").symlink_to(outside)
+        before = digests(outside)
+
+        report = self.prune("--apply")
+        self.assertNotIn("linked", [entry["slot"] for entry in report["slots"]],
+                         "a symlinked slot must not be classified at all")
+        self.assertEqual(digests(outside), before, "files outside the root must survive")
+
+    def test_apply_is_a_parser_error_for_every_other_action(self) -> None:
+        """A destructive-mode flag must not be silently ignored elsewhere."""
+        environment = {
+            **os.environ,
+            "CLAUDE_WORKFLOW_STATE_ROOT": str(self.root),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        result = subprocess.run(
+            [sys.executable, str(PRUNE_CLI), "status", "--repo", str(self.tmp), "--apply"],
+            capture_output=True, text=True, encoding="utf-8", env=environment, check=False,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--apply is only valid with prune", result.stderr)
+
+    def test_a_symlinked_snapshot_is_indeterminate(self) -> None:
+        """A workflow.json that is a symlink cannot classify its slot.
+
+        No writer creates one, so wherever it points - even at a valid dead
+        snapshot - it is untrusted state and must not authorize deletion of the
+        slot's real evidence.
+        """
+        slot = self.root / "symsnap-slot"
+        slot.mkdir(mode=0o700)
+        target = self.tmp / "elsewhere.json"
+        target.write_text(json.dumps({
+            "schemaVersion": 1, "repo": {"root": str(self.tmp / "gone")},
+        }), encoding="utf-8")
+        (slot / "workflow.json").symlink_to(target)
+        self.evidence(slot, "review", "real", "w-real", "2026-01-01T00:00:00+00:00")
+        before = digests(slot)
+
+        report = self.prune("--apply")
+        entries = next(item for item in report["slots"] if item["slot"] == "symsnap-slot")["entries"]
+        self.assertEqual({entry["reason"] for entry in entries}, {"indeterminate-workflow"})
+        self.assertEqual(digests(slot), before, "a symlinked snapshot must preserve the slot")
 
     def test_shared_directories_are_out_of_scope(self) -> None:
         """sessions/ and _advisor-sessions/ belong to no single workflow."""
