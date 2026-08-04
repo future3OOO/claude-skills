@@ -221,6 +221,10 @@ class StatePruneTests(unittest.TestCase):
             "indeterminate-coerced-schema", lambda slot: snapshot(slot, json.dumps(
                 {"schemaVersion": True, "workflowId": "w-c",
                  "repo": {"root": str(self.tmp / "gone")}})))
+        self.untrusted_snapshot_case(
+            "indeterminate-nul-root", lambda slot: snapshot(slot, json.dumps(
+                {"schemaVersion": 1, "workflowId": "w-n",
+                 "repo": {"root": "bad\u0000root"}})))
 
         def symlinked(slot: Path) -> None:
             target = self.tmp / "elsewhere.json"
@@ -455,6 +459,25 @@ class StatePruneTests(unittest.TestCase):
         entries = next(item for item in report["slots"] if item["slot"] == "blocked-slot")["entries"]
         self.assertEqual({entry["reason"] for entry in entries}, {"indeterminate-workflow"})
         self.assertEqual(digests(slot), before, "an unreachable root must preserve the slot")
+
+    def test_one_unreadable_slot_does_not_abort_the_estate_run(self) -> None:
+        """A slot whose directory cannot be read is skipped; siblings still run."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("permission-denied behavior requires an unprivileged user")
+        blocked = self.slot("aa-blocked")
+        readable = self.slot("bb-readable")
+        self.evidence(readable, "review", "ok", "w-ok", "2026-01-01T00:00:00+00:00")
+
+        blocked.chmod(0o000)
+        try:
+            report = self.prune("--apply")
+        finally:
+            blocked.chmod(0o700)
+        statuses = {entry["slot"]: entry["status"] for entry in report["slots"]}
+        self.assertEqual(statuses["aa-blocked"], "skipped")
+        self.assertIn("classification-failed", next(
+            entry["reason"] for entry in report["slots"] if entry["slot"] == "aa-blocked"))
+        self.assertIn("bb-readable", statuses, "a readable sibling must still be classified")
 
     def test_a_dead_snapshots_own_pointer_follows_it_out(self) -> None:
         """A dead slot holding only its snapshot still retires its pointer.

@@ -119,7 +119,8 @@ def _live(slot: Path) -> dict[str, object] | str | None:
         # Confirmed absence is the only stat failure that means dead; an
         # unreachable root (permissions, I/O, a stale mount) proves nothing.
         return None
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers roots that can never be paths, like embedded NULs.
         return INDETERMINATE
     return workflow
 
@@ -311,7 +312,14 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
         # creates one, and traversing it could delete outside the root.
         if slot.is_symlink() or not slot.is_dir() or slot.name.startswith("_") or slot.name == "sessions":
             continue
-        entries = _classify(slot, _live(slot))
+        try:
+            entries = _classify(slot, _live(slot))
+        except OSError as exc:
+            # One slot's filesystem failure stays inside that slot; the rest
+            # of the estate is still classified and reported.
+            slots.append({"slot": slot.name, "status": "skipped",
+                          "reason": f"classification-failed: {exc}", "entries": []})
+            continue
         planned = {
             entry["path"]: _identity(slot / entry["path"])
             for entry in entries if entry["decision"] == "removable"
