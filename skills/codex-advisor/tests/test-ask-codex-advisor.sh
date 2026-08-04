@@ -261,6 +261,100 @@ sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr 
 check_status "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
 rm -rf "$idtmp"
 
+printf '== gitnexus envelope validation (offline)\n'
+envtmp=$(mktemp -d)
+mkdir -p "$envtmp/home" "$envtmp/repo"
+git -C "$envtmp/repo" init -q
+git -C "$envtmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
+env_root=$(python3 "$ROOT/hooks/lib/repo_identity.py" --path "$envtmp/repo" --field root)
+env_head=$(git -C "$envtmp/repo" rev-parse HEAD)
+# Ungoverned invocations die at the ~/.bashrc alias-parse stage in this fake
+# HOME, the last stop before the provider. A refusal naming the gitnexus
+# condition instead proves validation fired before any provider effect.
+env_invoke() { HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope --cwd "$envtmp/repo" --gitnexus "$1" -- "q" 2>&1; }
+
+printf 'not json' > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "malformed gitnexus JSON refused" 2 "$status"
+check "malformed refusal names invalid JSON" "gitnexus evidence is not valid JSON" "$out"
+
+printf '[1, 2]' > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "non-object gitnexus top level refused" 2 "$status"
+check "non-object refusal names the envelope" "gitnexus evidence must be a JSON object envelope" "$out"
+
+printf '{"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "missing schemaVersion refused" 2 "$status"
+check "missing schemaVersion names the condition" "requires schemaVersion 1, got: null" "$out"
+
+printf '{"schemaVersion":true,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "boolean schemaVersion refused despite True == 1" 2 "$status"
+check "boolean schemaVersion names the condition" "requires schemaVersion 1, got: true" "$out"
+
+printf '{"schemaVersion":2,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "unknown schemaVersion refused" 2 "$status"
+check "unknown schemaVersion names the condition" "requires schemaVersion 1, got: 2" "$out"
+
+printf '{"schemaVersion":1.0,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "float schemaVersion refused despite 1.0 == 1" 2 "$status"
+check "float schemaVersion names the condition" "requires schemaVersion 1, got: 1.0" "$out"
+
+printf '{"schemaVersion":1,"repositoryRoot":42,"headSha":"%s","graphEvidence":{"context":"x"}}' "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "non-string repositoryRoot refused" 2 "$status"
+check "non-string repositoryRoot names the condition" "repositoryRoot must be the canonical repository root path" "$out"
+
+mkdir -p "$envtmp/other"
+git -C "$envtmp/other" init -q
+printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$envtmp/other" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "wrong repositoryRoot refused" 2 "$status"
+check "wrong-repository refusal names the expected root" "expected $env_root" "$out"
+
+printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"abc123","graphEvidence":{"context":"x"}}' "$env_root" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "abbreviated headSha refused as malformed" 2 "$status"
+check "abbreviated headSha names the shape condition" "headSha must be the full 40-hex commit sha" "$out"
+
+stale_sha=$(printf '%040d' 0)
+printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$stale_sha" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "stale well-formed headSha refused" 2 "$status"
+check "stale-head refusal names the current HEAD" "does not match the current HEAD $env_head" "$out"
+
+printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":"prose"}' "$env_root" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "non-object graphEvidence refused" 2 "$status"
+check "non-object graphEvidence names the condition" "graphEvidence must be a JSON object" "$out"
+
+printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "empty graphEvidence refused" 2 "$status"
+check "empty graphEvidence names the condition" "graphEvidence is empty" "$out"
+
+# Accepted evidence must clear validation and die at the alias-parse stage,
+# exactly where an omitted --gitnexus dies: the provider is never cheaper to
+# reach with evidence than without it.
+printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "matching envelope clears validation" 2 "$status"
+check "matching envelope reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
+
+ln -s "$envtmp/repo" "$envtmp/repolink"
+printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$envtmp/repolink" "$env_head" > "$envtmp/evidence.json"
+out=$(env_invoke "$envtmp/evidence.json"); status=$?
+check_status "symlink spelling of the same root accepted" 2 "$status"
+check "symlink spelling reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
+
+out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+check_status "omitted --gitnexus keeps current optional-input behavior" 2 "$status"
+check "omitted --gitnexus reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
+rm -rf "$envtmp"
+
 if [[ "${LIVE:-0}" = "1" ]]; then
   printf '== live consult (costs tokens)\n'
   live_out=$("$WRAPPER" --slug wrapper-contract-test --cwd "$PWD" --budget 40 --fresh \
