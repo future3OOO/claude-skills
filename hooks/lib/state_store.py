@@ -89,15 +89,34 @@ def atomic_write_json(path: Path, value: object) -> None:
 
 
 @contextlib.contextmanager
-def state_lock(identity: RepoIdentity) -> Iterator[None]:
-    """Serialize every writer for one repository's workflow state."""
-    path = repo_state_dir(identity) / ".workflow.lock"
+def _flock(path: Path, *, blocking: bool = True) -> Iterator[bool]:
+    """Hold this lock file's exclusive flock, yielding whether it was acquired.
+
+    One implementation for every holder, so a second caller cannot serialize on
+    a different contract. Non-blocking callers get False rather than an
+    exception, and the file is never unlinked: releasing by unlink would let a
+    waiting writer lock a fresh inode at the same path and lose exclusion.
+    """
     handle = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        if not blocking:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                yield False
+                return
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        yield True
     finally:
         os.close(handle)
+
+
+@contextlib.contextmanager
+def state_lock(identity: RepoIdentity) -> Iterator[None]:
+    """Serialize every writer for one repository's workflow state."""
+    with _flock(repo_state_dir(identity) / ".workflow.lock"):
+        yield
 
 
 def read_json(path: Path) -> dict[str, object] | None:
