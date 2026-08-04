@@ -136,6 +136,43 @@ re-encode existing evidence only and keep the adaptation out of the PR. When
 another slice merges, rebase onto the new `main` and repeat verification and
 review on the new head.
 
+## Workflow state root
+
+A non-empty `CLAUDE_WORKFLOW_STATE_ROOT` selects where workflow state is stored;
+otherwise the estate uses `$CLAUDE_HOME/state`, or `~/.claude/state` when
+`CLAUDE_HOME` is unset. Every workflow artifact follows the selected root:
+repository slots and their workflow snapshots, producer evidence, `.workflow.lock`,
+`stop/<session>.json`, `stop-latch-log.jsonl`, `sessions/<session>/<key>.json`
+associations, `_advisor-sessions/*.sid` advisor pointers, and the retained
+legacy `active-pass.json` marker.
+
+It redirects reads and writes; it never migrates artifacts already written
+elsewhere. It also isolates nothing else — skills, hooks, `CLAUDE.md`, the rest
+of `CLAUDE_HOME`, and Claude's own session and project storage are unaffected.
+
+Each process resolves the root from its own environment, so export it before
+launching or resuming Claude and reuse the same durable root for the whole pass.
+A process started without it falls back to the default root, where it cannot see
+a pass recorded under a different one.
+
+```bash
+# launch
+export CLAUDE_WORKFLOW_STATE_ROOT="$HOME/.claude-state-roots/agent-a"
+mkdir -p "$CLAUDE_WORKFLOW_STATE_ROOT" && chmod 700 "$CLAUDE_WORKFLOW_STATE_ROOT"
+claude
+
+# resume, in a new shell: the same root, exported again before resuming
+export CLAUDE_WORKFLOW_STATE_ROOT="$HOME/.claude-state-roots/agent-a"
+claude --resume
+```
+
+`prune --apply` deletes from whichever root is selected, so check the variable
+before running it by hand. The destructive prune tests never touch the default:
+each builds a private temporary root and points the variable at it.
+
+A per-agent root is optional. It keeps concurrent agents out of each other's
+workflow state, at the cost of splitting the audit history across roots.
+
 ## External dependencies
 
 This estate is **not self-contained**. `CLAUDE.md` mandates these tools and the
