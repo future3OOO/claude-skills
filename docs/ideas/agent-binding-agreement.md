@@ -85,7 +85,7 @@ Ours: five hooks [2][8], the ledger with a producer per load-bearing step [4][5]
 - Invalidate on edit, mechanically. Stale approvals are worse than none.
 - Re-measure every recurring reviewer finding fresh. Cached dispositions rot; we learned this the hard way.
 - Docs describing runtime behavior: the code is the owner, the doc is the defect when they disagree.
-- Name every executable by extension, not by shebang. A code graph selects on the name, so an extensionless runner never appears as a caller in it.
+- A code graph makes callable nodes only of the source types it parses. Naming a Python runner `.py` puts it in the graph; a shell runner stays out whatever you call it, so its callers have to be found by raw search rather than trusted to blast radius.
 - Keep enforcement out of Git. Ledger and hooks, nothing else.
 - Audit the transcript against the ledger sometimes. Count what was invoked versus what was recorded. It's the only check that catches a liar.
 
@@ -114,7 +114,7 @@ Things we know are unfinished. If you build this, you'll hit them too.
 - The lead's disposition carries its evidence, a structured document in the review recorder's shape, so the gate does not close on a bare flag. The advisor's own output is unpersisted: the findings the lead dispositions are transcribed rather than captured verbatim, so the two can drift and only the transcript shows it.
 - The rival advisor sometimes serializes its findings across consults, one more discovery per paid round, instead of enumerating everything in the first pass. Reviewer calibration is a real cost lever.
 - The production path is still heavier than some changes deserve. We have explicit not-required and documentation paths, but not yet a lighter production lane that cannot become the default escape hatch. The governance rule is the blunt case: every clause file counts, so correcting one sentence in one reopens a finished pass and buys another verification, another review, and another paid consult.
-- The contract forces proof and does not force subtraction. Cleanup is prose, and the quality gate that could measure growth runs before implementation, over a tree nothing has changed yet. Fix rounds add and rarely remove, and nothing counts it.
+- Completion demands no subtraction receipt. The quality gate runs after every edit and cleanup is a hard rule, but nothing at `complete` records what the pass added against what it removed, so growth across a long fix round answers to no one.
 - Auditing produced evidence is a state read. The fabrication check stays manual: whether the artifact came from the work. Native tool-invocation counts would make invocation matching mechanical; provenance would still be read by hand.
 - We haven't ablated the layers. We believe the chain only works whole; we haven't proven which piece carries the most weight.
 - This has only governed the estate that built it. The real test is a codebase that isn't about the contract.
