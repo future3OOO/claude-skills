@@ -121,56 +121,20 @@ them in the hooks diff until then.
 
 ## Scoped install from a non-`main` branch
 
-The procedure above is whole-estate reconciliation and starts from current
-`main`. Installing a verified but unmerged branch is different: `~/.claude` is
-one shared runtime for every concurrent session, and the live estate is a file
-overlay — disjoint paths compose, and the last writer wins on an overlapping
-path. While more than one unmerged slice is installed, a whole-estate install
-from either divergent branch would overwrite the other slice's live files.
-Three rules govern that window; this section is the concurrent live-estate
-install contract and owns them.
-
-**Install only the verified PR slice.** From a non-`main` branch, install the
-branch's changed-path set and nothing else. The overlap check is three-way —
-the live estate, current `main`, and that path set — with no installer, lock,
-registry, or manifest around it:
-
-```bash
-git fetch origin
-git diff --name-status origin/main...HEAD   # the changed-path set, with operations
-```
-
-Only paths with a live target in the mapping at the top of this file install
-at all; repository-only paths such as `README.md` and `docs/` have none. For
-each added or modified path in the set, compare the live file against current
-`main` and against the branch candidate before copying, and preserve live
-deviations outside the set. If a target path already differs from both `main`
-and the branch candidate, stop: two slices own the same path. A deletion or
-rename carries no branch candidate to copy: when the live file still matches
-`main`, retire the old name with the procedure above; when it does not, stop —
-another slice owns it. A rename is that retirement plus a copy of the new
-name. Every installed source change must be carried by the installing branch
-and its PR. Never run the whole-estate install above from a divergent branch.
-
-**Adapt only disposable encoding.** When an installed contract from another
-slice refuses scratch input with a named fail-closed error that explicitly
-identifies an input encoding, read the installed contract and mechanically
-re-encode the scratch input — only when every required value already exists in
-the collected evidence and its claims, repository, and HEAD remain unchanged.
-A changed meaning, newly computed or judged evidence, a production or
-recorded-state change, another checkout edit, or a workflow-gate refusal stops
-the pass and is reported instead. Scratch adaptation never enters the PR: a
-slice's PR carries its installed source change only, not re-encodings made to
-coexist with another live slice.
-
-**Rebase before integration.** Pass notes name each installed branch, commit,
-and path set. When one slice merges, every remaining slice rebases onto the
-new `main` before its final review or merge and repeats verification and
-review on the new head — earlier testing against the composite live estate is
-not integration proof. While multiple unmerged slices remain, installation
-stays scoped. Once the last remaining slice has rebased, its tree is the
-intended composite and may be installed whole; after it merges, reconcile the
-estate from `main` with the whole-estate procedure above.
+The procedure above reconciles the whole estate from current `main`; never
+run it from a divergent branch. To install a verified but unmerged slice,
+install only the branch's changed-path set —
+`git diff --name-status origin/main...HEAD` — and within it only paths with a
+live target in the mapping above; repository-only paths such as `README.md`
+have none. Act on a path only while the live file still matches `main`: copy
+an added or modified candidate, retire a deleted one with the procedure
+above, and treat a rename as that retirement plus a copy. A live file that
+differs from both `main` and the candidate means two slices own the path —
+stop. Every installed change is carried by the installing branch's PR; when
+another slice's installed contract refuses scratch input, mechanically
+re-encode existing evidence only and keep the adaptation out of the PR. When
+another slice merges, rebase onto the new `main` and repeat verification and
+review on the new head.
 
 ## External dependencies
 
