@@ -119,6 +119,54 @@ still matches `*.sh` or `*.py`, while an appended one matches neither. Delete
 the retired files once the replacements have carried a full session, and expect
 them in the hooks diff until then.
 
+## Scoped install from a non-`main` branch
+
+The procedure above is whole-estate reconciliation and starts from current
+`main`. Installing a verified but unmerged branch is different: `~/.claude` is
+one shared runtime for every concurrent session, and the live estate is a file
+overlay — disjoint paths compose, and the last writer wins on an overlapping
+path. While more than one unmerged slice is installed, a whole-estate install
+from either divergent branch would overwrite the other slice's live files.
+Three rules govern that window; this section is the concurrent live-estate
+install contract and owns them.
+
+**Install only the verified PR slice.** From a non-`main` branch, install the
+branch's changed-path set and nothing else. The overlap check is three-way —
+the live estate, current `main`, and that path set — with no installer, lock,
+registry, or manifest around it:
+
+```bash
+git fetch origin
+git diff --name-only origin/main...HEAD   # the branch's changed-path set
+```
+
+For each path in the set, compare the live file against current `main` and
+against the branch candidate before copying, and preserve live deviations
+outside the set. If a target path already differs from both `main` and the
+branch candidate, stop: two slices own the same path. Every installed source
+change must be carried by the installing branch and its PR. Never run the
+whole-estate install above from a divergent branch.
+
+**Adapt only disposable encoding.** When an installed contract from another
+slice refuses scratch input with a named fail-closed error that explicitly
+identifies an input encoding, read the installed contract and mechanically
+re-encode the scratch input — only when every required value already exists in
+the collected evidence and its claims, repository, and HEAD remain unchanged.
+A changed meaning, newly computed or judged evidence, a production or
+recorded-state change, another checkout edit, or a workflow-gate refusal stops
+the pass and is reported instead. Scratch adaptation never enters the PR: a
+slice's PR carries its installed source change only, not re-encodings made to
+coexist with another live slice.
+
+**Rebase before integration.** Pass notes name each installed branch, commit,
+and path set. When one slice merges, every remaining slice rebases onto the
+new `main` before its final review or merge and repeats verification and
+review on the new head — earlier testing against the composite live estate is
+not integration proof. While multiple unmerged slices remain, installation
+stays scoped. Once the last remaining slice has rebased, its tree is the
+intended composite and may be installed whole; after it merges, reconcile the
+estate from `main` with the whole-estate procedure above.
+
 ## External dependencies
 
 This estate is **not self-contained**. `CLAUDE.md` mandates these tools and the
