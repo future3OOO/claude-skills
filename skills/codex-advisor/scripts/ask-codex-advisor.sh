@@ -116,7 +116,7 @@ case "$phase" in
 Load /codebase-design, /tdd, and /code-quality. Challenge task scope, packet and GitNexus caller/callee coverage, Module/Interface/Seam choice, reuse, first real-seam RED, no-change surfaces, and demonstrated risks. Give the highest-risk finding first and one exact next action before editing.' ;;
   final-review)
     phase_prompt='Checkpoint Interface: final-review
-Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. End with exactly one of: Verdict: commit-ready, Verdict: fix-before-commit, Verdict: context-mismatch.' ;;
+Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. End with exactly one of: Verdict: commit-ready, Verdict: fix-before-commit, Verdict: context-mismatch. Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.' ;;
 esac
 
 evidence=""
