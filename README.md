@@ -119,6 +119,23 @@ still matches `*.sh` or `*.py`, while an appended one matches neither. Delete
 the retired files once the replacements have carried a full session, and expect
 them in the hooks diff until then.
 
+## Scoped install from a non-`main` branch
+
+The procedure above reconciles the whole estate from current `main`; never
+run it from a divergent branch. To install a verified but unmerged slice,
+install only the branch's changed-path set —
+`git diff --name-status origin/main...HEAD` — and within it only paths with a
+live target in the mapping above; repository-only paths such as `README.md`
+have none. Act on a path only while the live file still matches `main`: copy
+an added or modified candidate, retire a deleted one with the procedure
+above, and treat a rename as that retirement plus a copy. A live file that
+differs from both `main` and the candidate means two slices own the path —
+stop. Every installed change is carried by the installing branch's PR; when
+another slice's installed contract refuses scratch input, mechanically
+re-encode existing evidence only and keep the adaptation out of the PR. When
+another slice merges, rebase onto the new `main` and repeat verification and
+review on the new head.
+
 ## External dependencies
 
 This estate is **not self-contained**. `CLAUDE.md` mandates these tools and the
