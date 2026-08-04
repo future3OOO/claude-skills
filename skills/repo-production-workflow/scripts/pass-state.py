@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.state_prune import prune  # noqa: E402
 from hooks.lib.state_store import utc_timestamp  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowError,
@@ -39,7 +40,8 @@ PRODUCER_OWNED = {
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
-    result.add_argument("action", choices=("begin", "set-phase", "advisor-result", "advisor-disposition", "pause", "checkpoint", "complete", "summary", "status"))
+    result.add_argument("action", choices=("begin", "set-phase", "advisor-result", "advisor-disposition", "pause", "checkpoint", "complete", "summary", "status", "prune"))
+    result.add_argument("--apply", action="store_true", help="delete the reported removals; omit to report only")
     result.add_argument("--repo", default=".")
     result.add_argument("--slug")
     result.add_argument("--intent", default="")
@@ -142,7 +144,15 @@ def disposition_document(path: str, slug: str, workflow_id: str, stage: str) -> 
 
 
 def main() -> int:
-    args = parser().parse_args()
+    arguments = parser()
+    args = arguments.parse_args()
+    if args.apply and args.action != "prune":
+        arguments.error("--apply is only valid with prune")
+    # Estate-wide and repository-free, so it answers before the repository is
+    # resolved: prune retires state for slots whose repository is long gone.
+    if args.action == "prune":
+        print(json.dumps(prune(apply=args.apply), sort_keys=True), flush=True)
+        return 0
     try:
         identity = resolve_repo_identity(args.repo)
         if args.action == "begin":

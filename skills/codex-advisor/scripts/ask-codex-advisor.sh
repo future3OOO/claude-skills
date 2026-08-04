@@ -132,7 +132,9 @@ print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") o
   fi
 fi
 
-state_dir="${CLAUDE_HOME:-$HOME/.claude}/state/_advisor-sessions"
+# The same state-root resolution the recorded-summary attach uses below, so
+# the pointer store and the workflow state can never split across roots.
+state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/_advisor-sessions"
 mkdir -p "$state_dir"; chmod 700 "$state_dir"
 sid_file="$state_dir/${repo_key}-${normalized_slug}${active_wid:+-$active_wid}.sid"
 new_session_id() { if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/kernel/random/uuid; else python3 -c 'import uuid; print(uuid.uuid4())'; fi; }

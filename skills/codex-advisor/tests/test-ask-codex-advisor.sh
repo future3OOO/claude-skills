@@ -241,12 +241,15 @@ git -C "$idtmp/repo" init -q
 # Each invocation must get past SID creation and fail at the later alias-parse stage.
 # Discarding the status instead would let an early death leave the first SID file in
 # place, so the one-file assertion below would pass without proving path equivalence.
+# The state root is pinned, not inherited: a surrounding run that exports its
+# own synthetic CLAUDE_WORKFLOW_STATE_ROOT would otherwise take every sid with
+# it and the one-file assertion below would count an empty directory.
 offline_invoke() { # label, wrapper --cwd value, optional directory to run from
   local out status
   if [[ -n "${3:-}" ]]; then
-    out=$(cd "$3" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+    out=$(cd "$3" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
   else
-    out=$(HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+    out=$(HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
   fi
   status=$?
   check_status "session identity ($1) reaches the alias-parse stage" 2 "$status"
@@ -260,6 +263,18 @@ offline_invoke "symlink" "$idtmp/link"
 sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
 check_status "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
 rm -rf "$idtmp"
+
+printf '== state-root alignment (offline)\n'
+roottmp=$(mktemp -d)
+mkdir -p "$roottmp/home" "$roottmp/repo" "$roottmp/isolated"
+git -C "$roottmp/repo" init -q
+HOME="$roottmp/home" CLAUDE_HOME="$roottmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$roottmp/isolated" \
+  "$WRAPPER" --slug root-alignment --cwd "$roottmp/repo" -- "q" >/dev/null 2>&1
+override_sids=$(ls "$roottmp/isolated/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+fallback_sids=$(ls "$roottmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+check_status "sid lands under the workflow state root override" "1" "$override_sids"
+check_status "no sid lands under the CLAUDE_HOME fallback" "0" "$fallback_sids"
+rm -rf "$roottmp"
 
 printf '== gitnexus envelope validation (offline)\n'
 envtmp=$(mktemp -d)
