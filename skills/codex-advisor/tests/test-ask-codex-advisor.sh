@@ -79,6 +79,25 @@ grep -q 'Load /code-review, /codebase-design, /tdd, and /code-quality' "$WRAPPER
   && { printf 'PASS  after-code rubric loads code-review\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  final-review must load /code-review\n'; fail=$((fail+1)); }
 
+# A phase prompt is one arm of a case statement, so a whole-file grep cannot tell
+# which phase carries a rule. Extract the arm and assert against that block.
+phase_block() { sed -n "/^  $1)\$/,/;;\$/p" "$WRAPPER"; }
+materiality='Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.'
+preflight_block=$(phase_block preflight-advice)
+final_block=$(phase_block final-review)
+
+# Each marker doubles as the non-empty check: an extraction that silently matched
+# nothing would let the absence assertion below pass for the wrong reason.
+check "preflight-advice arm extracts" "Checkpoint Interface: preflight-advice" "$preflight_block"
+check "final-review arm extracts" "Checkpoint Interface: final-review" "$final_block"
+check "final-review states the materiality verdict criterion" "$materiality" "$final_block"
+
+if [[ "$preflight_block" == *"$materiality"* ]]; then
+  printf 'FAIL  materiality rule must stay out of preflight-advice, which emits no gating verdict\n'; fail=$((fail+1))
+else
+  printf 'PASS  materiality rule scoped out of preflight-advice\n'; pass=$((pass+1))
+fi
+
 grep -q 'is never RED/GREEN or production proof' "$WRAPPER" \
   && { printf 'PASS  fake-test hard rule present\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  fake-test rule must be a hard violation\n'; fail=$((fail+1)); }

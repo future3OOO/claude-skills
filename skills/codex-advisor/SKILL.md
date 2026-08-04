@@ -35,6 +35,16 @@ exactly one terminal line:
 - `Verdict: fix-before-commit`
 - `Verdict: context-mismatch`
 
+The prompt supplies the criterion for choosing between them. Return
+`Verdict: fix-before-commit` only when at least one finding is `material: true`;
+when context matches and no material finding remains, return
+`Verdict: commit-ready`. Report `material: false` findings for lead disposition
+without blocking, treat uncertainty as `material: true`, and preserve
+`Verdict: context-mismatch` for mismatched review context. This aligns the final
+advisor with the lead-review axis, which already computes unresolved state only
+over material findings. It removes a paid re-consult, not the audit record:
+every finding, material or not, still requires its lead-owned disposition below.
+
 The wrapper records every raw result — source and verdict — with findings
 pending; it never dispositions. After reading the output, the lead validates
 every finding and records the separate lead-owned disposition, which can only
