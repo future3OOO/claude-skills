@@ -129,7 +129,7 @@ live target in the mapping above; repository-only paths such as `README.md`
 have none. Update a live path when it matches current `main`, the candidate,
 or what this PR last installed there: copy an added or modified candidate,
 retire a deleted one with the procedure above, and treat a rename as that
-retirement plus a copy. Anything else means another slice may own it - stop.
+retirement plus a copy. Anything else means another slice may own it — stop.
 Every installed change is carried by the installing branch's PR; when
 another slice's installed contract refuses scratch input, mechanically
 re-encode existing evidence only and keep the adaptation out of the PR. When
