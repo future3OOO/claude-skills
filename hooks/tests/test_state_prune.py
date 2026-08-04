@@ -418,7 +418,8 @@ class StatePruneTests(unittest.TestCase):
         retained_sid = sessions / f"1111-old-pass-{5:032x}.sid"
         foreign_sid = sessions / f"9999-old-pass-{1:032x}.sid"
         unowned_sid = sessions / "1111-legacy-pass.sid"
-        for sid in (retired_sid, retained_sid, foreign_sid, unowned_sid):
+        newline_sid = sessions / f"1111-old-pass-{1:032x}.sid\n"
+        for sid in (retired_sid, retained_sid, foreign_sid, unowned_sid, newline_sid):
             sid.write_text("session\n", encoding="utf-8")
 
         report = self.prune("--apply")
@@ -429,8 +430,31 @@ class StatePruneTests(unittest.TestCase):
         self.assertEqual(fates[foreign_sid.name], "retained",
                          "a foreign-prefix pointer never follows another repository's decision")
         self.assertEqual(fates[unowned_sid.name], "retained")
+        self.assertEqual(fates[newline_sid.name], "retained",
+                         "a malformed newline-suffixed filename is never an owned pointer")
         self.assertFalse(retired_sid.exists())
-        self.assertTrue(retained_sid.exists() and foreign_sid.exists() and unowned_sid.exists())
+        self.assertTrue(retained_sid.exists() and foreign_sid.exists()
+                        and unowned_sid.exists() and newline_sid.exists())
+
+    def test_an_inaccessible_repository_root_preserves_the_slot(self) -> None:
+        """A stat failure that is not absence is indeterminate, not dead or a crash."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("permission-denied behavior requires an unprivileged user")
+        guarded = self.tmp / "guarded"
+        repo_root = guarded / "repo"
+        repo_root.mkdir(parents=True)
+        slot = self.slot("blocked-slot", root=repo_root)
+        self.evidence(slot, "review", "old", "w-old", "2026-01-01T00:00:00+00:00")
+        before = digests(slot)
+
+        guarded.chmod(0o000)
+        try:
+            report = self.prune("--apply")
+        finally:
+            guarded.chmod(0o700)
+        entries = next(item for item in report["slots"] if item["slot"] == "blocked-slot")["entries"]
+        self.assertEqual({entry["reason"] for entry in entries}, {"indeterminate-workflow"})
+        self.assertEqual(digests(slot), before, "an unreachable root must preserve the slot")
 
     def test_a_dead_snapshots_own_pointer_follows_it_out(self) -> None:
         """A dead slot holding only its snapshot still retires its pointer.

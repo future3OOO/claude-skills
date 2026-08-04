@@ -38,7 +38,7 @@ STAMPS = ("recordedAt", "updatedAt", "createdAt")
 # Wrapper-written session pointers: {repository key}-{slug}-{instance}.sid.
 # Only the trailing instance id is parsed; slugs may themselves contain "-".
 ADVISOR_SESSIONS = "_advisor-sessions"
-SID = re.compile(r"-([0-9a-f]{32})\.sid$")
+SID = re.compile(r"-([0-9a-f]{32})\.sid\Z")
 
 
 def _stamp(document: dict[str, object]) -> datetime | None:
@@ -113,7 +113,15 @@ def _live(slot: Path) -> dict[str, object] | str | None:
     repo = workflow.get("repo")
     if not isinstance(repo, dict) or not isinstance(repo.get("root"), str):
         return INDETERMINATE
-    return workflow if Path(repo["root"]).exists() else None
+    try:
+        Path(repo["root"]).stat()
+    except (FileNotFoundError, NotADirectoryError):
+        # Confirmed absence is the only stat failure that means dead; an
+        # unreachable root (permissions, I/O, a stale mount) proves nothing.
+        return None
+    except OSError:
+        return INDETERMINATE
+    return workflow
 
 
 def _classify(slot: Path, workflow: dict[str, object] | str | None) -> list[dict[str, str]]:
