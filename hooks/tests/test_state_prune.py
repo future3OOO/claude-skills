@@ -479,6 +479,25 @@ class StatePruneTests(unittest.TestCase):
             entry["reason"] for entry in report["slots"] if entry["slot"] == "aa-blocked"))
         self.assertIn("bb-readable", statuses, "a readable sibling must still be classified")
 
+    def test_a_directory_shaped_lock_skips_only_that_slot(self) -> None:
+        """A lock that cannot even be opened skips its slot; siblings still run."""
+        malformed = self.slot("aa-badlock")
+        for index in range(RETAINED_HISTORIES + 1):
+            self.evidence(malformed, "review", f"pass-{index}", f"w-{index}",
+                          f"2026-10-{index + 1:02d}T00:00:00+00:00")
+        (malformed / ".workflow.lock").mkdir()
+        readable = self.slot("bb-goodlock")
+        self.evidence(readable, "review", "ok", "w-ok", "2026-01-01T00:00:00+00:00")
+        before = digests(malformed)
+
+        report = self.prune("--apply")
+        statuses = {entry["slot"]: entry["status"] for entry in report["slots"]}
+        self.assertEqual(statuses["aa-badlock"], "skipped")
+        self.assertIn("lock-failed", next(
+            entry["reason"] for entry in report["slots"] if entry["slot"] == "aa-badlock"))
+        self.assertEqual(digests(malformed), before, "a slot with an unopenable lock loses nothing")
+        self.assertEqual(statuses["bb-goodlock"], "applied", "a readable sibling must still process")
+
     def test_a_dead_snapshots_own_pointer_follows_it_out(self) -> None:
         """A dead slot holding only its snapshot still retires its pointer.
 

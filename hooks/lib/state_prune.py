@@ -325,14 +325,21 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
             for entry in entries if entry["decision"] == "removable"
         }
         if apply and any(entry["decision"] == "removable" for entry in entries):
-            with _flock(slot / LOCK, blocking=False) as acquired:
-                if acquired:
-                    _remove(slot, entries, planned)
-                else:
-                    slots.append({"slot": slot.name, "status": "skipped",
-                                  "reason": "busy: another process holds the workflow lock",
-                                  "entries": entries})
-                    continue
+            try:
+                with _flock(slot / LOCK, blocking=False) as acquired:
+                    if acquired:
+                        _remove(slot, entries, planned)
+                    else:
+                        slots.append({"slot": slot.name, "status": "skipped",
+                                      "reason": "busy: another process holds the workflow lock",
+                                      "entries": entries})
+                        continue
+            except OSError as exc:
+                # A lock that cannot even be opened is this slot's failure,
+                # not the estate's; nothing was removed, so skip it whole.
+                slots.append({"slot": slot.name, "status": "skipped",
+                              "reason": f"lock-failed: {exc}", "entries": entries})
+                continue
         slots.append({"slot": slot.name, "status": "applied" if apply else "reported", "entries": entries})
 
     # A pointer may follow its workflow out only when this run really removed
