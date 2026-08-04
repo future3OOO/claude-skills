@@ -530,20 +530,23 @@ class StatePruneTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
         return resolve_repo_identity(repo)
 
-    def test_dead_slot_stop_documents_are_item_reported_and_removed(self) -> None:
-        """Producer-written Stop docs follow their dead slot out, per file.
+    def dead_stop_slot(self, name: str = "stoprepo"):
+        """A classifiably dead slot holding real producer-written Stop documents.
 
-        The document is created through the real stop_session_swap writer so
-        the persisted shape is the producer's, then the repository is deleted
-        to make the slot classifiably dead.
+        Both documents are created through the real stop_session_swap writer,
+        so the persisted shape is the producer's, and the repository is then
+        deleted to make the slot dead.
         """
         from hooks.lib.state_store import stop_session_swap
-        identity = self.real_repo_identity("stoprepo")
+        identity = self.real_repo_identity(name)
         os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.root)
         try:
             # state_root() reads the override per call, so the real writer
             # lands in this test's synthetic root with no reload tricks.
-            stop_session_swap(identity, "sess-a", "feedback", "latched")
+            stop_session_swap(identity, "sess-a", "blockFingerprint", "abc123")
+            # The resolution path writes an empty fingerprint, so an empty
+            # string is a real producer payload and must stay removable.
+            stop_session_swap(identity, "sess-b", "blockFingerprint", "")
         finally:
             os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
         slot = self.root / identity.key
@@ -551,15 +554,52 @@ class StatePruneTests(unittest.TestCase):
             "schemaVersion": 1, "workflowId": "w-dead",
             "repo": identity.as_dict(),
         }), encoding="utf-8")
-        shutil.rmtree(self.tmp / "stoprepo")
-        self.assertTrue((slot / "stop" / "sess-a.json").exists())
+        shutil.rmtree(self.tmp / name)
+        return identity, slot
+
+    def test_dead_slot_stop_documents_are_item_reported_and_removed(self) -> None:
+        """Only current-producer Stop documents follow their dead slot out.
+
+        Everything the producer contract does not cover - malformed JSON and a
+        name no producer writes - is preserved with its own reported reason.
+        """
+        identity, slot = self.dead_stop_slot()
+        malformed = slot / "stop" / "malformed.json"
+        malformed.write_text("{not json", encoding="utf-8")
+        unknown = slot / "stop" / "notes.txt"
+        unknown.write_text('{"schemaVersion": 1, "message": "valid json, wrong name"}', encoding="utf-8")
 
         report = self.prune("--apply")
-        entries = {e["path"]: e["decision"] for s in report["slots"] for e in s["entries"]
-                   if s["slot"] == identity.key}
-        self.assertEqual(entries.get("stop/sess-a.json"), "removed",
-                         "a dead slot's stop document must be item-reported and removed")
-        self.assertFalse((slot / "stop").exists(), "the emptied stop directory is removed")
+        entries = {e["path"]: (e["decision"], e["reason"]) for s in report["slots"]
+                   for e in s["entries"] if s["slot"] == identity.key}
+        self.assertEqual(entries.get("stop/sess-a.json"), ("removed", "dead-slot"),
+                         "a producer-written stop document must be item-reported and removed")
+        self.assertEqual(entries.get("stop/sess-b.json"), ("removed", "dead-slot"),
+                         "an empty fingerprint is a real producer payload, not an unknown shape")
+        self.assertEqual(entries.get("stop/malformed.json"), ("retained", "unknown-shape"),
+                         "malformed JSON must survive with its own reason")
+        self.assertEqual(entries.get("stop/notes.txt"), ("retained", "unknown-kind"),
+                         "a name no producer writes must survive with its own reason")
+        self.assertTrue(malformed.exists() and unknown.exists())
+
+    def test_apply_mutates_only_what_the_report_planned(self) -> None:
+        """What apply deletes is exactly what report-only mode called removable.
+
+        The plan is taken from a separate report run, so an apply-time
+        mutation the plan never contained - an emptied stop/ directory - is
+        visible as a difference rather than reported into existence.
+        """
+        _, slot = self.dead_stop_slot("fidelityrepo")
+        planned = {f"{s['slot']}/{e['path']}" for s in self.prune()["slots"]
+                   for e in s["entries"] if e["decision"] == "removable"}
+        before = {str(path.relative_to(self.root)) for path in self.root.rglob("*")}
+
+        self.prune("--apply")
+        after = {str(path.relative_to(self.root)) for path in self.root.rglob("*")}
+        self.assertEqual(before - after, planned,
+                         "apply must mutate exactly the paths report mode planned")
+        self.assertTrue((slot / "stop").is_dir(),
+                        "an emptied stop directory is not the report's to remove")
 
     def test_session_associations_follow_their_repositorys_liveness(self) -> None:
         """Producer-written associations retire with a confirmed-absent root only.

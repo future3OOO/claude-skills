@@ -33,6 +33,9 @@ EVIDENCE = re.compile(r"^(preflight|gate|verification|tdd|review|disposition)-.+
 # instance, so the slug cannot bind one, and it is removable only once the
 # whole slot is dead and no instance can be meant at all.
 ACTIVE_PASS = "active-pass.json"
+# The fields the Stop producers actually write; one of them must be present
+# before a Stop document is this contract's to retire.
+STOP_PAYLOAD = ("blockFingerprint", "message")
 # The evidence producers write different fields; neither family is canonical.
 STAMPS = ("recordedAt", "updatedAt", "createdAt")
 # Wrapper-written session pointers: {repository key}-{slug}-{instance}.sid.
@@ -178,10 +181,14 @@ def _classify(slot: Path, workflow: dict[str, object] | str | None) -> list[dict
                 name = f"stop/{document.name}"
                 if document.is_symlink() or not document.is_file():
                     entries.append({"path": name, "decision": "retained", "reason": "unknown-kind"})
-                elif workflow is None:
-                    entries.append({"path": name, "decision": "removable", "reason": "dead-slot"})
-                else:
+                elif workflow is not None:
                     entries.append({"path": name, "decision": "retained", "reason": "stop-session"})
+                elif document.suffix != ".json":
+                    entries.append({"path": name, "decision": "retained", "reason": "unknown-kind"})
+                elif not _producer_stop_document(document):
+                    entries.append({"path": name, "decision": "retained", "reason": "unknown-shape"})
+                else:
+                    entries.append({"path": name, "decision": "removable", "reason": "dead-slot"})
         elif not path.is_file():
             entries.append({"path": path.name, "decision": "retained", "reason": "not-a-file"})
         elif path.name == TELEMETRY:
@@ -252,6 +259,23 @@ def _retain_recent(owners: dict[Path, tuple[str, datetime]], entries: list[dict[
     return entries
 
 
+def _producer_stop_document(path: Path) -> bool:
+    """Whether this `<session>.json` holds what the current Stop producer wrote.
+
+    `stop_session_swap` writes schemaVersion 1 plus one of the fields its
+    callers set, updating the object in place, so extra keys are the producer's
+    too. An empty fingerprint is a real payload: the resolution path clears the
+    field by writing "". Unparseable bytes or another schema are not this
+    contract's to delete. The caller owns the filename test, so the two
+    preserved cases keep separate reported reasons.
+    """
+    document = read_json(path)
+    return (isinstance(document, dict)
+            and type(document.get("schemaVersion")) is int
+            and document.get("schemaVersion") == 1
+            and any(isinstance(document.get(field), str) for field in STOP_PAYLOAD))
+
+
 def _identity(path: Path) -> tuple[str, int, int] | None:
     """This file's content hash and inode identity, or None when unreadable.
 
@@ -292,15 +316,6 @@ def _remove(slot: Path, entries: list[dict[str, str]], planned: dict[str, tuple[
                 entry["decision"] = "removed"
             except OSError as exc:
                 entry["decision"], entry["reason"] = "skipped", f"unlink-failed: {exc}"
-    stop_directory = slot / "stop"
-    if _walkable(stop_directory) and not any(stop_directory.iterdir()):
-        # Prune holds the same repository lock as the stop writer, so an
-        # emptied stop directory cannot be repopulated mid-removal.
-        try:
-            stop_directory.rmdir()
-            entries.append({"path": "stop", "decision": "removed", "reason": "emptied-directory"})
-        except OSError as exc:
-            entries.append({"path": "stop", "decision": "skipped", "reason": f"rmdir-failed: {exc}"})
 
 
 def _retire_sessions(root: Path, retired: dict[str, str], pinned: set[str], apply: bool) -> list[dict[str, str]]:

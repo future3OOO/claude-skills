@@ -241,12 +241,15 @@ git -C "$idtmp/repo" init -q
 # Each invocation must get past SID creation and fail at the later alias-parse stage.
 # Discarding the status instead would let an early death leave the first SID file in
 # place, so the one-file assertion below would pass without proving path equivalence.
+# The state root is pinned, not inherited: a surrounding run that exports its
+# own synthetic CLAUDE_WORKFLOW_STATE_ROOT would otherwise take every sid with
+# it and the one-file assertion below would count an empty directory.
 offline_invoke() { # label, wrapper --cwd value, optional directory to run from
   local out status
   if [[ -n "${3:-}" ]]; then
-    out=$(cd "$3" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+    out=$(cd "$3" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
   else
-    out=$(HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+    out=$(HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
   fi
   status=$?
   check_status "session identity ($1) reaches the alias-parse stage" 2 "$status"
