@@ -160,7 +160,8 @@ class StatePruneTests(unittest.TestCase):
         slot = self.root / "dead-slot"
         slot.mkdir(mode=0o700)
         (slot / "workflow.json").write_text(json.dumps({
-            "schemaVersion": 1, "repo": {"root": str(self.tmp / "gone"), "key": "dead-slot"},
+            "schemaVersion": 1, "workflowId": "w-dead",
+            "repo": {"root": str(self.tmp / "gone"), "key": "dead-slot"},
         }), encoding="utf-8")
         self.evidence(slot, "preflight", "old", "w-dead", "2026-01-01T00:00:00+00:00")
         telemetry = slot / "stop-latch-log.jsonl"
@@ -178,32 +179,58 @@ class StatePruneTests(unittest.TestCase):
         self.assertEqual(digests(slot)["stop-latch-log.jsonl"], telemetry_before, "telemetry is never removed")
         self.assertEqual(digests(slot)["quality-deadbeef.json"], unknown_before, "unknown files are never removed")
 
+    def untrusted_snapshot_case(self, name: str, arrange) -> None:
+        """One untrusted-snapshot shape: the whole slot survives byte-identically."""
+        slot = self.root / name
+        slot.mkdir(mode=0o700)
+        arrange(slot)
+        for index in range(RETAINED_HISTORIES + 2):
+            self.evidence(slot, "review", f"pass-{index}", f"w-{index}",
+                          f"2026-09-{index + 1:02d}T00:00:00+00:00")
+        (slot / "active-pass.json").write_text(json.dumps({"slug": "p"}), encoding="utf-8")
+        before = digests(slot)
+
+        report = self.prune("--apply")
+        entries = next(item for item in report["slots"] if item["slot"] == name)["entries"]
+        self.assertEqual({entry["decision"] for entry in entries}, {"retained"},
+                         f"{name}: an untrusted snapshot must retain every artifact")
+        self.assertEqual({entry["reason"] for entry in entries}, {"indeterminate-workflow"})
+        self.assertEqual(digests(slot), before, f"{name}: the slot must stay byte-identical")
+
     def test_a_present_but_invalid_snapshot_preserves_the_whole_slot(self) -> None:
         """A snapshot that exists but cannot be trusted is indeterminate, not dead.
 
         Unparsable data may be corruption; an unknown schema may be a newer
-        estate. Neither confirms the slot is retired, so nothing in it is
-        deletable - dead-slot pruning is reserved for an absent snapshot or a
-        valid one whose repository root is confirmed gone.
+        estate; a snapshot binding no instance would turn every artifact into a
+        superseded history. None confirms the slot is retired - dead-slot
+        pruning is reserved for an absent snapshot or a valid one whose
+        repository root is confirmed gone.
         """
-        for name, snapshot in (
-            ("indeterminate-malformed", "{ corrupted"),
-            ("indeterminate-newer-schema", json.dumps(
-                {"schemaVersion": 2, "repo": {"root": str(self.tmp)}})),
-        ):
-            slot = self.root / name
-            slot.mkdir(mode=0o700)
-            (slot / "workflow.json").write_text(snapshot, encoding="utf-8")
-            self.evidence(slot, "review", "old", "w-old", "2026-01-01T00:00:00+00:00")
-            (slot / "active-pass.json").write_text(json.dumps({"slug": "p"}), encoding="utf-8")
-            before = digests(slot)
+        def snapshot(slot: Path, text: str) -> None:
+            (slot / "workflow.json").write_text(text, encoding="utf-8")
 
-            report = self.prune("--apply")
-            entries = next(item for item in report["slots"] if item["slot"] == name)["entries"]
-            self.assertEqual({entry["decision"] for entry in entries}, {"retained"},
-                             f"{name}: an untrusted snapshot must retain every artifact")
-            self.assertEqual({entry["reason"] for entry in entries}, {"indeterminate-workflow"})
-            self.assertEqual(digests(slot), before, f"{name}: the slot must stay byte-identical")
+        self.untrusted_snapshot_case(
+            "indeterminate-malformed", lambda slot: snapshot(slot, "{ corrupted"))
+        self.untrusted_snapshot_case(
+            "indeterminate-newer-schema", lambda slot: snapshot(slot, json.dumps(
+                {"schemaVersion": 2, "repo": {"root": str(self.tmp)}})))
+        self.untrusted_snapshot_case(
+            "indeterminate-no-instance", lambda slot: snapshot(slot, json.dumps(
+                {"schemaVersion": 1, "repo": {"root": str(self.tmp)}})))
+        self.untrusted_snapshot_case(
+            "indeterminate-coerced-schema", lambda slot: snapshot(slot, json.dumps(
+                {"schemaVersion": True, "workflowId": "w-c",
+                 "repo": {"root": str(self.tmp / "gone")}})))
+
+        def symlinked(slot: Path) -> None:
+            target = self.tmp / "elsewhere.json"
+            target.write_text(json.dumps({
+                "schemaVersion": 1, "workflowId": "w-x",
+                "repo": {"root": str(self.tmp / "gone")},
+            }), encoding="utf-8")
+            (slot / "workflow.json").symlink_to(target)
+
+        self.untrusted_snapshot_case("indeterminate-symlinked", symlinked)
 
     def test_a_live_slot_keeps_the_active_pass_and_four_recent_histories(self) -> None:
         """The active workflow, what it references, and the four newest survive."""
@@ -287,7 +314,8 @@ class StatePruneTests(unittest.TestCase):
         dead = self.root / "marker-dead"
         dead.mkdir(mode=0o700)
         (dead / "workflow.json").write_text(json.dumps({
-            "schemaVersion": 1, "repo": {"root": str(self.tmp / "gone"), "key": "marker-dead"},
+            "schemaVersion": 1, "workflowId": "w-dead",
+            "repo": {"root": str(self.tmp / "gone"), "key": "marker-dead"},
         }), encoding="utf-8")
         (dead / "active-pass.json").write_text(json.dumps({
             "schemaVersion": 1, "slug": "some-pass", "updatedAt": "2026-01-01T00:00:00+00:00",
@@ -372,34 +400,67 @@ class StatePruneTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("--apply is only valid with prune", result.stderr)
 
-    def test_a_symlinked_snapshot_is_indeterminate(self) -> None:
-        """A workflow.json that is a symlink cannot classify its slot.
 
-        No writer creates one, so wherever it points - even at a valid dead
-        snapshot - it is untrusted state and must not authorize deletion of the
-        slot's real evidence.
+    def test_advisor_pointers_follow_the_workflow_decision(self) -> None:
+        """A classifiable pointer shares its workflow's fate; the rest survive.
+
+        Classifiable means the filename carries the owning slot's key prefix
+        and the instance id of a workflow this run retired. A foreign-prefix,
+        suffix-less, or unknown-instance pointer retains fail-closed.
         """
-        slot = self.root / "symsnap-slot"
-        slot.mkdir(mode=0o700)
-        target = self.tmp / "elsewhere.json"
-        target.write_text(json.dumps({
-            "schemaVersion": 1, "repo": {"root": str(self.tmp / "gone")},
-        }), encoding="utf-8")
-        (slot / "workflow.json").symlink_to(target)
-        self.evidence(slot, "review", "real", "w-real", "2026-01-01T00:00:00+00:00")
-        before = digests(slot)
+        slot = self.slot("1111", workflow_id="a" * 32)
+        for index in range(6):
+            self.evidence(slot, "review", f"old-{index}", f"{index:032x}",
+                          f"2026-03-{index + 1:02d}T00:00:00+00:00")
+        sessions = self.root / "_advisor-sessions"
+        sessions.mkdir(mode=0o700)
+        retired_sid = sessions / f"1111-old-pass-{0:032x}.sid"
+        retained_sid = sessions / f"1111-old-pass-{5:032x}.sid"
+        foreign_sid = sessions / f"9999-old-pass-{1:032x}.sid"
+        unowned_sid = sessions / "1111-legacy-pass.sid"
+        for sid in (retired_sid, retained_sid, foreign_sid, unowned_sid):
+            sid.write_text("session\n", encoding="utf-8")
 
         report = self.prune("--apply")
-        entries = next(item for item in report["slots"] if item["slot"] == "symsnap-slot")["entries"]
-        self.assertEqual({entry["reason"] for entry in entries}, {"indeterminate-workflow"})
-        self.assertEqual(digests(slot), before, "a symlinked snapshot must preserve the slot")
+        fates = {entry["path"]: entry["decision"] for entry in report["advisorSessions"]}
+        self.assertEqual(fates[retired_sid.name], "removed",
+                         "a pointer to a retired history follows it out")
+        self.assertEqual(fates[retained_sid.name], "retained")
+        self.assertEqual(fates[foreign_sid.name], "retained",
+                         "a foreign-prefix pointer never follows another repository's decision")
+        self.assertEqual(fates[unowned_sid.name], "retained")
+        self.assertFalse(retired_sid.exists())
+        self.assertTrue(retained_sid.exists() and foreign_sid.exists() and unowned_sid.exists())
 
-    def test_shared_directories_are_out_of_scope(self) -> None:
-        """sessions/ and _advisor-sessions/ belong to no single workflow."""
-        for name in ("sessions", "_advisor-sessions"):
-            shared = self.root / name
-            shared.mkdir(mode=0o700)
-            (shared / "marker.json").write_text('{"kept":true}\n', encoding="utf-8")
+    def test_a_dead_snapshots_own_pointer_follows_it_out(self) -> None:
+        """A dead slot holding only its snapshot still retires its pointer.
+
+        The snapshot is the sole carrier of the instance id there, so its
+        removable entry must keep that id or the pointer strands forever.
+        """
+        dead = self.root / "2222"
+        dead.mkdir(mode=0o700)
+        dead_wid = "d" * 32
+        (dead / "workflow.json").write_text(json.dumps({
+            "schemaVersion": 1, "workflowId": dead_wid,
+            "repo": {"root": str(self.tmp / "gone"), "key": "2222"},
+        }), encoding="utf-8")
+        sessions = self.root / "_advisor-sessions"
+        sessions.mkdir(mode=0o700)
+        sid = sessions / f"2222-dead-pass-{dead_wid}.sid"
+        sid.write_text("session\n", encoding="utf-8")
+
+        report = self.prune("--apply")
+        fates = {entry["path"]: entry["decision"] for entry in report["advisorSessions"]}
+        self.assertEqual(fates[sid.name], "removed",
+                         "a snapshot-only dead workflow must still retire its pointer")
+        self.assertFalse(sid.exists())
+
+    def test_the_sessions_directory_is_out_of_scope(self) -> None:
+        """sessions/ belongs to no single workflow and is never touched."""
+        shared = self.root / "sessions"
+        shared.mkdir(mode=0o700)
+        (shared / "marker.json").write_text('{"kept":true}\n', encoding="utf-8")
         before = digests(self.root)
         report = self.prune("--apply")
         self.assertEqual([entry["slot"] for entry in report["slots"]], [])

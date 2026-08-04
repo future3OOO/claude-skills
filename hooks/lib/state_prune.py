@@ -35,6 +35,10 @@ EVIDENCE = re.compile(r"^(preflight|gate|verification|tdd|review|disposition)-.+
 ACTIVE_PASS = "active-pass.json"
 # The evidence producers write different fields; neither family is canonical.
 STAMPS = ("recordedAt", "updatedAt", "createdAt")
+# Wrapper-written session pointers: {repository key}-{slug}-{instance}.sid.
+# Only the trailing instance id is parsed; slugs may themselves contain "-".
+ADVISOR_SESSIONS = "_advisor-sessions"
+SID = re.compile(r"-([0-9a-f]{32})\.sid$")
 
 
 def _stamp(document: dict[str, object]) -> datetime | None:
@@ -96,7 +100,15 @@ def _live(slot: Path) -> dict[str, object] | str | None:
     if not snapshot.exists():
         return None
     workflow = read_json(snapshot)
-    if not isinstance(workflow, dict) or workflow.get("schemaVersion") != 1:
+    # Exact integer: bool and float coerce equal to 1 in Python, and a coerced
+    # version is another estate's data, not this schema.
+    if not isinstance(workflow, dict) or type(workflow.get("schemaVersion")) is not int \
+            or workflow.get("schemaVersion") != 1:
+        return INDETERMINATE
+    instance = workflow.get("workflowId")
+    if not isinstance(instance, str) or not instance:
+        # A snapshot binding no instance would make every artifact read as
+        # superseded history; it cannot be trusted to classify anything.
         return INDETERMINATE
     repo = workflow.get("repo")
     if not isinstance(repo, dict) or not isinstance(repo.get("root"), str):
@@ -126,9 +138,18 @@ def _classify(slot: Path, workflow: dict[str, object] | str | None) -> list[dict
         elif path.name == LOCK:
             entries.append({"path": path.name, "decision": "retained", "reason": "lock"})
         elif path.name == WORKFLOW:
-            entries.append({"path": path.name, "decision": "retained", "reason": "active-workflow"}
-                           if workflow else
-                           {"path": path.name, "decision": "removable", "reason": "dead-slot"})
+            if workflow:
+                entries.append({"path": path.name, "decision": "retained",
+                                "reason": "active-workflow", "workflowId": active})
+            else:
+                # An existing snapshot in a dead slot is valid (invalid shapes
+                # are INDETERMINATE), so its instance id rides along and its
+                # pointer can follow the history out.
+                entry = {"path": path.name, "decision": "removable", "reason": "dead-slot"}
+                dead = read_json(path)
+                if isinstance(dead, dict) and isinstance(dead.get("workflowId"), str):
+                    entry["workflowId"] = dead["workflowId"]
+                entries.append(entry)
         elif str(path) in referenced:
             entries.append({"path": path.name, "decision": "retained", "reason": "referenced-by-active-workflow"})
         elif path.name == ACTIVE_PASS:
@@ -143,12 +164,15 @@ def _classify(slot: Path, workflow: dict[str, object] | str | None) -> list[dict
         elif workflow is None:
             # A dead slot's whole workflow surface is removable: no pass can
             # still consult it, and nothing here binds to a living instance.
-            entries.append({"path": path.name, "decision": "removable", "reason": "dead-slot"})
+            entries.append({"path": path.name, "decision": "removable", "reason": "dead-slot",
+                            "workflowId": owner[0]})
         elif owner[0] == active:
-            entries.append({"path": path.name, "decision": "retained", "reason": "active-workflow"})
+            entries.append({"path": path.name, "decision": "retained", "reason": "active-workflow",
+                            "workflowId": active})
         else:
             owners[path] = owner
-            entries.append({"path": path.name, "decision": "pending", "reason": "superseded"})
+            entries.append({"path": path.name, "decision": "pending", "reason": "superseded",
+                            "workflowId": owner[0]})
 
     return _retain_recent(owners, entries)
 
@@ -219,6 +243,42 @@ def _remove(slot: Path, entries: list[dict[str, str]], planned: dict[str, tuple[
                 entry["decision"], entry["reason"] = "skipped", f"unlink-failed: {exc}"
 
 
+def _retire_sessions(root: Path, retired: dict[str, str], pinned: set[str], apply: bool) -> list[dict[str, str]]:
+    """Classifiable advisor pointers follow their workflow's decision.
+
+    Classifiable means the filename carries both the owning slot's key prefix
+    and the trailing instance id of a history this run actually removed; a
+    foreign prefix, missing suffix, or unknown instance retains fail-closed.
+    Pointers are decided from this invocation's real outcomes, so there is no
+    plan window to re-verify: a retired instance cannot be consulted again.
+    """
+    directory = root / ADVISOR_SESSIONS
+    entries: list[dict[str, str]] = []
+    if directory.is_symlink() or not directory.is_dir():
+        return entries
+    for path in sorted(directory.iterdir()):
+        match = SID.search(path.name)
+        if path.is_symlink() or not path.is_file() or match is None:
+            entries.append({"path": path.name, "decision": "retained", "reason": "unowned-pointer"})
+            continue
+        instance = match.group(1)
+        if instance in pinned:
+            entries.append({"path": path.name, "decision": "retained", "reason": "follows-retained-workflow"})
+        elif instance not in retired:
+            entries.append({"path": path.name, "decision": "retained", "reason": "unknown-workflow"})
+        elif not path.name.startswith(f"{retired[instance]}-"):
+            entries.append({"path": path.name, "decision": "retained", "reason": "foreign-repository"})
+        elif not apply:
+            entries.append({"path": path.name, "decision": "removable", "reason": "follows-removed-workflow"})
+        else:
+            try:
+                path.unlink()
+                entries.append({"path": path.name, "decision": "removed", "reason": "follows-removed-workflow"})
+            except OSError as exc:
+                entries.append({"path": path.name, "decision": "skipped", "reason": f"unlink-failed: {exc}"})
+    return entries
+
+
 def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]:
     """Classify every artifact under the state root, deleting only when applying.
 
@@ -237,10 +297,10 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
         return {"root": str(root), "applied": apply, "slots": slots}
 
     for slot in sorted(root.iterdir()):
-        # `sessions` and `_advisor-sessions` are shared across repositories and
-        # owned by no single workflow; this slice does not retire them. A
-        # symlink is rejected before is_dir would follow it: no writer creates
-        # one, and traversing it could delete outside the root.
+        # `sessions` is shared and out of scope; `_advisor-sessions` is
+        # handled after the loop, where pointers follow their workflow's fate.
+        # A symlink is rejected before is_dir would follow it: no writer
+        # creates one, and traversing it could delete outside the root.
         if slot.is_symlink() or not slot.is_dir() or slot.name.startswith("_") or slot.name == "sessions":
             continue
         entries = _classify(slot, _live(slot))
@@ -258,4 +318,20 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
                                   "entries": entries})
                     continue
         slots.append({"slot": slot.name, "status": "applied" if apply else "reported", "entries": entries})
-    return {"root": str(root), "applied": apply, "slots": slots}
+
+    # A pointer may follow its workflow out only when this run really removed
+    # that history; any other outcome for the instance pins the pointer.
+    retired: dict[str, str] = {}
+    pinned: set[str] = set()
+    removed_like = "removed" if apply else "removable"
+    for report_slot in slots:
+        for entry in report_slot["entries"]:
+            instance = entry.get("workflowId")
+            if not isinstance(instance, str):
+                continue
+            if entry["decision"] == removed_like:
+                retired.setdefault(instance, report_slot["slot"])
+            else:
+                pinned.add(instance)
+    return {"root": str(root), "applied": apply, "slots": slots,
+            "advisorSessions": _retire_sessions(root, retired, pinned, apply)}
