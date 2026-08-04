@@ -137,15 +137,20 @@ registry, or manifest around it:
 
 ```bash
 git fetch origin
-git diff --name-only origin/main...HEAD   # the branch's changed-path set
+git diff --name-status origin/main...HEAD   # the changed-path set, with operations
 ```
 
-For each path in the set, compare the live file against current `main` and
-against the branch candidate before copying, and preserve live deviations
-outside the set. If a target path already differs from both `main` and the
-branch candidate, stop: two slices own the same path. Every installed source
-change must be carried by the installing branch and its PR. Never run the
-whole-estate install above from a divergent branch.
+Only paths with a live target in the mapping at the top of this file install
+at all; repository-only paths such as `README.md` and `docs/` have none. For
+each added or modified path in the set, compare the live file against current
+`main` and against the branch candidate before copying, and preserve live
+deviations outside the set. If a target path already differs from both `main`
+and the branch candidate, stop: two slices own the same path. A deletion or
+rename carries no branch candidate to copy: when the live file still matches
+`main`, retire the old name with the procedure above; when it does not, stop —
+another slice owns it. A rename is that retirement plus a copy of the new
+name. Every installed source change must be carried by the installing branch
+and its PR. Never run the whole-estate install above from a divergent branch.
 
 **Adapt only disposable encoding.** When an installed contract from another
 slice refuses scratch input with a named fail-closed error that explicitly
