@@ -211,10 +211,11 @@ pass present the same terminal-marker-plus-incomplete-`cwd` state, and no
 predicate over markers and workflow contents separates them, so the suppression
 is deliberate rather than an oversight. It is counted rather than only accepted,
 because the payload's `cwd` reaches no state file and an audit after the fact
-could never recover which slot was passed over. Markers are not retired. Retiring the last one would make a
-session indistinguishable from one that never recorded any, returning it to the
-`cwd` slot and re-opening the cross-talk this design removes; general state
-cleanup belongs to its own issue.
+could never recover which slot was passed over. No hook retires markers. The
+deliberate `prune` verb (issue #50) retires one only when its recorded
+repository root is confirmed absent: a session stripped of every marker does
+return to the `cwd` slot, but only when each of its repositories is gone,
+where that slot resolves no pass either.
 
 **Release note — the latch telemetry population changed.** Events now carry the
 `repo` key of the slot they fired against, and the population they describe has

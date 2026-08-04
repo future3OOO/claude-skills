@@ -84,6 +84,41 @@ def _referenced(workflow: dict[str, object]) -> set[str]:
 INDETERMINATE = "indeterminate"
 
 
+def _walkable(directory: Path) -> bool:
+    """A real, non-symlinked directory this estate may traverse.
+
+    No writer creates symlinked directories, and following one could carry a
+    destructive walk outside the state root.
+    """
+    return directory.is_dir() and not directory.is_symlink()
+
+
+def _walk(directory: Path):
+    """The traversable directory's children, or nothing at all.
+
+    A missing or symlinked directory yields no children rather than raising,
+    so every estate walk shares one guard instead of repeating it.
+    """
+    if _walkable(directory):
+        yield from sorted(directory.iterdir())
+
+
+def _root_state(root: str) -> str:
+    """One owner for repository-root liveness: live, dead, or INDETERMINATE.
+
+    Confirmed absence is the only stat failure that means dead; an unreachable
+    root (permissions, I/O, a stale mount) proves nothing, and ValueError
+    covers roots that can never be paths, like embedded NULs.
+    """
+    try:
+        Path(root).stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return "dead"
+    except (OSError, ValueError):
+        return INDETERMINATE
+    return "live"
+
+
 def _live(slot: Path) -> dict[str, object] | str | None:
     """The slot's active workflow, None when dead, INDETERMINATE when untrusted.
 
@@ -113,14 +148,10 @@ def _live(slot: Path) -> dict[str, object] | str | None:
     repo = workflow.get("repo")
     if not isinstance(repo, dict) or not isinstance(repo.get("root"), str):
         return INDETERMINATE
-    try:
-        Path(repo["root"]).stat()
-    except (FileNotFoundError, NotADirectoryError):
-        # Confirmed absence is the only stat failure that means dead; an
-        # unreachable root (permissions, I/O, a stale mount) proves nothing.
+    state = _root_state(repo["root"])
+    if state == "dead":
         return None
-    except (OSError, ValueError):
-        # ValueError covers roots that can never be paths, like embedded NULs.
+    if state is INDETERMINATE:
         return INDETERMINATE
     return workflow
 
@@ -140,7 +171,18 @@ def _classify(slot: Path, workflow: dict[str, object] | str | None) -> list[dict
     entries: list[dict[str, str]] = []
 
     for path in sorted(slot.iterdir()):
-        if not path.is_file():
+        if path.name == "stop" and _walkable(path):
+            # Stop-session documents are association scaffolding: item-reported
+            # per file, removable only with a classifiably dead slot.
+            for document in sorted(path.iterdir()):
+                name = f"stop/{document.name}"
+                if document.is_symlink() or not document.is_file():
+                    entries.append({"path": name, "decision": "retained", "reason": "unknown-kind"})
+                elif workflow is None:
+                    entries.append({"path": name, "decision": "removable", "reason": "dead-slot"})
+                else:
+                    entries.append({"path": name, "decision": "retained", "reason": "stop-session"})
+        elif not path.is_file():
             entries.append({"path": path.name, "decision": "retained", "reason": "not-a-file"})
         elif path.name == TELEMETRY:
             entries.append({"path": path.name, "decision": "retained", "reason": "telemetry"})
@@ -250,6 +292,15 @@ def _remove(slot: Path, entries: list[dict[str, str]], planned: dict[str, tuple[
                 entry["decision"] = "removed"
             except OSError as exc:
                 entry["decision"], entry["reason"] = "skipped", f"unlink-failed: {exc}"
+    stop_directory = slot / "stop"
+    if _walkable(stop_directory) and not any(stop_directory.iterdir()):
+        # Prune holds the same repository lock as the stop writer, so an
+        # emptied stop directory cannot be repopulated mid-removal.
+        try:
+            stop_directory.rmdir()
+            entries.append({"path": "stop", "decision": "removed", "reason": "emptied-directory"})
+        except OSError as exc:
+            entries.append({"path": "stop", "decision": "skipped", "reason": f"rmdir-failed: {exc}"})
 
 
 def _retire_sessions(root: Path, retired: dict[str, str], pinned: set[str], apply: bool) -> list[dict[str, str]]:
@@ -261,11 +312,8 @@ def _retire_sessions(root: Path, retired: dict[str, str], pinned: set[str], appl
     Pointers are decided from this invocation's real outcomes, so there is no
     plan window to re-verify: a retired instance cannot be consulted again.
     """
-    directory = root / ADVISOR_SESSIONS
     entries: list[dict[str, str]] = []
-    if directory.is_symlink() or not directory.is_dir():
-        return entries
-    for path in sorted(directory.iterdir()):
+    for path in _walk(root / ADVISOR_SESSIONS):
         match = SID.search(path.name)
         if path.is_symlink() or not path.is_file() or match is None:
             entries.append({"path": path.name, "decision": "retained", "reason": "unowned-pointer"})
@@ -285,6 +333,39 @@ def _retire_sessions(root: Path, retired: dict[str, str], pinned: set[str], appl
                 entries.append({"path": path.name, "decision": "removed", "reason": "follows-removed-workflow"})
             except OSError as exc:
                 entries.append({"path": path.name, "decision": "skipped", "reason": f"unlink-failed: {exc}"})
+    return entries
+
+
+def _retire_associations(root: Path, apply: bool) -> list[dict[str, str]]:
+    """Session-association markers follow their repository's liveness.
+
+    Each sessions/<session>/<key>.json embeds the repository identity its
+    writer recorded; a confirmed-absent root retires the marker, anything
+    else - a live root, a mismatched filename, malformed or symlinked data -
+    is preserved and reported. The Stop reader (state_store's
+    session_associations) deliberately cannot serve here: it returns only
+    valid identities and silently skips malformed markers, while retirement
+    must see every file to preserve and report the unclassifiable ones.
+    """
+    entries: list[dict[str, str]] = []
+    for session in _walk(root / "sessions"):
+        for marker in _walk(session):
+            name = f"{session.name}/{marker.name}"
+            document = read_json(marker) if marker.is_file() and not marker.is_symlink() else None
+            repo = document.get("repo") if isinstance(document, dict) else None
+            root_value = repo.get("root") if isinstance(repo, dict) else None
+            if (not isinstance(root_value, str)
+                    or marker.name != f"{repo.get('key')}.json"
+                    or _root_state(root_value) != "dead"):
+                entries.append({"path": name, "decision": "retained", "reason": "unowned-or-live"})
+            elif not apply:
+                entries.append({"path": name, "decision": "removable", "reason": "dead-repository"})
+            else:
+                try:
+                    marker.unlink()
+                    entries.append({"path": name, "decision": "removed", "reason": "dead-repository"})
+                except OSError as exc:
+                    entries.append({"path": name, "decision": "skipped", "reason": f"unlink-failed: {exc}"})
     return entries
 
 
@@ -310,7 +391,7 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
         # handled after the loop, where pointers follow their workflow's fate.
         # A symlink is rejected before is_dir would follow it: no writer
         # creates one, and traversing it could delete outside the root.
-        if slot.is_symlink() or not slot.is_dir() or slot.name.startswith("_") or slot.name == "sessions":
+        if not _walkable(slot) or slot.name.startswith("_") or slot.name == "sessions":
             continue
         try:
             entries = _classify(slot, _live(slot))
@@ -357,4 +438,5 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
             else:
                 pinned.add(instance)
     return {"root": str(root), "applied": apply, "slots": slots,
-            "advisorSessions": _retire_sessions(root, retired, pinned, apply)}
+            "advisorSessions": _retire_sessions(root, retired, pinned, apply),
+            "sessions": _retire_associations(root, apply)}

@@ -261,6 +261,18 @@ sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr 
 check_status "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
 rm -rf "$idtmp"
 
+printf '== state-root alignment (offline)\n'
+roottmp=$(mktemp -d)
+mkdir -p "$roottmp/home" "$roottmp/repo" "$roottmp/isolated"
+git -C "$roottmp/repo" init -q
+HOME="$roottmp/home" CLAUDE_HOME="$roottmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$roottmp/isolated" \
+  "$WRAPPER" --slug root-alignment --cwd "$roottmp/repo" -- "q" >/dev/null 2>&1
+override_sids=$(ls "$roottmp/isolated/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+fallback_sids=$(ls "$roottmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+check_status "sid lands under the workflow state root override" "1" "$override_sids"
+check_status "no sid lands under the CLAUDE_HOME fallback" "0" "$fallback_sids"
+rm -rf "$roottmp"
+
 printf '== gitnexus envelope validation (offline)\n'
 envtmp=$(mktemp -d)
 mkdir -p "$envtmp/home" "$envtmp/repo"

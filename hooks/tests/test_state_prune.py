@@ -522,8 +522,106 @@ class StatePruneTests(unittest.TestCase):
                          "a snapshot-only dead workflow must still retire its pointer")
         self.assertFalse(sid.exists())
 
-    def test_the_sessions_directory_is_out_of_scope(self) -> None:
-        """sessions/ belongs to no single workflow and is never touched."""
+    def real_repo_identity(self, name: str):
+        """A real temporary git repository resolved through the production identity."""
+        from hooks.lib.repo_identity import resolve_repo_identity
+        repo = self.tmp / name
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        return resolve_repo_identity(repo)
+
+    def test_dead_slot_stop_documents_are_item_reported_and_removed(self) -> None:
+        """Producer-written Stop docs follow their dead slot out, per file.
+
+        The document is created through the real stop_session_swap writer so
+        the persisted shape is the producer's, then the repository is deleted
+        to make the slot classifiably dead.
+        """
+        from hooks.lib.state_store import stop_session_swap
+        identity = self.real_repo_identity("stoprepo")
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.root)
+        try:
+            # state_root() reads the override per call, so the real writer
+            # lands in this test's synthetic root with no reload tricks.
+            stop_session_swap(identity, "sess-a", "feedback", "latched")
+        finally:
+            os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
+        slot = self.root / identity.key
+        (slot / "workflow.json").write_text(json.dumps({
+            "schemaVersion": 1, "workflowId": "w-dead",
+            "repo": identity.as_dict(),
+        }), encoding="utf-8")
+        shutil.rmtree(self.tmp / "stoprepo")
+        self.assertTrue((slot / "stop" / "sess-a.json").exists())
+
+        report = self.prune("--apply")
+        entries = {e["path"]: e["decision"] for s in report["slots"] for e in s["entries"]
+                   if s["slot"] == identity.key}
+        self.assertEqual(entries.get("stop/sess-a.json"), "removed",
+                         "a dead slot's stop document must be item-reported and removed")
+        self.assertFalse((slot / "stop").exists(), "the emptied stop directory is removed")
+
+    def test_session_associations_follow_their_repositorys_liveness(self) -> None:
+        """Producer-written associations retire with a confirmed-absent root only.
+
+        Both markers are created through the real record_session_association
+        writer; one repository is then deleted. Malformed session data is
+        preserved untouched.
+        """
+        from hooks.lib.state_store import record_session_association
+        dead = self.real_repo_identity("deadrepo")
+        live = self.real_repo_identity("liverepo")
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.root)
+        try:
+            record_session_association("sess-b", dead)
+            record_session_association("sess-b", live)
+        finally:
+            os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
+        shutil.rmtree(self.tmp / "deadrepo")
+        malformed = self.root / "sessions" / "sess-b" / "marker.json"
+        malformed.write_text('{"kept":true}\n', encoding="utf-8")
+
+        report = self.prune("--apply")
+        fates = {entry["path"]: entry["decision"] for entry in report["sessions"]}
+        self.assertEqual(fates[f"sess-b/{dead.key}.json"], "removed",
+                         "an association whose repository root is confirmed absent retires")
+        self.assertEqual(fates[f"sess-b/{live.key}.json"], "retained")
+        self.assertEqual(fates["sess-b/marker.json"], "retained")
+        self.assertFalse((self.root / "sessions" / "sess-b" / f"{dead.key}.json").exists())
+        self.assertTrue((self.root / "sessions" / "sess-b" / f"{live.key}.json").exists())
+        self.assertTrue(malformed.exists())
+
+    def test_the_real_wrapper_pointer_reaches_prune_under_a_shared_root(self) -> None:
+        """The wrapper's sid, written under the override root, is visible to prune.
+
+        The real wrapper runs offline (it dies at its alias-parse stage, after
+        the pointer is written); nothing may land under the distinct
+        CLAUDE_HOME fallback.
+        """
+        wrapper = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
+        repo = self.tmp / "wrapperrepo"
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        fallback = self.tmp / "fallback-home"
+        subprocess.run(
+            [str(wrapper), "--slug", "shared-root", "--cwd", str(repo), "--", "q"],
+            capture_output=True, text=True,
+            env={**os.environ, "HOME": str(self.tmp / "home"),
+                 "CLAUDE_HOME": str(fallback),
+                 "CLAUDE_WORKFLOW_STATE_ROOT": str(self.root)},
+        )
+        pointers = list((self.root / "_advisor-sessions").glob("*.sid"))
+        self.assertEqual(len(pointers), 1, "the wrapper must write its pointer under the shared root")
+        self.assertFalse((fallback / "state" / "_advisor-sessions").exists(),
+                         "nothing may land under the CLAUDE_HOME fallback")
+
+        report = self.prune()
+        names = {entry["path"] for entry in report["advisorSessions"]}
+        self.assertIn(pointers[0].name, names,
+                      "prune must see the pointer the real wrapper just wrote")
+
+    def test_unknown_session_shapes_are_preserved(self) -> None:
+        """Files directly under sessions/ fit no association shape and survive."""
         shared = self.root / "sessions"
         shared.mkdir(mode=0o700)
         (shared / "marker.json").write_text('{"kept":true}\n', encoding="utf-8")
