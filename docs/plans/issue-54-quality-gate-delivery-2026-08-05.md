@@ -2,7 +2,7 @@
 
 ## Status
 
-- current state: child issues published; governing plan proposed in draft PR #78
+- current state: child issues published; governing plan under review in PR #78
 - governing artifact: this document
 - last updated: 2026-08-05
 
@@ -149,9 +149,9 @@ Out of scope:
 
 | PR | Branch | Base | Owner slice | Commit structure | Budget | Entry | Exit |
 |---|---|---|---|---|---:|---|---|
-| A | `feat/issue-54-canonical-evaluation` | current `main` | #75 canonical evaluation and cumulative growth | Interface-level RED proof; deep Module replacement plus cleanup | about 500 net | #75 ready; no blocker | role consumers migrated, captured totals proven, required checks green |
-| B | `feat/issue-54-exact-duplicates` | `main` after A merges | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
-| C | `feat/issue-54-responsibility-owners` | `main` after B merges | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | candidates calibrated and warning-only, required checks green |
+| A | `feat/issue-54-canonical-evaluation` | exact `origin/main` SHA recorded in #75 at dispatch | #75 canonical evaluation and cumulative growth | Interface-level RED proof; deep Module replacement plus cleanup | about 500 net | #75 ready; no blocker | role consumers migrated, captured totals proven, required checks green |
+| B | `feat/issue-54-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
+| C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | candidates calibrated and warning-only, required checks green |
 
 PR C may approach 600 net because its calibrated positive and negative proof
 must ship with the behavior; splitting that proof into a fourth PR would create
@@ -186,7 +186,7 @@ Required proof includes:
 - [x] Child #76 published, linked, and blocked by #75.
 - [x] Child #77 published, linked, and blocked by #76.
 - [x] Parent #54 seven-slice list replaced by the approved structure.
-- [x] This planning branch reviewed, pushed, and opened as draft PR #78.
+- [x] This planning branch reviewed, pushed, and opened as PR #78.
 - [ ] PR A merged with its checklist and reviewer loop complete.
 - [ ] PR B merged with its checklist and reviewer loop complete.
 - [!] Parent #54 must pin the exact responsibility-owner calibration manifest
