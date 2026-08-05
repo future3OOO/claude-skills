@@ -40,7 +40,10 @@ def check(
     findings = [evaluate_growth(snapshot), reuse_rule]
     # Hunks that reached no entry leave every hunk-derived rule unable to claim
     # it saw the whole change, while the measured counts stay trustworthy.
-    attribution = snapshot.attribution_gaps()
+    # A path with no single identity undermines every rule that reads that
+    # file; unattributed hunks undermine only the rules that read hunks.
+    identity = snapshot.identity_gaps()
+    attribution = snapshot.attribution_gaps() + identity
     # An analysis that could not see everything says so where the run is read.
     warnings.extend(
         f"incomplete analysis for {finding.rule_id}: {gap}" for finding in findings for gap in finding.gaps
@@ -56,7 +59,7 @@ def check(
     if fail_on_warnings and warnings:
         errors.extend(f"warning promoted to failure: {warning}" for warning in warnings)
 
-    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, bloat_errors, bloat_warnings, attribution, bloat_gaps)
+    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, bloat_errors, bloat_warnings, attribution, bloat_gaps, identity)
     return {
         "schemaVersion": 1,
         "gateVersion": "2026-07-29.1",
@@ -156,14 +159,15 @@ def _checks(
     bloat_warnings: list[str],
     attribution: tuple[str, ...],
     bloat_gaps: tuple[str, ...],
+    identity: tuple[str, ...],
 ) -> list[dict[str, object]]:
     def outcome(passed: bool, gaps: tuple[str, ...]) -> dict[str, object]:
         """A rule that could not see its whole scope is unknown, never a pass."""
         return {"passed": None, "status": "incomplete", "gaps": list(gaps)} if gaps else {"passed": passed, "status": "evaluated"}
 
     return [
-        {"name": "no-merge-conflict-markers", "passed": not conflict_files, "sample": conflict_files[:10]},
-        {"name": "no-temp-artifacts", "passed": not temp_files, "sample": temp_files[:10]},
+        {"name": "no-merge-conflict-markers", "sample": conflict_files[:10], **outcome(not conflict_files, identity)},
+        {"name": "no-temp-artifacts", "sample": temp_files[:10], **outcome(not temp_files, identity)},
         {"name": "no-quality-escapes", "sample": quality_escapes[:10], **outcome(not quality_escapes, attribution)},
         {"name": "no-duplicate-added-blocks", "sample": duplicates[:4], **outcome(not duplicates, attribution)},
         {

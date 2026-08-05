@@ -111,7 +111,7 @@ def evaluate_bloat(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str], 
     total_added, total_deleted = totals["added"], totals["deleted"]
     # Only the entries this rule actually weighs: an unmeasured production file
     # contributes zero, which is not evidence that it did not grow.
-    gaps = tuple(sorted({gap for entry in production for gap in entry.gaps}))
+    gaps = tuple(dict.fromkeys(tuple(sorted({gap for entry in production for gap in entry.gaps})) + snapshot.identity_gaps()))
     details, shrink_by_dir = _bloat_file_details(snapshot)
     for detail in details:
         errors.extend(_bloat_errors_for_file(detail, shrink_by_dir))
@@ -130,7 +130,7 @@ def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:
     suppresses the evidence.
     """
     growth = snapshot.growth()
-    gaps = snapshot.gaps()
+    gaps = tuple(dict.fromkeys(snapshot.gaps() + snapshot.identity_gaps()))
     net = growth["humanAuthored"]["net"]
     status = "incomplete" if gaps else "warn" if net > 500 else "pass"
     return Finding(

@@ -705,6 +705,14 @@ def test_unattributed_diff_path_cannot_report_clean_hunk_checks() -> None:
             _, ranged, _ = run_gate(repo, *extra)
             assert growth_finding(ranged)["status"] == "incomplete", (extra, growth_finding(ranged))
             assert any("Git-quoted" in gap for gap in growth_finding(ranged)["completeness"]["gaps"]), (extra, ranged["findings"])
+            # No representation of any path-dependent rule may read clean.
+            for item in ranged["findings"]:
+                assert item["status"] == "incomplete", (extra, item)
+            for item in ranged["checks"]:
+                assert item["passed"] is None and item["status"] == "incomplete", (extra, item)
+            for name, rule in ranged["hardRules"].items():
+                if name != "consequenceCoverage":
+                    assert rule["status"] == "incomplete", (extra, name, rule)
 
     with_repo(body)
 

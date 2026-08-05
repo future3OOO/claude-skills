@@ -42,6 +42,7 @@ class EvaluationSnapshot:
     changed_scope: str
     entries: tuple[SnapshotEntry, ...]
     unattributed: tuple[str, ...]
+    quoted: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_by_path", {entry.path: entry for entry in self.entries})
@@ -68,6 +69,7 @@ class EvaluationSnapshot:
             changed_scope=str(scope["changed_scope"]),
             entries=entries,
             unattributed=tuple(sorted(set(hunks) - changed)),
+            quoted=tuple(sorted(path for path in changed if path.startswith('"'))),
         )
 
     @property
@@ -108,6 +110,16 @@ class EvaluationSnapshot:
         """
         return tuple(f"{path}: diff hunks matched no changed file" for path in self.unattributed)
 
+    def identity_gaps(self) -> tuple[str, ...]:
+        """Paths Git returned in quoted form, so the file has no single name.
+
+        Git quotes a name holding a tab, quote, backslash or non-ASCII byte,
+        and only some of its commands do, so one file arrives as both a quoted
+        and a literal entry. Every rule that reads a file by path is then
+        reading something it cannot identify.
+        """
+        return tuple(f"{path}: Git-quoted path has no single identity" for path in self.quoted)
+
 
 def _entry(
     repo: Path,
@@ -128,11 +140,6 @@ def _entry(
     if untracked and current_text is not None:
         file_hunks = (_whole_file_hunk(current_text),)
     added, deleted, gaps = _counts_for(rel_path, counts.get(rel_path), current_text, base_text)
-    if rel_path.startswith('"'):
-        # Git quotes a name containing a tab, quote, backslash or non-ASCII
-        # byte, and only some of its commands do. The quoted and literal forms
-        # then describe one file as two entries, neither of them measurable.
-        gaps = gaps + (f"{rel_path}: Git-quoted path cannot be attributed",)
     return SnapshotEntry(
         path=rel_path,
         role=role,

@@ -56,7 +56,7 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
     hunks count too, because the candidate side is then incomplete as well.
     """
     errors = [finding for finding in findings if finding.severity == "error"]
-    gaps = tuple(dict.fromkeys(gaps + snapshot.attribution_gaps()))
+    gaps = tuple(dict.fromkeys(gaps + snapshot.attribution_gaps() + snapshot.identity_gaps()))
     return Finding(
         rule_id="reuse-existing-helpers",
         severity="error" if errors else "warning",
