@@ -1,90 +1,73 @@
 # Decision: Issue #54 quality-gate target architecture
 
-Date: 2026-08-05. Status: proposed target state.
+Date: 2026-08-05. Status: proposed; not binding until PR #79 is reviewed and
+merged.
 
-This document defines how the quality gate must look after issues #75, #76,
-and #77 are implemented. It does not replace the sequencing and review rules
-in
-[`docs/plans/issue-54-quality-gate-delivery-2026-08-05.md`](../plans/issue-54-quality-gate-delivery-2026-08-05.md),
-and it does not authorize any warning-to-blocker promotion. Issue #54 remains
-the human calibration and promotion gate; issue #49 remains the only owner of
-final-tree binding, workflow state, and persistence.
+This is the normative completed-state architecture for issues #75, #76, and #77.
+The
+[`issue-54-quality-gate-target-architecture.html`](issue-54-quality-gate-target-architecture.html)
+companion is a non-normative visual index; this Markdown controls whenever the
+two differ.
 
-## Decision summary
+This decision supplements, and does not replace or re-sequence, the
+[`issue-54-quality-gate-delivery-2026-08-05.md`](../plans/issue-54-quality-gate-delivery-2026-08-05.md)
+plan. The agent already executing #75 continues against that approved slice.
+Parent #54 remains the human calibration and promotion gate. Issue #49 remains
+the sole owner of review freshness, final-tree binding, workflow state, and
+persistence.
 
-The completed gate has one public Interface, one immutable evaluation owner,
-one path-classification owner, one redundancy-analysis owner, and one finding
-model. It deepens the existing Modules and deletes their superseded paths; it
-does not add a framework above the current implementations.
+## Binding versus illustrative content
 
-```mermaid
-flowchart LR
-    CLI["cli.py\nCLI Adapter"] --> RUN["runner.check\nsole public Interface"]
-    ENTRY["code_quality_gate.py\nstandalone entrypoint"] --> CLI
-    HOOK["hooks/code-quality-gate.py\nhook Adapter"] --> ENTRY
-    RUN --> SNAP["context.py\nEvaluationSnapshot owner"]
-    SNAP --> GIT["git_scope.py\nGit capture Adapter"]
-    SNAP --> ROLE["path_policy.py\nsole path classifier"]
-    SNAP --> INPUT["inputs.py\ncaptured-evidence Adapter"]
-    RUN --> CHECKS["checks.py\nsafety + cumulative growth"]
-    RUN --> RED["redundancy.py\nexact duplicate + owner lifecycle"]
-    RED --> SYMBOLS["symbols.py\nsyntax-anchor extraction"]
-    CHECKS --> FIND["findings.py\nstructured result model"]
-    RED --> FIND
-    RUN --> FIND
-    STATE["workflow state"] --> ROLE
+Binding in this decision:
 
-    style RUN fill:#dbeafe,stroke:#2563eb
-    style SNAP fill:#dcfce7,stroke:#16a34a
-    style RED fill:#fef3c7,stroke:#d97706
-    style STATE fill:#f3f4f6,stroke:#6b7280
-```
+- Module responsibility and forbidden-dependency boundaries;
+- caller-visible Interfaces and versioned data contracts;
+- evaluation ordering and ownership;
+- rule-family independence, identity, state, severity, completeness, and
+  resolution invariants;
+- required deletion and old-to-survivor ownership;
+- no-change surfaces and externally observable proof.
 
-Workflow state continues to call `path_policy` directly. It never imports
-`EvaluationSnapshot`, a detector, or a quality-gate finding type.
+Illustrative and private until an owning slice proves the real seam:
 
-## Why this shape
+- Python helper/function names other than `runner.check`;
+- private dataclass names and field layout;
+- the filename and helper shape of shared test support;
+- private capture, parsing, indexing, and normalization phases;
+- the slice-convergence sketch in this document.
 
-Two designs were considered:
+Private shapes may change without revising this decision when the binding
+owner, Interface, behavior, and deletion contract remain intact.
 
-1. A minimal design with direct detector functions and no shared detector
-   contract.
-2. A flexibility-first design with a `Detector` protocol and one class per
-   rule family.
+## Final ownership
 
-The target keeps the minimal external and file-level surface while retaining
-one useful internal Seam: detector Modules return the same structured finding
-and completeness types. `runner.py` calls a fixed roster in a fixed order.
-There is no detector protocol, registry, dependency scheduler, plugin loader,
-or caller-supplied detector list. The authorized variation is between safety,
-growth, exact-duplicate, and responsibility evidence—not between runtime
-implementations of a generic detector framework.
+| Module | Binding responsibility | Must not own |
+|---|---|---|
+| `runner.py` | The stable call Interface, fixed evaluation order, rule-policy projection, and result serialization | Git/filesystem reads, classification, diff parsing, detector algorithms, workflow state |
+| `context.py` | One immutable evaluation containing captured base/candidate evidence, stored classification, hunks, growth, capture gaps, and external evidence | Rule severity, display strings, persistence |
+| `git_scope.py` | Resolve the base it is given and capture one coherent base-to-candidate comparison | Choosing workflow/PR policy, path roles, findings, ownership inference |
+| `path_policy.py` | The quality gate's sole path/role/language classifier and the standalone test-like compatibility predicate consumed by workflow state | Snapshot, findings, or workflow imports |
+| `inputs.py` | Decode and structurally validate captured evidence and the versioned disposition data Interface selected by #77 | Trust, semantic authority, finding state, severity |
+| `checks.py` | Existing immediate safety blockers and cumulative production/test/test-support growth | Duplicate or responsibility analysis, independent role/diff walks |
+| `redundancy.py` | One deep Module containing independently driveable exact-duplication and owner-competition paths plus disposition/resolution; neither rule family gates the other | Classification, Git/filesystem reads, live advisor/GitNexus calls, persistence |
+| `symbols.py` | Language-aware extraction and canonicalization of exact syntax/code regions | Name/token similarity, semantic responsibility, severity |
+| `findings.py` | Stable rule policy, structured finding/result contracts, completeness projection, and canonical serialization | Repository reads or detection |
+| `cli.py` | Arguments, optional-input transport, rendering, and process exit | Evaluation or rule policy |
 
-## Final Module ownership
+`hooks/code-quality-gate.py` is the PostToolUse Adapter. The standalone
+`code_quality_gate.py` remains a thin entrypoint. They are outside the internal
+detector Module boundary.
 
-| Module | Responsibility | Public-to-package Interface | Must not own |
-|---|---|---|---|
-| `runner.py` | Evaluation order, severity projection, and result serialization | `check(...) -> dict[str, object]` | Git reads, path classification, diff parsing, detector algorithms, persistence |
-| `context.py` | Construct the one immutable `EvaluationSnapshot` and its complete repository index | `build_snapshot(...) -> EvaluationSnapshot` | Rule severity, warning strings, workflow state |
-| `git_scope.py` | Capture one base and one candidate, including typed file states and hunk ranges | `capture_scope(...) -> GitScope` | Roles, growth policy, findings, ownership inference |
-| `path_policy.py` | Classify every path once and expose the same classifier to workflow state | `classify_path(path) -> PathClassification` plus compatibility predicates derived from it | Snapshot or workflow dependencies |
-| `inputs.py` | Strictly decode captured Repo Context, graph evidence, and the reserved disposition document and report malformed/incomplete input | `parse_evidence(...) -> EvidenceInputs` | Semantic authority, severity, live external calls |
-| `checks.py` | Existing immediate safety checks and cumulative human-authored growth | `evaluate(snapshot) -> tuple[Finding, ...]` | Duplicate or responsibility analysis, independent path walks |
-| `redundancy.py` | Exact added/retained duplication, mechanical owner candidates, dispositions, and lifecycle resolution | `analyze(snapshot) -> RedundancyReport` | Syntax extraction details, path classification, live advisor/GitNexus calls |
-| `symbols.py` | Language-specific extraction of complete symbol and contiguous code anchors | `extract_anchors(path, text, hunks) -> tuple[CodeAnchor, ...]` | Name/token similarity scores, responsibility or severity decisions |
-| `findings.py` | Frozen finding, region, completeness, action, lifecycle, and report types | data construction and one JSON serializer | Repository reads or detection |
-| `cli.py` | Arguments, optional-input reads, text rendering, and process exit | `main()` | Result construction or policy |
+There is no detector protocol, runtime registry, topological scheduler,
+plugin loader, filesystem port, live advisor client, live GitNexus client, or
+quality-gate persistence Adapter. The fixed roster is ordinary, literal
+control flow.
 
-The `_quality_gate` package therefore ends with ten substantive Modules, plus
-the 18-line `code_quality_gate.py` standalone entrypoint. The hook Adapter
-remains outside this package. Adding a
-second context/snapshot Module, duplicate detector, ownership detector,
-finding hierarchy, or test harness for these responsibilities violates this
-decision unless the prior owner is replaced and deleted in the same slice.
+## Caller-visible Interfaces
 
-## Sole external Interface
+### 1. Stable call Interface
 
-The existing call remains byte-for-byte compatible:
+The positional order, defaults, and six parameters stay unchanged through #77:
 
 ```python
 def check(
@@ -98,349 +81,532 @@ def check(
     ...
 ```
 
-No `EvaluationSnapshot`, detector, filesystem port, Git client, disposition
-provider, or persistence object crosses this Interface. Calibration replay
-drives `runner.check` against real temporary repositories and pinned commits.
+This is signature compatibility, not byte-for-byte or semantic compatibility.
+No seventh parameter is added, and neither existing evidence parameter is
+overloaded with an unrelated document.
 
-Issue #77 does not invent a seventh parameter or overload either existing
-captured-evidence argument with an unrelated document. The single disposition
-transport is the candidate-tree file
-`.quality-gate/responsibility-dispositions.json`. Snapshot construction always
-captures that exact path when it exists, even when the file itself is unchanged,
-and `inputs.py` validates it before `redundancy.py` sees a typed value. The
-calibration harness materializes the corpus disposition at that path in its
-real temporary repository, then drives the unchanged `runner.check` Interface.
+### 2. Versioned result Interface
 
-The document references exact finding/content anchors, owner surfaces, and
-graph evidence; it does not claim semantic truth merely by existing in the
-tree. Missing, wildcard, stale, or non-resolving references leave the candidate
-active. A disposition can never clear exact deterministic conflict while both
-owners remain. The gate attaches the current base/candidate identities after
-validating all references, which avoids a self-referential candidate-tree hash.
+Issue #75 advances `schemaVersion` from 1 to 2. #76 and #77 may add optional v2
+fields but may not remove or retype a v2 field. Removal/retyping requires a
+later schema version and parent decision. `gateVersion` identifies the build;
+it does not reinterpret an existing rule ID.
 
-## Canonical evaluation model
+Schema v2 adds the binding collections `evaluation`, `findings`, and
+`resolvedFindings`. It removes the unconsumed `bloat` and `reuseFindings`
+projections. It retains `checks`, `hardRules`, `errors`, `warnings`, and
+`gitnexusQueries` as projections from the one typed report.
 
-`context.py` replaces `GateContext` with frozen values equivalent to this
-shape:
+### 3. Versioned disposition-evidence Interface
 
-```text
-EvaluationSnapshot
-  baseCommit: resolved commit OID
-  candidateIdentity: Git tree OID or snapshot:<sha256>
-  changedScope: display-only scope description
-  files: tuple[FileSnapshot, ...]
-  repositoryIndex: RepositoryIndex
-  growth: GrowthMetrics
-  evidence: EvidenceInputs
-  completeness: ScopeCompleteness
+Responsibility dispositions are a second external data Interface, even though
+they do not change the Python signature. #77 owns the exact carrier/path and
+must version it; this decision does not mandate a candidate-tree filename.
+The v1 data contract must carry:
 
-FileSnapshot
-  path, role, baseText, candidateText
-  addedHunks, deletedHunks
-  baseAnchors, candidateAnchors
+- its schema version and the evaluated base/candidate identities;
+- the target finding ID and content anchors, never wildcard/path-only claims;
+- the responsibility key, role, existing and competing owner anchors;
+- the semantic disposition: `same-responsibility`, `distinct-authority`, or
+  `temporary-coexistence`;
+- for same-responsibility or coexistence, the intended repair: `deepen`,
+  `replace`, or `consolidate`;
+- survivor, superseded surfaces, affected reference anchors, and evidence
+  references;
+- for coexistence, the tracked follow-up and expiry slice;
+- an immutable validation-record identifier and digest when a semantic claim
+  is expected to affect state.
 
-PathClassification
-  role: production | test | test-support | docs | generated | vendored | unknown
-  humanAuthored: bool
-  source: bool
-  exclusionReason: str | null
-```
+Unknown versions, missing/stale/duplicate references, wildcards, and unresolved
+anchors leave the finding active and emit rule-specific incompleteness. Trust
+must come from an immutable validation root outside the candidate tree whose
+identifier and digest are explicitly bound by parent #54: the parent-pinned
+owner manifest or another parent-approved external advisor/human review record.
+A provenance string inside the candidate tree does not establish independence.
 
-`test-support` contributes to the test growth bucket. Production, test, and
-test-support contribute to total human-authored code. Docs, generated,
-vendored, lockfile, binary, and unknown paths are reported separately and do
-not silently enter a source bucket.
+A validated `same-responsibility` disposition moves a candidate to
+`confirmed-unresolved`. A `distinct-authority` disposition moves it to
+`resolved` telemetry only when every referenced structural anchor is
+snapshot-valid and resolves, every owner-discovery evidence class and required
+graph/test scope is complete, and the decision matches that external validation
+root. Otherwise it remains an active `candidate`. Candidate-authored,
+candidate-modified, stale, or merely previously committed assertions cannot
+resolve themselves. `temporary-coexistence` always moves to and remains
+`confirmed-unresolved`.
 
-`path_policy.py` is also a pinned workflow-state compatibility surface. It must
-remain at
-`skills/production-code/scripts/_quality_gate/path_policy.py`, remain
-standalone-loadable with no intra-package imports, and retain
-`is_test_like_path(path)`. That predicate is derived from `classify_path`; it
-does not implement a second classifier. `hooks/lib/state_store.py` continues
-loading that file by path and calling that symbol without importing the
-quality-gate package.
+`deepen`, `replace`, and `consolidate` are repair declarations, not finding-state
+transitions. A candidate reaches `resolved` only through validated
+`distinct-authority`; a `confirmed-unresolved` finding reaches `resolved` only
+through the structural predicate in the one-owner reduction contract. A
+disposition never clears a `QG54-DUPLICATE-*` finding while its duplicate
+occurrences remain and can never assert that gate-computed scope is complete.
 
-For staged evaluation, `candidateIdentity` is the captured Git tree OID. For a
-working-tree evaluation, snapshot construction reads every required value
-once, then hashes the ordered path, role, deletion marker, and candidate bytes.
-No detector reads Git or the filesystem after construction. That digest is an
-evaluation identity only; it does not duplicate issue #49's final-tree
-authorization binding.
+## Base and candidate contract
 
-Every hunk is derived from one base-to-captured-candidate comparison. Commit,
-index, dirty, and untracked deltas are not concatenated as independent diffs.
-A hunk retains old/new ranges and its exact contiguous regions. Separate hunks
-can never form one block.
+Base selection belongs to the caller Adapter. `git_scope.py` resolves and
+captures the base it receives; it never invents workflow/PR policy.
 
-The repository index contains the eligible base and candidate anchors needed
-for retained-baseline and owner discovery. Every skipped, unreadable,
-unsupported, ambiguous, or truncated file/anchor/reference is recorded. A
-hard internal cap may protect execution, but reaching it changes the relevant
-scope to incomplete; it can never shrink the denominator and report clean or
-resolved.
-
-## Fixed evaluation order
-
-`runner.check` performs exactly this sequence:
-
-```text
-capture base and candidate
-→ classify every path once through path_policy
-→ build immutable file, hunk, anchor, growth, and completeness values
-→ decode and bind supplied Repo Context / graph evidence to that identity
-→ run immediate safety checks
-→ evaluate cumulative growth
-→ find exact added-to-added and added-to-baseline duplicates
-→ use exact evidence plus captured graph/structural evidence to evaluate owners
-→ validate finding identities, references, and completeness
-→ separate active from resolved findings
-→ derive strings and compatibility projections from the typed report
-```
-
-Detector order is a literal sequence, asserted by Interface tests. A generic
-topological scheduler would add a second workflow owner without an authorized
-runtime variation point.
-
-## Rule and severity contract
-
-The new stable rule IDs are:
-
-| Rule ID | Meaning after all three slices | #54 severity |
+| Mode | Base contract | Candidate contract |
 |---|---|---|
-| `QG54-ANALYSIS-INCOMPLETE` | Required file, owner, caller, callee, test, or test-support scope is incomplete | warning |
-| `QG54-GROWTH-CUMULATIVE` | Base-to-candidate human-authored growth reaches a delivery-governance threshold | warning |
-| `QG54-DUPLICATE-ADDED` | Two added regions contain the same implementation | warning |
-| `QG54-DUPLICATE-BASELINE` | An added region exactly recreates retained baseline implementation | warning |
-| `QG54-OWNER-COMPETITION` | Mechanical evidence identifies possible or confirmed competing owners | warning |
+| `staged_only=True` | explicit `base_ref` is required and resolves to one commit | the captured Git index tree OID |
+| worktree with explicit base | caller-supplied `base_ref` resolves to one commit | one coherent captured worktree/index/untracked view |
+| worktree without explicit base | `HEAD`; reported as `baseSource=HEAD` | one coherent captured working view |
 
-Immediate merge-marker, temporary-artifact, and quality-escape checks remain
-separate existing blockers. The completed #54 code does not promote any ID in
-the table, including when `fail_on_warnings=True`. That flag may promote only
-non-`QG54-*` warnings, preserving its existing behavior for every warning that
-#54 does not replace. A later promotion changes a named `QG54-*` rule policy
-through a separate human-approved parent decision and, for completion-time
-blocking, requires issue #49's bound final snapshot. If an affected rule is
-later promoted, incomplete required analysis prevents a clean completion
-verdict; that later decision must define the bound blocker projection.
+The `HEAD~1` clean-tree fallback is deleted. An unbound `HEAD` result describes
+only the working delta and cannot claim branch-cumulative growth. The
+PostToolUse Adapter supplies its trusted branch/PR base when it has one; when it
+does not, growth is visibly incomplete for the cumulative claim rather than
+silently clean. Corpus and PR/completion evaluation always supply an exact
+base.
 
-Cumulative growth reports production and test/test-support additions,
-deletions, and net values plus the total human-authored net. Around 500 net is
-visible budget pressure and 1,000 net is blocker-eligible only after the later
-binding and promotion decision. Per-file size, same-directory shrink credit,
-and additive/deletion ratios are not substitutes and do not survive.
+Snapshot construction produces one internally consistent comparison from
+captured bytes. It does not concatenate commit, index, dirty, and untracked
+diffs, and detectors never reread live files. Separate hunks stay separate.
+The private capture mechanism must either capture a coherent tree or detect
+pre/post drift and record a capture gap; the architecture does not mandate a
+particular temporary-index or manifest implementation.
 
-## Exact duplicate evidence
-
-`redundancy.py` compares complete symbol/helper bodies first and contiguous
-hunk-contained blocks second. Normalization removes only comments, blank
-lines, and insignificant whitespace. It preserves identifiers, literals,
-operators, control flow, symbol boundaries, file roles, and hunk boundaries.
-Any token change means the implementations are not exact.
-
-Every duplicate finding carries both regions. Added-to-baseline only clears
-when the baseline implementation is reused or the superseded baseline region
-is absent from the candidate. Added-to-added only clears when one
-implementation remains or the repetition is consolidated behind one owner.
-Generated code, imports, declarative tables, fixtures, and repository
-boilerplate remain warning evidence only where the calibrated rule includes
-their role and shape.
-
-## Structured finding contract
-
-`findings.py` owns one JSON shape for all #54 evidence:
+Candidate identity is discriminated:
 
 ```text
-Finding
-  ruleId: stable rule ID
-  findingId: sha256(rule ID + ordered content/path anchors)
-  severity: warning
-  state: candidate | confirmed-unresolved | resolved | null
-  baseCommit, candidateIdentity
-  regions[]: path, role, start/end display lines, contentAnchor, evidenceRole
-  evidence[]: typed mechanical or advisor-reviewable evidence
-  completeness: required scopes and reasons
-  action: reuse | deepen | replace | consolidate | delete | complete-analysis
-  passCondition: typed, rerunnable predicate and referenced anchors
+git-tree          tree OID for staged evaluation
+worktree-snapshot gate-owned digest for edit-time provenance only
 ```
 
-Line numbers and commit identities aid display/provenance but are excluded
-from `findingId`. Unrelated inserted lines and rebases therefore preserve
-identity; changing a referenced implementation changes it.
+Neither identity authorizes review. #49 owns its different review manifest and
+must never accept or recreate the gate's worktree digest. A later promoted
+completion rule is applied only through #49's own bound review/final-tree
+contract.
 
-The top-level result advances to schema version 2 and adds:
+## Canonical classification and snapshot
+
+Every entry stores one `path_policy` result containing at least:
 
 ```text
-evaluation: base/candidate identities, role counts, growth, completeness
-findings: state=null findings plus candidate/confirmed-unresolved owner findings
-resolvedFindings: resolved telemetry/calibration evidence only
+role: production | test | test-support | docs | generated | vendored | unknown
+language: python | javascript | go | rust | shell | php | ruby | other
+humanAuthored: bool
+source: bool
+testLikeCompat: bool
+exclusionReason: string | null
 ```
 
-The lifecycle filter applies only to `QG54-OWNER-COMPETITION`. Findings whose
-`state` is `null`—growth, exact duplicates, and analysis incompleteness—are
-active whenever emitted and therefore always appear in `findings` and active
-warnings. For owner findings, only `candidate` and `confirmed-unresolved` are
-active.
+The role and language are stored once. Checks, redundancy analysis, symbol
+extraction, runner counts, and result projection never call `path_policy`
+again.
 
-`warnings`, `checks`, `hardRules`, `bloat`, `reuseFindings`, and
-`gitnexusQueries` are derived compatibility projections from this one report,
-not independently assembled truth. `resolvedFindings` never appears in active
-warnings and never makes the visible gate non-green. `ok` is false only for
-existing immediate blockers or an explicitly promotion-eligible rule.
+`is_test_like_path(path)` remains standalone-loadable at
+`skills/production-code/scripts/_quality_gate/path_policy.py` and returns the
+result of `classify_path(path).testLikeCompat`; it is not inferred from role
+alone and does not require an evaluation snapshot. The
+pre-#75 truth must remain identical, including generated paths and
+`*.schema.json` being test-like. A full-history characterization over every
+repository path proves zero differences between the old and new predicates.
 
-## One-owner lifecycle
-
-Names, suffixes, shared vocabulary, shared data, dependencies, and graph
-proximity may generate a `candidate`; none can confirm semantic authority.
-Confirmation requires exact retained implementation, provably pure forwarding
-under a validated ownership contract, or snapshot-bound advisor-reviewed
-evidence that supplies the responsibility key.
-
-A confirmed finding resolves only when this complete predicate is true:
+The real compatibility dependency is:
 
 ```text
-responsibilityOwnerCount(responsibilityKey, role, candidateSnapshot) == 1
+workflow_state → state_store → path_policy.is_test_like_path
+```
+
+`state_store` retains its own reviewable, governance, code, and documentation
+decisions. It delegates only test-like classification. Workflow code never
+imports the snapshot, findings, checks, or redundancy Modules.
+
+The immutable evaluation owns captured base/candidate text or deletion state,
+old/new hunk ranges, contiguous regions, stored classification, production and
+test/test-support growth, repository-index coverage, captured external
+evidence, and capture gaps. These are responsibilities, not mandated private
+Python field names.
+
+## Completeness
+
+Capture completeness and rule completeness are different contracts:
+
+- **Capture gaps** record unreadable, unsupported, ambiguous, skipped,
+  truncated, cap-reached, or drifted files/hunks/anchors/references.
+- **Rule completeness** selects only gaps relevant to the rule's required file,
+  hunk, anchor, owner-discovery, caller, callee, test, and test-support scopes.
+
+Owner-rule completeness also covers every mechanical evidence class:
+state/external-boundary writers, invariant validators, public/test surfaces,
+workflow/lifecycle coordinators, caller/callee parallel entry points,
+fixture/builder/harness lifecycle, forwarding shape, and exact implementation.
+Each class is evaluated against the eligible repository index even when it
+produces zero candidates. An omitted, unimplemented, skipped, capped, or
+truncated class makes the affected owner rule incomplete; evaluating exact and
+forwarding evidence alone can never report owner discovery complete.
+Missing required external graph evidence makes its caller/callee evidence class
+incomplete; an empty optional input cannot be interpreted as a completed scan
+with zero candidates.
+
+`findings.py` owns the literal mapping from stable rule ID to required scopes.
+The gate emits one `QG54-ANALYSIS-INCOMPLETE` finding per affected rule ID and
+scope kind. Unrelated unknown files do not dirty an unrelated rule. A cap may
+protect execution, but reaching it makes the affected scope incomplete; no
+configuration, allowlist, exclusion, or cap can shrink a denominator into a
+clean or resolved result.
+
+Rule status is `passed`, `finding`, `incomplete`, or `not-evaluated`. At edit
+time an incomplete QG54 rule remains non-blocking but visibly non-clean. If a
+named rule later becomes blocker-eligible, its required incomplete scope blocks
+that rule's completion projection automatically.
+
+## Fixed evaluation flow
+
+```text
+caller selects base
+→ capture one base and candidate
+→ classify each path once, including language and compatibility truth
+→ decode and structurally validate captured evidence
+→ freeze the immutable evaluation
+→ immediate safety checks
+→ cumulative growth
+→ exact added/added and added/retained-baseline findings from the snapshot
+→ independently generate responsibility candidates from every owner evidence
+  class using the snapshot; exact evidence is optional input, never an entry
+  requirement
+→ validate snapshot-bound dispositions, confirm conflicts or legitimate
+  distinctions, and evaluate structural resolution
+→ validate finding identities, references, and rule completeness
+→ project active warnings, resolved telemetry, compatibility keys, and exit
+```
+
+Detectors consume only the frozen evaluation. They cannot read Git, disk,
+`path_policy`, workflow state, live GitNexus, or a live advisor.
+
+## Stable rules and severity
+
+Rule IDs match independent calibration/promotion units:
+
+| Rule ID | Evidence unit | Initial edit-time severity |
+|---|---|---|
+| `QG54-ANALYSIS-INCOMPLETE` | one affected rule ID and scope kind | warning / visibly incomplete |
+| `QG54-GROWTH-CUMULATIVE` | production plus test/test-support cumulative human-authored growth | warning |
+| `QG54-DUPLICATE-ADDED-SYMBOL` | exact complete added symbol/helper body | warning |
+| `QG54-DUPLICATE-ADDED-BLOCK` | calibrated exact contiguous added block | warning |
+| `QG54-DUPLICATE-BASELINE` | exact added implementation whose baseline anchor remains in the candidate | warning |
+| `QG54-OWNER-COMPETITION-PRODUCTION` | mechanically evidenced competing production owners | warning |
+| `QG54-OWNER-COMPETITION-TEST` | mechanically evidenced competing test/test-support owners | warning |
+
+Changing a rule's meaning requires a new ID. Promotion is by one exact rule ID,
+never by prefix, family, role field, or score. A promotion record names the
+rule ID, effective decision, #49 binding requirement, and completion-verdict
+projection. The calibration slices make no promotion decision.
+
+Immediate merge-marker, temporary-artifact, and quality-escape blockers remain
+separate existing rule policies with `severity=error`. All structured findings
+share one model whose severity permits `error` or `warning`; only QG54 rules
+are constrained to warning in these slices.
+
+`QG54-DUPLICATE-*` and `QG54-OWNER-COMPETITION-*` are separate rule families.
+The former asks whether implementation was copied; the latter asks whether
+multiple surfaces try to decide, mutate, validate, orchestrate, or maintain one
+responsibility. One evaluation may trigger either family, both, or neither.
+
+### Pending operator choice: `fail_on_warnings`
+
+The six-parameter call signature is stable, but `fail_on_warnings` cannot keep
+its old "promote every warning string" implementation while QG54 rules remain
+warning-only by parent contract. The recommended schema-v2 policy is:
+
+```text
+promotion operates over typed active findings, never rendered strings
+QG54 findings are not blanket-promotion eligible
+surviving non-QG54 warning policies retain their existing eligibility
+CLI optional-input read errors remain outside runner.check promotion
+```
+
+This policy is not binding until the operator explicitly confirms it. No code
+or child issue may infer the choice from this proposed document.
+
+## PostToolUse visibility
+
+Warning-only must mean non-blocking feedback, not discarded output.
+`hooks/code-quality-gate.py` surfaces every active QG54 warning to the hook's
+supported feedback channel while returning zero. Existing blockers still print
+failure output and return nonzero. `resolvedFindings` never appears in edit-time
+feedback.
+
+The Adapter may parse schema-v2 JSON to select active warnings; the gate does
+not gain a warnings-fail mode, suppression file, rate limiter, or verbosity
+configuration. A real hook test executes the production hook, observes active
+warning text, and proves exit zero.
+
+## Exact evidence
+
+Exact comparison preserves identifiers, literals, operators, control flow,
+symbol boundaries, relative indentation, roles, languages, and hunk
+boundaries. Canonicalization may remove tokenizer-proven comments, blank lines,
+trailing whitespace, common outer indentation, and insignificant intra-line
+whitespace outside literals. Tabs and spaces remain distinct where the
+language treats them as distinct. Python uses its real tokenizer; regex comment
+stripping is forbidden. If safe language-aware normalization is unavailable,
+the affected exact rule is `not-evaluated` or `incomplete`, never guessed.
+
+Complete symbol/helper bodies are considered before arbitrary blocks. A block
+is contiguous, stays inside one hunk and symbol boundary, and uses a
+versioned/calibrated threshold owned by #76 rather than this architecture.
+Separate hunks never combine. Human-authored fixture/test-support code always
+enters warning candidate analysis; calibration controls later blocker
+eligibility, not whether it is inspected.
+
+Added-to-baseline evidence requires a base anchor whose content still exists in
+the captured candidate. Copying then deleting the baseline implementation
+clears the retained-baseline rule. Calling/reusing the baseline owner does not
+create a duplicate. When one occurrence qualifies as both added/added and
+retained-baseline, the baseline rule owns the finding to avoid double-reporting
+one defect.
+
+## Finding identity and output
+
+Every finding serializes:
+
+```text
+ruleId, findingId, severity, state
+base/candidate evaluation identities
+ordered regions with path, role, language, display lines, content anchor, evidence role
+typed evidence and rule completeness
+action and a discriminated rerunnable pass condition
+```
+
+`state` is null for growth, exact, safety, and incomplete findings. A null-state
+finding is active when emitted. Responsibility state is `candidate`,
+`confirmed-unresolved`, or `resolved`; only the first two are active.
+
+Content anchors hash anchor kind, language, and canonical implementation bytes.
+Finding identity is rule-family specific:
+
+- duplicate: rule ID plus normalized implementation fingerprint and role/
+  language;
+- responsibility: rule ID plus responsibility key and canonically sorted owner
+  content anchors;
+- growth: rule ID plus the evaluated base/candidate identities;
+- incompleteness: rule ID plus affected rule ID, scope kind, and relevant
+  content anchor when present.
+
+Paths, lines, and commits are provenance/display regions, not duplicate or
+responsibility identity. Rename/move-only therefore preserves the debt's ID.
+Regions are canonically sorted by content anchor, role, path, and display line.
+
+Pass-condition kinds include at least `duplicate-absent`, `one-owner`,
+`analysis-complete`, and `growth-below`; each names the anchors/scopes required
+to rerun it on a later evaluation.
+
+### Compatibility projection
+
+| Typed result | Schema-v2 projection |
+|---|---|
+| immediate safety error | `errors`; `checks[].status=finding`; `passed=false`; `ok=false` |
+| active QG54 finding | `findings`, `warnings`, and `checks[].warnings`; `status=finding`; `passed=true`; `ok` unchanged |
+| incomplete QG54 rule | `findings` and `warnings`; `status=incomplete`; `passed=null`; edit-time `ok` unchanged |
+| QG54 rule not evaluated | `findings` and `warnings`; `status=not-evaluated`; `passed=null`; edit-time `ok` unchanged |
+| resolved owner evidence | `resolvedFindings` only; never an active warning |
+| cumulative metrics | `evaluation.growth`; no legacy `bloat` object |
+| owner/reuse evidence | structured findings; no legacy `reuseFindings` object |
+| graph follow-up query | retained `gitnexusQueries` projection until its documented consumer migrates |
+
+`hardRules` is computed from blocker policy only. A QG54 warning cannot flip a
+hard rule to failed through a compatibility key.
+
+## One-owner reduction contract
+
+**Responsibility-candidate generation MUST run independently of duplicate
+detection. The absence of an exact-duplicate finding MUST NOT suppress,
+downgrade, or prevent an owner-competition candidate. Exact duplication is one
+evidence type, not an entry requirement for ownership analysis.**
+
+Responsibility candidate generation is broad and mechanical. Its separately
+recorded evidence types include:
+
+- multiple writers of the same state or external boundary;
+- multiple validators deciding the same invariant;
+- overlapping public or test Interfaces for the same domain operation;
+- competing workflow or lifecycle coordinators;
+- shared caller/callee structures suggesting parallel entry points;
+- multiple fixtures, builders, or harnesses owning the same test lifecycle;
+- pure or near-pure forwarding surfaces; and
+- exact retained or repeated implementation.
+
+Names, suffixes, vocabulary, shared data, dependencies, and graph proximity may
+help generate a `candidate`; none independently proves semantic authority. A
+candidate records the mechanical reason it requires disposition, not a claim
+that the gate knows which Module has legitimate authority.
+
+Two implementations may share no text and still compete to own the same state
+transition, validation rule, workflow phase, fixture lifecycle, or testing
+responsibility. #77 is therefore wrong if it generates owner candidates only
+from #76 exact matches, even if exact detection itself is perfect. #76 evidence
+may strengthen #77 evidence; it does not bound #77 discovery and cannot by
+itself prove the same responsibility. Exact duplicate code in legitimately
+different roles may produce only a duplicate-family finding.
+
+Disposition and independently validated evidence determine whether a broad
+candidate represents distinct authority, temporary coexistence, or a genuine
+same-responsibility conflict. A candidate becomes `confirmed-unresolved` only
+when the snapshot-bound external validation root establishes the responsibility
+key and competing anchors. Exact implementation or forwarding evidence can make
+the retained conflict mechanically deterministic after that binding; neither
+establishes semantic authority on its own. Broad structural signals alone stay
+candidates requiring disposition.
+
+The binding lifecycle is:
+
+```text
+mechanical signals
+→ competing-owner candidate
+→ externally validated, snapshot-bound disposition
+→ confirmed conflict or legitimate distinction
+→ deepen, replace, or consolidate
+→ rewire consumers
+→ delete superseded owner
+→ mechanically resolved
+```
+
+`redundancy.py` remains one deep Module; this contract does not create another
+public Interface, detector Module, registry, or scheduler. It requires two
+independently driveable behavior paths through `runner.check`: exact-duplicate
+evaluation and owner-competition evaluation. Illustrative private phases may
+look like `find_exact_duplicates(snapshot)`,
+`generate_responsibility_candidates(snapshot, graph_evidence)`,
+`evaluate_dispositions(candidates, evidence)`, and
+`evaluate_owner_resolution(confirmed_findings, candidate_snapshot)`. Their
+names and signatures are not binding, and public tests do not bypass
+`runner.check` to call them.
+
+The counted owner set is bounded: contract-backed owner anchors plus every
+mechanically generated structural, exact, or forwarding candidate in the
+completely scanned eligible repository index. It is proof of the declared
+responsibility contract, not a universal semantic ownership detector.
+
+A confirmed finding resolves only when:
+
+```text
+the bounded owner discovery is complete and exactly one owner remains
 and every declared superseded surface is absent
-and no affected caller, test, or test-support reference reaches a superseded anchor
-and every affected caller, test, and test-support surface has a resolved
-    reference or graph path to the surviving anchor
-and owner-discovery, caller, callee, test, and test-support scope is complete
+and no affected caller, test, or test-support reference reaches an old anchor
+and every affected caller, test, and test-support path reaches the survivor
+and caller, callee, test, and test-support rule scope is complete
 ```
 
-An unknown, skipped, stale, truncated, unresolved, or ambiguous term makes the
-predicate false. The finding stays active, and
-`QG54-ANALYSIS-INCOMPLETE` makes the proof gap visible. In particular, seeing
-one owner before truncating ahead of a second can never yield `resolved`.
-
-The accepted reduction paths are:
-
-- **Deepen and absorb:** move the behavior, invariant, scenario, fixture,
-  helper, or harness into the existing owner; delete the competing surface.
-- **Replace:** rewire every affected caller/test/support surface to the new
-  owner; delete the superseded implementation, Interface, Module, fixture,
-  helper, harness, or test Module.
-- **Consolidate:** move both paths behind one deeper owner; delete both
-  redundant public/test surfaces.
-
-Partial deepening, rename/move-only changes, a facade or forwarding layer over
-retained owners, prose, suppressions, wildcard allowances, or a disposition
-while deterministic conflict remains do not resolve the finding.
-`distinct-authority` moves a `candidate` directly to resolved telemetry only
-when every structural reference is snapshot-valid and the semantic evidence
-is explicitly advisor-reviewable. `temporary-coexistence` stays
-`confirmed-unresolved` with named old/new owners, deletion surfaces, tracked
-follow-up, and expiry slice.
+Valid repairs deepen and absorb, replace and delete, or consolidate and delete.
+Partial deepening, rename/move-only changes, a facade over retained owners,
+prose, suppressions, self-authored semantic claims, wildcard allowances, or a
+disposition while deterministic conflict remains do not resolve the finding.
 
 ## Test and calibration ownership
 
-There is one public behavior suite and one shared test-support owner:
+There is one shared test-support owner with a small scenario-evaluation
+Interface over real temporary Git repositories and `runner.check`. Its exact
+filename and private helpers are illustrative. Test Modules and corpus replay
+must reuse it; none reimplements Git setup, gate invocation, normalization, or
+result parsing.
 
-```text
-skills/production-code/scripts/
-  test_code_quality_gate.py          runner.check behavior and corpus replay
-  quality_gate_test_support.py       sole temp-repo, commit, run, and assertion harness
-  quality_gate_corpus/
-    pr68-round-six.json              captured #68 identity and expectations
-    responsibility-owners.json       parent-pinned manifest, required before #77
-```
+Required public proof includes:
 
-The support Module is extracted once from the current test file; no test Module
-reimplements Git setup, gate invocation, fixture checkout, hashing, or result
-normalization. Tests may be split later only by genuinely distinct behavior,
-and all must import that owner.
+- all base/candidate modes and schema-v2 serialization;
+- full-history `is_test_like_path` equivalence, including generated paths and
+  `*.schema.json`;
+- real PostToolUse warning visibility with exit zero;
+- separate hunks, Python indentation, strings containing comment markers,
+  one-token differences, rename/move identity, and retained-baseline deletion;
+- real capture truncation where the second owner is missed, driven through
+  `runner.check` without a hand-built snapshot or stubbed discovery;
+- candidate self-authorization, stale/wildcard disposition evidence, and
+  retained deterministic conflict;
+- textually unrelated Modules writing the same state or external boundary
+  produce an owner candidate with no `QG54-DUPLICATE-*` prerequisite;
+- different validators deciding the same invariant produce an owner candidate;
+- separate fixture, builder, or harness implementations owning the same test
+  lifecycle produce an owner candidate;
+- shared data with genuinely different authority or failure policy remains a
+  negative owner-competition case;
+- exact duplicate code in genuinely different roles does not automatically
+  confirm same-responsibility ownership;
+- one scenario exercises duplicate-only, owner-only, both-family, and
+  neither-family results independently;
+- a confirmed conflict remains active after rename, facade creation, or partial
+  deepening and resolves only after rewiring and deletion leave one owner;
+- one-owner deletion/rewiring and resolved-versus-active projection;
+- mixed blocker/QG54 warning compatibility output.
 
-Every corpus entry contains an ID, exact base and candidate commits, `git diff`
-SHA-256, intended positive/negative role, adjudication, and expected rule IDs.
-Replay verifies identity before evaluating behavior and publishes all
-candidates and false positives. The owner manifest's entries remain unknown
-until parent #54 pins them; #77 cannot select, broaden, or silently replace
-them.
+Corpus replay requires the source checkout's full local history. It verifies
+both commits locally, fails rather than fetches/skips if either is missing,
+hashes the exact output of
+`git -c core.autocrlf=false -c core.safecrlf=false diff --no-ext-diff --no-color <base> <candidate>`,
+and drives imported `runner.check` through the shared real-repository harness.
+Replay publishes every expected/unexpected finding and requires
+`unexaminedCount=0`.
 
-The captured PR #68 round-six entry is fixed to:
+The captured PR #68 round-six corpus is fixed to:
 
 - base `4cfffcb8d5724bfc2b03dce505da8cf930fb49fa`;
 - candidate `28cf04e63fa6eb598b938d3a78d782969538d9a9`;
-- `git diff` SHA-256
+- diff SHA-256
   `885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a`;
 - human-authored code `+1129/-8`, net `1121`.
 
-This fixture is the captured round-six corpus, not the complete PR. The merged
-PR's final head has different totals.
+This is the captured round-six corpus, not the complete PR. #77 additionally
+requires the parent-pinned owner manifest; the agent cannot select or broaden
+it, and every referenced commit must exist in this repository's local history.
 
-## Mandatory consolidation and deletion
+## Mandatory old-to-survivor consolidation
 
-The final implementation must remove, not wrap, these superseded paths:
+| Superseded surface | Surviving owner | Delivery convergence |
+|---|---|---|
+| `GateContext`, raw scope/diff reads, `diff_utils.py`, `collect_added_lines`, `added_lines_with_untracked` | canonical evaluation in `context.py` | #75 |
+| detector-local role/language predicates and `production_only` | stored `path_policy` classification in the evaluation | #75 |
+| per-file limits, same-directory shrink credit, additive ratios | cumulative growth in `checks.py` | #75 |
+| three-line windows, cross-hunk assembly, collapse heuristics, duplicate blocker path | exact private phases in `redundancy.py` | #76 |
+| `reuse.py`, `ReuseFinding`, lexical name/token scores, `RISKY_BLOCK_RULE`, `REUSE_ACTION_TOKENS`, silent index caps | responsibility private phases in `redundancy.py` and structured data in `findings.py` | #77 |
+| `models.py` and runner's parallel errors/warnings/check truth | owning capture/finding types and one runner serializer | across #75–#77 |
+| duplicated test Git/run/assertion helpers | the one shared scenario-test owner | owning slice |
 
-- `GateContext` and every raw-scope/raw-diff dictionary read outside snapshot
-  construction;
-- `diff_utils.py`, `collect_added_lines`, and every flattened or independent
-  diff walk;
-- `added_lines_with_untracked`, `production_only`, and all detector-local role
-  predicates;
-- the three-line duplicate windows, cross-hunk assembly, collapse heuristics,
-  and their hard-failure projection;
-- per-file bloat limits, same-directory shrink credit, and additive-ratio
-  proxies replaced by cumulative growth;
-- `reuse.py`, `ReuseFinding`, lexical behavior/name scoring, token-overlap
-  severity, and silent file/symbol caps;
-- behavior scoring exports from `symbols.py`; only syntax-anchor extraction
-  remains;
-- `RISKY_BLOCK_RULE` and `REUSE_ACTION_TOKENS`, which exist only for the
-  superseded lexical reuse path and are not syntax-anchor contracts;
-- `models.py` after its surviving data moves to `git_scope.py`, `context.py`,
-  or `findings.py` according to the ownership table;
-- parallel runner lists and hand-built error/warning/check result paths;
-- obsolete helper-level tests and duplicate temp-repository/corpus harnesses.
+The replacement is judged by responsibility, not filename. Equivalent old
+logic recreated in another helper does not satisfy deletion. Genuinely distinct
+test layers and scenarios are retained.
 
-`skills/production-code/references/gate-policy.md` and the production-code
-skill guidance must be updated with the structured warning-only contract and
-must stop describing lexical reuse scores or duplicate windows as blockers.
+`gate-policy.md` and production-code guidance must stop describing duplicate
+windows, lexical scores, or per-file bloat proxies as blockers and must name the
+structured rule contracts that replace them.
 
-The production implementation—`code_quality_gate.py` plus `_quality_gate/*.py`—
-remains under the enforced 1,800-line ceiling. The target is 1,500–1,600 lines,
-honestly allowing bounded net growth from today's 1,304 lines for the new
-capability while still requiring the deletions above. The budget test also
-enforces 1,200 lines per Module and 180 per function, with review/justification
-triggers at 700 per Module, 90 per function, and 1,200 total. This decision does
-not pre-authorize a new Module or function justification: `redundancy.py` must
-remain at or below 700 lines and each function at or below 90, or the owning
-slice must return to parent #54 with a smaller design or an explicit reviewed
-exception.
+The existing 1,800 total, 1,200 per-Module, and 180 per-function limits (with
+1,200/700/90 review triggers) are repo-local implementation safeguards for
+this gate package. They are not #54 runtime code-budget rules and must not
+encourage artificial Module splitting. The target remains roughly 1,500–1,600
+production lines versus today's 1,304, after the mandatory deletions and
+without a pre-authorized new justification.
 
-## Slice convergence map
+## Non-authoritative convergence sketch
 
-| Slice | Target-state change | Superseded surface deleted in the same slice | End-state proof |
-|---|---|---|---|
-| #75 | `context.py` becomes the snapshot owner; `path_policy` supplies stored roles; `checks.py` owns cumulative growth; `runner.py` serializes one report | `GateContext`, flattened independent role walks, `production_only`, per-file/same-directory bloat proxies, parallel growth result assembly | all role consumers in `context.py`, `checks.py`, `reuse.py`, and `runner.py` read stored roles; captured #68 totals are exact; workflow state still imports only `path_policy` |
-| #76 | `redundancy.py` becomes the sole exact-evidence owner across production, tests, and support | old duplicate windows, cross-hunk assembly, addition-only limitation, duplicate hard-failure path | added/added and added/baseline findings report both regions; copy-delete and consolidation clear; separate hunks cannot combine; corpus replay is identity-pinned |
-| #77 | the same `redundancy.py` deepens to own responsibility candidates, dispositions, completeness, and lifecycle | `reuse.py`, `ReuseFinding`, lexical scoring/severity, silent discovery caps, parallel ownership helpers | one-owner predicate is mechanically rerunnable; truncation stays active; resolved telemetry is not an active warning; parent-pinned corpus has zero unexamined results |
-| Parent #54 | human reviews named calibration results and decides whether a later promotion proposal exists | no implementation change is implied | no rule changes severity without a separate named decision; #49 remains the sole completion-binding owner |
+The delivery plan controls sequence and scope. This sketch only shows how the
+binding owners converge:
 
-## Completion checklist
+| Slice | Convergence target |
+|---|---|
+| #75 | canonical evaluation, stored role/language/compatibility truth, rule/result foundation, cumulative growth, authoritative-base provenance, and visible non-blocking hook output; delete superseded context/diff/bloat paths |
+| #76 | deepen the one redundancy owner with calibrated exact symbol/block/baseline evidence; delete old duplicate paths |
+| #77 | deepen the same owner with duplicate-independent responsibility discovery, trusted disposition evidence, lifecycle and owner-corpus replay; delete lexical reuse paths |
+| Parent #54 | review named calibration results and decide any later rule-specific promotion |
 
-After #77, the architecture is complete only when all of these are true:
+## Forbidden dependencies and completion audit
 
-- `runner.check` is the only public evaluation Interface and retains its six
-  parameters.
-- `.quality-gate/responsibility-dispositions.json` is the only disposition
-  transport and every calibration disposition reaches the detector through a
-  real candidate tree and `runner.check`.
-- Every detector reads one frozen snapshot and no detector reads Git, disk, or
-  path policy directly.
-- Every quality-gate role consumer uses the snapshot's classification; workflow
-  state remains independent, loads `path_policy.py` at its pinned path, and
-  calls the standalone `is_test_like_path` compatibility predicate.
-- Exact findings contain both hunk-preserving regions and stable IDs.
-- Owner resolution proves one survivor, complete rewiring, superseded deletion,
-  and complete owner/caller/callee/test/test-support scope.
-- Lifecycle-less #75/#76 findings are active when emitted; only `candidate` and
-  `confirmed-unresolved` owner findings are active, while `resolved` owner
-  evidence is telemetry only.
-- All five `QG54-*` rule IDs remain warning-only and immune to blanket
-  `fail_on_warnings` promotion.
-- The captured PR #68 round-six identity and totals match exactly, and the
-  parent-pinned owner corpus—not an agent-selected replacement—is replayed.
-- Every item in the mandatory deletion list is absent, the production package
-  is no larger than 1,800 lines, and policy documentation describes the new
-  owner rather than the superseded paths.
-- Issue #49's CLI, event ledger, persistence, final-tree binding, and workflow
-  state were not imported, changed, or reimplemented.
+The following edges must remain absent:
+
+- workflow code → evaluation, findings, checks, or redundancy;
+- quality-gate code → #49 ledger, review manifest, or persistence;
+- detectors → Git, filesystem, `path_policy`, workflow state, live GitNexus, or
+  live advisor;
+- #49 → gate worktree-snapshot digest;
+- runner → detector registry/plugin scheduler;
+- candidate-authored disposition → trusted semantic resolution.
+
+The architecture is complete only when the stable call and versioned data
+Interfaces are proven; active warnings are visible without blocking; every
+detector consumes one classified/language-aware immutable evaluation; rule
+completeness covers every required owner evidence class and prevents false
+clean/resolved output; exact and owner families are independently driveable;
+exact/owner findings have stable content identity and both source regions;
+one-owner resolution proves deletion and rewiring; corpus replay is exact and
+fully examined; all mandatory superseded responsibilities are absent; and
+issue #49 and workflow ownership remain independent.
