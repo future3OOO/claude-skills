@@ -4,17 +4,26 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Issue 54 quality-gate architecture map</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"
+      integrity="sha384-2ql948lIdLcGEE0/qxNiudyTjgauA3RDJERu5xW75kFCvSl5a9odyQYCb6tEjnmB"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js"
+      integrity="sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy"
+      crossorigin="anonymous"
+    ></script>
     <script type="module">
-      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.esm.min.mjs";
-      mermaid.initialize({
+      const mermaidApi = window.mermaid;
+      mermaidApi.initialize({
         startOnLoad: false,
         theme: "neutral",
         securityLevel: "strict",
         flowchart: { curve: "basis", htmlLabels: false },
       });
       for (const [index, diagram] of [...document.querySelectorAll(".mermaid")].entries()) {
-        const { svg, bindFunctions } = await mermaid.render(
+        const { svg, bindFunctions } = await mermaidApi.render(
           `issue54-diagram-${index + 1}`,
           diagram.textContent,
         );
