@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import ast
+import hashlib
 import shutil
 import subprocess
 import tempfile
@@ -46,6 +47,12 @@ def run_gate(repo: Path, *args: str) -> tuple[int, dict[str, object], str]:
     res = run(["python3", str(SCRIPT), "check", "--repo", str(repo), "--json", *args], repo)
     payload = json.loads(res.stdout)
     return res.returncode, payload, res.stderr
+
+
+def growth_finding(payload: dict[str, object]) -> dict[str, object]:
+    findings = [item for item in payload["findings"] if item["ruleId"] == "cumulative-growth"]
+    assert len(findings) == 1, findings
+    return findings[0]
 
 
 def snapshot_paths(repo: Path) -> set[str]:
@@ -593,6 +600,141 @@ def test_bloat_reports_one_error_per_file() -> None:
     with_repo(body)
 
 
+def test_unknown_numstat_cannot_report_clean_growth() -> None:
+    # Real Git reports "-\t-" for a file it treats as binary, even when the
+    # suffix is source. Growth must say so instead of inventing counts.
+    def body(repo: Path) -> None:
+        (repo / "src" / "base.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
+        code, payload, _ = run_gate(repo)
+        finding = growth_finding(payload)
+        assert finding["status"] == "incomplete", finding
+        assert finding["completeness"]["complete"] is False, finding
+        assert any("src/base.py" in gap for gap in finding["completeness"]["gaps"]), finding
+        assert code == 0
+
+    with_repo(body)
+
+
+SPLIT_LINES = (
+    "    resolved = normalize_identifier(candidate_value) + normalize_identifier(fallback_value)",
+    "    combined = resolved.strip().lower().replace('-', '_').replace(' ', '_')",
+    "    return combined if combined.startswith('id_') else f'id_{combined}'",
+)
+
+
+def test_separate_hunks_do_not_form_one_duplicate() -> None:
+    # The three lines exist intact in one file and split across two distant
+    # hunks in another. Only joining those hunks makes them look duplicated.
+    def body(repo: Path) -> None:
+        filler = "\n".join(f"KEEP_{i} = {i}" for i in range(8))
+        write(repo / "src" / "split.py", f"X = 1\n{filler}\nY = 2\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "split baseline")
+        write(
+            repo / "src" / "split.py",
+            f"X = 1\n{SPLIT_LINES[0]}\n{SPLIT_LINES[1]}\n{filler}\nY = 2\n{SPLIT_LINES[2]}\n",
+        )
+        write(repo / "src" / "intact.py", "def build_identifier(candidate_value, fallback_value):\n" + "\n".join(SPLIT_LINES) + "\n")
+        code, payload, _ = run_gate(repo)
+        duplicate = next(item for item in payload["checks"] if item["name"] == "no-duplicate-added-blocks")
+        assert duplicate["passed"] is True, json.dumps(duplicate, indent=2)
+        assert code == 0, json.dumps(payload["errors"], indent=2)
+
+    with_repo(body)
+
+
+def test_deleting_a_production_file_counts_as_deletions() -> None:
+    # One owner of per-entry counts means a removed file's lines are deletions;
+    # they used to vanish because the file had no current text to read.
+    def body(repo: Path) -> None:
+        write(repo / "src" / "legacy.py", "\n".join(f"OLD_{i} = {i}" for i in range(40)) + "\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "legacy")
+        (repo / "src" / "legacy.py").unlink()
+        code, payload, _ = run_gate(repo)
+        assert payload["bloat"]["totalDeleted"] == 40, payload["bloat"]
+        assert payload["cumulativeGrowth"]["production"] == {"added": 0, "deleted": 40, "net": -40}
+        assert code == 0
+
+    with_repo(body)
+
+
+def test_growth_reports_each_role_separately() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "src" / "app.py", "\n".join(f"VALUE_{i} = {i}" for i in range(10)) + "\n")
+        write(repo / "tests" / "test_app.py", "\n".join(f"def test_{i}():\n    assert {i} == {i}" for i in range(4)) + "\n")
+        write(repo / "tests" / "fixtures" / "sample.py", "SAMPLE = {'a': 1}\n")
+        code, payload, _ = run_gate(repo)
+        growth = payload["cumulativeGrowth"]
+        assert growth["production"] == {"added": 10, "deleted": 0, "net": 10}, growth
+        assert growth["test"] == {"added": 8, "deleted": 0, "net": 8}, growth
+        assert growth["testSupport"] == {"added": 1, "deleted": 0, "net": 1}, growth
+        assert growth["humanAuthored"] == {"added": 19, "deleted": 0, "net": 19}, growth
+        assert growth_finding(payload)["status"] == "pass"
+        assert code == 0
+
+    with_repo(body)
+
+
+def test_generated_and_non_source_stay_out_of_human_authored_growth() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "src" / "real.py", "REAL = 1\nREAL_TWO = 2\n")
+        write(repo / "src" / "generated" / "client.py", "\n".join(f"GEN_{i} = {i}" for i in range(30)) + "\n")
+        write(repo / "src" / "payload.schema.json", '{"type": "object"}\n')
+        write(repo / "docs" / "notes.md", "# notes\n\nprose\n")
+        code, payload, _ = run_gate(repo)
+        growth = payload["cumulativeGrowth"]
+        assert growth["production"] == {"added": 2, "deleted": 0, "net": 2}, growth
+        assert growth["generated"] == {"added": 30, "deleted": 0, "net": 30}, growth
+        assert growth["humanAuthored"] == {"added": 2, "deleted": 0, "net": 2}, growth
+        assert code == 0
+
+    with_repo(body)
+
+
+def test_growth_finding_carries_stable_identity_and_evidence() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "src" / "app.py", "VALUE = 1\n")
+        first = growth_finding(run_gate(repo)[1])
+        repeated = growth_finding(run_gate(repo)[1])
+        assert first["ruleId"] == "cumulative-growth"
+        assert first["findingId"] == repeated["findingId"]
+        assert first["severity"] == "warning"
+        assert first["base"] and first["candidate"]
+        assert first["region"]["scope"] == "evaluation"
+        assert first["evidence"]["humanAuthored"] == {"added": 1, "deleted": 0, "net": 1}
+        assert first["action"] and first["passCondition"]
+        write(repo / "src" / "app.py", "VALUE = 1\nOTHER = 2\n")
+        assert growth_finding(run_gate(repo)[1])["findingId"] != first["findingId"]
+
+    with_repo(body)
+
+
+def test_captured_round_six_corpus_reports_pinned_totals() -> None:
+    # The captured PR #68 round-six corpus, not the merged PR's final head.
+    base = "4cfffcb8d5724bfc2b03dce505da8cf930fb49fa"
+    candidate = "28cf04e63fa6eb598b938d3a78d782969538d9a9"
+    repo = SCRIPT_DIR.parents[2]
+    diff = run(["git", "diff", base, candidate], repo)
+    assert diff.returncode == 0, diff.stderr
+    digest = hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()
+    assert digest == "885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a", digest
+
+    replay = Path(tempfile.mkdtemp(prefix="round-six-corpus-")) / "candidate"
+    try:
+        git(repo, "worktree", "add", "-q", "--detach", str(replay), candidate)
+        _, payload, _ = run_gate(replay, "--base-ref", base)
+        growth = payload["cumulativeGrowth"]
+        assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
+        assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
+        assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
+        assert growth["humanAuthored"] == {"added": 1129, "deleted": 8, "net": 1121}, growth
+        assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
+    finally:
+        run(["git", "worktree", "remove", "--force", str(replay)], repo)
+        shutil.rmtree(replay.parent, ignore_errors=True)
+
+
 def test_gate_implementation_budget() -> None:
     limits = {
         "wrapper_lines": 150,
@@ -668,6 +810,13 @@ def main() -> int:
         test_ambiguous_reuse_warns_with_gitnexus_query,
         test_duplicate_polling_loop_is_grouped,
         test_bloat_reports_one_error_per_file,
+        test_unknown_numstat_cannot_report_clean_growth,
+        test_separate_hunks_do_not_form_one_duplicate,
+        test_deleting_a_production_file_counts_as_deletions,
+        test_growth_reports_each_role_separately,
+        test_generated_and_non_source_stay_out_of_human_authored_growth,
+        test_growth_finding_carries_stable_identity_and_evidence,
+        test_captured_round_six_corpus_reports_pinned_totals,
         test_gate_implementation_budget,
     ]
     for test in tests:

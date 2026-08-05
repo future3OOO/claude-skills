@@ -3,12 +3,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .checks import duplicate_added_blocks, evaluate_bloat, scan_quality_escapes
-from .context import GateContext
+from .checks import duplicate_added_blocks, evaluate_bloat, evaluate_growth, scan_quality_escapes
 from .git_scope import collect_scope
 from .inputs import parse_gitnexus_context_json, parse_repo_context_packet
-from .path_policy import is_binary_path, is_production_source_path, is_temp_artifact
+from .path_policy import ROLE_PRODUCTION, is_binary_path, is_temp_artifact
 from .reuse import detect_reuse_issues
+from .snapshot import EvaluationSnapshot
 
 
 def check(
@@ -25,14 +25,15 @@ def check(
     changed_files: set[str] = set(scope["changed_files"])
     gitnexus_boosts, gitnexus_warnings = parse_gitnexus_context_json(gitnexus_context_json)
     warnings.extend(gitnexus_warnings)
-    ctx = GateContext.from_scope(repo, scope)
+    snapshot = EvaluationSnapshot.from_scope(repo, scope)
 
-    conflict_files, temp_files = _changed_file_failures(ctx)
-    quality_escapes = scan_quality_escapes(ctx)
-    duplicates = duplicate_added_blocks(ctx)
-    bloat_errors, bloat_warnings, bloat_details = evaluate_bloat(ctx)
+    conflict_files, temp_files = _changed_file_failures(snapshot)
+    quality_escapes = scan_quality_escapes(snapshot)
+    duplicates = duplicate_added_blocks(snapshot)
+    bloat_errors, bloat_warnings, bloat_details = evaluate_bloat(snapshot)
+    growth = evaluate_growth(snapshot)
     reuse_findings, gitnexus_queries = detect_reuse_issues(
-        ctx,
+        snapshot,
         parse_repo_context_packet(repo_context_packet),
         gitnexus_boosts,
     )
@@ -56,12 +57,14 @@ def check(
         "candidateTree": scope["candidate_tree"] or None,
         "changedFilesCount": len(changed_files),
         "changedFilesSample": sorted(changed_files)[:30],
-        "sourceFilesCount": len([path for path in changed_files if is_production_source_path(path)]),
+        "sourceFilesCount": len(snapshot.role_entries(ROLE_PRODUCTION)),
         "checks": checks,
         "hardRules": _hard_rules(checks),
         "errors": errors,
         "warnings": warnings,
         "bloat": bloat_details,
+        "cumulativeGrowth": snapshot.growth(),
+        "findings": [growth.as_dict(snapshot.base_identity, snapshot.candidate_identity)],
         "reuseFindings": [finding.as_dict() for finding in reuse_findings],
         "gitnexusQueries": gitnexus_queries,
     }
@@ -88,15 +91,15 @@ def format_text(result: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _changed_file_failures(ctx: GateContext) -> tuple[list[str], list[str]]:
+def _changed_file_failures(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str]]:
     conflict_files: list[str] = []
     temp_files: list[str] = []
-    for rel_path in sorted(ctx.changed_files):
-        text = ctx.read_current(rel_path)
-        if is_temp_artifact(rel_path) and text is not None:
-            temp_files.append(rel_path)
-        if not is_binary_path(rel_path) and text and re.search(r"^<{7} |^={7}$|^>{7} ", text, re.M):
-            conflict_files.append(rel_path)
+    for entry in snapshot.entries:
+        text = entry.current_text
+        if is_temp_artifact(entry.path) and text is not None:
+            temp_files.append(entry.path)
+        if not is_binary_path(entry.path) and text and re.search(r"^<{7} |^={7}$|^>{7} ", text, re.M):
+            conflict_files.append(entry.path)
     return conflict_files, temp_files
 
 

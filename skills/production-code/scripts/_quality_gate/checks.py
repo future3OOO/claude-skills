@@ -4,10 +4,9 @@ import os
 import re
 from pathlib import Path
 
-from .context import GateContext
-from .git_scope import read_file
-from .models import Numstat
-from .path_policy import is_production_source_path, is_source_path, physical_lines
+from .models import Finding, SnapshotEntry
+from .path_policy import ROLE_NON_SOURCE, ROLE_PRODUCTION, physical_lines
+from .snapshot import EvaluationSnapshot
 
 
 # Import statements and the sys.path bootstrap a standalone entry point needs
@@ -54,46 +53,49 @@ EMPTY_CATCH_RULES = [
 ]
 
 
-def scan_quality_escapes(ctx: GateContext) -> list[str]:
+def scan_quality_escapes(snapshot: EvaluationSnapshot) -> list[str]:
     hits: list[str] = []
-    added_by_file = ctx.added_lines
-    for rel_path, lines in added_by_file.items():
-        if is_source_path(rel_path):
-            hits.extend(_line_hits(rel_path, lines, rules_for_path(rel_path)))
-    for rel_path in sorted(ctx.untracked):
-        if not is_source_path(rel_path) or (text := ctx.read_current(rel_path)) is None:
+    tracked_added: dict[str, list[tuple[int, str]]] = {}
+    for entry in snapshot.entries:
+        if entry.role == ROLE_NON_SOURCE:
             continue
-        hits.extend(_line_hits(rel_path, list(enumerate(text.splitlines(), 1)), rules_for_path(rel_path)))
-        hits.extend(_multiline_hits(rel_path, text))
-    return sorted(set(hits + _multiline_added_hits(added_by_file)))
+        lines = entry.added_lines()
+        hits.extend(_line_hits(entry.path, lines, rules_for_entry(entry)))
+        if entry.untracked and entry.current_text is not None:
+            hits.extend(_multiline_hits(entry.path, entry.current_text))
+        else:
+            tracked_added[entry.path] = lines
+    return sorted(set(hits + _multiline_added_hits(tracked_added)))
 
 
-def rules_for_path(path: str) -> list[re.Pattern[str]]:
-    suffix = Path(path).suffix.lower()
+def rules_for_entry(entry: SnapshotEntry) -> list[re.Pattern[str]]:
+    suffix = Path(entry.path).suffix.lower()
     rules = list(GENERAL_ESCAPE_RULES)
-    if suffix == ".py" and is_production_source_path(path):
+    if entry.role != ROLE_PRODUCTION:
+        return rules
+    if suffix == ".py":
         rules.extend(PYTHON_ESCAPE_RULES)
-    if suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"} and is_production_source_path(path):
+    if suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}:
         rules.extend(TS_ESCAPE_RULES)
     return rules
 
 
-def duplicate_added_blocks(ctx: GateContext) -> list[dict[str, object]]:
+def duplicate_added_blocks(snapshot: EvaluationSnapshot) -> list[dict[str, object]]:
     windows: dict[str, dict[str, object]] = {}
-    added_by_file = ctx.added_lines_with_untracked(production_only=True)
-    for rel_path, lines in added_by_file.items():
-        if not is_production_source_path(rel_path):
-            continue
-        normalized = _duplicate_candidate_lines(lines)
-        for index in range(0, max(0, len(normalized) - 2)):
-            key = _duplicate_window_key(normalized, index)
-            if len(key) < 80:
-                continue
-            item = windows.setdefault(key, {"count": 0, "files": set(), "sample": key[:180]})
-            item["count"] = int(item["count"]) + 1
-            files = item["files"]
-            assert isinstance(files, set)
-            files.add(rel_path)
+    for entry in snapshot.role_entries(ROLE_PRODUCTION):
+        # Windows never span a hunk boundary: lines that are far apart in the
+        # file are not one block just because both sides of a gap changed.
+        for hunk in entry.hunks:
+            normalized = _duplicate_candidate_lines(list(hunk.added))
+            for index in range(0, max(0, len(normalized) - 2)):
+                key = _duplicate_window_key(normalized, index)
+                if len(key) < 80:
+                    continue
+                item = windows.setdefault(key, {"count": 0, "files": set(), "sample": key[:180]})
+                item["count"] = int(item["count"]) + 1
+                files = item["files"]
+                assert isinstance(files, set)
+                files.add(entry.path)
     return _collapse_duplicate_findings([
         {"count": item["count"], "files": sorted(item["files"]), "sample": item["sample"]}
         for item in windows.values()
@@ -101,10 +103,12 @@ def duplicate_added_blocks(ctx: GateContext) -> list[dict[str, object]]:
     ])
 
 
-def evaluate_bloat(ctx: GateContext) -> tuple[list[str], list[str], dict[str, object]]:
+def evaluate_bloat(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str], dict[str, object]]:
     errors: list[str] = []
     warnings: list[str] = []
-    details, total_added, total_deleted, shrink_by_dir = _bloat_file_details(ctx, ctx.numstats)
+    production = snapshot.growth()[ROLE_PRODUCTION]
+    total_added, total_deleted = production["added"], production["deleted"]
+    details, shrink_by_dir = _bloat_file_details(snapshot)
     for detail in details:
         errors.extend(_bloat_errors_for_file(detail, shrink_by_dir))
         warnings.extend(_bloat_warnings_for_file(detail))
@@ -113,6 +117,28 @@ def evaluate_bloat(ctx: GateContext) -> tuple[list[str], list[str], dict[str, ob
     elif total_added >= 500 and total_added > max(1, total_deleted) * 4:
         warnings.append(f"changed source diff is additive: added={total_added} deleted={total_deleted}")
     return errors, warnings, {"totalAdded": total_added, "totalDeleted": total_deleted, "files": details[:50]}
+
+
+def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:
+    """Cumulative growth per role, reported every run and warning-only.
+
+    The repository's ~500 net review budget only chooses pass or warn; it never
+    suppresses the evidence.
+    """
+    growth = snapshot.growth()
+    gaps = snapshot.gaps()
+    net = growth["humanAuthored"]["net"]
+    status = "incomplete" if gaps else "warn" if net > 500 else "pass"
+    return Finding(
+        rule_id="cumulative-growth",
+        severity="warning",
+        status=status,
+        region={"scope": "evaluation", "changedScope": snapshot.changed_scope, "fileCount": len(snapshot.entries)},
+        evidence=growth,
+        action="Reduce the change, or split it, until human-authored net growth is at or under the 500-line review budget.",
+        pass_condition="human-authored net growth <= 500 with every changed path measured",
+        gaps=gaps,
+    )
 
 
 def _line_hits(path: str, lines: list[tuple[int, str]], rules: list[re.Pattern[str]]) -> list[str]:
@@ -183,36 +209,19 @@ def _same_duplicate_family(left: dict[str, object], right: dict[str, object]) ->
     return len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens)) >= 0.6
 
 
-def _bloat_file_details(ctx: GateContext, records: list[Numstat]) -> tuple[list[dict[str, object]], int, int, dict[str, int]]:
-    numstat = _merge_numstats(records)
+def _bloat_file_details(snapshot: EvaluationSnapshot) -> tuple[list[dict[str, object]], dict[str, int]]:
     details: list[dict[str, object]] = []
-    total_added = 0
-    total_deleted = 0
     shrink_by_dir: dict[str, int] = {}
-    for rel_path in sorted(ctx.changed_files):
-        if not is_production_source_path(rel_path) or (current_text := ctx.read_current(rel_path)) is None:
+    for entry in snapshot.role_entries(ROLE_PRODUCTION):
+        if entry.current_text is None:
             continue
-        base_text = ctx.read_base(rel_path)
-        baseline_lines = physical_lines(base_text) if base_text is not None else None
-        current_lines = physical_lines(current_text)
-        record = numstat.get(rel_path)
-        added = record.added if record else (current_lines if baseline_lines is None else 0)
-        deleted = record.deleted if record else 0
-        total_added += added
-        total_deleted += deleted
-        parent = str(Path(rel_path).parent).replace(os.sep, "/")
-        if deleted > added:
-            shrink_by_dir[parent] = shrink_by_dir.get(parent, 0) + deleted - added
-        details.append({"file": rel_path, "added": added, "deleted": deleted, "currentLines": current_lines, "baselineLines": baseline_lines, "netGrowth": max(0, added - deleted)})
-    return details, total_added, total_deleted, shrink_by_dir
-
-
-def _merge_numstats(records: list[Numstat]) -> dict[str, Numstat]:
-    merged: dict[str, Numstat] = {}
-    for record in records:
-        previous = merged.get(record.path)
-        merged[record.path] = record if previous is None else Numstat(previous.added + record.added, previous.deleted + record.deleted, record.path)
-    return merged
+        baseline_lines = physical_lines(entry.base_text) if entry.base_text is not None else None
+        current_lines = physical_lines(entry.current_text)
+        parent = str(Path(entry.path).parent).replace(os.sep, "/")
+        if entry.deleted > entry.added:
+            shrink_by_dir[parent] = shrink_by_dir.get(parent, 0) + entry.deleted - entry.added
+        details.append({"file": entry.path, "added": entry.added, "deleted": entry.deleted, "currentLines": current_lines, "baselineLines": baseline_lines, "netGrowth": max(0, entry.added - entry.deleted)})
+    return details, shrink_by_dir
 
 
 def _bloat_errors_for_file(detail: dict[str, object], shrink_by_dir: dict[str, int]) -> list[str]:

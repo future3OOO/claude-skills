@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .context import GateContext
 from .git_scope import git_text, read_file, read_git_file
 from .models import ReuseFinding, SymbolDef
-from .path_policy import is_production_source_path, language_for_path, normalize_path
+from .path_policy import ROLE_PRODUCTION, language_for_path, normalize_path
+from .snapshot import EvaluationSnapshot
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
 
@@ -21,18 +21,25 @@ GENERIC_MATCH_TOKENS = {
 
 
 def detect_reuse_issues(
-    ctx: GateContext,
+    snapshot: EvaluationSnapshot,
     repo_context: dict[str, object],
     gitnexus_boosts: dict[str, int],
 ) -> tuple[list[ReuseFinding], list[str]]:
     packet_paths = {normalize_path(str(path)) for path in repo_context.get("paths", set()) if str(path)}
-    candidates = _new_symbols(ctx) + _risky_added_blocks(ctx)
+    candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
         return [], []
-    existing = _existing_symbol_index(ctx, candidates, packet_paths, gitnexus_boosts)
+    existing = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
     if not existing:
         return [], []
-    findings = _score_reuse_candidates(candidates, existing, ctx.added_lines, _deleted_definition_names(ctx.raw_diff))
+    # Tracked hunks only: an untracked file's whole text is its added lines, so
+    # including it would read a symbol's own definition as a call to it.
+    added_by_file = {
+        entry.path: entry.added_lines()
+        for entry in snapshot.role_entries(ROLE_PRODUCTION)
+        if not entry.untracked
+    }
+    findings = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))
     queries = [
         f'gitnexus_context(name="{finding.existing_symbol}") and gitnexus_impact(target="{finding.existing_symbol}", direction="upstream")'
         for finding in findings
@@ -42,29 +49,30 @@ def detect_reuse_issues(
 
 
 def _existing_symbol_index(
-    ctx: GateContext,
+    snapshot: EvaluationSnapshot,
     candidates: list[SymbolDef],
     packet_paths: set[str],
     gitnexus_boosts: dict[str, int],
 ) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
     indexed = 0
-    tracked_args = ["ls-tree", "-r", "--name-only", ctx.base_for_file] if ctx.candidate_source == "index" else ["ls-files"]
-    tracked = [normalize_path(line) for line in git_text(ctx.repo, tracked_args).splitlines() if normalize_path(line)]
+    tracked_args = ["ls-tree", "-r", "--name-only", snapshot.base_for_file] if snapshot.candidate_source == "index" else ["ls-files"]
+    tracked = [normalize_path(line) for line in git_text(snapshot.repo, tracked_args).splitlines() if normalize_path(line)]
     candidate_languages = {item.language for item in candidates}
     candidate_roots = {_top_dir(item.path) for item in candidates}
     gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
     for rel_path in tracked:
         if indexed >= MAX_INDEX_FILES or len(symbols) >= MAX_INDEX_SYMBOLS:
             break
-        if rel_path in ctx.untracked or not is_production_source_path(rel_path):
+        entry = snapshot.entry(rel_path)
+        if (entry is not None and entry.untracked) or snapshot.role_of(rel_path) != ROLE_PRODUCTION:
             continue
         if not _should_index_existing(rel_path, candidate_languages, candidate_roots, packet_paths, gitnexus_paths):
             continue
-        if ctx.candidate_source == "index":
-            text = read_git_file(ctx.repo, ctx.base_for_file, rel_path)
+        if snapshot.candidate_source == "index" or entry is not None:
+            text = read_git_file(snapshot.repo, snapshot.base_for_file, rel_path)
         else:
-            text = read_git_file(ctx.repo, ctx.base_for_file, rel_path) if rel_path in ctx.changed_files else read_file(ctx.repo / rel_path)
+            text = read_file(snapshot.repo / rel_path)
         if text is None or len(text.encode("utf-8", errors="ignore")) > MAX_INDEX_FILE_BYTES:
             continue
         indexed += 1
@@ -76,26 +84,21 @@ def _existing_symbol_index(
     return symbols
 
 
-def _new_symbols(ctx: GateContext) -> list[SymbolDef]:
+def _new_symbols(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
-    for rel_path, lines in ctx.added_lines.items():
-        if not is_production_source_path(rel_path):
-            continue
-        for line_no, text in lines:
-            for symbol in extract_symbols(rel_path, text, "added"):
-                symbols.append(SymbolDef(symbol.name, rel_path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
-    for rel_path in sorted(ctx.untracked):
-        if is_production_source_path(rel_path) and (text := ctx.read_current(rel_path)) is not None:
-            symbols.extend(extract_symbols(rel_path, text, "untracked"))
+    for entry in snapshot.role_entries(ROLE_PRODUCTION):
+        source = "untracked" if entry.untracked else "added"
+        for line_no, text in entry.added_lines():
+            for symbol in extract_symbols(entry.path, text, source):
+                symbols.append(SymbolDef(symbol.name, entry.path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
     return symbols
 
 
-def _risky_added_blocks(ctx: GateContext) -> list[SymbolDef]:
+def _risky_added_blocks(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     blocks: list[SymbolDef] = []
-    for rel_path, lines in ctx.added_lines_with_untracked(production_only=True).items():
-        if not is_production_source_path(rel_path):
-            continue
-        for line_no, text in lines:
+    for entry in snapshot.role_entries(ROLE_PRODUCTION):
+        rel_path = entry.path
+        for line_no, text in entry.added_lines():
             # Prose cannot reimplement a helper. Without this, a comment naming
             # what the code does ("must resolve and read there") is mined for
             # behavior tokens and reported as a duplicate implementation.
@@ -112,17 +115,13 @@ def _risky_added_blocks(ctx: GateContext) -> list[SymbolDef]:
     return blocks
 
 
-def _deleted_definition_names(raw_diff: str) -> set[str]:
-    deleted: set[str] = set()
-    current = ""
-    for line in raw_diff.splitlines():
-        if line.startswith("diff --git "):
-            current = ""
-        elif line.startswith("--- a/"):
-            current = normalize_path(line[len("--- a/") :])
-        elif current and is_production_source_path(current) and line.startswith("-") and not line.startswith("---"):
-            deleted.update(symbol.name for symbol in extract_symbols(current, line[1:], "deleted"))
-    return deleted
+def _deleted_definition_names(snapshot: EvaluationSnapshot) -> set[str]:
+    return {
+        symbol.name
+        for entry in snapshot.role_entries(ROLE_PRODUCTION)
+        for line_no, text in entry.deleted_lines()
+        for symbol in extract_symbols(entry.path, text, "deleted")
+    }
 
 
 def _score_reuse_candidates(

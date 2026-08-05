@@ -81,10 +81,12 @@ def parse_numstat(raw: str) -> list[Numstat]:
         if len(parts) < 3:
             continue
         try:
-            added = int(parts[0])
-            deleted = int(parts[1])
+            added: int | None = int(parts[0])
+            deleted: int | None = int(parts[1])
         except ValueError:
-            added = deleted = 10000
+            # Git writes "-" for a file it treats as binary. Record the absence
+            # so the evaluation can report it, rather than inventing counts.
+            added = deleted = None
         records.append(Numstat(added=added, deleted=deleted, path=normalize_path("\t".join(parts[2:]))))
     return records
 

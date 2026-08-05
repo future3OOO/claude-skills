@@ -17,6 +17,19 @@ TEST_MARKERS = (
     "/fixtures/", "/generated/", "/snapshots/", "/test/", "/tests/",
 )
 
+ROLE_PRODUCTION = "production"
+ROLE_TEST = "test"
+ROLE_TEST_SUPPORT = "test-support"
+ROLE_GENERATED = "generated"
+ROLE_NON_SOURCE = "non-source"
+
+# Machine-written source is not human-authored, so it is excluded from the
+# human-authored totals rather than folded into the test-support bucket.
+GENERATED_MARKERS = ("/generated/",)
+
+# Material that supports tests without being test code itself.
+SUPPORT_MARKERS = ("/__fixtures__/", "/__mocks__/", "/__snapshots__/", "/fixture/", "/fixtures/", "/snapshots/")
+
 
 def normalize_path(value: str) -> str:
     return value.strip().replace(os.sep, "/")
@@ -71,6 +84,23 @@ def is_source_path(path: str) -> bool:
 
 def is_production_source_path(path: str) -> bool:
     return is_source_path(path) and not is_test_like_path(path)
+
+
+def resolve_role(path: str) -> str:
+    """The single role every quality-gate consumer reads, resolved once per entry.
+
+    Additive over the predicates above: `is_test_like_path` keeps its exact
+    meaning because workflow state loads it directly and classifies edits with
+    it.
+    """
+    if not is_source_path(path):
+        return ROLE_NON_SOURCE
+    lowered = f"/{normalize_path(path).lower()}"
+    if any(marker in lowered for marker in GENERATED_MARKERS):
+        return ROLE_GENERATED
+    if not is_test_like_path(path):
+        return ROLE_PRODUCTION
+    return ROLE_TEST_SUPPORT if any(marker in lowered for marker in SUPPORT_MARKERS) else ROLE_TEST
 
 
 def language_for_path(path: str) -> str:

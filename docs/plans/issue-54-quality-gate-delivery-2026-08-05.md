@@ -207,3 +207,7 @@ Required proof includes:
 - 2026-08-05: added complete owner/reference discovery, explicit finding
   states, mechanical rewiring proof, and the parent-owned PR C corpus gate
   after reviewer findings and codebase-design advisor challenge.
+- 2026-08-06: PR A opened for child #75 from `origin/main` at `7ddfd9c1`.
+  `EvaluationSnapshot` replaces `GateContext`, every quality-gate role consumer
+  reads snapshot-owned roles, and the captured round-six corpus replays at
+  `+1129/-8` net `1121`.
