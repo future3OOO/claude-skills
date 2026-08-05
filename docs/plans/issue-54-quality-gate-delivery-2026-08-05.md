@@ -21,6 +21,8 @@ warning evidence until the parent explicitly authorizes a named promotion.
 ## Source of truth
 
 - authority: GitHub issue #54 and approved child issues #75, #76, and #77
+- target architecture:
+  [`docs/decisions/issue-54-quality-gate-target-architecture.md`](../decisions/issue-54-quality-gate-target-architecture.md)
 - trusted base: exact `origin/main` SHA recorded in the owning child at
   dispatch; PR B and PR C use the preceding slice's merge SHA
 - related contract: issue #49 exclusively owns typed final-tree verification
