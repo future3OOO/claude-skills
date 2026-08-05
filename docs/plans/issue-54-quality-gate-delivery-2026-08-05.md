@@ -67,6 +67,37 @@ returns to parent #54 for human decision.
   round-six corpus, focused negative cases, the integrated hook suite, and the
   repository quality gate
 
+### Core reduction contract
+
+Issue #77 must turn confirmed competing ownership into a deletion and
+deepening loop, not another score. Candidate generation remains mechanical and
+warning-only. A candidate becomes a confirmed same-responsibility finding only
+when exact retained implementation, provably pure forwarding under a validated
+ownership contract, or snapshot-bound advisor-validated evidence establishes
+the responsibility key; names, suffixes, vocabulary, shared data, and graph
+proximity cannot establish it.
+
+Against a complete evaluated snapshot, a confirmed finding is resolved only
+when one owner remains for that responsibility and role, every declared
+superseded surface is absent, and every affected indexed caller and test
+resolves through the surviving owner. Incomplete or truncated caller/test
+scope cannot report resolution.
+
+Valid repairs deepen and absorb into the existing owner, replace the owner and
+delete the superseded surface, or consolidate both paths behind one deeper
+owner and delete the redundant surfaces. Partial deepening, renaming or moving
+the competitor, layering a forwarding/orchestration surface over retained
+owners without a distinct authority, invariant, external boundary, lifecycle,
+failure policy, or runtime variation point, or adding prose, suppression, or
+disposition evidence while the confirmed conflict remains does not resolve it.
+
+An accepted `distinct-authority` disposition establishes that the candidate
+does not share the same responsibility. `temporary-coexistence` never resolves
+the debt: it must name the old and new owners, surfaces to delete, tracked
+follow-up, and expiry slice while the warning remains visible. The resolution
+predicate ships at fixed warning severity; only a later parent-approved
+decision over named rule IDs may change severity.
+
 ## Scope
 
 In scope:
@@ -145,3 +176,6 @@ Required proof includes:
 - 2026-08-05: created after operator approval and Claude Advisor challenge.
 - 2026-08-05: linked published children #75, #76, and #77 and reconciled
   parent #54.
+- 2026-08-05: made the one-owner deletion/deepening contract explicit after
+  operator direction and Claude Advisor challenge; PR count and order remain
+  unchanged.
