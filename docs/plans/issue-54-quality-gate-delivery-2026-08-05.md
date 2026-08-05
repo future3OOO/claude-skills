@@ -21,7 +21,8 @@ warning evidence until the parent explicitly authorizes a named promotion.
 ## Source of truth
 
 - authority: GitHub issue #54 and approved child issues #75, #76, and #77
-- trusted base: current `origin/main` when each sequential branch begins
+- trusted base: exact `origin/main` SHA recorded in the owning child at
+  dispatch; PR B and PR C use the preceding slice's merge SHA
 - related contract: issue #49 exclusively owns typed final-tree verification
   binding and workflow persistence
 - captured evidence: PR #68 round-six corpus from
@@ -189,7 +190,7 @@ Required proof includes:
 - [x] This planning branch reviewed, pushed, and opened as PR #78.
 - [ ] PR A merged with its checklist and reviewer loop complete.
 - [ ] PR B merged with its checklist and reviewer loop complete.
-- [!] Parent #54 must pin the exact responsibility-owner calibration manifest
+- [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
   before PR C is dispatched.
 - [ ] PR C merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 calibration evidence reviewed by a human.
