@@ -420,7 +420,7 @@ to rerun it on a later evaluation.
 | Typed result | Schema-v2 projection |
 |---|---|
 | immediate safety error | `errors`; `checks[].status=finding`; `passed=false`; `ok=false` |
-| active QG54 finding | `findings`, `warnings`, and `checks[].warnings`; `status=finding`; `passed=true`; `ok` unchanged |
+| active QG54 finding | `findings`, `warnings`, and `checks[].warnings`; while its exact ID is ineligible, `status=finding`, `passed=true`, and `ok` unchanged; if parent #54 later enables that exact ID, `fail_on_warnings=true` keeps `severity=warning` and `passed=true`, adds an exact-ID `errors` projection, and sets `ok=false` |
 | incomplete QG54 rule | `findings` and `warnings`; `status=incomplete`; `passed=null`; edit-time `ok` unchanged |
 | QG54 rule not evaluated | `findings` and `warnings`; `status=not-evaluated`; `passed=null`; edit-time `ok` unchanged |
 | active transitional non-QG54 warning | `findings`, `warnings`, and `checks[].warnings`; normally `passed=true` and `ok` unchanged; with `fail_on_warnings=true`, an eligible exact ID keeps `severity=warning` and `passed=true`, adds an exact-ID `errors` projection, and sets `ok=false` |
