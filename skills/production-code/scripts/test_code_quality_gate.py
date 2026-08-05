@@ -50,9 +50,23 @@ def run_gate(repo: Path, *args: str) -> tuple[int, dict[str, object], str]:
 
 
 def growth_finding(payload: dict[str, object]) -> dict[str, object]:
-    findings = [item for item in payload["findings"] if item["ruleId"] == "cumulative-growth"]
+    findings = [item for item in payload["findings"] if item["ruleId"] == "QG54-GROWTH-CUMULATIVE"]
     assert len(findings) == 1, findings
     return findings[0]
+
+
+def growth_totals(payload: dict[str, object]) -> dict[str, object]:
+    return payload["evaluation"]["growth"]
+
+
+def reuse_finding(payload: dict[str, object]) -> dict[str, object]:
+    findings = [item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY"]
+    assert len(findings) == 1, findings
+    return findings[0]
+
+
+def reuse_matches(payload: dict[str, object]) -> list[dict[str, object]]:
+    return reuse_finding(payload)["evidence"]["matches"]
 
 
 def snapshot_paths(repo: Path) -> set[str]:
@@ -77,9 +91,7 @@ def test_clean_pass() -> None:
         assert code == 0
         assert payload["ok"] is True
         assert set(payload["hardRules"]) == {
-            "codeVolume",
             "noDuplication",
-            "shortestPath",
             "cleanup",
             "noMergeConflictMarkers",
             "consequenceCoverage",
@@ -215,36 +227,23 @@ def test_test_fake_green_escapes_still_fail() -> None:
     with_repo(body)
 
 
-def test_new_huge_source_file_fails() -> None:
+def test_large_growth_is_warning_only() -> None:
+    # The per-file bloat blockers are deleted by the binding architecture:
+    # cumulative human-authored growth over the review budget warns, never fails.
     def body(repo: Path) -> None:
         write(repo / "src" / "huge.py", "\n".join(f"VALUE_{i} = {i}" for i in range(801)) + "\n")
-        code, payload, _ = run_gate(repo)
-        assert code == 2
-        assert payload["hardRules"]["codeVolume"]["passed"] is False
-
-    with_repo(body)
-
-
-def test_large_existing_file_must_not_grow() -> None:
-    def body(repo: Path) -> None:
-        write(repo / "src" / "large.py", "\n".join(f"VALUE_{i} = {i}" for i in range(1201)) + "\n")
-        git(repo, "add", ".")
-        git(repo, "commit", "-q", "-m", "large baseline")
-        with (repo / "src" / "large.py").open("a", encoding="utf-8") as handle:
-            handle.write("EXTRA = 1\n")
-        code, payload, _ = run_gate(repo)
-        assert code == 2
-        assert payload["hardRules"]["codeVolume"]["passed"] is False
-
-    with_repo(body)
-
-
-def test_fixtures_excluded_from_bloat() -> None:
-    def body(repo: Path) -> None:
-        write(repo / "tests" / "fixtures" / "huge.py", "\n".join(f"VALUE_{i} = {i}" for i in range(1200)) + "\n")
-        code, payload, _ = run_gate(repo)
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
         assert code == 0
         assert payload["ok"] is True
+        finding = growth_finding(payload)
+        assert finding["status"] == "finding", finding
+        assert finding["passed"] is True and finding["state"] is None, finding
+        assert any("QG54-GROWTH-CUMULATIVE" in warning for warning in payload["warnings"]), payload["warnings"]
+        # An active warning-only rule keeps its intrinsic pass in the checks
+        # projection while its warning is visible there too.
+        growth_check = check_named(payload, "cumulative-growth")
+        assert growth_check["status"] == "finding" and growth_check["passed"] is True, growth_check
+        assert any("QG54-GROWTH-CUMULATIVE" in warning for warning in growth_check["warnings"]), growth_check
 
     with_repo(body)
 
@@ -258,7 +257,7 @@ def test_reimplemented_existing_helper_fails() -> None:
         code, payload, _ = run_gate(repo)
         assert code == 2
         assert payload["hardRules"]["noDuplication"]["passed"] is False
-        assert payload["reuseFindings"][0]["existingFile"] == "src/ids.py"
+        assert reuse_matches(payload)[0]["existingFile"] == "src/ids.py"
 
     with_repo(body)
 
@@ -291,8 +290,8 @@ def test_reimplemented_dedupe_loop_fails() -> None:
         )
         code, payload, _ = run_gate(repo)
         assert code == 2
-        assert payload["hardRules"]["shortestPath"]["passed"] is False
-        assert any(item["existingSymbol"] == "dedupe_items" for item in payload["reuseFindings"])
+        assert payload["hardRules"]["noDuplication"]["passed"] is False
+        assert any(item["existingSymbol"] == "dedupe_items" for item in reuse_matches(payload))
 
     with_repo(body)
 
@@ -322,7 +321,7 @@ def test_deleted_helper_is_not_reported_as_reuse_candidate() -> None:
         )
         code, payload, _ = run_gate(repo)
         assert code == 0, json.dumps(payload, indent=2)
-        assert payload["reuseFindings"] == []
+        assert reuse_matches(payload) == []
 
     with_repo(body)
 
@@ -336,7 +335,7 @@ def test_single_token_cross_domain_reuse_warning_is_suppressed() -> None:
         code, payload, _ = run_gate(repo)
         assert code == 0
         assert payload["ok"] is True
-        assert payload["reuseFindings"] == []
+        assert reuse_matches(payload) == []
 
     with_repo(body)
 
@@ -359,7 +358,7 @@ def test_generic_serializer_method_name_is_not_reuse_evidence() -> None:
         )
         code, payload, _ = run_gate(repo)
         assert code == 0, json.dumps(payload, indent=2)
-        assert payload["reuseFindings"] == []
+        assert reuse_matches(payload) == []
 
     with_repo(body)
 
@@ -378,7 +377,7 @@ def test_pytest_named_module_is_test_source() -> None:
             "    assert True\n",
         )
         code, payload, _ = run_gate(repo)
-        assert payload["reuseFindings"] == [], payload["reuseFindings"]
+        assert reuse_matches(payload) == [], reuse_matches(payload)
         assert payload["ok"] is True
         assert code == 0
 
@@ -402,7 +401,7 @@ def test_comment_prose_is_not_a_risky_block() -> None:
         # the existing-symbol index, which is when the comment can match it.
         write(repo / "skills" / "advisor" / "scripts" / "state.py", "def slug() -> str:\n    return 'x'\n")
         code, payload, _ = run_gate(repo)
-        assert payload["reuseFindings"] == [], payload["reuseFindings"]
+        assert reuse_matches(payload) == [], reuse_matches(payload)
         assert payload["ok"] is True
         assert code == 0
 
@@ -418,7 +417,7 @@ def test_action_only_wait_helper_overlap_is_suppressed() -> None:
         code, payload, _ = run_gate(repo)
         assert code == 0
         assert payload["ok"] is True
-        assert payload["reuseFindings"] == []
+        assert reuse_matches(payload) == []
 
     with_repo(body)
 
@@ -477,8 +476,8 @@ def test_same_file_related_helper_warns_but_function_edit_passes() -> None:
             handle.write("\ndef normalize_user_record(value: str) -> str:\n    return value.strip().lower()\n")
         code, payload, _ = run_gate(repo)
         assert code == 0
-        assert payload["reuseFindings"][0]["severity"] == "warning"
-        assert payload["reuseFindings"][0]["existingFile"] == "src/users.py"
+        assert reuse_matches(payload)[0]["severity"] == "warning"
+        assert reuse_matches(payload)[0]["existingFile"] == "src/users.py"
         write(repo / "src" / "users.py", "def normalize_user(value: str) -> str:\n    return value.strip().casefold()\n")
         code, payload, _ = run_gate(repo)
         assert code == 0
@@ -510,7 +509,7 @@ def test_repo_context_packet_boosts_reuse_confidence() -> None:
         write(packet, "<top_targets>\n<file path=\"lib/users.py\" />\n</top_targets>\n")
         code, payload, _ = run_gate(repo, "--repo-context-packet", str(packet))
         assert code == 2
-        assert payload["reuseFindings"][0]["existingFile"] == "lib/users.py"
+        assert reuse_matches(payload)[0]["existingFile"] == "lib/users.py"
 
     with_repo(body)
 
@@ -539,7 +538,7 @@ def test_gitnexus_context_json_boosts_reuse_confidence() -> None:
         )
         code, payload, _ = run_gate(repo, "--gitnexus-context-json", str(context))
         assert code == 2
-        assert payload["reuseFindings"][0]["existingSymbol"] == "resolve_order"
+        assert reuse_matches(payload)[0]["existingSymbol"] == "resolve_order"
 
     with_repo(body)
 
@@ -553,8 +552,14 @@ def test_ambiguous_reuse_warns_with_gitnexus_query() -> None:
         code, payload, _ = run_gate(repo)
         assert code == 0
         assert payload["ok"] is True
-        assert payload["reuseFindings"][0]["severity"] == "warning"
+        assert reuse_matches(payload)[0]["severity"] == "warning"
         assert payload["gitnexusQueries"]
+        # An active transitional warning projects into the check with its
+        # intrinsic pass kept: status=finding, passed=true, warning visible.
+        check = check_named(payload, "reuse-existing-helpers")
+        assert check["status"] == "finding" and check["passed"] is True, check
+        assert check["warnings"], check
+        assert reuse_finding(payload)["status"] == "finding", reuse_finding(payload)
 
     with_repo(body)
 
@@ -654,15 +659,15 @@ def test_truncated_baseline_discovery_cannot_report_clean_reuse() -> None:
         # clean reuse pass while discovery never finished.
         write(repo / "src" / "candidate.py", "def unrelated_widget_label():\n    return 0\n")
         _, payload, _ = run_gate(repo)
-        finding = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
+        finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY")
         assert finding["status"] == "incomplete", finding
         assert finding["completeness"]["complete"] is False, finding
         assert any("stopped at" in gap for gap in finding["completeness"]["gaps"]), finding
-        assert any("incomplete analysis for reuse-existing-helpers" in w for w in payload["warnings"]), payload["warnings"]
+        assert any("QG54-ANALYSIS-INCOMPLETE for QG-LEGACY-REUSE-ADVISORY" in w for w in payload["warnings"]), payload["warnings"]
         # No representation of the rule may read as an evaluated clean pass.
         check = next(item for item in payload["checks"] if item["name"] == "reuse-existing-helpers")
         assert check["passed"] is None and check["status"] == "incomplete", check
-        for name in ("noDuplication", "shortestPath"):
+        for name in ("noDuplication",):
             assert payload["hardRules"][name] == {
                 "status": "incomplete",
                 "passed": None,
@@ -676,43 +681,48 @@ def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
     return next(item for item in payload["checks"] if item["name"] == name)
 
 
-def test_unattributed_diff_path_cannot_report_clean_hunk_checks() -> None:
-    # Git quotes a header path containing a tab, so it never matches the literal
-    # name porcelain reports. Those hunks are unattributed, not absent.
+def test_special_character_filename_remains_fully_measurable() -> None:
+    # Git C-quotes a tab-holding name in the textual diff header while the -z
+    # transports carry the literal name. Decoding the header reunites the hunks
+    # with their entry, so the file is measured, never silently skipped.
     def body(repo: Path) -> None:
         quoted = repo / "src" / "we\tird.py"
         write(quoted, "A = 1\n")
         git(repo, "add", ".")
         git(repo, "commit", "-q", "-m", "quoted path")
         quoted.write_text("A = 1\nB = 2\n", encoding="utf-8")
-        _, payload, _ = run_gate(repo)
-        duplicates = check_named(payload, "no-duplicate-added-blocks")
-        assert duplicates["passed"] is None and duplicates["status"] == "incomplete", duplicates
-        # Both representations of the reuse rule, never only one.
-        reuse = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
-        assert reuse["status"] == "incomplete", reuse
-        assert check_named(payload, "reuse-existing-helpers")["passed"] is None, payload["checks"]
-        # Counts were still measured here, so growth and bloat stay evaluated.
-        assert check_named(payload, "risk-calibrated-bloat")["passed"] is True, payload["checks"]
-        assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
+        for extra in (("--base-ref", "HEAD"), ()):
+            _, payload, _ = run_gate(repo, *extra)
+            growth = growth_totals(payload)
+            assert growth["production"] == {"added": 1, "deleted": 0, "net": 1}, (extra, growth)
+            assert check_named(payload, "no-duplicate-added-blocks")["passed"] is True, (extra, payload["checks"])
+            assert payload["evaluation"]["gaps"] == [], (extra, payload["evaluation"])
 
-        # Commit-range and staged-only modes take paths from --name-only and
-        # --numstat, which quote the name where porcelain does not. The file
-        # must not silently become an unscanned, zero-growth entry.
         git(repo, "add", "-A")
         git(repo, "commit", "-q", "-m", "quoted change")
+        quoted.write_text("A = 1\nB = 2\nC = 3\n", encoding="utf-8")
+        git(repo, "add", "-A")
         for extra in (("--base-ref", "HEAD~1"), ("--base-ref", "HEAD~1", "--staged-only")):
             _, ranged, _ = run_gate(repo, *extra)
-            assert growth_finding(ranged)["status"] == "incomplete", (extra, growth_finding(ranged))
-            assert any("Git-quoted" in gap for gap in growth_finding(ranged)["completeness"]["gaps"]), (extra, ranged["findings"])
-            # No representation of any path-dependent rule may read clean.
-            for item in ranged["findings"]:
-                assert item["status"] == "incomplete", (extra, item)
+            assert growth_totals(ranged)["production"] == {"added": 2, "deleted": 0, "net": 2}, (extra, growth_totals(ranged))
+            assert growth_finding(ranged)["completeness"]["complete"] is True, (extra, growth_finding(ranged))
             for item in ranged["checks"]:
-                assert item["passed"] is None and item["status"] == "incomplete", (extra, item)
-            for name, rule in ranged["hardRules"].items():
-                if name != "consequenceCoverage":
-                    assert rule["status"] == "incomplete", (extra, name, rule)
+                assert item["status"] != "incomplete", (extra, item)
+
+    with_repo(body)
+
+
+def test_literal_leading_quote_filename_remains_fully_measurable() -> None:
+    # A literal name that merely begins with a quote character is not evidence
+    # of Git quoting; the file must stay a fully measured ordinary entry.
+    def body(repo: Path) -> None:
+        write(repo / "src" / '"weird.py', "A = 1\nB = 2\n")
+        _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        growth = growth_totals(payload)
+        assert growth["production"] == {"added": 2, "deleted": 0, "net": 2}, growth
+        assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
+        for item in payload["checks"]:
+            assert item["status"] != "incomplete", item
 
     with_repo(body)
 
@@ -728,24 +738,26 @@ def test_skipped_oversized_baseline_cannot_report_clean_reuse() -> None:
         git(repo, "commit", "-q", "-m", "oversized baseline")
         write(repo / "src" / "dup.py", owner)
         _, payload, _ = run_gate(repo)
-        finding = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
+        finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY")
         assert finding["status"] == "incomplete", finding
         assert any("huge.py" in gap for gap in finding["completeness"]["gaps"]), finding
 
     with_repo(body)
 
 
-def test_unmeasured_production_file_cannot_report_clean_bloat() -> None:
+def test_unmeasured_production_file_cannot_report_clean_reuse_or_growth() -> None:
+    # A binary-classified production source file has no measured counts and no
+    # readable hunks, so neither growth nor reuse may claim a complete result.
     def body(repo: Path) -> None:
         (repo / "src" / "base.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
-        _, payload, _ = run_gate(repo)
-        bloat = check_named(payload, "risk-calibrated-bloat")
-        assert bloat["passed"] is None and bloat["status"] == "incomplete", bloat
-        assert payload["hardRules"]["codeVolume"] == {
-            "status": "incomplete",
-            "passed": None,
-            "checks": ["risk-calibrated-bloat"],
-        }, payload["hardRules"]["codeVolume"]
+        _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        assert growth_finding(payload)["status"] == "incomplete", growth_finding(payload)
+        reuse = reuse_finding(payload)
+        assert reuse["status"] == "incomplete", reuse
+        assert any("src/base.py" in gap for gap in reuse["completeness"]["gaps"]), reuse
+        check = check_named(payload, "reuse-existing-helpers")
+        assert check["passed"] is None and check["status"] == "incomplete", check
+        assert payload["hardRules"]["noDuplication"]["status"] == "incomplete", payload["hardRules"]
 
     with_repo(body)
 
@@ -758,10 +770,29 @@ def test_deleting_a_production_file_counts_as_deletions() -> None:
         git(repo, "add", ".")
         git(repo, "commit", "-q", "-m", "legacy")
         (repo / "src" / "legacy.py").unlink()
-        code, payload, _ = run_gate(repo)
-        assert payload["bloat"]["totalDeleted"] == 40, payload["bloat"]
-        assert payload["cumulativeGrowth"]["production"] == {"added": 0, "deleted": 40, "net": -40}
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        assert growth_totals(payload)["production"] == {"added": 0, "deleted": 40, "net": -40}
+        assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
         assert code == 0
+
+    with_repo(body)
+
+
+def test_staged_deletion_with_unstaged_recreation_measures_the_candidate() -> None:
+    # The evaluation is base to final candidate tree. A tracked file whose
+    # deletion is staged but which exists recreated on disk is a modification
+    # of the base file, never a pure deletion plus an unmeasured new file.
+    def body(repo: Path) -> None:
+        write(repo / "src" / "thing.py", "OLD_A = 1\nOLD_B = 2\nOLD_C = 3\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "tracked baseline")
+        git(repo, "rm", "-q", "src/thing.py")
+        write(repo / "src" / "thing.py", "NEW_A = 1\nNEW_B = 2\nNEW_C = 3\nNEW_D = 4\n")
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        growth = growth_totals(payload)
+        assert growth["production"] == {"added": 4, "deleted": 3, "net": 1}, growth
+        assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
+        assert code == 0, json.dumps(payload["errors"], indent=2)
 
     with_repo(body)
 
@@ -771,14 +802,30 @@ def test_growth_reports_each_role_separately() -> None:
         write(repo / "src" / "app.py", "\n".join(f"VALUE_{i} = {i}" for i in range(10)) + "\n")
         write(repo / "tests" / "test_app.py", "\n".join(f"def test_{i}():\n    assert {i} == {i}" for i in range(4)) + "\n")
         write(repo / "tests" / "fixtures" / "sample.py", "SAMPLE = {'a': 1}\n")
-        code, payload, _ = run_gate(repo)
-        growth = payload["cumulativeGrowth"]
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        growth = growth_totals(payload)
         assert growth["production"] == {"added": 10, "deleted": 0, "net": 10}, growth
         assert growth["test"] == {"added": 8, "deleted": 0, "net": 8}, growth
         assert growth["testSupport"] == {"added": 1, "deleted": 0, "net": 1}, growth
         assert growth["humanAuthored"] == {"added": 19, "deleted": 0, "net": 19}, growth
-        assert growth_finding(payload)["status"] == "pass"
+        assert growth_finding(payload)["status"] == "passed", growth_finding(payload)
         assert code == 0
+
+    with_repo(body)
+
+
+def test_unbased_run_reports_the_cumulative_claim_incomplete() -> None:
+    # Without a caller-supplied base the totals cover only the working delta,
+    # so the cumulative-growth claim is visibly incomplete, never silently clean.
+    def body(repo: Path) -> None:
+        write(repo / "src" / "app.py", "VALUE = 1\n")
+        code, payload, _ = run_gate(repo)
+        finding = growth_finding(payload)
+        assert finding["status"] == "incomplete", finding
+        assert any("no caller-supplied base" in gap for gap in finding["completeness"]["gaps"]), finding
+        assert any("QG54-GROWTH-CUMULATIVE" in warning for warning in payload["warnings"]), payload["warnings"]
+        assert code == 0
+        assert payload["ok"] is True
 
     with_repo(body)
 
@@ -790,7 +837,7 @@ def test_generated_and_non_source_stay_out_of_human_authored_growth() -> None:
         write(repo / "src" / "payload.schema.json", '{"type": "object"}\n')
         write(repo / "docs" / "notes.md", "# notes\n\nprose\n")
         code, payload, _ = run_gate(repo)
-        growth = payload["cumulativeGrowth"]
+        growth = growth_totals(payload)
         assert growth["production"] == {"added": 2, "deleted": 0, "net": 2}, growth
         assert growth["generated"] == {"added": 30, "deleted": 0, "net": 30}, growth
         assert growth["humanAuthored"] == {"added": 2, "deleted": 0, "net": 2}, growth
@@ -804,9 +851,10 @@ def test_growth_finding_carries_stable_identity_and_evidence() -> None:
         write(repo / "src" / "app.py", "VALUE = 1\n")
         first = growth_finding(run_gate(repo)[1])
         repeated = growth_finding(run_gate(repo)[1])
-        assert first["ruleId"] == "cumulative-growth"
+        assert first["ruleId"] == "QG54-GROWTH-CUMULATIVE"
         assert first["findingId"] == repeated["findingId"]
         assert first["severity"] == "warning"
+        assert first["state"] is None and "passed" in first
         assert first["base"] and first["candidate"]
         assert first["region"]["scope"] == "evaluation"
         assert first["evidence"]["humanAuthored"] == {"added": 1, "deleted": 0, "net": 1}
@@ -819,10 +867,42 @@ def test_growth_finding_carries_stable_identity_and_evidence() -> None:
 
 def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     # The captured PR #68 round-six corpus, not the merged PR's final head.
+    # The diff options are part of the fixture identity pinned by the target
+    # architecture; changing one requires a parent re-pin.
     base = "4cfffcb8d5724bfc2b03dce505da8cf930fb49fa"
     candidate = "28cf04e63fa6eb598b938d3a78d782969538d9a9"
     repo = SCRIPT_DIR.parents[2]
-    diff = run(["git", "diff", base, candidate], repo)
+    for sha in (base, candidate):
+        present = run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], repo)
+        assert present.returncode == 0, f"corpus commit {sha} missing from local history"
+    diff = run(
+        [
+            "git",
+            "-c", "core.autocrlf=false",
+            "-c", "core.safecrlf=false",
+            "-c", "core.quotePath=true",
+            "-c", "diff.indentHeuristic=true",
+            "-c", "diff.suppressBlankEmpty=false",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--diff-algorithm=myers",
+            "--no-renames",
+            "--unified=3",
+            "--inter-hunk-context=0",
+            "--abbrev=7",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--line-prefix=",
+            "--submodule=short",
+            "--ignore-submodules=none",
+            "-O/dev/null",
+            base,
+            candidate,
+        ],
+        repo,
+    )
     assert diff.returncode == 0, diff.stderr
     digest = hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()
     assert digest == "885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a", digest
@@ -831,7 +911,7 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     try:
         git(repo, "worktree", "add", "-q", "--detach", str(replay), candidate)
         _, payload, _ = run_gate(replay, "--base-ref", base)
-        growth = payload["cumulativeGrowth"]
+        growth = growth_totals(payload)
         assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
         assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
         assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
@@ -839,12 +919,153 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
         assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
         # The corpus adds new committed files; their absent baselines are not
         # discovery failures, so every rule must still read complete.
-        reuse = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
+        reuse = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY")
         assert reuse["completeness"] == {"complete": True, "gaps": []}, reuse
-        assert all(item.get("status", "evaluated") == "evaluated" for item in payload["checks"]), payload["checks"]
+        assert all(item["status"] != "incomplete" for item in payload["checks"]), payload["checks"]
     finally:
         run(["git", "worktree", "remove", "--force", str(replay)], repo)
         shutil.rmtree(replay.parent, ignore_errors=True)
+
+
+def test_intermediate_commits_do_not_leak_into_the_evaluation() -> None:
+    # The evaluation is one base-to-final-candidate comparison: content that
+    # existed only in an intermediate commit neither triggers escape rules nor
+    # double-counts as growth.
+    def body(repo: Path) -> None:
+        base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+        escape = "TO" + "DO"
+        write(repo / "src" / "base.py", f"def ok() -> int:  # {escape}: temporary\n    return 1\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "intermediate with escape")
+        write(repo / "src" / "base.py", "def ok() -> int:\n    return 2\n")
+        code, payload, _ = run_gate(repo, "--base-ref", base)
+        escapes = check_named(payload, "no-quality-escapes")
+        assert escapes["passed"] is True, escapes
+        assert growth_totals(payload)["production"] == {"added": 1, "deleted": 1, "net": 0}, growth_totals(payload)
+        assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
+        assert code == 0, json.dumps(payload["errors"], indent=2)
+
+    with_repo(body)
+
+
+def test_missing_base_ref_cannot_report_a_complete_result() -> None:
+    def body(repo: Path) -> None:
+        write(repo / "src" / "app.py", "VALUE = 1\n")
+        code, payload, _ = run_gate(repo, "--base-ref", "deadbeef")
+        assert code == 2
+        assert any("base-ref not found" in error for error in payload["errors"]), payload["errors"]
+        assert growth_finding(payload)["status"] == "incomplete", growth_finding(payload)
+        assert reuse_finding(payload)["status"] == "incomplete", reuse_finding(payload)
+        for item in payload["checks"]:
+            # gitnexus-context evaluates only the optional caller input, which
+            # a missing base does not affect; every repo-reading rule is dirty.
+            if item["name"] != "gitnexus-context":
+                assert item["status"] == "incomplete", item
+        for name, rule in payload["hardRules"].items():
+            if name != "consequenceCoverage":
+                assert rule["status"] == "incomplete", (name, rule)
+
+    with_repo(body)
+
+
+def test_promotion_follows_exact_rule_id_metadata_only() -> None:
+    # QG54 rules start promotion-ineligible: a growth warning cannot fail the
+    # gate even under --fail-on-warnings.
+    def growth_body(repo: Path) -> None:
+        write(repo / "src" / "huge.py", "\n".join(f"VALUE_{i} = {i}" for i in range(801)) + "\n")
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--fail-on-warnings")
+        assert growth_finding(payload)["status"] == "finding", growth_finding(payload)
+        assert payload["errors"] == [], payload["errors"]
+        assert payload["ok"] is True
+        assert code == 0
+
+    with_repo(growth_body)
+
+    # The transitional QG-LEGACY-GITNEXUS-CONTEXT ID stays eligible: promotion
+    # adds an exact-ID error and flips ok while the finding stays a warning
+    # with its intrinsic check untouched.
+    def legacy_body(repo: Path) -> None:
+        context = repo / "broken-context.json"
+        context.write_text("not json", encoding="utf-8")
+        code, payload, _ = run_gate(
+            repo, "--base-ref", "HEAD", "--fail-on-warnings", "--gitnexus-context-json", str(context)
+        )
+        finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-GITNEXUS-CONTEXT")
+        assert finding["severity"] == "warning", finding
+        assert finding["status"] == "finding", finding
+        context_check = check_named(payload, "gitnexus-context")
+        assert context_check["status"] == "finding" and context_check["passed"] is True, context_check
+        assert context_check["warnings"], context_check
+        assert any("QG-LEGACY-GITNEXUS-CONTEXT" in error for error in payload["errors"]), payload["errors"]
+        assert payload["ok"] is False
+        assert code == 2
+        without_flag = run_gate(repo, "--base-ref", "HEAD", "--gitnexus-context-json", str(context))[1]
+        assert without_flag["ok"] is True, without_flag["errors"]
+
+    with_repo(legacy_body)
+
+
+def test_snapshot_reads_the_captured_tree_not_the_moving_worktree() -> None:
+    # Concurrent mutation between capture and evaluation cannot produce a mixed
+    # snapshot: every byte comes from the captured candidate tree object.
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from _quality_gate.git_scope import collect_scope
+    from _quality_gate.snapshot import EvaluationSnapshot
+
+    def body(repo: Path) -> None:
+        write(repo / "src" / "base.py", "def ok() -> int:\n    return 99\n")
+        scope = collect_scope(repo, "HEAD")
+        write(repo / "src" / "base.py", "def mutated() -> int:\n    return -1\n")
+        snapshot = EvaluationSnapshot.from_scope(repo, scope)
+        entry = snapshot.entry("src/base.py")
+        assert entry is not None
+        assert entry.current_text == "def ok() -> int:\n    return 99\n", entry.current_text
+        assert [text for _, text in entry.added_lines()] == ["    return 99"], entry.hunks
+        assert entry.added == 1 and entry.deleted == 1, (entry.added, entry.deleted)
+
+    with_repo(body)
+
+
+def test_full_history_test_like_classification_is_unchanged() -> None:
+    # The standalone predicate workflow state loads must keep the exact
+    # pre-snapshot truth table over every path that ever existed in this
+    # repository, including generated paths and *.schema.json staying test-like.
+    import importlib.util
+    import re as _re
+
+    spec = importlib.util.spec_from_file_location(
+        "_characterized_path_policy", SCRIPT_DIR / "_quality_gate" / "path_policy.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    markers = (
+        "/__fixtures__/", "/__mocks__/", "/__snapshots__/", "/__tests__/", "/fixture/",
+        "/fixtures/", "/generated/", "/snapshots/", "/test/", "/tests/",
+    )
+
+    def reference(path: str) -> bool:
+        lowered = "/" + path.strip().replace(os.sep, "/").lower()
+        if any(marker in lowered for marker in markers):
+            return True
+        name = Path(path).name.lower()
+        if _re.fullmatch(r"(?:test_.+|.+_test)\.py", name):
+            return True
+        return bool(_re.search(r"\.(?:test|spec)\.", name)) or name.endswith(".schema.json")
+
+    repo = SCRIPT_DIR.parents[2]
+    listed = run(["git", "log", "--all", "--name-only", "--format="], repo)
+    paths = {line for line in listed.stdout.splitlines() if line.strip()}
+    paths |= set(run(["git", "ls-files"], repo).stdout.splitlines())
+    assert len(paths) > 100, "full-history path enumeration failed"
+    for path in sorted(paths):
+        expected = reference(path)
+        assert module.is_test_like_path(path) is expected, path
+        assert module.classify_path(path).test_like_compat is expected, path
+    assert module.is_test_like_path("src/generated/client.py") is True
+    assert module.is_test_like_path("api/payload.schema.json") is True
 
 
 def test_gate_implementation_budget() -> None:
@@ -901,9 +1122,7 @@ def main() -> int:
         test_python_escapes_fail,
         test_test_any_annotations_do_not_fail_cleanup,
         test_test_fake_green_escapes_still_fail,
-        test_new_huge_source_file_fails,
-        test_large_existing_file_must_not_grow,
-        test_fixtures_excluded_from_bloat,
+        test_large_growth_is_warning_only,
         test_reimplemented_existing_helper_fails,
         test_reimplemented_dedupe_loop_fails,
         test_deleted_helper_is_not_reported_as_reuse_candidate,
@@ -921,17 +1140,24 @@ def main() -> int:
         test_gitnexus_context_json_boosts_reuse_confidence,
         test_ambiguous_reuse_warns_with_gitnexus_query,
         test_duplicate_polling_loop_is_grouped,
-        test_bloat_reports_one_error_per_file,
         test_unknown_numstat_cannot_report_clean_growth,
         test_separate_hunks_do_not_form_one_duplicate,
         test_truncated_baseline_discovery_cannot_report_clean_reuse,
-        test_unattributed_diff_path_cannot_report_clean_hunk_checks,
+        test_special_character_filename_remains_fully_measurable,
+        test_literal_leading_quote_filename_remains_fully_measurable,
         test_skipped_oversized_baseline_cannot_report_clean_reuse,
-        test_unmeasured_production_file_cannot_report_clean_bloat,
+        test_unmeasured_production_file_cannot_report_clean_reuse_or_growth,
         test_deleting_a_production_file_counts_as_deletions,
+        test_staged_deletion_with_unstaged_recreation_measures_the_candidate,
         test_growth_reports_each_role_separately,
+        test_unbased_run_reports_the_cumulative_claim_incomplete,
         test_generated_and_non_source_stay_out_of_human_authored_growth,
         test_growth_finding_carries_stable_identity_and_evidence,
+        test_intermediate_commits_do_not_leak_into_the_evaluation,
+        test_missing_base_ref_cannot_report_a_complete_result,
+        test_promotion_follows_exact_rule_id_metadata_only,
+        test_snapshot_reads_the_captured_tree_not_the_moving_worktree,
+        test_full_history_test_like_classification_is_unchanged,
         test_captured_round_six_corpus_reports_pinned_totals,
         test_gate_implementation_budget,
     ]

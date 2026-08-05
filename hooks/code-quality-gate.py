@@ -2,6 +2,7 @@
 """PostToolUse: invalidate review readiness, then return quality feedback."""
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ def main() -> int:
         return 0
 
     result = subprocess.run(
-        [sys.executable, str(GATE), "check", "--repo", str(identity.root)],
+        [sys.executable, str(GATE), "check", "--repo", str(identity.root), "--json"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -49,6 +50,22 @@ def main() -> int:
     if result.returncode:
         print(f"production-code gate FAILED for {path}\n{result.stdout}", file=sys.stderr, end="")
         return 2
+    try:
+        verdict = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(f"production-code gate returned unparseable output for {path}\n{result.stdout}", file=sys.stderr, end="")
+        return 2
+    warnings = verdict.get("warnings") or []
+    if warnings:
+        # Warning-only means non-blocking feedback, not discarded output: every
+        # active warning reaches the model while the hook still returns zero.
+        rendered = "\n".join(f"- {warning}" for warning in warnings)
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": f"production quality gate warnings for {path}:\n{rendered}",
+            }
+        }))
     return 0
 
 

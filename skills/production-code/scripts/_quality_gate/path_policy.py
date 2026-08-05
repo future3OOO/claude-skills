@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import namedtuple
 from pathlib import Path
 
 
@@ -12,6 +13,8 @@ EXCLUDE_DIRS = {
     "build", "coverage", "dist", "node_modules", "target", "vendor", "venv",
 }
 
+VENDORED_DIRS = {"node_modules", "vendor"}
+
 TEST_MARKERS = (
     "/__fixtures__/", "/__mocks__/", "/__snapshots__/", "/__tests__/", "/fixture/",
     "/fixtures/", "/generated/", "/snapshots/", "/test/", "/tests/",
@@ -21,7 +24,11 @@ ROLE_PRODUCTION = "production"
 ROLE_TEST = "test"
 ROLE_TEST_SUPPORT = "test-support"
 ROLE_GENERATED = "generated"
-ROLE_NON_SOURCE = "non-source"
+ROLE_DOCS = "docs"
+ROLE_VENDORED = "vendored"
+ROLE_UNKNOWN = "unknown"
+
+DOC_EXTENSIONS = {".adoc", ".md", ".rst", ".txt"}
 
 # Machine-written source is not human-authored, so it is excluded from the
 # human-authored totals rather than folded into the test-support bucket.
@@ -29,6 +36,16 @@ GENERATED_MARKERS = ("/generated/",)
 
 # Material that supports tests without being test code itself.
 SUPPORT_MARKERS = ("/__fixtures__/", "/__mocks__/", "/__snapshots__/", "/fixture/", "/fixtures/", "/snapshots/")
+
+
+# One resolved classification, computed once and stored on the snapshot. A
+# namedtuple, not a dataclass: workflow state loads this file standalone via
+# spec_from_file_location without registering it in sys.modules, and dataclass
+# creation resolves annotations through sys.modules on Python 3.12.
+PathClass = namedtuple(
+    "PathClass",
+    ["role", "language", "human_authored", "source", "test_like_compat", "exclusion_reason"],
+)
 
 
 def normalize_path(value: str) -> str:
@@ -67,6 +84,11 @@ def is_excluded_path(path: str) -> bool:
 
 
 def is_test_like_path(path: str) -> bool:
+    """The standalone compatibility predicate workflow state loads directly."""
+    return classify_path(path).test_like_compat
+
+
+def _test_like(path: str) -> bool:
     lowered = f"/{normalize_path(path).lower()}"
     if any(marker in lowered for marker in TEST_MARKERS):
         return True
@@ -82,25 +104,33 @@ def is_source_path(path: str) -> bool:
     return bool(path) and not is_excluded_path(path) and not is_binary_path(path) and Path(path).suffix.lower() in SOURCE_EXTENSIONS
 
 
-def is_production_source_path(path: str) -> bool:
-    return is_source_path(path) and not is_test_like_path(path)
+def classify_path(path: str) -> PathClass:
+    """The single classification every quality-gate consumer reads.
 
-
-def resolve_role(path: str) -> str:
-    """The single role every quality-gate consumer reads, resolved once per entry.
-
-    Additive over the predicates above: `is_test_like_path` keeps its exact
-    meaning because workflow state loads it directly and classifies edits with
-    it.
+    Additive over the predicates above: the test-like truth keeps its exact
+    pre-existing meaning because workflow state classifies edits with it.
     """
-    if not is_source_path(path):
-        return ROLE_NON_SOURCE
-    lowered = f"/{normalize_path(path).lower()}"
-    if any(marker in lowered for marker in GENERATED_MARKERS):
-        return ROLE_GENERATED
-    if not is_test_like_path(path):
-        return ROLE_PRODUCTION
-    return ROLE_TEST_SUPPORT if any(marker in lowered for marker in SUPPORT_MARKERS) else ROLE_TEST
+    test_like = _test_like(path)
+    language = language_for_path(path)
+    if is_source_path(path):
+        lowered = f"/{normalize_path(path).lower()}"
+        if any(marker in lowered for marker in GENERATED_MARKERS):
+            return PathClass(ROLE_GENERATED, language, False, True, test_like, "generated path")
+        if not test_like:
+            return PathClass(ROLE_PRODUCTION, language, True, True, test_like, None)
+        support = any(marker in lowered for marker in SUPPORT_MARKERS)
+        return PathClass(ROLE_TEST_SUPPORT if support else ROLE_TEST, language, True, True, test_like, None)
+    if not path:
+        return PathClass(ROLE_UNKNOWN, language, False, False, test_like, "empty path")
+    if is_excluded_path(path):
+        parts = {part.lower() for part in normalize_path(path).split("/") if part}
+        role = ROLE_VENDORED if parts & VENDORED_DIRS else ROLE_UNKNOWN
+        return PathClass(role, language, False, False, test_like, "excluded directory")
+    if is_binary_path(path):
+        return PathClass(ROLE_UNKNOWN, language, False, False, test_like, "binary extension")
+    if Path(path).suffix.lower() in DOC_EXTENSIONS:
+        return PathClass(ROLE_DOCS, language, False, False, test_like, "non-source extension")
+    return PathClass(ROLE_UNKNOWN, language, False, False, test_like, "non-source extension")
 
 
 def language_for_path(path: str) -> str:
@@ -125,7 +155,3 @@ def is_temp_artifact(path: str) -> bool:
     return bool(re.search(r"(^|/)(?:\.tmp|tmp|temp)(/|$)", lowered)) or lowered.endswith(
         (".bak", ".orig", ".rej", ".tmp")
     )
-
-
-def physical_lines(text: str | None) -> int:
-    return len(text.splitlines()) if text else 0

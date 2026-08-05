@@ -4,6 +4,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from .path_policy import PathClass
+
 
 @dataclass(frozen=True)
 class Numstat:
@@ -27,11 +29,20 @@ class Hunk:
 
 
 @dataclass(frozen=True)
-class SnapshotEntry:
-    """One changed path with its resolved role, text, hunks, and growth."""
+class BaselineFile:
+    """One base-tree source file with its stored classification."""
 
     path: str
     role: str
+    language: str
+
+
+@dataclass(frozen=True)
+class SnapshotEntry:
+    """One changed path with its stored classification, text, hunks, and growth."""
+
+    path: str
+    classification: PathClass
     base_text: str | None
     current_text: str | None
     untracked: bool
@@ -39,6 +50,22 @@ class SnapshotEntry:
     deleted: int
     hunks: tuple[Hunk, ...]
     gaps: tuple[str, ...]
+
+    @property
+    def role(self) -> str:
+        return self.classification.role
+
+    @property
+    def language(self) -> str:
+        return self.classification.language
+
+    @property
+    def source(self) -> bool:
+        return self.classification.source
+
+    @property
+    def human_authored(self) -> bool:
+        return self.classification.human_authored
 
     def added_lines(self) -> list[tuple[int, str]]:
         return [line for hunk in self.hunks for line in hunk.added]
@@ -51,29 +78,39 @@ class SnapshotEntry:
 class Finding:
     """One evaluated rule: its identity, region, evidence, and completeness.
 
-    `status` is `incomplete` whenever the rule's required scope had gaps, so a
-    rule that could not see everything can never read as a clean pass.
+    `status` uses the binding rule vocabulary — `passed`, `finding`,
+    `incomplete`, or `not-evaluated` — and is `incomplete` whenever the rule's
+    required scope had gaps, so a rule that could not see everything can never
+    read as a clean pass. `passed` is the intrinsic check result (null while
+    unknown); `state` is null for every rule family this slice ships, and a
+    null-state finding is active when emitted. `identity` carries the
+    rule-family identity anchors; paths and line numbers in `region` are
+    display provenance, never identity.
     """
 
     rule_id: str
     severity: str
     status: str
+    passed: bool | None
+    identity: tuple[str, ...]
     region: dict[str, object]
     evidence: dict[str, object]
     action: str
     pass_condition: str
     gaps: tuple[str, ...]
 
+    def finding_id(self) -> str:
+        anchor = "\x1f".join((self.rule_id, *self.identity))
+        return hashlib.sha256(anchor.encode("utf-8")).hexdigest()[:16]
+
     def as_dict(self, base: str, candidate: str) -> dict[str, object]:
-        anchor = json.dumps(
-            [self.rule_id, self.region, self.evidence, sorted(self.gaps)],
-            sort_keys=True,
-        )
-        return {
+        serialized = {
             "ruleId": self.rule_id,
-            "findingId": hashlib.sha256(anchor.encode("utf-8")).hexdigest()[:16],
+            "findingId": self.finding_id(),
             "severity": self.severity,
             "status": self.status,
+            "passed": self.passed,
+            "state": None,
             "base": base,
             "candidate": candidate,
             "region": self.region,
@@ -82,6 +119,9 @@ class Finding:
             "passCondition": self.pass_condition,
             "completeness": {"complete": not self.gaps, "gaps": sorted(self.gaps)},
         }
+        # A JSON round trip hands the caller its own copy, so later mutation of
+        # the returned structure can never reshape the evaluated finding.
+        return json.loads(json.dumps(serialized, sort_keys=True))
 
 
 @dataclass(frozen=True)

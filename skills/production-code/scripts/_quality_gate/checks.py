@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
+from .findings import RULE_GROWTH
 from .models import Finding, SnapshotEntry
-from .path_policy import ROLE_NON_SOURCE, ROLE_PRODUCTION, physical_lines
 from .snapshot import EvaluationSnapshot
 
 
@@ -57,11 +56,13 @@ def scan_quality_escapes(snapshot: EvaluationSnapshot) -> list[str]:
     hits: list[str] = []
     tracked_added: dict[str, list[tuple[int, str]]] = {}
     for entry in snapshot.entries:
-        if entry.role == ROLE_NON_SOURCE:
+        if not entry.source:
             continue
         lines = entry.added_lines()
         hits.extend(_line_hits(entry.path, lines, rules_for_entry(entry)))
-        if entry.untracked and entry.current_text is not None:
+        if entry.base_text is None and entry.current_text is not None:
+            # A brand-new file's empty-catch shapes can span lines the unified
+            # diff splits; scan its whole captured text instead.
             hits.extend(_multiline_hits(entry.path, entry.current_text))
         else:
             tracked_added[entry.path] = lines
@@ -71,7 +72,7 @@ def scan_quality_escapes(snapshot: EvaluationSnapshot) -> list[str]:
 def rules_for_entry(entry: SnapshotEntry) -> list[re.Pattern[str]]:
     suffix = Path(entry.path).suffix.lower()
     rules = list(GENERAL_ESCAPE_RULES)
-    if entry.role != ROLE_PRODUCTION:
+    if entry.role != "production":
         return rules
     if suffix == ".py":
         rules.extend(PYTHON_ESCAPE_RULES)
@@ -82,7 +83,7 @@ def rules_for_entry(entry: SnapshotEntry) -> list[re.Pattern[str]]:
 
 def duplicate_added_blocks(snapshot: EvaluationSnapshot) -> list[dict[str, object]]:
     windows: dict[str, dict[str, object]] = {}
-    for entry in snapshot.role_entries(ROLE_PRODUCTION):
+    for entry in snapshot.role_entries("production"):
         # Windows never span a hunk boundary: lines that are far apart in the
         # file are not one block just because both sides of a gap changed.
         for hunk in entry.hunks:
@@ -103,44 +104,30 @@ def duplicate_added_blocks(snapshot: EvaluationSnapshot) -> list[dict[str, objec
     ])
 
 
-def evaluate_bloat(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str], dict[str, object], tuple[str, ...]]:
-    errors: list[str] = []
-    warnings: list[str] = []
-    production = snapshot.role_entries(ROLE_PRODUCTION)
-    totals = snapshot.growth()[ROLE_PRODUCTION]
-    total_added, total_deleted = totals["added"], totals["deleted"]
-    # Only the entries this rule actually weighs: an unmeasured production file
-    # contributes zero, which is not evidence that it did not grow.
-    gaps = tuple(dict.fromkeys(tuple(sorted({gap for entry in production for gap in entry.gaps})) + snapshot.identity_gaps()))
-    details, shrink_by_dir = _bloat_file_details(snapshot)
-    for detail in details:
-        errors.extend(_bloat_errors_for_file(detail, shrink_by_dir))
-        warnings.extend(_bloat_warnings_for_file(detail))
-    if total_added >= 1000 and total_added > max(1, total_deleted) * 6:
-        errors.append(f"changed source diff is heavily additive: added={total_added} deleted={total_deleted}")
-    elif total_added >= 500 and total_added > max(1, total_deleted) * 4:
-        warnings.append(f"changed source diff is additive: added={total_added} deleted={total_deleted}")
-    return errors, warnings, {"totalAdded": total_added, "totalDeleted": total_deleted, "files": details[:50]}, gaps
-
-
 def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:
     """Cumulative growth per role, reported every run and warning-only.
 
     The repository's ~500 net review budget only chooses pass or warn; it never
-    suppresses the evidence.
+    suppresses the evidence. Without a caller-supplied base the totals cover
+    only the working delta, so the cumulative claim is visibly incomplete
+    rather than silently clean.
     """
     growth = snapshot.growth()
-    gaps = tuple(dict.fromkeys(snapshot.gaps() + snapshot.identity_gaps()))
+    gaps = snapshot.gaps()
+    if snapshot.base_source == "HEAD":
+        gaps = gaps + ("no caller-supplied base: totals cover the working delta only, not branch-cumulative growth",)
     net = growth["humanAuthored"]["net"]
-    status = "incomplete" if gaps else "warn" if net > 500 else "pass"
+    status = "incomplete" if gaps else "finding" if net > 500 else "passed"
     return Finding(
-        rule_id="cumulative-growth",
+        rule_id=RULE_GROWTH,
         severity="warning",
         status=status,
+        passed=None if gaps else True,
+        identity=(snapshot.base_identity, snapshot.candidate_identity),
         region={"scope": "evaluation", "changedScope": snapshot.changed_scope, "fileCount": len(snapshot.entries)},
         evidence=growth,
         action="Reduce the change, or split it, until human-authored net growth is at or under the 500-line review budget.",
-        pass_condition="human-authored net growth <= 500 with every changed path measured",
+        pass_condition="growth-below: human-authored net <= 500 against a caller-supplied base with every changed path measured",
         gaps=gaps,
     )
 
@@ -211,42 +198,3 @@ def _same_duplicate_family(left: dict[str, object], right: dict[str, object]) ->
     if not left_tokens or not right_tokens:
         return False
     return len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens)) >= 0.6
-
-
-def _bloat_file_details(snapshot: EvaluationSnapshot) -> tuple[list[dict[str, object]], dict[str, int]]:
-    details: list[dict[str, object]] = []
-    shrink_by_dir: dict[str, int] = {}
-    for entry in snapshot.role_entries(ROLE_PRODUCTION):
-        if entry.current_text is None:
-            continue
-        baseline_lines = physical_lines(entry.base_text) if entry.base_text is not None else None
-        current_lines = physical_lines(entry.current_text)
-        parent = str(Path(entry.path).parent).replace(os.sep, "/")
-        if entry.deleted > entry.added:
-            shrink_by_dir[parent] = shrink_by_dir.get(parent, 0) + entry.deleted - entry.added
-        details.append({"file": entry.path, "added": entry.added, "deleted": entry.deleted, "currentLines": current_lines, "baselineLines": baseline_lines, "netGrowth": max(0, entry.added - entry.deleted)})
-    return details, shrink_by_dir
-
-
-def _bloat_errors_for_file(detail: dict[str, object], shrink_by_dir: dict[str, int]) -> list[str]:
-    rel_path = str(detail["file"])
-    current_lines = int(detail["currentLines"])
-    baseline_lines = detail["baselineLines"]
-    net_growth = int(detail["netGrowth"])
-    available_shrink = shrink_by_dir.get(str(Path(rel_path).parent).replace(os.sep, "/"), 0)
-    if baseline_lines is None:
-        return [f"new source file {rel_path} has {current_lines} lines (>800)"] if current_lines > 800 else []
-    baseline = int(baseline_lines)
-    if baseline > 1200 and current_lines >= baseline:
-        return [f"large source file {rel_path} must shrink when touched ({current_lines} >= {baseline})"]
-    if net_growth > 250 and available_shrink < net_growth:
-        return [f"source file {rel_path} grew by {net_growth} lines without same-directory shrink"]
-    if baseline >= 800 and net_growth > 80 and available_shrink < net_growth:
-        return [f"large source file {rel_path} grew by {net_growth} lines without same-directory shrink"]
-    return []
-
-
-def _bloat_warnings_for_file(detail: dict[str, object]) -> list[str]:
-    if detail["baselineLines"] is None and int(detail["currentLines"]) > 500:
-        return [f"new source file {detail['file']} has {detail['currentLines']} lines (>500)"]
-    return []

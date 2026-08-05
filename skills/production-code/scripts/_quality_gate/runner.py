@@ -3,13 +3,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .checks import duplicate_added_blocks, evaluate_bloat, evaluate_growth, scan_quality_escapes
+from .checks import duplicate_added_blocks, evaluate_growth, scan_quality_escapes
+from .findings import RULE_GITNEXUS_CONTEXT, RULE_GROWTH, RULE_INCOMPLETE, gitnexus_context_finding, incompleteness_findings, promoted_errors
 from .git_scope import collect_scope
 from .inputs import parse_gitnexus_context_json, parse_repo_context_packet
 from .models import Finding
-from .path_policy import ROLE_PRODUCTION, is_binary_path, is_temp_artifact
+from .path_policy import is_binary_path, is_temp_artifact
 from .reuse import detect_reuse_issues
 from .snapshot import EvaluationSnapshot
+
+GATE_VERSION = "2026-08-06.1"
 
 
 def check(
@@ -22,63 +25,61 @@ def check(
 ) -> dict[str, object]:
     scope = collect_scope(repo, base_ref, staged_only=staged_only)
     errors: list[str] = list(scope["errors"])
-    warnings: list[str] = []
-    changed_files: set[str] = set(scope["changed_files"])
     gitnexus_boosts, gitnexus_warnings = parse_gitnexus_context_json(gitnexus_context_json)
-    warnings.extend(gitnexus_warnings)
     snapshot = EvaluationSnapshot.from_scope(repo, scope)
 
     conflict_files, temp_files = _changed_file_failures(snapshot)
     quality_escapes = scan_quality_escapes(snapshot)
     duplicates = duplicate_added_blocks(snapshot)
-    bloat_errors, bloat_warnings, bloat_details, bloat_gaps = evaluate_bloat(snapshot)
     reuse_findings, gitnexus_queries, reuse_rule = detect_reuse_issues(
         snapshot,
         parse_repo_context_packet(repo_context_packet),
         gitnexus_boosts,
     )
-    findings = [evaluate_growth(snapshot), reuse_rule]
-    # Hunks that reached no entry leave every hunk-derived rule unable to claim
-    # it saw the whole change, while the measured counts stay trustworthy.
-    # A path with no single identity undermines every rule that reads that
-    # file; unattributed hunks undermine only the rules that read hunks.
-    identity = snapshot.identity_gaps()
-    attribution = snapshot.attribution_gaps() + identity
-    # An analysis that could not see everything says so where the run is read.
-    warnings.extend(
-        f"incomplete analysis for {finding.rule_id}: {gap}" for finding in findings for gap in finding.gaps
-    )
-    warnings.extend(f"incomplete analysis for changed-line rules: {gap}" for gap in attribution)
-    warnings.extend(f"incomplete analysis for risk-calibrated-bloat: {gap}" for gap in bloat_gaps)
+    growth_rule = evaluate_growth(snapshot)
+    findings: list[Finding] = [growth_rule, reuse_rule]
+    if gitnexus_warnings:
+        findings.append(gitnexus_context_finding(gitnexus_warnings))
+    findings.extend(incompleteness_findings(findings))
+
     reuse_errors = [finding for finding in reuse_findings if finding.severity == "error"]
     reuse_warnings = [finding for finding in reuse_findings if finding.severity == "warning"]
+    growth_warning = _growth_warning(growth_rule)
+    gitnexus_rule = next((finding for finding in findings if finding.rule_id == RULE_GITNEXUS_CONTEXT), None)
+    warnings = _rendered_warnings(findings, reuse_warnings, growth_warning)
 
-    errors.extend(_error_messages(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, bloat_errors))
-    warnings.extend(bloat_warnings)
-    warnings.extend(_reuse_warning_messages(reuse_warnings))
-    if fail_on_warnings and warnings:
-        errors.extend(f"warning promoted to failure: {warning}" for warning in warnings)
+    errors.extend(_error_messages(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors))
+    errors.extend(promoted_errors(findings, fail_on_warnings))
 
-    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, bloat_errors, bloat_warnings, attribution, bloat_gaps, identity)
+    # Hunk-reading rules cannot claim they saw the whole change when hunks are
+    # unattributed or capture failed; path-reading rules depend on capture only.
+    capture = snapshot.capture_gaps
+    attribution = snapshot.attribution_gaps() + capture
+    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, growth_rule, growth_warning, gitnexus_rule, capture, attribution)
     return {
-        "schemaVersion": 1,
-        "gateVersion": "2026-07-29.1",
+        "schemaVersion": 2,
+        "gateVersion": GATE_VERSION,
         "ok": not errors,
         "repo": str(repo),
         "changedScope": scope["changed_scope"],
         "candidateSource": scope["candidate_source"],
         "candidateTree": scope["candidate_tree"] or None,
-        "changedFilesCount": len(changed_files),
-        "changedFilesSample": sorted(changed_files)[:30],
-        "sourceFilesCount": len(snapshot.role_entries(ROLE_PRODUCTION)),
+        "changedFilesCount": len(snapshot.entries),
+        "changedFilesSample": sorted(entry.path for entry in snapshot.entries)[:30],
+        "sourceFilesCount": len(snapshot.role_entries("production")),
+        "evaluation": {
+            "base": {"commit": snapshot.base_identity, "source": snapshot.base_source},
+            "candidate": {"identity": snapshot.candidate_identity, "tree": snapshot.candidate_tree or None},
+            "growth": snapshot.growth(),
+            "complete": not (snapshot.gaps() or snapshot.attribution_gaps()),
+            "gaps": sorted(set(snapshot.gaps() + snapshot.attribution_gaps())),
+        },
+        "findings": [finding.as_dict(snapshot.base_identity, snapshot.candidate_identity) for finding in findings],
+        "resolvedFindings": [],
         "checks": checks,
         "hardRules": _hard_rules(checks),
         "errors": errors,
         "warnings": warnings,
-        "bloat": bloat_details,
-        "cumulativeGrowth": snapshot.growth(),
-        "findings": [finding.as_dict(snapshot.base_identity, snapshot.candidate_identity) for finding in findings],
-        "reuseFindings": [finding.as_dict() for finding in reuse_findings],
         "gitnexusQueries": gitnexus_queries,
     }
 
@@ -105,6 +106,35 @@ def format_text(result: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _growth_warning(growth_rule: Finding) -> str:
+    if growth_rule.status != "finding":
+        return ""
+    net = growth_rule.evidence["humanAuthored"]["net"]
+    return f"{RULE_GROWTH}: human-authored net growth {net} exceeds the 500-line review budget"
+
+
+def _rendered_warnings(findings: list[Finding], reuse_warnings: list[object], growth_warning: str) -> list[str]:
+    warnings: list[str] = []
+    for finding in findings:
+        if finding.rule_id == RULE_INCOMPLETE:
+            affected = finding.evidence["affectedRuleId"]
+            warnings.extend(f"{RULE_INCOMPLETE} for {affected}: {gap}" for gap in finding.evidence["gaps"])
+    if growth_warning:
+        warnings.append(growth_warning)
+    warnings.extend(
+        f"possible reusable existing path for {finding.new_file}:{finding.new_line} -> "
+        f"{finding.existing_file}:{finding.existing_line} {finding.existing_symbol} ({finding.reason})"
+        for finding in reuse_warnings
+    )
+    warnings.extend(
+        message
+        for finding in findings
+        if finding.rule_id == RULE_GITNEXUS_CONTEXT
+        for message in finding.evidence["messages"]
+    )
+    return warnings
+
+
 def _changed_file_failures(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str]]:
     conflict_files: list[str] = []
     temp_files: list[str] = []
@@ -123,7 +153,6 @@ def _error_messages(
     quality_escapes: list[str],
     duplicates: list[dict[str, object]],
     reuse_errors: list[object],
-    bloat_errors: list[str],
 ) -> list[str]:
     errors = []
     if conflict_files:
@@ -136,15 +165,7 @@ def _error_messages(
         errors.append(f"duplicate added code blocks detected: {len(duplicates)}")
     if reuse_errors:
         errors.append(f"new code appears to reimplement existing helpers or loops: {len(reuse_errors)}")
-    return errors + bloat_errors
-
-
-def _reuse_warning_messages(reuse_warnings: list[object]) -> list[str]:
-    return [
-        f"possible reusable existing path for {finding.new_file}:{finding.new_line} -> "
-        f"{finding.existing_file}:{finding.existing_line} {finding.existing_symbol} ({finding.reason})"
-        for finding in reuse_warnings
-    ]
+    return errors
 
 
 def _checks(
@@ -155,28 +176,47 @@ def _checks(
     reuse_errors: list[object],
     reuse_warnings: list[object],
     reuse_rule: Finding,
-    bloat_errors: list[str],
-    bloat_warnings: list[str],
+    growth_rule: Finding,
+    growth_warning: str,
+    gitnexus_rule: Finding | None,
+    capture: tuple[str, ...],
     attribution: tuple[str, ...],
-    bloat_gaps: tuple[str, ...],
-    identity: tuple[str, ...],
 ) -> list[dict[str, object]]:
     def outcome(passed: bool, gaps: tuple[str, ...]) -> dict[str, object]:
         """A rule that could not see its whole scope is unknown, never a pass."""
-        return {"passed": None, "status": "incomplete", "gaps": list(gaps)} if gaps else {"passed": passed, "status": "evaluated"}
+        if gaps:
+            return {"passed": None, "status": "incomplete", "gaps": list(gaps)}
+        return {"passed": passed, "status": "passed" if passed else "finding"}
+
+    def rule_outcome(rule: Finding) -> dict[str, object]:
+        """A typed rule projects its own status: an active warning-only rule
+        keeps its intrinsic pass with status=finding while its warning shows."""
+        projected = {"passed": rule.passed, "status": rule.status}
+        if rule.status == "incomplete":
+            projected["gaps"] = sorted(rule.gaps)
+        return projected
 
     return [
-        {"name": "no-merge-conflict-markers", "sample": conflict_files[:10], **outcome(not conflict_files, identity)},
-        {"name": "no-temp-artifacts", "sample": temp_files[:10], **outcome(not temp_files, identity)},
+        {"name": "no-merge-conflict-markers", "sample": conflict_files[:10], **outcome(not conflict_files, capture)},
+        {"name": "no-temp-artifacts", "sample": temp_files[:10], **outcome(not temp_files, capture)},
         {"name": "no-quality-escapes", "sample": quality_escapes[:10], **outcome(not quality_escapes, attribution)},
         {"name": "no-duplicate-added-blocks", "sample": duplicates[:4], **outcome(not duplicates, attribution)},
         {
             "name": "reuse-existing-helpers",
             "warnings": [finding.as_dict() for finding in reuse_warnings[:10]],
             "sample": [finding.as_dict() for finding in reuse_errors[:10]],
-            **outcome(not reuse_errors, reuse_rule.gaps),
+            **rule_outcome(reuse_rule),
         },
-        {"name": "risk-calibrated-bloat", "warnings": bloat_warnings[:10], **outcome(not bloat_errors, bloat_gaps)},
+        {
+            "name": "cumulative-growth",
+            "warnings": [growth_warning] if growth_warning else [],
+            **rule_outcome(growth_rule),
+        },
+        {
+            "name": "gitnexus-context",
+            "warnings": list(gitnexus_rule.evidence["messages"]) if gitnexus_rule else [],
+            **(rule_outcome(gitnexus_rule) if gitnexus_rule else {"passed": True, "status": "passed"}),
+        },
     ]
 
 
@@ -192,9 +232,7 @@ def _hard_rules(checks: list[dict[str, object]]) -> dict[str, dict[str, object]]
         return {"status": "evaluated", "passed": all(results), "checks": list(names)}
 
     return {
-        "codeVolume": rule("risk-calibrated-bloat"),
         "noDuplication": rule("no-duplicate-added-blocks", "reuse-existing-helpers"),
-        "shortestPath": rule("risk-calibrated-bloat", "no-duplicate-added-blocks", "reuse-existing-helpers"),
         "cleanup": rule("no-quality-escapes", "no-temp-artifacts"),
         "noMergeConflictMarkers": rule("no-merge-conflict-markers"),
         "consequenceCoverage": {

@@ -4,171 +4,151 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .git_scope import git_text, read_file, read_git_file, read_index_file
-from .models import Hunk, Numstat, SnapshotEntry
-from .path_policy import (
-    ROLE_GENERATED,
-    ROLE_NON_SOURCE,
-    ROLE_PRODUCTION,
-    ROLE_TEST,
-    ROLE_TEST_SUPPORT,
-    normalize_path,
-    physical_lines,
-    resolve_role,
-)
-
-
-HUMAN_AUTHORED_ROLES = (ROLE_PRODUCTION, ROLE_TEST, ROLE_TEST_SUPPORT)
-GROWTH_ROLES = (*HUMAN_AUTHORED_ROLES, ROLE_GENERATED)
+from .git_scope import git_text, read_git_file
+from .models import BaselineFile, Hunk, Numstat, SnapshotEntry
+from .path_policy import classify_path, normalize_path
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+_QUOTED_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "\\": "\\"}
 
 
 @dataclass(frozen=True)
 class EvaluationSnapshot:
     """The one immutable base-to-candidate evaluation every detector reads.
 
-    Roles, base and current text, hunk boundaries, growth, and completeness are
-    resolved once here so no detector re-derives them. In `index` candidate
-    mode the captured tree makes the candidate genuinely immutable; in worktree
-    mode the files are read once, up front, rather than per detector.
+    Classification, base and candidate text, hunk boundaries, growth, and
+    completeness are resolved once here so no detector re-derives them. Every
+    byte comes from the captured base commit and candidate tree objects, so a
+    worktree that keeps moving cannot produce a mixed snapshot.
     """
 
     repo: Path
-    base_for_file: str
     base_identity: str
+    base_source: str
     candidate_source: str
     candidate_tree: str
     changed_scope: str
     entries: tuple[SnapshotEntry, ...]
+    baseline: tuple[BaselineFile, ...]
     unattributed: tuple[str, ...]
-    quoted: tuple[str, ...]
+    capture_gaps: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_by_path", {entry.path: entry for entry in self.entries})
 
     @classmethod
     def from_scope(cls, repo: Path, scope: dict[str, object]) -> "EvaluationSnapshot":
-        base_for_file = str(scope["base_for_file"])
-        candidate_source = str(scope.get("candidate_source") or "worktree")
-        candidate_tree = str(scope.get("candidate_tree") or "")
+        base = str(scope["base_commit"])
+        tree = str(scope["candidate_tree"])
         hunks = _collect_hunks(str(scope["raw_diff"]))
         changed = set(scope["changed_files"])
         counts = _merge_numstats(list(scope["numstats"]))
         untracked = set(scope["untracked"])
+        capture_gaps = tuple(str(error) for error in scope["errors"])
         entries = tuple(
-            _entry(repo, path, base_for_file, candidate_source, candidate_tree, hunks, counts, path in untracked)
+            _entry(repo, path, base, tree, hunks, counts, path in untracked)
             for path in sorted(changed)
         )
         return cls(
             repo=repo,
-            base_for_file=base_for_file,
-            base_identity=git_text(repo, ["rev-parse", base_for_file]).strip() or base_for_file,
-            candidate_source=candidate_source,
-            candidate_tree=candidate_tree,
+            base_identity=base,
+            base_source=str(scope["base_source"]),
+            candidate_source=str(scope["candidate_source"]),
+            candidate_tree=tree,
             changed_scope=str(scope["changed_scope"]),
             entries=entries,
+            baseline=_baseline_index(repo, base, changed),
             unattributed=tuple(sorted(set(hunks) - changed)),
-            quoted=tuple(sorted(path for path in changed if path.startswith('"'))),
+            capture_gaps=capture_gaps,
         )
 
     @property
     def candidate_identity(self) -> str:
-        return self.candidate_tree or self.candidate_source
+        if not self.candidate_tree:
+            return self.candidate_source
+        kind = "git-tree" if self.candidate_source == "index" else "worktree-snapshot"
+        return f"{kind}:{self.candidate_tree}"
 
     def entry(self, rel_path: str) -> SnapshotEntry | None:
         return self._by_path.get(rel_path)
 
-    def role_of(self, rel_path: str) -> str:
-        """The stored role for an evaluated path, else the classifier's answer.
-
-        Baseline files the reuse index scans are not part of the change, so they
-        have no entry, but every role decision still resolves through here.
-        """
-        entry = self._by_path.get(rel_path)
-        return entry.role if entry else resolve_role(rel_path)
-
     def role_entries(self, *roles: str) -> list[SnapshotEntry]:
         return [entry for entry in self.entries if entry.role in roles]
 
+    def read_baseline(self, rel_path: str) -> str | None:
+        """Baseline content from the captured base commit, never the live tree."""
+        return read_git_file(self.repo, self.base_identity, rel_path)
+
     def growth(self) -> dict[str, dict[str, int]]:
-        buckets = {role: _totals(self.role_entries(role)) for role in GROWTH_ROLES}
-        buckets["humanAuthored"] = _totals(self.role_entries(*HUMAN_AUTHORED_ROLES))
-        return {_growth_key(name): value for name, value in buckets.items()}
+        buckets = {
+            "production": _totals(self.role_entries("production")),
+            "test": _totals(self.role_entries("test")),
+            "testSupport": _totals(self.role_entries("test-support")),
+            "generated": _totals(self.role_entries("generated")),
+            "humanAuthored": _totals([entry for entry in self.entries if entry.human_authored]),
+        }
+        return buckets
 
     def gaps(self) -> tuple[str, ...]:
-        """Per-entry measurement gaps only; attribution has its own accessor."""
-        return tuple(sorted({gap for entry in self.entries for gap in entry.gaps}))
+        """Per-entry measurement gaps plus capture-level gaps."""
+        entry_gaps = {gap for entry in self.entries for gap in entry.gaps}
+        return tuple(sorted(entry_gaps)) + self.capture_gaps
 
     def attribution_gaps(self) -> tuple[str, ...]:
-        """Diff paths whose hunks belong to no evaluated entry.
-
-        Git quotes a header path containing a tab, quote, backslash or
-        non-ASCII byte, while porcelain reports the literal name, so those
-        hunks reach no entry. The counts are still measured, so this is kept
-        away from growth and reported to the rules that read hunks.
-        """
+        """Diff paths whose hunks belong to no evaluated entry."""
         return tuple(f"{path}: diff hunks matched no changed file" for path in self.unattributed)
-
-    def identity_gaps(self) -> tuple[str, ...]:
-        """Paths Git returned in quoted form, so the file has no single name.
-
-        Git quotes a name holding a tab, quote, backslash or non-ASCII byte,
-        and only some of its commands do, so one file arrives as both a quoted
-        and a literal entry. Every rule that reads a file by path is then
-        reading something it cannot identify.
-        """
-        return tuple(f"{path}: Git-quoted path has no single identity" for path in self.quoted)
 
 
 def _entry(
     repo: Path,
     rel_path: str,
-    base_for_file: str,
-    candidate_source: str,
-    candidate_tree: str,
+    base: str,
+    tree: str,
     hunks: dict[str, tuple[Hunk, ...]],
     counts: dict[str, Numstat],
     untracked: bool,
 ) -> SnapshotEntry:
-    role = resolve_role(rel_path)
-    # Current text is read for every entry: a temp artifact is detected by its
+    classification = classify_path(rel_path)
+    # Candidate text is read for every entry: a temp artifact is detected by its
     # presence, whatever its suffix. Base text only serves source-role rules.
-    current_text = _read_current(repo, rel_path, candidate_source, candidate_tree)
-    base_text = None if role == ROLE_NON_SOURCE else read_git_file(repo, base_for_file, rel_path)
-    file_hunks = hunks.get(rel_path, ())
-    if untracked and current_text is not None:
-        file_hunks = (_whole_file_hunk(current_text),)
-    added, deleted, gaps = _counts_for(rel_path, counts.get(rel_path), current_text, base_text)
+    current_text = read_git_file(repo, tree, rel_path)
+    base_text = read_git_file(repo, base, rel_path) if classification.source else None
+    added, deleted, gaps = _counts_for(rel_path, counts.get(rel_path))
     return SnapshotEntry(
         path=rel_path,
-        role=role,
+        classification=classification,
         base_text=base_text,
         current_text=current_text,
         untracked=untracked,
         added=added,
         deleted=deleted,
-        hunks=file_hunks,
+        hunks=hunks.get(rel_path, ()),
         gaps=gaps,
     )
 
 
-def _read_current(repo: Path, rel_path: str, candidate_source: str, candidate_tree: str) -> str | None:
-    if candidate_source != "index":
-        return read_file(repo / rel_path)
-    # Read from the captured tree so every check sees one immutable candidate,
-    # even if the index moves during the run.
-    return read_git_file(repo, candidate_tree, rel_path) if candidate_tree else read_index_file(repo, rel_path)
+def _baseline_index(repo: Path, base: str, changed: set[str]) -> tuple[BaselineFile, ...]:
+    """Source files in the base tree: the owners a change could reimplement.
+
+    A path the change adds has no base entry, so its absence is absence, not
+    discovery that failed.
+    """
+    listed = git_text(repo, ["ls-tree", "-r", "--name-only", "-z", base]) if base else ""
+    files: list[BaselineFile] = []
+    for raw in listed.split("\0"):
+        rel_path = normalize_path(raw)
+        if not rel_path:
+            continue
+        classification = classify_path(rel_path)
+        if classification.source:
+            files.append(BaselineFile(rel_path, classification.role, classification.language))
+    return tuple(files)
 
 
-def _counts_for(
-    rel_path: str,
-    record: Numstat | None,
-    current_text: str | None,
-    base_text: str | None,
-) -> tuple[int, int, tuple[str, ...]]:
+def _counts_for(rel_path: str, record: Numstat | None) -> tuple[int, int, tuple[str, ...]]:
     if record is None:
-        return (physical_lines(current_text) if base_text is None else 0), 0, ()
+        return 0, 0, ()
     if record.added is None or record.deleted is None:
         # Git reports "-" counts for a file it treats as binary. Inventing a
         # number here would let an unmeasured file report as measured.
@@ -176,13 +156,8 @@ def _counts_for(
     return record.added, record.deleted, ()
 
 
-def _whole_file_hunk(text: str) -> Hunk:
-    lines = tuple(enumerate(text.splitlines(), 1))
-    return Hunk(base_start=0, base_lines=0, current_start=1, current_lines=len(lines), added=lines, deleted=())
-
-
 def _collect_hunks(raw_diff: str) -> dict[str, tuple[Hunk, ...]]:
-    """One hunk-preserving walk of the collected diff, keyed by evaluated path."""
+    """One hunk-preserving walk of the captured diff, keyed by literal path."""
     collected: dict[str, list[Hunk]] = {}
     base_path = key = ""
     base_line = current_line = 0
@@ -243,7 +218,43 @@ def _diff_path(value: str) -> str:
     value = value.strip()
     if value == "/dev/null":
         return ""
+    value = _unquote_git_path(value)
     return normalize_path(value[2:] if value[:2] in {"a/", "b/"} else value)
+
+
+def _unquote_git_path(value: str) -> str:
+    """Decode Git's C-style quoted path back to the literal filename.
+
+    Git only quotes in the textual diff header; the -z name and numstat
+    transports carry literal names, so decoding here reunites the hunks with
+    their entry. A literal name that merely begins with a quote character is
+    not quoted output and passes through untouched.
+    """
+    if len(value) < 2 or not value.startswith('"') or not value.endswith('"'):
+        return value
+    inner = value[1:-1]
+    out = bytearray()
+    index = 0
+    while index < len(inner):
+        char = inner[index]
+        if char != "\\":
+            out.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(inner):
+            return value
+        escape = inner[index]
+        if escape in _QUOTED_ESCAPES:
+            out.extend(_QUOTED_ESCAPES[escape].encode("latin-1"))
+            index += 1
+        elif escape.isdigit():
+            octal = inner[index : index + 3]
+            out.append(int(octal, 8))
+            index += 3
+        else:
+            return value
+    return out.decode("utf-8", errors="replace")
 
 
 def _merge_numstats(records: list[Numstat]) -> dict[str, Numstat]:
@@ -264,7 +275,3 @@ def _totals(entries: list[SnapshotEntry]) -> dict[str, int]:
     added = sum(entry.added for entry in entries)
     deleted = sum(entry.deleted for entry in entries)
     return {"added": added, "deleted": deleted, "net": added - deleted}
-
-
-def _growth_key(role: str) -> str:
-    return "testSupport" if role == ROLE_TEST_SUPPORT else role

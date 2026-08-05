@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-from .git_scope import git_text, read_file, read_git_file
-from .models import Finding, ReuseFinding, SymbolDef
-from .path_policy import ROLE_PRODUCTION, language_for_path, normalize_path
+from .findings import RULE_REUSE_ADVISORY
+from .models import BaselineFile, Finding, ReuseFinding, SymbolDef
 from .snapshot import EvaluationSnapshot
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
@@ -25,18 +23,18 @@ def detect_reuse_issues(
     repo_context: dict[str, object],
     gitnexus_boosts: dict[str, int],
 ) -> tuple[list[ReuseFinding], list[str], Finding]:
-    packet_paths = {normalize_path(str(path)) for path in repo_context.get("paths", set()) if str(path)}
+    packet_paths = {str(path) for path in repo_context.get("paths", set()) if str(path)}
     candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
         return [], [], _reuse_rule(snapshot, [], ())
     existing, gaps = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
     if not existing:
         return [], [], _reuse_rule(snapshot, [], gaps)
-    # Tracked hunks only: an untracked file's whole text is its added lines, so
-    # including it would read a symbol's own definition as a call to it.
+    # Files the change adds have no baseline, so their whole text is added
+    # lines; including them would read a symbol's own definition as a call.
     added_by_file = {
         entry.path: entry.added_lines()
-        for entry in snapshot.role_entries(ROLE_PRODUCTION)
+        for entry in snapshot.role_entries("production")
         if not entry.untracked
     }
     findings = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))
@@ -52,19 +50,27 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
     """The reuse rule's own evaluation record.
 
     Truncated or skipped baseline discovery reports `incomplete`: a scan that
-    never read a file has not seen the owner it would have matched. Unattributed
-    hunks count too, because the candidate side is then incomplete as well.
+    never read a file has not seen the owner it would have matched. The
+    candidate side is incomplete too when hunks are unattributed, capture
+    failed, or a production entry's counts were never measured.
     """
     errors = [finding for finding in findings if finding.severity == "error"]
-    gaps = tuple(dict.fromkeys(gaps + snapshot.attribution_gaps() + snapshot.identity_gaps()))
+    production_gaps = tuple(sorted({gap for entry in snapshot.role_entries("production") for gap in entry.gaps}))
+    gaps = tuple(dict.fromkeys(gaps + production_gaps + snapshot.attribution_gaps() + snapshot.capture_gaps))
+    matches = [finding.as_dict() for finding in findings]
     return Finding(
-        rule_id="reuse-existing-helpers",
+        rule_id=RULE_REUSE_ADVISORY,
         severity="error" if errors else "warning",
-        status="incomplete" if gaps else "warn" if findings else "pass",
+        status="incomplete" if gaps else "finding" if findings else "passed",
+        passed=None if gaps else not errors,
+        identity=tuple(
+            f"{item.new_file}:{item.new_line}:{item.new_symbol}->{item.existing_file}:{item.existing_line}:{item.existing_symbol}"
+            for item in findings
+        ),
         region={"scope": "evaluation", "changedScope": snapshot.changed_scope, "fileCount": len(snapshot.entries)},
-        evidence={"errors": len(errors), "warnings": len(findings) - len(errors)},
+        evidence={"errors": len(errors), "warnings": len(findings) - len(errors), "matches": matches},
         action="Call the existing owner instead of reimplementing it, or widen discovery until the baseline scan completes.",
-        pass_condition="no reimplementation of an existing owner, with baseline discovery complete",
+        pass_condition="duplicate-absent: no reimplementation of an existing owner, with baseline discovery complete",
         gaps=gaps,
     )
 
@@ -78,39 +84,29 @@ def _existing_symbol_index(
     symbols: list[SymbolDef] = []
     gaps: list[str] = []
     indexed = 0
-    tracked_args = ["ls-tree", "-r", "--name-only", snapshot.base_for_file] if snapshot.candidate_source == "index" else ["ls-files"]
-    tracked = [normalize_path(line) for line in git_text(snapshot.repo, tracked_args).splitlines() if normalize_path(line)]
     candidate_languages = {item.language for item in candidates}
     candidate_roots = {_top_dir(item.path) for item in candidates}
     gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
-    for rel_path in tracked:
+    for baseline in snapshot.baseline:
         if indexed >= MAX_INDEX_FILES or len(symbols) >= MAX_INDEX_SYMBOLS:
             gaps.append(f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files / {MAX_INDEX_SYMBOLS} symbols")
             break
-        entry = snapshot.entry(rel_path)
-        if (entry is not None and entry.untracked) or snapshot.role_of(rel_path) != ROLE_PRODUCTION:
+        if baseline.role != "production":
             continue
-        if not _should_index_existing(rel_path, candidate_languages, candidate_roots, packet_paths, gitnexus_paths):
+        if not _should_index_existing(baseline, candidate_languages, candidate_roots, packet_paths, gitnexus_paths):
             continue
-        if snapshot.candidate_source == "index" or entry is not None:
-            text = read_git_file(snapshot.repo, snapshot.base_for_file, rel_path)
-            if text is None and entry is not None:
-                # A file this change adds has no baseline content to search.
-                # That is absence, not discovery that failed.
-                continue
-        else:
-            text = read_file(snapshot.repo / rel_path)
+        text = snapshot.read_baseline(baseline.path)
         if text is None:
             # An owner defined in a file discovery never read cannot be matched,
             # so the rule must say so rather than report no reimplementation.
-            gaps.append(f"{rel_path}: reuse baseline could not be read")
+            gaps.append(f"{baseline.path}: reuse baseline could not be read")
             continue
         if len(text.encode("utf-8", errors="ignore")) > MAX_INDEX_FILE_BYTES:
-            gaps.append(f"{rel_path}: reuse baseline exceeds {MAX_INDEX_FILE_BYTES} bytes")
+            gaps.append(f"{baseline.path}: reuse baseline exceeds {MAX_INDEX_FILE_BYTES} bytes")
             continue
         indexed += 1
-        for symbol in extract_symbols(rel_path, text, "baseline", 12 if rel_path in packet_paths else 0):
-            boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{rel_path}:{symbol.name}", 0))
+        for symbol in extract_symbols(baseline.path, text, "baseline", baseline.language, 12 if baseline.path in packet_paths else 0):
+            boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{baseline.path}:{symbol.name}", 0))
             symbols.append(SymbolDef(symbol.name, symbol.path, symbol.line, symbol.kind, symbol.language, symbol.tokens, symbol.source, boost))
             if len(symbols) >= MAX_INDEX_SYMBOLS:
                 gaps.append(f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files / {MAX_INDEX_SYMBOLS} symbols")
@@ -120,17 +116,17 @@ def _existing_symbol_index(
 
 def _new_symbols(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
-    for entry in snapshot.role_entries(ROLE_PRODUCTION):
+    for entry in snapshot.role_entries("production"):
         source = "untracked" if entry.untracked else "added"
         for line_no, text in entry.added_lines():
-            for symbol in extract_symbols(entry.path, text, source):
+            for symbol in extract_symbols(entry.path, text, source, entry.language):
                 symbols.append(SymbolDef(symbol.name, entry.path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
     return symbols
 
 
 def _risky_added_blocks(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     blocks: list[SymbolDef] = []
-    for entry in snapshot.role_entries(ROLE_PRODUCTION):
+    for entry in snapshot.role_entries("production"):
         rel_path = entry.path
         for line_no, text in entry.added_lines():
             # Prose cannot reimplement a helper. Without this, a comment naming
@@ -145,16 +141,16 @@ def _risky_added_blocks(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
             if dedupe_shape:
                 tokens.append("dedupe")
             if dedupe_shape or len(set(tokens)) >= 2:
-                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", language_for_path(rel_path), tuple(tokens[:3]), "added"))
+                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", entry.language, tuple(tokens[:3]), "added"))
     return blocks
 
 
 def _deleted_definition_names(snapshot: EvaluationSnapshot) -> set[str]:
     return {
         symbol.name
-        for entry in snapshot.role_entries(ROLE_PRODUCTION)
+        for entry in snapshot.role_entries("production")
         for line_no, text in entry.deleted_lines()
-        for symbol in extract_symbols(entry.path, text, "deleted")
+        for symbol in extract_symbols(entry.path, text, "deleted", entry.language)
     }
 
 
@@ -222,18 +218,18 @@ def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], new_line
 
 
 def _should_index_existing(
-    rel_path: str,
+    baseline: BaselineFile,
     candidate_languages: set[str],
     candidate_roots: set[str],
     packet_paths: set[str],
     gitnexus_paths: set[str],
 ) -> bool:
     return (
-        language_for_path(rel_path) in candidate_languages
+        baseline.language in candidate_languages
         and (
-            _top_dir(rel_path) in candidate_roots
-            or rel_path in packet_paths
-            or rel_path in gitnexus_paths
+            _top_dir(baseline.path) in candidate_roots
+            or baseline.path in packet_paths
+            or baseline.path in gitnexus_paths
         )
     )
 
@@ -250,4 +246,4 @@ def _same_reuse_neighborhood(path_a: str, path_b: str, context_boost: int) -> bo
 
 
 def _top_dir(path: str) -> str:
-    return normalize_path(path).split("/", 1)[0]
+    return path.split("/", 1)[0]

@@ -369,6 +369,19 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 
+    def test_active_warnings_are_visible_while_the_hook_exits_zero(self) -> None:
+        # Warning-only means non-blocking feedback, not discarded output: the
+        # real PostToolUse hook surfaces active QG54 warnings on its supported
+        # feedback channel (additionalContext) and still returns zero.
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        feedback = json.loads(result.stdout)
+        context = feedback["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(feedback["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+        self.assertIn("QG54-GROWTH-CUMULATIVE", context)
+        self.assertIn("QG54-ANALYSIS-INCOMPLETE", context)
+
     def test_non_code_production_edit_invalidates_but_docs_do_not(self) -> None:
         self.complete_workflow(finish=False)
         (self.repo / "requirements.txt").write_text("package==1\n", encoding="utf-8")
