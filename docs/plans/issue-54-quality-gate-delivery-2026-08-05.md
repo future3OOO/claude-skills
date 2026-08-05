@@ -22,10 +22,6 @@ warning evidence until the parent explicitly authorizes a named promotion.
 ## Source of truth
 
 - authority: GitHub issue #54 and approved child issues #75, #76, and #77
-- target architecture:
-  [`docs/decisions/issue-54-quality-gate-target-architecture.md`](../decisions/issue-54-quality-gate-target-architecture.md)
-- visual architecture map:
-  [`docs/decisions/issue-54-quality-gate-target-architecture.html`](../decisions/issue-54-quality-gate-target-architecture.html)
 - trusted base: exact `origin/main` SHA recorded in the owning child at
   dispatch; PR B and PR C use the preceding slice's merge SHA
 - related contract: issue #49 exclusively owns typed final-tree verification
@@ -46,6 +42,19 @@ warning evidence until the parent explicitly authorizes a named promotion.
 If a child brief and the parent conflict, the parent controls scope and the
 child controls its approved delivery slice. Any ambiguity or rule promotion
 returns to parent #54 for human decision.
+
+## Conditional completed-state architecture
+
+The following artifacts are review inputs, not implementation authority, until
+PR #79 merges. Before that merge, active slices follow parent #54 and their
+approved child briefs. On merge, the normative decision becomes the binding
+completed-state architecture without replacing or re-sequencing this plan; the
+visual remains non-normative.
+
+- normative decision:
+  [`docs/decisions/issue-54-quality-gate-target-architecture.md`](../decisions/issue-54-quality-gate-target-architecture.md)
+- visual architecture map:
+  [`docs/decisions/issue-54-quality-gate-target-architecture.html`](../decisions/issue-54-quality-gate-target-architecture.html)
 
 ## Affected surface
 
