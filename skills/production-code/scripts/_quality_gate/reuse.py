@@ -29,12 +29,7 @@ def detect_reuse_issues(
     candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
         return [], [], _reuse_rule(snapshot, [], ())
-    existing, truncated = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
-    gaps = (
-        (f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files / {MAX_INDEX_SYMBOLS} symbols",)
-        if truncated
-        else ()
-    )
+    existing, gaps = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
     if not existing:
         return [], [], _reuse_rule(snapshot, [], gaps)
     # Tracked hunks only: an untracked file's whole text is its added lines, so
@@ -77,10 +72,10 @@ def _existing_symbol_index(
     candidates: list[SymbolDef],
     packet_paths: set[str],
     gitnexus_boosts: dict[str, int],
-) -> tuple[list[SymbolDef], bool]:
+) -> tuple[list[SymbolDef], tuple[str, ...]]:
     symbols: list[SymbolDef] = []
+    gaps: list[str] = []
     indexed = 0
-    truncated = False
     tracked_args = ["ls-tree", "-r", "--name-only", snapshot.base_for_file] if snapshot.candidate_source == "index" else ["ls-files"]
     tracked = [normalize_path(line) for line in git_text(snapshot.repo, tracked_args).splitlines() if normalize_path(line)]
     candidate_languages = {item.language for item in candidates}
@@ -88,7 +83,7 @@ def _existing_symbol_index(
     gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
     for rel_path in tracked:
         if indexed >= MAX_INDEX_FILES or len(symbols) >= MAX_INDEX_SYMBOLS:
-            truncated = True
+            gaps.append(f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files / {MAX_INDEX_SYMBOLS} symbols")
             break
         entry = snapshot.entry(rel_path)
         if (entry is not None and entry.untracked) or snapshot.role_of(rel_path) != ROLE_PRODUCTION:
@@ -97,18 +92,28 @@ def _existing_symbol_index(
             continue
         if snapshot.candidate_source == "index" or entry is not None:
             text = read_git_file(snapshot.repo, snapshot.base_for_file, rel_path)
+            if text is None and entry is not None:
+                # A file this change adds has no baseline content to search.
+                # That is absence, not discovery that failed.
+                continue
         else:
             text = read_file(snapshot.repo / rel_path)
-        if text is None or len(text.encode("utf-8", errors="ignore")) > MAX_INDEX_FILE_BYTES:
+        if text is None:
+            # An owner defined in a file discovery never read cannot be matched,
+            # so the rule must say so rather than report no reimplementation.
+            gaps.append(f"{rel_path}: reuse baseline could not be read")
+            continue
+        if len(text.encode("utf-8", errors="ignore")) > MAX_INDEX_FILE_BYTES:
+            gaps.append(f"{rel_path}: reuse baseline exceeds {MAX_INDEX_FILE_BYTES} bytes")
             continue
         indexed += 1
         for symbol in extract_symbols(rel_path, text, "baseline", 12 if rel_path in packet_paths else 0):
             boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{rel_path}:{symbol.name}", 0))
             symbols.append(SymbolDef(symbol.name, symbol.path, symbol.line, symbol.kind, symbol.language, symbol.tokens, symbol.source, boost))
             if len(symbols) >= MAX_INDEX_SYMBOLS:
-                truncated = True
+                gaps.append(f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files / {MAX_INDEX_SYMBOLS} symbols")
                 break
-    return symbols, truncated
+    return symbols, tuple(dict.fromkeys(gaps))
 
 
 def _new_symbols(snapshot: EvaluationSnapshot) -> list[SymbolDef]:

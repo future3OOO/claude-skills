@@ -29,8 +29,9 @@ class EvaluationSnapshot:
     """The one immutable base-to-candidate evaluation every detector reads.
 
     Roles, base and current text, hunk boundaries, growth, and completeness are
-    resolved once here so no detector re-derives them, and so every rule sees
-    the same candidate even if the worktree or index moves during the run.
+    resolved once here so no detector re-derives them. In `index` candidate
+    mode the captured tree makes the candidate genuinely immutable; in worktree
+    mode the files are read once, up front, rather than per detector.
     """
 
     repo: Path
@@ -40,6 +41,7 @@ class EvaluationSnapshot:
     candidate_tree: str
     changed_scope: str
     entries: tuple[SnapshotEntry, ...]
+    unattributed: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_by_path", {entry.path: entry for entry in self.entries})
@@ -50,11 +52,12 @@ class EvaluationSnapshot:
         candidate_source = str(scope.get("candidate_source") or "worktree")
         candidate_tree = str(scope.get("candidate_tree") or "")
         hunks = _collect_hunks(str(scope["raw_diff"]))
+        changed = set(scope["changed_files"])
         counts = _merge_numstats(list(scope["numstats"]))
         untracked = set(scope["untracked"])
         entries = tuple(
             _entry(repo, path, base_for_file, candidate_source, candidate_tree, hunks, counts, path in untracked)
-            for path in sorted(set(scope["changed_files"]))
+            for path in sorted(changed)
         )
         return cls(
             repo=repo,
@@ -64,6 +67,7 @@ class EvaluationSnapshot:
             candidate_tree=candidate_tree,
             changed_scope=str(scope["changed_scope"]),
             entries=entries,
+            unattributed=tuple(sorted(set(hunks) - changed)),
         )
 
     @property
@@ -91,7 +95,18 @@ class EvaluationSnapshot:
         return {_growth_key(name): value for name, value in buckets.items()}
 
     def gaps(self) -> tuple[str, ...]:
+        """Per-entry measurement gaps only; attribution has its own accessor."""
         return tuple(sorted({gap for entry in self.entries for gap in entry.gaps}))
+
+    def attribution_gaps(self) -> tuple[str, ...]:
+        """Diff paths whose hunks belong to no evaluated entry.
+
+        Git quotes a header path containing a tab, quote, backslash or
+        non-ASCII byte, while porcelain reports the literal name, so those
+        hunks reach no entry. The counts are still measured, so this is kept
+        away from growth and reported to the rules that read hunks.
+        """
+        return tuple(f"{path}: diff hunks matched no changed file" for path in self.unattributed)
 
 
 def _entry(

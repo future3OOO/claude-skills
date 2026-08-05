@@ -672,6 +672,62 @@ def test_truncated_baseline_discovery_cannot_report_clean_reuse() -> None:
     with_repo(body)
 
 
+def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
+    return next(item for item in payload["checks"] if item["name"] == name)
+
+
+def test_unattributed_diff_path_cannot_report_clean_hunk_checks() -> None:
+    # Git quotes a header path containing a tab, so it never matches the literal
+    # name porcelain reports. Those hunks are unattributed, not absent.
+    def body(repo: Path) -> None:
+        quoted = repo / "src" / "we\tird.py"
+        write(quoted, "A = 1\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "quoted path")
+        quoted.write_text("A = 1\nB = 2\n", encoding="utf-8")
+        _, payload, _ = run_gate(repo)
+        duplicates = check_named(payload, "no-duplicate-added-blocks")
+        assert duplicates["passed"] is None and duplicates["status"] == "incomplete", duplicates
+        # Counts were still measured, so growth and bloat stay evaluated.
+        assert check_named(payload, "risk-calibrated-bloat")["passed"] is True, payload["checks"]
+        assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
+
+    with_repo(body)
+
+
+def test_skipped_oversized_baseline_cannot_report_clean_reuse() -> None:
+    # The real owner lives in a file the index refuses to read, so a
+    # reimplementation of it must not come back as a clean reuse pass.
+    def body(repo: Path) -> None:
+        owner = "def normalize_user_identifier(value):\n    return value.strip().lower()\n"
+        padding = "\n".join(f"# pad {i}" * 6 for i in range(9000))
+        write(repo / "src" / "huge.py", owner + padding)
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "oversized baseline")
+        write(repo / "src" / "dup.py", owner)
+        _, payload, _ = run_gate(repo)
+        finding = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
+        assert finding["status"] == "incomplete", finding
+        assert any("huge.py" in gap for gap in finding["completeness"]["gaps"]), finding
+
+    with_repo(body)
+
+
+def test_unmeasured_production_file_cannot_report_clean_bloat() -> None:
+    def body(repo: Path) -> None:
+        (repo / "src" / "base.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
+        _, payload, _ = run_gate(repo)
+        bloat = check_named(payload, "risk-calibrated-bloat")
+        assert bloat["passed"] is None and bloat["status"] == "incomplete", bloat
+        assert payload["hardRules"]["codeVolume"] == {
+            "status": "incomplete",
+            "passed": None,
+            "checks": ["risk-calibrated-bloat"],
+        }, payload["hardRules"]["codeVolume"]
+
+    with_repo(body)
+
+
 def test_deleting_a_production_file_counts_as_deletions() -> None:
     # One owner of per-entry counts means a removed file's lines are deletions;
     # they used to vanish because the file had no current text to read.
@@ -759,6 +815,11 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
         assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
         assert growth["humanAuthored"] == {"added": 1129, "deleted": 8, "net": 1121}, growth
         assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
+        # The corpus adds new committed files; their absent baselines are not
+        # discovery failures, so every rule must still read complete.
+        reuse = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
+        assert reuse["completeness"] == {"complete": True, "gaps": []}, reuse
+        assert all(item.get("status", "evaluated") == "evaluated" for item in payload["checks"]), payload["checks"]
     finally:
         run(["git", "worktree", "remove", "--force", str(replay)], repo)
         shutil.rmtree(replay.parent, ignore_errors=True)
@@ -842,6 +903,9 @@ def main() -> int:
         test_unknown_numstat_cannot_report_clean_growth,
         test_separate_hunks_do_not_form_one_duplicate,
         test_truncated_baseline_discovery_cannot_report_clean_reuse,
+        test_unattributed_diff_path_cannot_report_clean_hunk_checks,
+        test_skipped_oversized_baseline_cannot_report_clean_reuse,
+        test_unmeasured_production_file_cannot_report_clean_bloat,
         test_deleting_a_production_file_counts_as_deletions,
         test_growth_reports_each_role_separately,
         test_generated_and_non_source_stay_out_of_human_authored_growth,

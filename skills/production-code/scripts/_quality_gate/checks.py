@@ -103,11 +103,15 @@ def duplicate_added_blocks(snapshot: EvaluationSnapshot) -> list[dict[str, objec
     ])
 
 
-def evaluate_bloat(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str], dict[str, object]]:
+def evaluate_bloat(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str], dict[str, object], tuple[str, ...]]:
     errors: list[str] = []
     warnings: list[str] = []
-    production = snapshot.growth()[ROLE_PRODUCTION]
-    total_added, total_deleted = production["added"], production["deleted"]
+    production = snapshot.role_entries(ROLE_PRODUCTION)
+    totals = snapshot.growth()[ROLE_PRODUCTION]
+    total_added, total_deleted = totals["added"], totals["deleted"]
+    # Only the entries this rule actually weighs: an unmeasured production file
+    # contributes zero, which is not evidence that it did not grow.
+    gaps = tuple(sorted({gap for entry in production for gap in entry.gaps}))
     details, shrink_by_dir = _bloat_file_details(snapshot)
     for detail in details:
         errors.extend(_bloat_errors_for_file(detail, shrink_by_dir))
@@ -116,7 +120,7 @@ def evaluate_bloat(snapshot: EvaluationSnapshot) -> tuple[list[str], list[str], 
         errors.append(f"changed source diff is heavily additive: added={total_added} deleted={total_deleted}")
     elif total_added >= 500 and total_added > max(1, total_deleted) * 4:
         warnings.append(f"changed source diff is additive: added={total_added} deleted={total_deleted}")
-    return errors, warnings, {"totalAdded": total_added, "totalDeleted": total_deleted, "files": details[:50]}
+    return errors, warnings, {"totalAdded": total_added, "totalDeleted": total_deleted, "files": details[:50]}, gaps
 
 
 def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:

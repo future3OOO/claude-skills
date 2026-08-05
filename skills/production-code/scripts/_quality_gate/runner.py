@@ -31,17 +31,22 @@ def check(
     conflict_files, temp_files = _changed_file_failures(snapshot)
     quality_escapes = scan_quality_escapes(snapshot)
     duplicates = duplicate_added_blocks(snapshot)
-    bloat_errors, bloat_warnings, bloat_details = evaluate_bloat(snapshot)
+    bloat_errors, bloat_warnings, bloat_details, bloat_gaps = evaluate_bloat(snapshot)
     reuse_findings, gitnexus_queries, reuse_rule = detect_reuse_issues(
         snapshot,
         parse_repo_context_packet(repo_context_packet),
         gitnexus_boosts,
     )
     findings = [evaluate_growth(snapshot), reuse_rule]
+    # Hunks that reached no entry leave every hunk-derived rule unable to claim
+    # it saw the whole change, while the measured counts stay trustworthy.
+    attribution = snapshot.attribution_gaps()
     # An analysis that could not see everything says so where the run is read.
     warnings.extend(
         f"incomplete analysis for {finding.rule_id}: {gap}" for finding in findings for gap in finding.gaps
     )
+    warnings.extend(f"incomplete analysis for changed-line rules: {gap}" for gap in attribution)
+    warnings.extend(f"incomplete analysis for risk-calibrated-bloat: {gap}" for gap in bloat_gaps)
     reuse_errors = [finding for finding in reuse_findings if finding.severity == "error"]
     reuse_warnings = [finding for finding in reuse_findings if finding.severity == "warning"]
 
@@ -51,7 +56,7 @@ def check(
     if fail_on_warnings and warnings:
         errors.extend(f"warning promoted to failure: {warning}" for warning in warnings)
 
-    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, bloat_errors, bloat_warnings)
+    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, bloat_errors, bloat_warnings, attribution, bloat_gaps)
     return {
         "schemaVersion": 1,
         "gateVersion": "2026-07-29.1",
@@ -149,22 +154,25 @@ def _checks(
     reuse_rule: Finding,
     bloat_errors: list[str],
     bloat_warnings: list[str],
+    attribution: tuple[str, ...],
+    bloat_gaps: tuple[str, ...],
 ) -> list[dict[str, object]]:
+    def outcome(passed: bool, gaps: tuple[str, ...]) -> dict[str, object]:
+        """A rule that could not see its whole scope is unknown, never a pass."""
+        return {"passed": None, "status": "incomplete", "gaps": list(gaps)} if gaps else {"passed": passed, "status": "evaluated"}
+
     return [
         {"name": "no-merge-conflict-markers", "passed": not conflict_files, "sample": conflict_files[:10]},
         {"name": "no-temp-artifacts", "passed": not temp_files, "sample": temp_files[:10]},
-        {"name": "no-quality-escapes", "passed": not quality_escapes, "sample": quality_escapes[:10]},
-        {"name": "no-duplicate-added-blocks", "passed": not duplicates, "sample": duplicates[:4]},
+        {"name": "no-quality-escapes", "sample": quality_escapes[:10], **outcome(not quality_escapes, attribution)},
+        {"name": "no-duplicate-added-blocks", "sample": duplicates[:4], **outcome(not duplicates, attribution)},
         {
             "name": "reuse-existing-helpers",
-            # The rule's own finding owns its status: discovery that stopped
-            # early is unknown, never a pass.
-            "passed": None if reuse_rule.gaps else not reuse_errors,
-            "status": "incomplete" if reuse_rule.gaps else "evaluated",
             "warnings": [finding.as_dict() for finding in reuse_warnings[:10]],
             "sample": [finding.as_dict() for finding in reuse_errors[:10]],
+            **outcome(not reuse_errors, reuse_rule.gaps + attribution),
         },
-        {"name": "risk-calibrated-bloat", "passed": not bloat_errors, "warnings": bloat_warnings[:10]},
+        {"name": "risk-calibrated-bloat", "warnings": bloat_warnings[:10], **outcome(not bloat_errors, bloat_gaps)},
     ]
 
 
