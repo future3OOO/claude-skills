@@ -14,7 +14,8 @@ This decision supplements, and does not replace or re-sequence, the
 plan. The agent already executing #75 continues against that approved slice.
 Parent #54 remains the human calibration and promotion gate. Issue #49 remains
 the sole owner of review freshness, final-tree binding, workflow state, and
-persistence.
+persistence; [PR #74](https://github.com/future3OOO/claude-skills/pull/74) is
+its active implementation and is a no-change surface for #54.
 
 ## Binding versus illustrative content
 
@@ -304,21 +305,36 @@ The former asks whether implementation was copied; the latter asks whether
 multiple surfaces try to decide, mutate, validate, orchestrate, or maintain one
 responsibility. One evaluation may trigger either family, both, or neither.
 
-### Pending operator choice: `fail_on_warnings`
+### Approved schema-v2 `fail_on_warnings` policy
 
-The six-parameter call signature is stable, but `fail_on_warnings` cannot keep
-its old "promote every warning string" implementation while QG54 rules remain
-warning-only by parent contract. The recommended schema-v2 policy is:
+In schema v2, `fail_on_warnings` evaluates typed active findings through each
+exact rule ID's explicit warning-promotion eligibility. Each QG54 rule ID
+enumerated for #75–#77 initially has promotion eligibility disabled until
+parent #54 explicitly approves that exact ID. Surviving non-QG54 warning rules
+retain their individually defined existing eligibility. Promotion never uses
+rendered strings, prefixes, families, roles, scores, or free-text explanations.
+CLI input-transport failures remain governed separately by the CLI transport
+contract.
 
-```text
-promotion operates over typed active findings, never rendered strings
-QG54 findings are not blanket-promotion eligible
-surviving non-QG54 warning policies retain their existing eligibility
-CLI optional-input read errors remain outside runner.check promotion
-```
+Schema v2 therefore assigns an exact rule ID and explicit eligibility to every
+surviving warning rule. Eligibility is internal immutable rule-policy metadata
+owned by `findings.py`; it is not serialized per finding and is never supplied
+by a caller. An untyped warning string is not a promotion input.
 
-This policy is not binding until the operator explicitly confirms it. No code
-or child issue may infer the choice from this proposed document.
+The schema-v2 transition has exactly two non-QG54 warning IDs:
+
+| Exact rule ID | Lifetime | `fail_on_warnings` eligibility |
+|---|---|---|
+| `QG-LEGACY-REUSE-ADVISORY` | #75 and #76; deleted with lexical reuse scoring in #77 | enabled, preserving schema-v1 behavior |
+| `QG-LEGACY-GITNEXUS-CONTEXT` | #75 and #76; replaced in #77 by per-affected-rule `QG54-ANALYSIS-INCOMPLETE` evidence | enabled, preserving schema-v1 behavior |
+
+No other non-QG54 warning rule survives #75, and none survives the completed
+#77 architecture. Per-file bloat warnings are replaced by
+`QG54-GROWTH-CUMULATIVE`; malformed or missing graph evidence relevant to #77
+becomes disabled `QG54-ANALYSIS-INCOMPLETE` evidence for each affected rule.
+The CLI transport contract is the `cli.py` responsibility in the ownership
+table above; optional-input read failures remain outside `runner.check`
+promotion.
 
 ## PostToolUse visibility
 
@@ -401,6 +417,7 @@ to rerun it on a later evaluation.
 | active QG54 finding | `findings`, `warnings`, and `checks[].warnings`; `status=finding`; `passed=true`; `ok` unchanged |
 | incomplete QG54 rule | `findings` and `warnings`; `status=incomplete`; `passed=null`; edit-time `ok` unchanged |
 | QG54 rule not evaluated | `findings` and `warnings`; `status=not-evaluated`; `passed=null`; edit-time `ok` unchanged |
+| active transitional non-QG54 warning | `findings`, `warnings`, and `checks[].warnings`; normally `passed=true` and `ok` unchanged; an eligible exact ID is promoted only when `fail_on_warnings=true` |
 | resolved owner evidence | `resolvedFindings` only; never an active warning |
 | cumulative metrics | `evaluation.growth`; no legacy `bloat` object |
 | owner/reuse evidence | structured findings; no legacy `reuseFindings` object |

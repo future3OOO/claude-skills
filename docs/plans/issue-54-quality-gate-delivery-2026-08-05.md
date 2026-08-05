@@ -5,7 +5,7 @@
 - current state: child issues published; governing plan merged in PR #78;
   target architecture under review in PR #79
 - governing artifact: this document
-- last updated: 2026-08-05
+- last updated: 2026-08-06
 
 ## Objective
 
@@ -25,7 +25,8 @@ warning evidence until the parent explicitly authorizes a named promotion.
 - trusted base: exact `origin/main` SHA recorded in the owning child at
   dispatch; PR B and PR C use the preceding slice's merge SHA
 - related contract: issue #49 exclusively owns typed final-tree verification
-  binding and workflow persistence
+  binding and workflow persistence; PR #74 is its active implementation and a
+  no-change surface for #54
 - captured evidence: PR #68 round-six corpus from
   `4cfffcb8d5724bfc2b03dce505da8cf930fb49fa` to
   `28cf04e63fa6eb598b938d3a78d782969538d9a9`
@@ -42,6 +43,23 @@ warning evidence until the parent explicitly authorizes a named promotion.
 If a child brief and the parent conflict, the parent controls scope and the
 child controls its approved delivery slice. Any ambiguity or rule promotion
 returns to parent #54 for human decision.
+
+### Approved schema-v2 warning-promotion decision
+
+`fail_on_warnings` evaluates typed active findings through each exact rule
+ID's explicit eligibility. Every #75–#77 QG54 rule initially has eligibility
+disabled until parent #54 approves that exact ID. Every surviving non-QG54
+warning receives an exact rule ID and explicit eligibility preserving its
+schema-v1 behavior; untyped strings, prefixes, families, roles, scores, and
+free text never control promotion. CLI input-transport failures remain under
+the separate CLI transport contract and outside `runner.check` promotion.
+Eligibility is internal `findings.py` rule-policy metadata, not serialized or
+caller supplied. #75 and #76 temporarily retain only
+`QG-LEGACY-REUSE-ADVISORY` and `QG-LEGACY-GITNEXUS-CONTEXT`, both eligible to
+preserve schema-v1 behavior. #77 deletes the former and replaces the latter,
+when relevant, with disabled per-affected-rule
+`QG54-ANALYSIS-INCOMPLETE` evidence. No non-QG54 warning survives the completed
+#77 architecture.
 
 ## Conditional completed-state architecture
 
@@ -240,8 +258,8 @@ Required proof includes:
   before PR C is dispatched.
 - [ ] PR C merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 calibration evidence reviewed by a human.
-- [ ] Operator records the versioned `fail_on_warnings` meaning before #75
-  finalizes schema-v2 warning projection.
+- [x] Operator recorded the exact-rule schema-v2 `fail_on_warnings` meaning
+  before #75 finalizes warning projection.
 - [ ] Any later promotion recorded as a separate, explicitly approved decision.
 
 ## Change log
@@ -258,3 +276,5 @@ Required proof includes:
 - 2026-08-05: made exact-duplicate and owner-competition discovery independent,
   added evidence-class completeness and adversarial public proof, and closed
   candidate-tree self-attestation.
+- 2026-08-06: recorded the operator-approved exact-rule schema-v2
+  `fail_on_warnings` policy and PR #74 as #49's active, separate implementation.
