@@ -128,6 +128,11 @@ def _entry(
     if untracked and current_text is not None:
         file_hunks = (_whole_file_hunk(current_text),)
     added, deleted, gaps = _counts_for(rel_path, counts.get(rel_path), current_text, base_text)
+    if rel_path.startswith('"'):
+        # Git quotes a name containing a tab, quote, backslash or non-ASCII
+        # byte, and only some of its commands do. The quoted and literal forms
+        # then describe one file as two entries, neither of them measurable.
+        gaps = gaps + (f"{rel_path}: Git-quoted path cannot be attributed",)
     return SnapshotEntry(
         path=rel_path,
         role=role,

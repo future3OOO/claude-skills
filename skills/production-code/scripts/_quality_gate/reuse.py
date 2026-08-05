@@ -51,10 +51,12 @@ def detect_reuse_issues(
 def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps: tuple[str, ...]) -> Finding:
     """The reuse rule's own evaluation record.
 
-    Truncated baseline discovery reports `incomplete`: a scan that stopped early
-    has not seen the owner it would have matched, so it cannot report clean.
+    Truncated or skipped baseline discovery reports `incomplete`: a scan that
+    never read a file has not seen the owner it would have matched. Unattributed
+    hunks count too, because the candidate side is then incomplete as well.
     """
     errors = [finding for finding in findings if finding.severity == "error"]
+    gaps = tuple(dict.fromkeys(gaps + snapshot.attribution_gaps()))
     return Finding(
         rule_id="reuse-existing-helpers",
         severity="error" if errors else "warning",

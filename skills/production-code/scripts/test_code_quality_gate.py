@@ -688,9 +688,23 @@ def test_unattributed_diff_path_cannot_report_clean_hunk_checks() -> None:
         _, payload, _ = run_gate(repo)
         duplicates = check_named(payload, "no-duplicate-added-blocks")
         assert duplicates["passed"] is None and duplicates["status"] == "incomplete", duplicates
-        # Counts were still measured, so growth and bloat stay evaluated.
+        # Both representations of the reuse rule, never only one.
+        reuse = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
+        assert reuse["status"] == "incomplete", reuse
+        assert check_named(payload, "reuse-existing-helpers")["passed"] is None, payload["checks"]
+        # Counts were still measured here, so growth and bloat stay evaluated.
         assert check_named(payload, "risk-calibrated-bloat")["passed"] is True, payload["checks"]
         assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
+
+        # Commit-range and staged-only modes take paths from --name-only and
+        # --numstat, which quote the name where porcelain does not. The file
+        # must not silently become an unscanned, zero-growth entry.
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "quoted change")
+        for extra in (("--base-ref", "HEAD~1"), ("--base-ref", "HEAD~1", "--staged-only")):
+            _, ranged, _ = run_gate(repo, *extra)
+            assert growth_finding(ranged)["status"] == "incomplete", (extra, growth_finding(ranged))
+            assert any("Git-quoted" in gap for gap in growth_finding(ranged)["completeness"]["gaps"]), (extra, ranged["findings"])
 
     with_repo(body)
 

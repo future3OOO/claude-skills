@@ -170,7 +170,7 @@ def _checks(
             "name": "reuse-existing-helpers",
             "warnings": [finding.as_dict() for finding in reuse_warnings[:10]],
             "sample": [finding.as_dict() for finding in reuse_errors[:10]],
-            **outcome(not reuse_errors, reuse_rule.gaps + attribution),
+            **outcome(not reuse_errors, reuse_rule.gaps),
         },
         {"name": "risk-calibrated-bloat", "warnings": bloat_warnings[:10], **outcome(not bloat_errors, bloat_gaps)},
     ]
