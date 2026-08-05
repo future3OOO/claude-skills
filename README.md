@@ -136,6 +136,32 @@ re-encode existing evidence only and keep the adaptation out of the PR. When
 another slice merges, rebase onto the new `main` and repeat verification and
 review on the new head.
 
+## Workflow state root
+
+`CLAUDE_WORKFLOW_STATE_ROOT` selects where workflow state is stored; otherwise it
+lands in `$CLAUDE_HOME/state`, or `~/.claude/state`. Everything the workflow
+writes follows that root — repository state, producer evidence, locks, Stop and
+session records, advisor pointers. Nothing else moves: skills, hooks,
+`CLAUDE.md`, and Claude's own sessions are unaffected, and state already written
+elsewhere stays there.
+
+Each process reads the variable from its own environment, so export it before
+launching or resuming and reuse the same root for the whole pass.
+
+```bash
+export CLAUDE_WORKFLOW_STATE_ROOT="$HOME/.claude-state-roots/agent-a"
+mkdir -p "$CLAUDE_WORKFLOW_STATE_ROOT" && chmod 700 "$CLAUDE_WORKFLOW_STATE_ROOT"
+claude
+# later, in a new shell: export the same root again, then
+claude --resume
+```
+
+`prune --apply` deletes from whichever root is selected, so check the variable
+before running it by hand; the prune tests always point it at a temporary root.
+
+A per-agent root is optional: it isolates concurrent agents from each other's
+workflow state, at the cost of splitting audit history across roots.
+
 ## External dependencies
 
 This estate is **not self-contained**. `CLAUDE.md` mandates these tools and the
