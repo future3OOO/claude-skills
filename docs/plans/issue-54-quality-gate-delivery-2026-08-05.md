@@ -2,9 +2,10 @@
 
 ## Status
 
-- current state: child issues published; governing plan under review in PR #78
+- current state: child issues published; governing plan merged in PR #78;
+  target architecture under review in PR #79
 - governing artifact: this document
-- last updated: 2026-08-05
+- last updated: 2026-08-06
 
 ## Objective
 
@@ -24,7 +25,8 @@ warning evidence until the parent explicitly authorizes a named promotion.
 - trusted base: exact `origin/main` SHA recorded in the owning child at
   dispatch; PR B and PR C use the preceding slice's merge SHA
 - related contract: issue #49 exclusively owns typed final-tree verification
-  binding and workflow persistence
+  binding and workflow persistence; PR #74 is its active implementation and a
+  no-change surface for #54
 - captured evidence: PR #68 round-six corpus from
   `4cfffcb8d5724bfc2b03dce505da8cf930fb49fa` to
   `28cf04e63fa6eb598b938d3a78d782969538d9a9`
@@ -41,6 +43,39 @@ warning evidence until the parent explicitly authorizes a named promotion.
 If a child brief and the parent conflict, the parent controls scope and the
 child controls its approved delivery slice. Any ambiguity or rule promotion
 returns to parent #54 for human decision.
+
+### Approved schema-v2 warning-promotion decision
+
+`fail_on_warnings` evaluates typed active findings through each exact rule
+ID's explicit eligibility. Every #75–#77 QG54 rule initially has eligibility
+disabled until parent #54 approves that exact ID. Every surviving non-QG54
+warning receives an exact rule ID and explicit eligibility preserving its
+schema-v1 behavior; untyped strings, prefixes, families, roles, scores, and
+free text never control promotion. CLI input-transport failures remain under
+the separate CLI transport contract and outside `runner.check` promotion.
+Eligibility is internal `findings.py` rule-policy metadata, not serialized or
+caller supplied. #75 and #76 temporarily retain only
+`QG-LEGACY-REUSE-ADVISORY` and `QG-LEGACY-GITNEXUS-CONTEXT`, both eligible to
+preserve schema-v1 behavior. #77 deletes the former and replaces the latter,
+when relevant, with disabled per-affected-rule
+`QG54-ANALYSIS-INCOMPLETE` evidence. No non-QG54 warning survives the completed
+#77 architecture.
+Promotion leaves the source finding at `severity=warning` and its intrinsic
+check at `passed=true`; it adds an `errors` projection bound to the eligible
+exact ID and sets top-level `ok=false`.
+
+## Conditional completed-state architecture
+
+The following artifacts are review inputs, not implementation authority, until
+PR #79 merges. Before that merge, active slices follow parent #54 and their
+approved child briefs. On merge, the normative decision becomes the binding
+completed-state architecture without replacing or re-sequencing this plan; the
+visual remains non-normative.
+
+- normative decision:
+  [`docs/decisions/issue-54-quality-gate-target-architecture.md`](../decisions/issue-54-quality-gate-target-architecture.md)
+- visual architecture map:
+  [`docs/decisions/issue-54-quality-gate-target-architecture.html`](../decisions/issue-54-quality-gate-target-architecture.html)
 
 ## Affected surface
 
@@ -84,11 +119,24 @@ warning collection. `resolved` evidence may remain in telemetry and calibration
 with warning-grade provenance, but it must not keep the visible gate non-green.
 No state in this slice blocks completion.
 
-Candidate generation remains mechanical. A candidate becomes
-`confirmed-unresolved` only when exact retained implementation, provably pure
-forwarding under a validated ownership contract, or snapshot-bound
-advisor-validated evidence establishes the responsibility key; names, suffixes,
-vocabulary, shared data, and graph proximity cannot establish it.
+Candidate generation remains broad and mechanical. It independently evaluates
+state/external-boundary writers, invariant validators, overlapping production
+or test Interfaces, workflow/lifecycle coordinators, caller/callee parallel
+entry points, fixture/builder/harness lifecycle, forwarding shape, and exact
+implementation. These signals require disposition but cannot establish semantic
+authority. An owner rule is incomplete if any required evidence class is
+skipped, capped, truncated, or unimplemented.
+
+`QG54-DUPLICATE-*` and `QG54-OWNER-COMPETITION-*` are separate rule families.
+Responsibility-candidate generation must run independently of duplicate
+detection: no duplicate finding is required, and its absence cannot suppress,
+downgrade, or prevent an owner candidate. One evaluation may trigger either
+family, both, or neither.
+
+A candidate becomes `confirmed-unresolved` only when independently validated,
+snapshot-bound evidence establishes the responsibility key and competing
+anchors. Exact implementation and forwarding shape strengthen evidence but do
+not mechanically infer semantic authority.
 
 Against a complete evaluated snapshot, a `confirmed-unresolved` finding becomes
 `resolved` only when one owner remains for that responsibility and role, every
@@ -109,9 +157,19 @@ disposition evidence while the confirmed conflict remains does not resolve it.
 Neither does shrinking the owner-discovery denominator through configuration,
 allowlists, exclusions, or index limits.
 
+Semantic disposition (`same-responsibility`, `distinct-authority`, or
+`temporary-coexistence`) is separate from repair strategy (`deepen`, `replace`,
+or `consolidate`). A validated `same-responsibility` decision moves a candidate
+to `confirmed-unresolved`; declaring a repair strategy never changes state by
+itself.
+
 `distinct-authority` is evaluated while the finding is still `candidate`. An
 accepted disposition rejects the same-responsibility premise and transitions
-directly to `resolved` telemetry without entering `confirmed-unresolved`.
+directly to `resolved` telemetry without entering `confirmed-unresolved` only
+when every referenced anchor resolves in the evaluated snapshot, every owner
+evidence class and required graph/test scope is complete, and the decision
+matches a parent-bound immutable validation record outside the candidate tree.
+A candidate-authored provenance field cannot satisfy that trust contract.
 `temporary-coexistence` stays `confirmed-unresolved`: it must name the old and
 new owners, surfaces to delete, tracked follow-up, and expiry slice while the
 warning remains visible. Only a later parent-approved decision over named rule
@@ -150,9 +208,9 @@ Out of scope:
 
 | PR | Branch | Base | Owner slice | Commit structure | Budget | Entry | Exit |
 |---|---|---|---|---|---:|---|---|
-| A | `feat/issue-54-canonical-evaluation` | exact `origin/main` SHA recorded in #75 at dispatch | #75 canonical evaluation and cumulative growth | Interface-level RED proof; deep Module replacement plus cleanup | about 500 net | #75 ready; no blocker | role consumers migrated, captured totals proven, required checks green |
+| A | `feat/issue-54-canonical-evaluation` | exact `origin/main` SHA recorded in #75 at dispatch | #75 canonical evaluation and cumulative growth | Interface-level RED proof; deep Module replacement plus cleanup | about 500 net | #75 ready; no blocker | role consumers migrated, captured totals proven, active warnings visible through the real hook with exit zero, required checks green |
 | B | `feat/issue-54-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
-| C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | candidates calibrated and warning-only, required checks green |
+| C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | every owner evidence class evaluated; no duplicate prerequisite; candidates calibrated and warning-only; required checks green |
 
 PR C may approach 600 net because its calibrated positive and negative proof
 must ship with the behavior; splitting that proof into a fourth PR would create
@@ -176,6 +234,15 @@ Required proof includes:
   before the second, and therefore remains active and unresolved; it must use
   #75's real skipped/truncated-scope path, not a hand-built snapshot, stubbed
   discovery collaborator, or newly invented exclusion knob
+- textually unrelated Modules writing the same state/external boundary,
+  different validators deciding the same invariant, and separate fixture or
+  harness owners each produce owner candidates without duplicate findings
+- shared data with genuinely different authority or failure policy remains a
+  negative owner case; exact duplicate code in genuinely different roles does
+  not automatically confirm owner competition
+- duplicate-only, owner-only, both-family, and neither-family public scenarios
+- rename, facade, and partial-deepening scenarios remain unresolved; only
+  complete rewiring and superseded-owner deletion resolve a confirmed conflict
 - net-line measurement under delivery-governance rules
 - the current-head PR reviewer completion gate before each merge
 
@@ -187,13 +254,15 @@ Required proof includes:
 - [x] Child #76 published, linked, and blocked by #75.
 - [x] Child #77 published, linked, and blocked by #76.
 - [x] Parent #54 seven-slice list replaced by the approved structure.
-- [x] This planning branch reviewed, pushed, and opened as PR #78.
+- [x] Governing plan reviewed and merged in PR #78.
 - [ ] PR A merged with its checklist and reviewer loop complete.
 - [ ] PR B merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
   before PR C is dispatched.
 - [ ] PR C merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 calibration evidence reviewed by a human.
+- [x] Operator recorded the exact-rule schema-v2 `fail_on_warnings` meaning
+  before #75 finalizes warning projection.
 - [ ] Any later promotion recorded as a separate, explicitly approved decision.
 
 ## Change log
@@ -207,3 +276,8 @@ Required proof includes:
 - 2026-08-05: added complete owner/reference discovery, explicit finding
   states, mechanical rewiring proof, and the parent-owned PR C corpus gate
   after reviewer findings and codebase-design advisor challenge.
+- 2026-08-05: made exact-duplicate and owner-competition discovery independent,
+  added evidence-class completeness and adversarial public proof, and closed
+  candidate-tree self-attestation.
+- 2026-08-06: recorded the operator-approved exact-rule schema-v2
+  `fail_on_warnings` policy and PR #74 as #49's active, separate implementation.
