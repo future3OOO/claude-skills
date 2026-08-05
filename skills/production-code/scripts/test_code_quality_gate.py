@@ -659,6 +659,15 @@ def test_truncated_baseline_discovery_cannot_report_clean_reuse() -> None:
         assert finding["completeness"]["complete"] is False, finding
         assert any("stopped at" in gap for gap in finding["completeness"]["gaps"]), finding
         assert any("incomplete analysis for reuse-existing-helpers" in w for w in payload["warnings"]), payload["warnings"]
+        # No representation of the rule may read as an evaluated clean pass.
+        check = next(item for item in payload["checks"] if item["name"] == "reuse-existing-helpers")
+        assert check["passed"] is None and check["status"] == "incomplete", check
+        for name in ("noDuplication", "shortestPath"):
+            assert payload["hardRules"][name] == {
+                "status": "incomplete",
+                "passed": None,
+                "checks": payload["hardRules"][name]["checks"],
+            }, payload["hardRules"][name]
 
     with_repo(body)
 

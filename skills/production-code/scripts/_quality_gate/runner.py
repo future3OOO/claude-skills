@@ -6,6 +6,7 @@ from pathlib import Path
 from .checks import duplicate_added_blocks, evaluate_bloat, evaluate_growth, scan_quality_escapes
 from .git_scope import collect_scope
 from .inputs import parse_gitnexus_context_json, parse_repo_context_packet
+from .models import Finding
 from .path_policy import ROLE_PRODUCTION, is_binary_path, is_temp_artifact
 from .reuse import detect_reuse_issues
 from .snapshot import EvaluationSnapshot
@@ -50,7 +51,7 @@ def check(
     if fail_on_warnings and warnings:
         errors.extend(f"warning promoted to failure: {warning}" for warning in warnings)
 
-    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, bloat_errors, bloat_warnings)
+    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, bloat_errors, bloat_warnings)
     return {
         "schemaVersion": 1,
         "gateVersion": "2026-07-29.1",
@@ -85,7 +86,8 @@ def format_text(result: dict[str, object]) -> str:
         "Checks:",
     ]
     for check_item in result["checks"]:
-        lines.append(f"- {check_item['name']}: {'pass' if check_item['passed'] else 'fail'}")
+        outcome = "incomplete" if check_item["passed"] is None else "pass" if check_item["passed"] else "fail"
+        lines.append(f"- {check_item['name']}: {outcome}")
     lines.append("")
     lines.append("Errors:")
     lines.extend([f"- {error}" for error in result["errors"]] if result["errors"] else ["- none"])
@@ -144,6 +146,7 @@ def _checks(
     duplicates: list[dict[str, object]],
     reuse_errors: list[object],
     reuse_warnings: list[object],
+    reuse_rule: Finding,
     bloat_errors: list[str],
     bloat_warnings: list[str],
 ) -> list[dict[str, object]]:
@@ -154,7 +157,10 @@ def _checks(
         {"name": "no-duplicate-added-blocks", "passed": not duplicates, "sample": duplicates[:4]},
         {
             "name": "reuse-existing-helpers",
-            "passed": not reuse_errors,
+            # The rule's own finding owns its status: discovery that stopped
+            # early is unknown, never a pass.
+            "passed": None if reuse_rule.gaps else not reuse_errors,
+            "status": "incomplete" if reuse_rule.gaps else "evaluated",
             "warnings": [finding.as_dict() for finding in reuse_warnings[:10]],
             "sample": [finding.as_dict() for finding in reuse_errors[:10]],
         },
@@ -163,15 +169,22 @@ def _checks(
 
 
 def _hard_rules(checks: list[dict[str, object]]) -> dict[str, dict[str, object]]:
-    passed = {item["name"]: bool(item["passed"]) for item in checks}
-    no_duplication = passed["no-duplicate-added-blocks"] and passed["reuse-existing-helpers"]
-    shortest_path = passed["risk-calibrated-bloat"] and no_duplication
+    outcome = {item["name"]: item["passed"] for item in checks}
+
+    def rule(*names: str) -> dict[str, object]:
+        results = [outcome[name] for name in names]
+        if any(result is None for result in results):
+            # An unknown contributing check leaves the rule unestablished; the
+            # gate must not read a truncated analysis as an evaluated pass.
+            return {"status": "incomplete", "passed": None, "checks": list(names)}
+        return {"status": "evaluated", "passed": all(results), "checks": list(names)}
+
     return {
-        "codeVolume": {"status": "evaluated", "passed": passed["risk-calibrated-bloat"], "checks": ["risk-calibrated-bloat"]},
-        "noDuplication": {"status": "evaluated", "passed": no_duplication, "checks": ["no-duplicate-added-blocks", "reuse-existing-helpers"]},
-        "shortestPath": {"status": "evaluated", "passed": shortest_path, "checks": ["risk-calibrated-bloat", "no-duplicate-added-blocks", "reuse-existing-helpers"]},
-        "cleanup": {"status": "evaluated", "passed": passed["no-quality-escapes"] and passed["no-temp-artifacts"], "checks": ["no-quality-escapes", "no-temp-artifacts"]},
-        "noMergeConflictMarkers": {"status": "evaluated", "passed": passed["no-merge-conflict-markers"], "checks": ["no-merge-conflict-markers"]},
+        "codeVolume": rule("risk-calibrated-bloat"),
+        "noDuplication": rule("no-duplicate-added-blocks", "reuse-existing-helpers"),
+        "shortestPath": rule("risk-calibrated-bloat", "no-duplicate-added-blocks", "reuse-existing-helpers"),
+        "cleanup": rule("no-quality-escapes", "no-temp-artifacts"),
+        "noMergeConflictMarkers": rule("no-merge-conflict-markers"),
         "consequenceCoverage": {
             "status": "not_evaluated",
             "passed": None,
