@@ -140,7 +140,9 @@ review on the new head.
 
 A non-empty `CLAUDE_WORKFLOW_STATE_ROOT` selects where workflow state is stored;
 otherwise the estate uses `$CLAUDE_HOME/state`, or `~/.claude/state` when
-`CLAUDE_HOME` is unset. Every workflow artifact follows the selected root:
+`CLAUDE_HOME` is unset — unset, not empty, because the Python writers read an
+empty `CLAUDE_HOME` as a relative path while the advisor wrapper takes the
+fallback. Every workflow artifact follows the selected root:
 repository slots and their workflow snapshots, producer evidence, `.workflow.lock`,
 `stop/<session>.json`, `stop-latch-log.jsonl`, `sessions/<session>/<key>.json`
 associations, `_advisor-sessions/*.sid` advisor pointers, and the retained
