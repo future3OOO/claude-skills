@@ -174,7 +174,7 @@ worktree-snapshot gate-owned digest for edit-time provenance only
 ```
 
 Neither identity authorizes review. #49 owns its different review manifest and
-must never accept or recreate the gate's worktree digest. A later promoted
+must never accept or recreate the gate's worktree digest. A later-promoted
 completion rule is applied only through #49's own bound review/final-tree
 contract.
 
@@ -532,9 +532,36 @@ Required public proof includes:
 
 Corpus replay requires the source checkout's full local history. It verifies
 both commits locally, fails rather than fetches/skips if either is missing,
-hashes the exact output of
-`git -c core.autocrlf=false -c core.safecrlf=false diff --no-ext-diff --no-color <base> <candidate>`,
-and drives imported `runner.check` through the shared real-repository harness.
+hashes the exact output of:
+
+```bash
+git \
+  -c core.autocrlf=false \
+  -c core.safecrlf=false \
+  -c core.quotePath=true \
+  -c diff.indentHeuristic=true \
+  -c diff.suppressBlankEmpty=false \
+  diff \
+  --no-ext-diff \
+  --no-textconv \
+  --no-color \
+  --diff-algorithm=myers \
+  --no-renames \
+  --unified=3 \
+  --inter-hunk-context=0 \
+  --abbrev=7 \
+  --src-prefix=a/ \
+  --dst-prefix=b/ \
+  --line-prefix= \
+  --submodule=short \
+  --ignore-submodules=none \
+  -O/dev/null \
+  <base> <candidate>
+```
+
+These options are part of the fixture identity; changing one requires a parent
+re-pin. Replay drives imported `runner.check` through the shared real-repository
+harness.
 Replay publishes every expected/unexpected finding and requires
 `unexaminedCount=0`.
 

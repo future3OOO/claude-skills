@@ -225,9 +225,10 @@
             <div class="mt-5 overflow-x-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
               <pre class="mermaid min-w-[700px]">flowchart LR
   Broad["Candidate : active"] -->|external same-responsibility validation| Conflict["Confirmed conflict : active"]
+  Broad -->|external temporary-coexistence validation| Conflict
   Broad -->|external distinct authority plus complete scope| Resolved["Resolved : telemetry"]
   Broad -->|unvalidated semantic claim| Broad
-  Conflict -->|temporary coexistence| Conflict
+  Conflict -->|temporary coexistence remains active| Conflict
   Conflict -->|partial move or facade| Conflict
   Conflict -->|deepen, replace, or consolidate plus rewire and delete| Resolved
 
