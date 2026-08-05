@@ -31,6 +31,11 @@ warning evidence until the parent explicitly authorizes a named promotion.
   `885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a`
 - captured human-authored code: `+1129/-8`, net `1121`; these are not the
   merged PR's final-head totals
+- responsibility-owner calibration corpus: not yet pinned. Before PR C is
+  dispatched, parent #54 must record a human-approved manifest whose every
+  entry names exact base and candidate commits, diff SHA-256, intended
+  positive/negative role, and adjudication. An implementation agent must not
+  choose or broaden this corpus.
 
 If a child brief and the parent conflict, the parent controls scope and the
 child controls its approved delivery slice. Any ambiguity or rule promotion
@@ -63,25 +68,35 @@ returns to parent #54 for human decision.
   - incomplete required scope never reports a false clean result
   - calibration children produce evidence and make no subjective promotion
     decision
-- proofPlan: public Interface tests, historical replay, the captured PR #68
-  round-six corpus, focused negative cases, the integrated hook suite, and the
-  repository quality gate
+- proofPlan: public `runner.check` Interface tests, slice-specific historical
+  replay, the captured PR #68 round-six corpus, focused negative cases, the
+  integrated hook suite, and the repository quality gate; only #77's
+  responsibility-owner replay requires the parent-pinned owner corpus
 
 ### Core reduction contract
 
 Issue #77 must turn confirmed competing ownership into a deletion and
-deepening loop, not another score. Candidate generation remains mechanical and
-warning-only. A candidate becomes a confirmed same-responsibility finding only
-when exact retained implementation, provably pure forwarding under a validated
-ownership contract, or snapshot-bound advisor-validated evidence establishes
-the responsibility key; names, suffixes, vocabulary, shared data, and graph
-proximity cannot establish it.
+deepening loop, not another score. The deep Module behind `runner.check` owns
+three explicit finding states: `candidate`, `confirmed-unresolved`, and
+`resolved`. Only `candidate` and `confirmed-unresolved` appear in the active
+warning collection. `resolved` evidence may remain in telemetry and calibration
+with warning-grade provenance, but it must not keep the visible gate non-green.
+No state in this slice blocks completion.
 
-Against a complete evaluated snapshot, a confirmed finding is resolved only
-when one owner remains for that responsibility and role, every declared
-superseded surface is absent, and every affected indexed caller and test
-resolves through the surviving owner. Incomplete or truncated caller/test
-scope cannot report resolution.
+Candidate generation remains mechanical. A candidate becomes
+`confirmed-unresolved` only when exact retained implementation, provably pure
+forwarding under a validated ownership contract, or snapshot-bound
+advisor-validated evidence establishes the responsibility key; names, suffixes,
+vocabulary, shared data, and graph proximity cannot establish it.
+
+Against a complete evaluated snapshot, a `confirmed-unresolved` finding becomes
+`resolved` only when one owner remains for that responsibility and role, every
+declared superseded surface is absent, no affected candidate-tree caller, test,
+or test-support reference resolves to a superseded anchor, and every affected
+caller, test, and test-support surface has a mechanically resolved reference or
+graph path to the surviving anchor. Required owner-discovery, caller, callee,
+test, and test-support scope must all be complete; missing, ambiguous, skipped,
+or truncated scope cannot report resolution.
 
 Valid repairs deepen and absorb into the existing owner, replace the owner and
 delete the superseded surface, or consolidate both paths behind one deeper
@@ -90,13 +105,16 @@ the competitor, layering a forwarding/orchestration surface over retained
 owners without a distinct authority, invariant, external boundary, lifecycle,
 failure policy, or runtime variation point, or adding prose, suppression, or
 disposition evidence while the confirmed conflict remains does not resolve it.
+Neither does shrinking the owner-discovery denominator through configuration,
+allowlists, exclusions, or index limits.
 
-An accepted `distinct-authority` disposition establishes that the candidate
-does not share the same responsibility. `temporary-coexistence` never resolves
-the debt: it must name the old and new owners, surfaces to delete, tracked
-follow-up, and expiry slice while the warning remains visible. The resolution
-predicate ships at fixed warning severity; only a later parent-approved
-decision over named rule IDs may change severity.
+`distinct-authority` is evaluated while the finding is still `candidate`. An
+accepted disposition rejects the same-responsibility premise and transitions
+directly to `resolved` telemetry without entering `confirmed-unresolved`.
+`temporary-coexistence` stays `confirmed-unresolved`: it must name the old and
+new owners, surfaces to delete, tracked follow-up, and expiry slice while the
+warning remains visible. Only a later parent-approved decision over named rule
+IDs may change severity.
 
 ## Scope
 
@@ -133,7 +151,7 @@ Out of scope:
 |---|---|---|---|---|---:|---|---|
 | A | `feat/issue-54-canonical-evaluation` | current `main` | #75 canonical evaluation and cumulative growth | Interface-level RED proof; deep Module replacement plus cleanup | about 500 net | #75 ready; no blocker | role consumers migrated, captured totals proven, required checks green |
 | B | `feat/issue-54-exact-duplicates` | `main` after A merges | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
-| C | `feat/issue-54-responsibility-owners` | `main` after B merges | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged | candidates calibrated and warning-only, required checks green |
+| C | `feat/issue-54-responsibility-owners` | `main` after B merges | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | candidates calibrated and warning-only, required checks green |
 
 PR C may approach 600 net because its calibrated positive and negative proof
 must ship with the behavior; splitting that proof into a fourth PR would create
@@ -153,6 +171,10 @@ Required proof includes:
 - the quality gate over the branch's real base-to-candidate change
 - captured corpus identity and SHA-256 verification
 - slice-specific historical replay with no unexamined regressions
+- an Interface-level negative where owner discovery sees one owner, truncates
+  before the second, and therefore remains active and unresolved; it must use
+  #75's real skipped/truncated-scope path, not a hand-built snapshot, stubbed
+  discovery collaborator, or newly invented exclusion knob
 - net-line measurement under delivery-governance rules
 - the current-head PR reviewer completion gate before each merge
 
@@ -167,6 +189,8 @@ Required proof includes:
 - [x] This planning branch reviewed, pushed, and opened as draft PR #78.
 - [ ] PR A merged with its checklist and reviewer loop complete.
 - [ ] PR B merged with its checklist and reviewer loop complete.
+- [!] Parent #54 must pin the exact responsibility-owner calibration manifest
+  before PR C is dispatched.
 - [ ] PR C merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 calibration evidence reviewed by a human.
 - [ ] Any later promotion recorded as a separate, explicitly approved decision.
@@ -179,3 +203,6 @@ Required proof includes:
 - 2026-08-05: made the one-owner deletion/deepening contract explicit after
   operator direction and Claude Advisor challenge; PR count and order remain
   unchanged.
+- 2026-08-05: added complete owner/reference discovery, explicit finding
+  states, mechanical rewiring proof, and the parent-owned PR C corpus gate
+  after reviewer findings and codebase-design advisor challenge.
