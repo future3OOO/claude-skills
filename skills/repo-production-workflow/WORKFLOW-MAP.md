@@ -28,10 +28,9 @@ flowchart LR
 ## State Interface
 
 One repository-scoped file records the active slug, phase, next action, step
-statuses, code-review disposition state, and final-review result. Which root
-holds it — precedence, what follows the root, what it does not isolate, and when
-to set it — is owned by
-[Workflow state root](https://github.com/future3OOO/claude-skills/blob/main/README.md#workflow-state-root).
+statuses, code-review disposition state, and final-review result. See
+[Workflow state root](https://github.com/future3OOO/claude-skills/blob/main/README.md#workflow-state-root)
+for which root holds it.
 
 ```text
 begin              # assigns the pass's random workflowId

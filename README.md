@@ -138,42 +138,29 @@ review on the new head.
 
 ## Workflow state root
 
-A non-empty `CLAUDE_WORKFLOW_STATE_ROOT` selects where workflow state is stored;
-otherwise the estate uses `$CLAUDE_HOME/state`, or `~/.claude/state` when
-`CLAUDE_HOME` is unset — unset, not empty, because the Python writers read an
-empty `CLAUDE_HOME` as a relative path while the advisor wrapper takes the
-fallback. Every workflow artifact follows the selected root:
-repository slots and their workflow snapshots, producer evidence, `.workflow.lock`,
-`stop/<session>.json`, `stop-latch-log.jsonl`, `sessions/<session>/<key>.json`
-associations, `_advisor-sessions/*.sid` advisor pointers, and the retained
-legacy `active-pass.json` marker.
+`CLAUDE_WORKFLOW_STATE_ROOT` selects where workflow state is stored; otherwise it
+lands in `$CLAUDE_HOME/state`, or `~/.claude/state`. Everything the workflow
+writes follows that root — repository state, producer evidence, locks, Stop and
+session records, advisor pointers. Nothing else moves: skills, hooks,
+`CLAUDE.md`, and Claude's own sessions are unaffected, and state already written
+elsewhere stays there.
 
-It redirects reads and writes; it never migrates artifacts already written
-elsewhere. It also isolates nothing else — skills, hooks, `CLAUDE.md`, the rest
-of `CLAUDE_HOME`, and Claude's own session and project storage are unaffected.
-
-Each process resolves the root from its own environment, so export it before
-launching or resuming Claude and reuse the same durable root for the whole pass.
-A process started without it falls back to the default root, where it cannot see
-a pass recorded under a different one.
+Each process reads the variable from its own environment, so export it before
+launching or resuming and reuse the same root for the whole pass.
 
 ```bash
-# launch
 export CLAUDE_WORKFLOW_STATE_ROOT="$HOME/.claude-state-roots/agent-a"
 mkdir -p "$CLAUDE_WORKFLOW_STATE_ROOT" && chmod 700 "$CLAUDE_WORKFLOW_STATE_ROOT"
 claude
-
-# resume, in a new shell: the same root, exported again before resuming
-export CLAUDE_WORKFLOW_STATE_ROOT="$HOME/.claude-state-roots/agent-a"
+# later, in a new shell: export the same root again, then
 claude --resume
 ```
 
 `prune --apply` deletes from whichever root is selected, so check the variable
-before running it by hand. The destructive prune tests never touch the default:
-each builds a private temporary root and points the variable at it.
+before running it by hand; the prune tests always point it at a temporary root.
 
-A per-agent root is optional. It keeps concurrent agents out of each other's
-workflow state, at the cost of splitting the audit history across roots.
+A per-agent root is optional: it isolates concurrent agents from each other's
+workflow state, at the cost of splitting audit history across roots.
 
 ## External dependencies
 
