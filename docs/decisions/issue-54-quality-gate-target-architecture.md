@@ -336,6 +336,12 @@ The CLI transport contract is the `cli.py` responsibility in the ownership
 table above; optional-input read failures remain outside `runner.check`
 promotion.
 
+Promotion does not retype the source finding or change its intrinsic check
+result. When `fail_on_warnings=true` selects an eligible exact ID, the finding
+remains in `findings`, `warnings`, and `checks[].warnings` with
+`severity=warning` and `passed=true`; the projection adds an `errors` entry
+bound to that exact rule ID and sets top-level `ok=false`.
+
 ## PostToolUse visibility
 
 Warning-only must mean non-blocking feedback, not discarded output.
@@ -417,7 +423,7 @@ to rerun it on a later evaluation.
 | active QG54 finding | `findings`, `warnings`, and `checks[].warnings`; `status=finding`; `passed=true`; `ok` unchanged |
 | incomplete QG54 rule | `findings` and `warnings`; `status=incomplete`; `passed=null`; edit-time `ok` unchanged |
 | QG54 rule not evaluated | `findings` and `warnings`; `status=not-evaluated`; `passed=null`; edit-time `ok` unchanged |
-| active transitional non-QG54 warning | `findings`, `warnings`, and `checks[].warnings`; normally `passed=true` and `ok` unchanged; an eligible exact ID is promoted only when `fail_on_warnings=true` |
+| active transitional non-QG54 warning | `findings`, `warnings`, and `checks[].warnings`; normally `passed=true` and `ok` unchanged; with `fail_on_warnings=true`, an eligible exact ID keeps `severity=warning` and `passed=true`, adds an exact-ID `errors` projection, and sets `ok=false` |
 | resolved owner evidence | `resolvedFindings` only; never an active warning |
 | cumulative metrics | `evaluation.growth`; no legacy `bloat` object |
 | owner/reuse evidence | structured findings; no legacy `reuseFindings` object |

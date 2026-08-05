@@ -60,6 +60,9 @@ preserve schema-v1 behavior. #77 deletes the former and replaces the latter,
 when relevant, with disabled per-affected-rule
 `QG54-ANALYSIS-INCOMPLETE` evidence. No non-QG54 warning survives the completed
 #77 architecture.
+Promotion leaves the source finding at `severity=warning` and its intrinsic
+check at `passed=true`; it adds an `errors` projection bound to the eligible
+exact ID and sets top-level `ok=false`.
 
 ## Conditional completed-state architecture
 
