@@ -1,0 +1,25 @@
+name: agent branch export
+
+on:
+  push:
+    branches: ["agent/issue-49-implementation"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Package checkout
+        run: zip -qr claude-skills-source.zip . -x '.git/*'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-skills-source
+          path: claude-skills-source.zip
+          retention-days: 1
