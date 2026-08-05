@@ -27,14 +27,25 @@ and `--gitnexus-context-json <path-or->`. Load
 [references/gate-policy.md](references/gate-policy.md) when interpreting the
 gate's JSON contract.
 
+## Minimum Implementation Ladder
+
+Before writing production code, stop at the first production-safe rung:
+
+1. No production change is required.
+2. Deepen the existing responsible owner and delete any surface the change supersedes.
+3. Use a standard-library capability.
+4. Use a native platform, runtime, datastore, or protocol capability.
+5. Use an already-installed dependency that legitimately owns the behavior.
+6. Add the minimum custom implementation inside the justified responsible owner.
+
+Use a lower rung only when every higher rung cannot preserve the required behavior, boundary validation, security, accessibility, data-loss protection, cleanup, and affected-surface proof.
+
 ## Core Standard
 
 - Ship production code only.
 - Make the smallest correct change.
 - Delete lines that do not directly serve the requirement.
 - Remove dead code instead of hiding it behind flags or wrappers.
-- Extend an existing correct path before adding a new branch or abstraction.
-- Prefer deepening an existing module over creating a new public module.
 - Use Ousterhout-style depth: a small, stable public interface hiding meaningful implementation complexity. File size is not the measure.
 - A new public module or seam must earn its interface by hiding complexity, improving locality, or supporting real variation across callers, adapters, or test surfaces.
 - Do not add orchestration layers, control-plane hops, or indirection that the requirement does not need.
@@ -106,12 +117,11 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
 - Provide an explicit fail path or dead-letter path for retry loops.
 - Leave no orphaned temp state, leaked leases, or silent leftovers.
 - Keep startup, pre-task, and post-task cleanup deterministic.
-- Do not add a new package if the standard library or an existing package already solves the problem cleanly.
 - Do not introduce a second package manager or second lockfile.
 
 ## Execution Checklist
 
-- Before writing code, including untracked files, scratch implementation files, generated source, or a new worktree, identify the existing path to extend, public interface, test surface, minimum changed surface, and code that must be deleted or reused to avoid a second implementation.
+- Before writing code, including untracked files, scratch implementation files, generated source, or a new worktree, name the selected ladder rung and responsible owner; identify its interface, test surface, minimum changed surface, and code that must be deleted or reused to avoid a second implementation.
 - Inspect the delta and remove unnecessary additions.
 - Scan for common quality escapes such as `TODO`, `FIXME`, `eslint-disable`, `@ts-ignore`, and broad catch/pass patterns.
 - Run the bundled production code quality gate.
