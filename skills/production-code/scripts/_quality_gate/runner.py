@@ -31,11 +31,15 @@ def check(
     quality_escapes = scan_quality_escapes(snapshot)
     duplicates = duplicate_added_blocks(snapshot)
     bloat_errors, bloat_warnings, bloat_details = evaluate_bloat(snapshot)
-    growth = evaluate_growth(snapshot)
-    reuse_findings, gitnexus_queries = detect_reuse_issues(
+    reuse_findings, gitnexus_queries, reuse_rule = detect_reuse_issues(
         snapshot,
         parse_repo_context_packet(repo_context_packet),
         gitnexus_boosts,
+    )
+    findings = [evaluate_growth(snapshot), reuse_rule]
+    # An analysis that could not see everything says so where the run is read.
+    warnings.extend(
+        f"incomplete analysis for {finding.rule_id}: {gap}" for finding in findings for gap in finding.gaps
     )
     reuse_errors = [finding for finding in reuse_findings if finding.severity == "error"]
     reuse_warnings = [finding for finding in reuse_findings if finding.severity == "warning"]
@@ -64,7 +68,7 @@ def check(
         "warnings": warnings,
         "bloat": bloat_details,
         "cumulativeGrowth": snapshot.growth(),
-        "findings": [growth.as_dict(snapshot.base_identity, snapshot.candidate_identity)],
+        "findings": [finding.as_dict(snapshot.base_identity, snapshot.candidate_identity) for finding in findings],
         "reuseFindings": [finding.as_dict() for finding in reuse_findings],
         "gitnexusQueries": gitnexus_queries,
     }

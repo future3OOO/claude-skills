@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from .git_scope import git_text, read_file, read_git_file
-from .models import ReuseFinding, SymbolDef
+from .models import Finding, ReuseFinding, SymbolDef
 from .path_policy import ROLE_PRODUCTION, language_for_path, normalize_path
 from .snapshot import EvaluationSnapshot
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
@@ -24,14 +24,19 @@ def detect_reuse_issues(
     snapshot: EvaluationSnapshot,
     repo_context: dict[str, object],
     gitnexus_boosts: dict[str, int],
-) -> tuple[list[ReuseFinding], list[str]]:
+) -> tuple[list[ReuseFinding], list[str], Finding]:
     packet_paths = {normalize_path(str(path)) for path in repo_context.get("paths", set()) if str(path)}
     candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
-        return [], []
-    existing = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
+        return [], [], _reuse_rule(snapshot, [], ())
+    existing, truncated = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
+    gaps = (
+        (f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files / {MAX_INDEX_SYMBOLS} symbols",)
+        if truncated
+        else ()
+    )
     if not existing:
-        return [], []
+        return [], [], _reuse_rule(snapshot, [], gaps)
     # Tracked hunks only: an untracked file's whole text is its added lines, so
     # including it would read a symbol's own definition as a call to it.
     added_by_file = {
@@ -45,7 +50,26 @@ def detect_reuse_issues(
         for finding in findings
         if finding.score < 90
     ]
-    return findings[:30], sorted(set(queries))[:10]
+    return findings[:30], sorted(set(queries))[:10], _reuse_rule(snapshot, findings[:30], gaps)
+
+
+def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps: tuple[str, ...]) -> Finding:
+    """The reuse rule's own evaluation record.
+
+    Truncated baseline discovery reports `incomplete`: a scan that stopped early
+    has not seen the owner it would have matched, so it cannot report clean.
+    """
+    errors = [finding for finding in findings if finding.severity == "error"]
+    return Finding(
+        rule_id="reuse-existing-helpers",
+        severity="error" if errors else "warning",
+        status="incomplete" if gaps else "warn" if findings else "pass",
+        region={"scope": "evaluation", "changedScope": snapshot.changed_scope, "fileCount": len(snapshot.entries)},
+        evidence={"errors": len(errors), "warnings": len(findings) - len(errors)},
+        action="Call the existing owner instead of reimplementing it, or widen discovery until the baseline scan completes.",
+        pass_condition="no reimplementation of an existing owner, with baseline discovery complete",
+        gaps=gaps,
+    )
 
 
 def _existing_symbol_index(
@@ -53,9 +77,10 @@ def _existing_symbol_index(
     candidates: list[SymbolDef],
     packet_paths: set[str],
     gitnexus_boosts: dict[str, int],
-) -> list[SymbolDef]:
+) -> tuple[list[SymbolDef], bool]:
     symbols: list[SymbolDef] = []
     indexed = 0
+    truncated = False
     tracked_args = ["ls-tree", "-r", "--name-only", snapshot.base_for_file] if snapshot.candidate_source == "index" else ["ls-files"]
     tracked = [normalize_path(line) for line in git_text(snapshot.repo, tracked_args).splitlines() if normalize_path(line)]
     candidate_languages = {item.language for item in candidates}
@@ -63,6 +88,7 @@ def _existing_symbol_index(
     gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
     for rel_path in tracked:
         if indexed >= MAX_INDEX_FILES or len(symbols) >= MAX_INDEX_SYMBOLS:
+            truncated = True
             break
         entry = snapshot.entry(rel_path)
         if (entry is not None and entry.untracked) or snapshot.role_of(rel_path) != ROLE_PRODUCTION:
@@ -80,8 +106,9 @@ def _existing_symbol_index(
             boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{rel_path}:{symbol.name}", 0))
             symbols.append(SymbolDef(symbol.name, symbol.path, symbol.line, symbol.kind, symbol.language, symbol.tokens, symbol.source, boost))
             if len(symbols) >= MAX_INDEX_SYMBOLS:
+                truncated = True
                 break
-    return symbols
+    return symbols, truncated
 
 
 def _new_symbols(snapshot: EvaluationSnapshot) -> list[SymbolDef]:

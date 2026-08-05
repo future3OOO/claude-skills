@@ -643,6 +643,26 @@ def test_separate_hunks_do_not_form_one_duplicate() -> None:
     with_repo(body)
 
 
+def test_truncated_baseline_discovery_cannot_report_clean_reuse() -> None:
+    # Real truncation: a committed baseline file carrying more symbols than the
+    # index ceiling, so discovery stops before it has seen every existing owner.
+    def body(repo: Path) -> None:
+        write(repo / "src" / "wide.py", "\n".join(f"def a{i}():pass" for i in range(25001)) + "\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "wide baseline")
+        # A name nothing matches: without the truncation gap this run reports a
+        # clean reuse pass while discovery never finished.
+        write(repo / "src" / "candidate.py", "def unrelated_widget_label():\n    return 0\n")
+        _, payload, _ = run_gate(repo)
+        finding = next(item for item in payload["findings"] if item["ruleId"] == "reuse-existing-helpers")
+        assert finding["status"] == "incomplete", finding
+        assert finding["completeness"]["complete"] is False, finding
+        assert any("stopped at" in gap for gap in finding["completeness"]["gaps"]), finding
+        assert any("incomplete analysis for reuse-existing-helpers" in w for w in payload["warnings"]), payload["warnings"]
+
+    with_repo(body)
+
+
 def test_deleting_a_production_file_counts_as_deletions() -> None:
     # One owner of per-entry counts means a removed file's lines are deletions;
     # they used to vanish because the file had no current text to read.
@@ -812,6 +832,7 @@ def main() -> int:
         test_bloat_reports_one_error_per_file,
         test_unknown_numstat_cannot_report_clean_growth,
         test_separate_hunks_do_not_form_one_duplicate,
+        test_truncated_baseline_discovery_cannot_report_clean_reuse,
         test_deleting_a_production_file_counts_as_deletions,
         test_growth_reports_each_role_separately,
         test_generated_and_non_source_stay_out_of_human_authored_growth,
