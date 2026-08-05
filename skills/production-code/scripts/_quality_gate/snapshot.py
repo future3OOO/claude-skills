@@ -58,7 +58,7 @@ class EvaluationSnapshot:
             candidate_tree=tree,
             changed_scope=str(scope["changed_scope"]),
             entries=entries,
-            baseline=_baseline_index(repo, base, changed),
+            baseline=_baseline_index(repo, base),
             unattributed=tuple(sorted(set(hunks) - changed)),
             capture_gaps=capture_gaps,
         )
@@ -128,7 +128,7 @@ def _entry(
     )
 
 
-def _baseline_index(repo: Path, base: str, changed: set[str]) -> tuple[BaselineFile, ...]:
+def _baseline_index(repo: Path, base: str) -> tuple[BaselineFile, ...]:
     """Source files in the base tree: the owners a change could reimplement.
 
     A path the change adds has no base entry, so its absence is absence, not

@@ -758,6 +758,11 @@ def test_unmeasured_production_file_cannot_report_clean_reuse_or_growth() -> Non
         check = check_named(payload, "reuse-existing-helpers")
         assert check["passed"] is None and check["status"] == "incomplete", check
         assert payload["hardRules"]["noDuplication"]["status"] == "incomplete", payload["hardRules"]
+        # Git supplied no hunks for the unmeasured source file, so the
+        # hunk-reading checks saw none of its content and cannot claim a pass.
+        for name in ("no-quality-escapes", "no-duplicate-added-blocks"):
+            hunk_check = check_named(payload, name)
+            assert hunk_check["passed"] is None and hunk_check["status"] == "incomplete", (name, hunk_check)
 
     with_repo(body)
 
@@ -1068,6 +1073,36 @@ def test_full_history_test_like_classification_is_unchanged() -> None:
     assert module.is_test_like_path("api/payload.schema.json") is True
 
 
+def test_gate_completes_on_an_unborn_repo_with_open_stdin() -> None:
+    # git mktree reads stdin by design; the gate must not let any git child
+    # inherit an open stdin, or the first run in a freshly initialized repo
+    # hangs at a terminal until EOF.
+    repo = Path(tempfile.mkdtemp(prefix="production-code-gate-unborn-"))
+    read_fd, write_fd = os.pipe()
+    try:
+        git(repo, "init", "-q")
+        git(repo, "config", "user.email", "test@example.com")
+        git(repo, "config", "user.name", "Test User")
+        write(repo / "app.py", "VALUE = 1\n")
+        proc = subprocess.Popen(
+            ["python3", str(SCRIPT), "check", "--repo", str(repo), "--json"],
+            stdin=read_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+        )
+        try:
+            stdout, _ = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise AssertionError("gate hung on an unborn repository while stdin stayed open")
+        payload = json.loads(stdout)
+        assert proc.returncode == 0, stdout
+        assert payload["ok"] is True, payload["errors"]
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+        shutil.rmtree(repo, ignore_errors=True)
+
+
 def test_gate_implementation_budget() -> None:
     limits = {
         "wrapper_lines": 150,
@@ -1158,6 +1193,7 @@ def main() -> int:
         test_promotion_follows_exact_rule_id_metadata_only,
         test_snapshot_reads_the_captured_tree_not_the_moving_worktree,
         test_full_history_test_like_classification_is_unchanged,
+        test_gate_completes_on_an_unborn_repo_with_open_stdin,
         test_captured_round_six_corpus_reports_pinned_totals,
         test_gate_implementation_budget,
     ]

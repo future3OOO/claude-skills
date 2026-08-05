@@ -10,11 +10,14 @@ from .path_policy import normalize_path
 
 
 def run_git(repo: Path, args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    # No git child here consumes stdin, and mktree would otherwise block on an
+    # inherited open terminal the first time a repository has no HEAD.
     return subprocess.run(
         ["git", *args],
         cwd=repo,
         encoding="utf-8",
         errors="replace",
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,

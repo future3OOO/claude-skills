@@ -20,8 +20,9 @@ tests, build, or domain-specific gates.
   additive-ratio failures.
 - Incomplete required scope never reads clean: missing base refs, capture
   failures, binary (unmeasured) counts, truncated or unreadable baseline
-  discovery, and unattributed hunks propagate `incomplete` to every affected
-  finding, check, and hard rule, surfaced as `QG54-ANALYSIS-INCOMPLETE`.
+  discovery, and unattributed hunks propagate `incomplete` to affected checks
+  and hard rules. Typed incomplete findings are additionally surfaced as
+  `QG54-ANALYSIS-INCOMPLETE`.
 - `--fail-on-warnings` promotes only typed active findings whose exact rule ID
   carries promotion eligibility in immutable rule-policy metadata. All QG54
   IDs start ineligible; the transitional `QG-LEGACY-REUSE-ADVISORY` and

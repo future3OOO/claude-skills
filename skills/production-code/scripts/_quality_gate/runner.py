@@ -52,9 +52,13 @@ def check(
     errors.extend(promoted_errors(findings, fail_on_warnings))
 
     # Hunk-reading rules cannot claim they saw the whole change when hunks are
-    # unattributed or capture failed; path-reading rules depend on capture only.
+    # unattributed, capture failed, or a source file's counts were never
+    # measured (Git supplied no hunks to inspect); path-reading rules depend on
+    # capture only. Non-source measurement gaps stay out: an image's binary
+    # counts are irrelevant to rules that read source hunks.
     capture = snapshot.capture_gaps
-    attribution = snapshot.attribution_gaps() + capture
+    measurement = tuple(sorted({gap for entry in snapshot.entries if entry.source for gap in entry.gaps}))
+    attribution = snapshot.attribution_gaps() + measurement + capture
     checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, growth_rule, growth_warning, gitnexus_rule, capture, attribution)
     return {
         "schemaVersion": 2,

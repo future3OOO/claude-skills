@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from .findings import RULE_GROWTH
 from .models import Finding, SnapshotEntry
@@ -70,13 +69,12 @@ def scan_quality_escapes(snapshot: EvaluationSnapshot) -> list[str]:
 
 
 def rules_for_entry(entry: SnapshotEntry) -> list[re.Pattern[str]]:
-    suffix = Path(entry.path).suffix.lower()
     rules = list(GENERAL_ESCAPE_RULES)
     if entry.role != "production":
         return rules
-    if suffix == ".py":
+    if entry.language == "python":
         rules.extend(PYTHON_ESCAPE_RULES)
-    if suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}:
+    if entry.language == "javascript":
         rules.extend(TS_ESCAPE_RULES)
     return rules
 
