@@ -2,7 +2,7 @@
 
 ## Status
 
-- current state: child issues #75, #76, and #77 published; planning PR pending
+- current state: child issues published; governing plan proposed in draft PR #78
 - governing artifact: this document
 - last updated: 2026-08-05
 
@@ -133,7 +133,7 @@ Required proof includes:
 - [x] Child #76 published, linked, and blocked by #75.
 - [x] Child #77 published, linked, and blocked by #76.
 - [x] Parent #54 seven-slice list replaced by the approved structure.
-- [ ] This planning branch reviewed, pushed, and opened as a draft PR.
+- [x] This planning branch reviewed, pushed, and opened as draft PR #78.
 - [ ] PR A merged with its checklist and reviewer loop complete.
 - [ ] PR B merged with its checklist and reviewer loop complete.
 - [ ] PR C merged with its checklist and reviewer loop complete.
