@@ -7,6 +7,17 @@ from dataclasses import dataclass
 from .path_policy import PathClass
 
 
+def content_anchor(kind: str, language: str, content: str) -> str:
+    """A stable anchor over anchor kind, language, and the anchored content.
+
+    One implementation for every family: a later rule that anchors normalized
+    implementation bytes rather than a symbol name feeds the same function, so
+    anchors stay comparable instead of drifting per rule.
+    """
+    payload = "\x1f".join((kind, language, content))
+    return hashlib.sha256(payload.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class Numstat:
     """Counts for one path; `None` when Git reported the file as binary."""

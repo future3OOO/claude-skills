@@ -718,8 +718,61 @@ def test_reuse_finding_identity_survives_an_unrelated_inserted_line(repo: Path) 
     second = reuse_finding(after)
     assert first["evidence"]["matches"], first
     assert first["findingId"] == second["findingId"], (first["findingId"], second["findingId"])
-    # The region still reports where it is now, so the display location moved.
-    assert second["region"]["anchors"][0]["line"] != first["region"]["anchors"][0]["line"], second["region"]
+
+    # Regions carry the full contract and are canonically ordered, so the
+    # serialized order is a property of the finding, not of match order.
+    regions = first["region"]["regions"]
+    assert regions, first["region"]
+    for region in regions:
+        assert set(region) == {"path", "role", "language", "displayLine", "contentAnchor", "evidenceRole"}, region
+        assert region["role"] == "production" and region["language"] == "python", region
+    assert {region["evidenceRole"] for region in regions} == {"candidate", "existing-owner"}, regions
+    ordered = sorted(regions, key=lambda r: (r["contentAnchor"], r["evidenceRole"], r["path"], r["displayLine"]))
+    assert regions == ordered, regions
+
+    # The content anchor is stable across the insertion while the display line
+    # moves: that split is exactly what makes the ID survive.
+    moved = next(r for r in second["region"]["regions"] if r["evidenceRole"] == "candidate")
+    origin = next(r for r in regions if r["evidenceRole"] == "candidate")
+    assert moved["contentAnchor"] == origin["contentAnchor"], (origin, moved)
+    assert moved["displayLine"] != origin["displayLine"], (origin, moved)
+
+
+def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
+    # Fix 6 is enforced structurally rather than behaviourally: the CLI
+    # captures and evaluates in one process, so there is no window at the
+    # public Interface in which to observe a post-freeze read. What can be
+    # asserted is that the detector modules hold nothing capable of one -
+    # EvaluationSnapshot carries no repository handle, and no detector imports
+    # the Git transport or touches the filesystem. This guards against a later
+    # slice quietly reintroducing a detector-time read.
+    detectors = ("checks.py", "reuse.py", "symbols.py", "findings.py")
+    banned_calls = {"run_git", "git_text", "git_read", "read_git_file", "open", "read_text", "read_bytes"}
+    for name in detectors:
+        tree = ast.parse((SCRIPT_DIR / "_quality_gate" / name).read_text(encoding="utf-8"))
+        imported = {
+            node.module for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        } | {
+            alias.name for node in ast.walk(tree)
+            if isinstance(node, ast.Import) for alias in node.names
+        }
+        assert not {"git_scope", ".git_scope", "subprocess", "os"} & imported, (name, sorted(imported))
+        called = {
+            node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+            for node in ast.walk(tree) if isinstance(node, ast.Call)
+            and isinstance(node.func, (ast.Name, ast.Attribute))
+        }
+        assert not banned_calls & called, (name, sorted(banned_calls & called))
+
+    snapshot_source = (SCRIPT_DIR / "_quality_gate" / "snapshot.py").read_text(encoding="utf-8")
+    assert "def read_baseline" not in snapshot_source, "read_baseline is a detector-time Git read"
+    fields = {
+        node.target.id
+        for node in ast.walk(ast.parse(snapshot_source))
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert "repo" not in fields, "EvaluationSnapshot must hold no repository handle after the freeze"
 
 
 @with_repo
@@ -1446,7 +1499,7 @@ def test_gate_implementation_budget() -> None:
         # round number, so any further growth has to be argued rather than
         # absorbed by slack. The steady-state ceiling stays 1800 and is
         # enforced below against the package minus the surfaces #77 deletes.
-        "total_lines": 1958,
+        "total_lines": 1995,
     }
     steady_state_total = 1800
     # The surfaces the target architecture assigns to #77 for deletion. #75
@@ -1462,12 +1515,12 @@ def test_gate_implementation_budget() -> None:
     justified: dict[str, str] = {
         "TOTAL": (
             "Approved transitional coexistence for #75, expiring with #77. The package measures "
-            "1958 lines because the schema-v2 canonical-evaluation machinery coexists with "
-            "_quality_gate/reuse.py (282) and _quality_gate/symbols.py (101) - the 383 lines the "
+            "1995 lines because the schema-v2 canonical-evaluation machinery coexists with "
+            "_quality_gate/reuse.py (308) and _quality_gate/symbols.py (101) - the 409 lines the "
             "target architecture assigns to #77 for deletion. #75's acceptance criteria require "
             "retaining QG-LEGACY-REUSE-ADVISORY and QG-LEGACY-GITNEXUS-CONTEXT as promotion-eligible "
             "through #75 and #76, so those surfaces cannot be removed in this slice. Without them "
-            "the package is 1575, inside the 1,500-1,600 converged envelope and under the 1800 "
+            "the package is 1586, inside the 1,500-1,600 converged envelope and under the 1800 "
             "steady-state ceiling asserted below. When #77 deletes them the subtraction goes to "
             "zero and that assertion becomes the plain 1800 ceiling again."
         ),

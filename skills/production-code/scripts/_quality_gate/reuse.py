@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .findings import RULE_REUSE_ADVISORY
-from .models import BaselineFile, Finding, ReuseFinding, SymbolDef
+from .models import BaselineFile, Finding, ReuseFinding, SymbolDef, content_anchor
 from .snapshot import EvaluationSnapshot
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
@@ -76,19 +76,45 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
             "scope": "evaluation",
             "changedScope": snapshot.changed_scope,
             "fileCount": len(snapshot.entries),
-            # Display provenance, ordered as the matches are: where each anchor
-            # sits in this evaluation, which a later evaluation may move.
-            "anchors": [
-                {"path": item.new_file, "line": item.new_line, "symbol": item.new_symbol,
-                 "ownerPath": item.existing_file, "ownerLine": item.existing_line, "ownerSymbol": item.existing_symbol}
-                for item in findings
-            ],
+            "regions": _regions(snapshot, findings),
         },
         evidence={"errors": len(errors), "warnings": len(findings) - len(errors), "matches": matches},
         action="Call the existing owner instead of reimplementing it, or widen discovery until the baseline scan completes.",
         pass_condition="duplicate-absent: no reimplementation of an existing owner, with baseline discovery complete",
         gaps=gaps,
     )
+
+
+def _regions(snapshot: EvaluationSnapshot, findings: list[ReuseFinding]) -> list[dict[str, object]]:
+    """Ordered exact regions: the candidate anchor and the owner it matched.
+
+    Role and language come from the snapshot's stored classification, never
+    re-derived here. Ordering is canonical - content anchor, role, path, then
+    display line - so the serialized order is a property of the finding rather
+    than of the order matches happened to be scored in.
+    """
+    stored = {entry.path: (entry.role, entry.language) for entry in snapshot.entries}
+    stored.update({base.path: (base.role, base.language) for base in snapshot.baseline})
+    regions = []
+    for item in findings:
+        for path, line, symbol, evidence_role in (
+            (item.new_file, item.new_line, item.new_symbol, "candidate"),
+            (item.existing_file, item.existing_line, item.existing_symbol, "existing-owner"),
+        ):
+            role, language = stored.get(path, ("unknown", "other"))
+            regions.append({
+                "path": path,
+                "role": role,
+                "language": language,
+                "displayLine": line,
+                # Anchor kind, language, and symbol: stable under the line
+                # moves and rebases that shift displayLine. The normalized
+                # implementation fingerprint the duplicate family needs is
+                # #76's work and is deliberately not invented here.
+                "contentAnchor": content_anchor("symbol", language, symbol),
+                "evidenceRole": evidence_role,
+            })
+    return sorted(regions, key=lambda item: (item["contentAnchor"], item["evidenceRole"], item["path"], item["displayLine"]))
 
 
 def _existing_symbol_index(
