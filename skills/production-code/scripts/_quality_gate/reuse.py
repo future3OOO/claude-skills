@@ -56,6 +56,7 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
     candidate side is incomplete too when hunks are unattributed, capture
     failed, or a production entry's counts were never measured.
     """
+    stored = _stored_classification(snapshot)
     errors = [finding for finding in findings if finding.severity == "error"]
     production_gaps = tuple(sorted({gap for entry in snapshot.role_entries("production") for gap in entry.gaps}))
     gaps = tuple(dict.fromkeys(gaps + production_gaps + snapshot.attribution_gaps() + snapshot.capture_gaps))
@@ -65,18 +66,19 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
         severity="error" if errors else "warning",
         status="incomplete" if gaps else "finding" if findings else "passed",
         passed=None if gaps else not errors,
-        # Identity is the anchor pair, never the line: a comment inserted above
-        # a match, or a rebase, moves every line number while the finding and
-        # its disposition stay the same one.
+        # Identity is the anchor pair and nothing else. Paths and lines are
+        # provenance, so a rename or move preserves the debt's ID and the
+        # disposition attached to it, and an inserted line cannot shift it.
         identity=tuple(
-            f"{item.new_file}:{item.new_symbol}->{item.existing_file}:{item.existing_symbol}"
+            f"{_symbol_anchor(stored, item.new_file, item.new_symbol)}"
+            f"->{_symbol_anchor(stored, item.existing_file, item.existing_symbol)}"
             for item in findings
         ),
         region={
             "scope": "evaluation",
             "changedScope": snapshot.changed_scope,
             "fileCount": len(snapshot.entries),
-            "regions": _regions(snapshot, findings),
+            "regions": _regions(stored, findings),
         },
         evidence={"errors": len(errors), "warnings": len(findings) - len(errors), "matches": matches},
         action="Call the existing owner instead of reimplementing it, or widen discovery until the baseline scan completes.",
@@ -89,16 +91,30 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
     )
 
 
-def _regions(snapshot: EvaluationSnapshot, findings: list[ReuseFinding]) -> list[dict[str, object]]:
-    """Ordered exact regions: the candidate anchor and the owner it matched.
+def _stored_classification(snapshot: EvaluationSnapshot) -> dict[str, tuple[str, str]]:
+    """Role and language per path, as the snapshot already resolved them.
 
-    Role and language come from the snapshot's stored classification, never
-    re-derived here. Ordering is canonical - content anchor, role, path, then
-    display line - so the serialized order is a property of the finding rather
-    than of the order matches happened to be scored in.
+    Built once per evaluation: the baseline index can hold thousands of paths,
+    so a scan per lookup would make anchoring quadratic in the change size.
     """
     stored = {entry.path: (entry.role, entry.language) for entry in snapshot.entries}
     stored.update({base.path: (base.role, base.language) for base in snapshot.baseline})
+    return stored
+
+
+def _symbol_anchor(stored: dict[str, tuple[str, str]], path: str, symbol: str) -> str:
+    """The symbol anchor identity and regions share, so the two cannot drift."""
+    return anchor("symbol", stored.get(path, ("unknown", "other"))[1], symbol)
+
+
+def _regions(stored: dict[str, tuple[str, str]], findings: list[ReuseFinding]) -> list[dict[str, object]]:
+    """Ordered exact regions: the candidate anchor and the owner it matched.
+
+    Role and language come from the snapshot's stored classification, never
+    re-derived here. Ordering is canonical - anchor, evidence role, path, then
+    display line - so the serialized order is a property of the finding rather
+    than of the order matches happened to be scored in.
+    """
     regions = []
     for item in findings:
         for path, line, symbol, evidence_role in (
@@ -117,7 +133,7 @@ def _regions(snapshot: EvaluationSnapshot, findings: list[ReuseFinding]) -> list
                 # family, so this slice does not claim one it did not compute.
                 # Stable under the line moves and rebases that shift
                 # displayLine, which is what the finding ID relies on.
-                "symbolAnchor": anchor("symbol", language, symbol),
+                "symbolAnchor": _symbol_anchor(stored, path, symbol),
                 "evidenceRole": evidence_role,
             })
     return sorted(regions, key=lambda item: (item["symbolAnchor"], item["evidenceRole"], item["path"], item["displayLine"]))

@@ -867,6 +867,32 @@ def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
                 assert region["symbolAnchor"], region
 
 
+@with_repo
+def test_reuse_finding_identity_survives_a_rename(repo: Path) -> None:
+    # Paths are provenance, not identity: "Rename/move-only therefore preserves
+    # the debt's ID" (ADR :410-411). Moving the reimplementation to a different
+    # path is the same debt, so the ID a disposition was attached to must not
+    # move with the file. Identity anchors the symbol pair; the region still
+    # reports the new path as display provenance.
+    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    body = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
+    write(repo / "src" / "copycat.py", body)
+    _, before, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    (repo / "src" / "copycat.py").unlink()
+    write(repo / "src" / "moved" / "copycat.py", body)
+    _, after, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    first, second = reuse_finding(before), reuse_finding(after)
+    assert first["evidence"]["matches"] and second["evidence"]["matches"], (first, second)
+    assert first["findingId"] == second["findingId"], (first["findingId"], second["findingId"])
+    # The move is still visible where it belongs - in the display region.
+    paths = {region["path"] for region in second["region"]["regions"]}
+    assert "src/moved/copycat.py" in paths, paths
+
+
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
     return next(item for item in payload["checks"] if item["name"] == name)
 
@@ -1568,7 +1594,7 @@ def test_gate_implementation_budget() -> None:
         # round number, so any further growth has to be argued rather than
         # absorbed by slack. The steady-state ceiling stays 1800 and is
         # enforced below against the package minus the surfaces #77 deletes.
-        "total_lines": 2027,
+        "total_lines": 2043,
     }
     steady_state_total = 1800
     # The surfaces the target architecture assigns to #77 for deletion. #75
@@ -1584,8 +1610,8 @@ def test_gate_implementation_budget() -> None:
     justified: dict[str, str] = {
         "TOTAL": (
             "Approved transitional coexistence for #75, expiring with #77. The package measures "
-            "2027 lines because the schema-v2 canonical-evaluation machinery coexists with "
-            "_quality_gate/reuse.py (314) and _quality_gate/symbols.py (101) - the 415 lines the "
+            "2043 lines because the schema-v2 canonical-evaluation machinery coexists with "
+            "_quality_gate/reuse.py (330) and _quality_gate/symbols.py (101) - the 431 lines the "
             "target architecture assigns to #77 for deletion. #75's acceptance criteria require "
             "retaining QG-LEGACY-REUSE-ADVISORY and QG-LEGACY-GITNEXUS-CONTEXT as promotion-eligible "
             "through #75 and #76, so those surfaces cannot be removed in this slice. Without them "
