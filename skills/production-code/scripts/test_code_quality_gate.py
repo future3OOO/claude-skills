@@ -1512,13 +1512,19 @@ def main() -> int:
         test_captured_round_six_corpus_reports_pinned_totals,
         test_gate_implementation_budget,
     ]
+    passed = skipped = 0
     for test in tests:
         try:
             test()
         except _SourceRepositoryUnavailable as reason:
             print(f"SKIP {test.__name__} ({reason})")
+            skipped += 1
             continue
+        # Counted only once the test has returned, so a failure escapes here
+        # and aborts before it can be summarised as a pass.
+        passed += 1
         print(f"PASS {test.__name__}")
+    print(f"{passed} passed, {skipped} skipped")
     return 0
 
 
