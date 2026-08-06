@@ -38,6 +38,60 @@ STATE_FIELDS = ("phase", "nextAction", "slug", "intent", "repoContextForge", "gi
                 "advisorPreflight.findings", "codeReview.status", "codeReview.findings",
                 "finalReview.source", "finalReview.status", "finalReview.findings")
 CHECKPOINT_FIELDS = ("phase", "slug", "ready", "missing", "tdd", "codeReviewStatus")
+# The documents the recorders validate before they will record anything, written once per
+# arm. They are benchmark stimulus and nothing else: the replay proves that two estate refs
+# persist identical state from identical input and shows what each operation costs. It is
+# not evidence that a preflight, an advisor consult or a code review ever happened.
+REPLAY_INPUTS: dict[str, object] = {
+    "preflight.json": {**{section: "workflow-state replay stimulus" for section in (
+        "affectedSurface", "authoritativeContract", "invariants", "proofPlan", "reusePath",
+        "chosenApproach", "rejectedAlternatives", "touchpoints", "verify", "update",
+        "modularityPlan", "riskChecks")}, "openQuestions": "none"},
+    "review.json": {"findings": [], "dispositions": []},
+}
+# Every governed operation downstream of Repo Context Forge, in order, each driven through
+# the arm's own shipped producer rather than a reimplementation of its contract. Each entry
+# carries the fields to compare and the transition it must observe, so a producer that
+# exits zero without advancing the state it owns fails the run instead of timing fast.
+REPLAY = (
+    ("replay-gitnexus", lambda c: [*c["cli"], "set-phase", *c["bound"], "--phase", "gitnexus",
+                                   "--status", "passed"],
+     STATE_FIELDS, lambda p: p["exits"] == [0] and p["gitnexus"] == "passed"),
+    ("replay-advisor-preflight", lambda c: [*c["cli"], "advisor-result", *c["bound"], "--stage", "preflight",
+                                            "--source", "codex-advisor", "--verdict", "completed"],
+     STATE_FIELDS, lambda p: p["advisorPreflight.status"] == "completed"),
+    ("replay-advisor-disposition", lambda c: [*c["cli"], "advisor-disposition", *c["bound"],
+                                              "--stage", "preflight", "--findings", "none"],
+     STATE_FIELDS, lambda p: p["advisorPreflight.findings"] == "none"),
+    ("replay-preflight", lambda c: [*c["script"]("production-preflight", "record-preflight.py"), *c["bound"],
+                                    "--input", str(c["inputs"] / "preflight.json")],
+     ("status",), lambda p: p["exits"] == [0] and p["status"] == "passed"),
+    ("replay-tdd", lambda c: [*c["script"]("tdd", "tdd-run.py"), "--repo", c["repo"], "--slug", "estate-benchmark",
+                              "--not-required", "workflow-state replay records no behaviour change"],
+     ("status",), lambda p: p["exits"] == [0] and p["status"] == "not-required"),
+    ("replay-production-code", lambda c: [*c["script"]("production-code", "record-production-code.py"),
+                                          *c["bound"], "--input", str(c["inputs"] / "gate.json")],
+     ("status",), lambda p: p["exits"] == [0] and p["status"] == "passed"),
+    ("replay-implementation", lambda c: [*c["cli"], "set-phase", *c["bound"], "--phase", "implementation",
+                                         "--status", "passed"],
+     STATE_FIELDS, lambda p: p["implementation"] == "passed"),
+    ("replay-verification", lambda c: [*c["script"]("repo-production-workflow", "verify-run.py"),
+                                       "--repo", c["repo"], "--slug", "estate-benchmark", "--", "true"],
+     ("verification", "exitCode"), lambda p: p["verification"] == "passed" and p["exitCode"] == 0),
+    ("replay-code-review", lambda c: [*c["script"]("code-review", "record-review.py"), *c["bound"],
+                                      "--resolved-model", "workflow-state-replay",
+                                      "--review-context-id", "workflow-state-replay",
+                                      "--input", str(c["inputs"] / "review.json")],
+     ("status",), lambda p: p["exits"] == [0] and p["status"] == "passed"),
+    ("replay-advisor-final", lambda c: [*c["cli"], "advisor-result", *c["bound"], "--stage", "final",
+                                        "--source", "codex-advisor", "--verdict", "commit-ready"],
+     STATE_FIELDS, lambda p: p["finalReview.source"] == "codex-advisor" and p["finalReview.status"] == "commit-ready"),
+    ("replay-final-disposition", lambda c: [*c["cli"], "advisor-disposition", *c["bound"], "--stage", "final",
+                                            "--findings", "none"],
+     STATE_FIELDS, lambda p: p["finalReview.findings"] == "none"),
+    ("replay-complete", lambda c: [*c["cli"], "complete", *c["bound"]],
+     STATE_FIELDS, lambda p: p["exits"] == [0] and p["phase"] == "complete"),
+)
 # Each scenario must be shown to have done the thing it is named for. Parity alone
 # would hold for two identically broken arms, so these decide the exit status too.
 EXPECTED = {
@@ -46,6 +100,7 @@ EXPECTED = {
     "checkpoint-not-ready": lambda p: p["ready"] is False and "repo-context-forge" in (p["missing"] or []),
     "post-edit-hook": lambda p: p["exits"] == [2, 0] and p["gateRejected"] and p["after"]["phase"] == "implementation",
     "prune-report": lambda p: p["exits"] == [0] and p["applied"] is False and p["removableCount"] == 0,
+    **{name: predicate for name, _, _, predicate in REPLAY},
 }
 # Shared keys only: the candidate's extra `quality-gate=` is a representation change,
 # reported as a delta rather than compared.
@@ -244,7 +299,44 @@ def scenario(name: str, start: float, runs: list[subprocess.CompletedProcess[str
             "projection": {"exits": [process.returncode for process in runs], **projection}}
 
 
-def repetition(arm: dict[str, object], index: int) -> tuple[list[dict[str, object]], str]:
+def replay_seed(arm: dict[str, object]) -> tuple[dict[str, object], dict[str, object]]:
+    """Advance one arm to the replay's starting line through its own real Repo Context Forge.
+
+    Once per arm, not once per repetition. Every governed operation after it is gated
+    behind repo-context-forge, and only that adapter can record the phase, so without
+    this the twelve downstream operations cannot be reached at all. It costs seconds
+    where they cost milliseconds, so each repetition continues a fresh copy of what it
+    produced here; the copied root is that real path's output, not a substitute for it.
+    """
+    root = Path(str(arm["root"]))
+    home = root / "replay"
+    env = arm_env(root, home / "seed-state")
+    repo = fixture(home / "repo", env)
+    begun = run([*cli_for(arm), "begin", "--repo", str(repo), "--slug", "estate-benchmark",
+                 "--intent", "workflow-state replay"], env)
+    start = time.perf_counter()
+    forged = run([sys.executable, str(root / "home/skills/repo-context-forge/scripts/bootstrap.py"),
+                  "--repo", str(repo), "--workflow-slug", "estate-benchmark",
+                  "--intent", "workflow-state replay"], env)
+    seconds = round(time.perf_counter() - start, 6)
+    inputs = home / "inputs"
+    inputs.mkdir(parents=True)
+    for name, document in REPLAY_INPUTS.items():
+        (inputs / name).write_text(json.dumps(document), encoding="utf-8")
+    # The recorder refuses anything but this gate's own ok verdict, so the arm's gate is
+    # run against the arm's fixture rather than a document describing one.
+    gate = run([sys.executable, str(root / "home/skills/production-code/scripts/code_quality_gate.py"),
+                "check", "--repo", str(repo), "--json"], env)
+    (inputs / "gate.json").write_text(gate.stdout, encoding="utf-8")
+    reached, _ = project(run([*cli_for(arm), "status", "--repo", str(repo)], env).stdout, STATE_FIELDS)
+    return ({"state": home / "seed-state", "repo": repo, "inputs": inputs,
+             "key": repo_key(root, repo, env), "instance": str(loaded(begun.stdout).get("workflowId"))},
+            {"beginExit": begun.returncode, "exit": forged.returncode, "gateExit": gate.returncode,
+             "seconds": seconds, "repoContextForge": reached["repoContextForge"],
+             "blocker": forged.stderr.strip()[-300:]})
+
+
+def repetition(arm: dict[str, object], index: int, seed: dict[str, object]) -> tuple[list[dict[str, object]], str]:
     """One ordered replay of every scenario against a fresh fixture and a fresh state root.
 
     Fresh both, every time: the candidate retains ledger history where the baseline
@@ -255,18 +347,7 @@ def repetition(arm: dict[str, object], index: int) -> tuple[list[dict[str, objec
     state_root = root / "state" / str(index)
     env = arm_env(root, state_root)
     repo = fixture(root / "repos" / str(index), env)
-    # Asked of the arm's own identity owner, from the fixture path, before any scenario
-    # runs. Reading it back from the arm's state root instead would make an arm whose
-    # redirect failed contribute no key at all, and the escape it caused invisible.
-    identity = run([sys.executable, str(root / "home/hooks/lib/repo_identity.py"),
-                    "--field", "key", "--path", str(repo)], env)
-    key = identity.stdout.strip()
-    # No key means arm_traces searches for nothing and reports a clean root it never
-    # examined. Refuse here rather than emit an artifact: isolation.ok is a boolean and
-    # cannot say "not measured".
-    if identity.returncode or not key:
-        raise SystemExit(f"repository key for {repo} is unavailable, so an escape could not "
-                         f"be detected: exit {identity.returncode} {identity.stderr.strip()}")
+    key = repo_key(root, repo, env)
     cli = cli_for(arm)
     hook = str(root / "home/hooks/code-quality-gate.py")
     scenarios = []
@@ -302,11 +383,56 @@ def repetition(arm: dict[str, object], index: int) -> tuple[list[dict[str, objec
     pruned = run([*cli, "prune"], env)
     scenarios.append(scenario("prune-report", start, [pruned], *prune_projection(pruned.stdout)))
 
+    # A private copy of the seeded root, so each repetition replays the governed sequence
+    # from the same real Repo Context Forge output without paying for it again, and so a
+    # step that mutates state cannot leak into the next repetition. Its own fixture too:
+    # the post-edit-hook scenario above deliberately plants an escape marker in this
+    # repetition's repo, which the arm's quality gate would then reject for an unrelated
+    # reason when the production-code recorder asks for its verdict.
+    replayed = root / "replay" / str(index)
+    seeded = Path(str(seed["state"]))
+    # An arm whose redirect failed never wrote the seeded root, so there is nothing to
+    # copy. The replay then runs from an empty root and fails its own invariants, which
+    # is the right report for an escaped arm; aborting here would produce no artifact
+    # at all and hide the escape the run exists to catch.
+    if seeded.is_dir():
+        shutil.copytree(seeded, replayed)
+    else:
+        replayed.mkdir(parents=True)
+    replay_env = arm_env(root, replayed)
+    context = {
+        "cli": cli, "repo": str(seed["repo"]), "inputs": Path(str(seed["inputs"])),
+        "script": lambda skill, name: [sys.executable, str(root / "home/skills" / skill / "scripts" / name)],
+        "bound": ["--repo", str(seed["repo"]), "--slug", "estate-benchmark",
+                  "--workflow-id", str(seed["instance"])],
+    }
+    for name, argv, fields, _ in REPLAY:
+        start = time.perf_counter()
+        stepped = run(argv(context), replay_env)
+        scenarios.append(scenario(name, start, [stepped], *project(stepped.stdout, fields)))
+
     return scenarios, key
 
 
 def cli_for(arm: dict[str, object]) -> list[str]:
     return [sys.executable, str(Path(str(arm["root"])) / "home/skills/repo-production-workflow/scripts/pass-state.py")]
+
+
+def repo_key(root: Path, repo: Path, env: dict[str, str]) -> str:
+    """The arm's own identity owner asked for this fixture's key, from the fixture path.
+
+    Reading it back from the arm's state root instead would make an arm whose redirect
+    failed contribute no key at all, and the escape it caused invisible. No key means
+    arm_traces searches for nothing and reports a clean root it never examined, so this
+    refuses rather than returning empty: isolation.ok is a boolean and cannot say
+    "not measured".
+    """
+    identity = run([sys.executable, str(root / "home/hooks/lib/repo_identity.py"),
+                    "--field", "key", "--path", str(repo)], env)
+    if identity.returncode or not identity.stdout.strip():
+        raise SystemExit(f"repository key for {repo} is unavailable, so an escape could not "
+                         f"be detected: exit {identity.returncode} {identity.stderr.strip()}")
+    return identity.stdout.strip()
 
 
 def stores_in(root: Path) -> list[str]:
@@ -327,21 +453,27 @@ def migration(arms: dict[str, dict[str, object]], out: Path) -> dict[str, object
     seeds a root, the seed is copied so both continuations start byte-identical, and each
     arm continues its own copy. Runs in its own directory outside both arms' state roots,
     so the per-arm freshness guarantee is untouched.
+
+    Agreement alone is not acceptance. Two arms can project every field identically and
+    still leave that state in different engines, so each arm is also asked what it writes
+    starting from nothing, and what it left on the seeded root must contain that. An arm
+    that natively uses one store but silently keeps the seeded one fails; a same-ref run,
+    where the two are the same store, passes. No engine is named here.
     """
     home = out / "migration"
     # Recreated per run like each arm root, so a rerun against the same --out cannot
     # inherit the previous run's seed or fail on an existing fixture.
     shutil.rmtree(home, ignore_errors=True)
+    start = time.perf_counter()
     env = arm_env(Path(str(arms["baseline"]["root"])), home / "seed-state")
     repo = fixture(home / "repo", env)
-    # Asked of the identity owner like every repetition key: the migration fixture is a
-    # separate repository, so without its key arm_traces could not see an escape that
-    # happened only here.
-    key = run([sys.executable, str(Path(str(arms["baseline"]["root"])) / "home/hooks/lib/repo_identity.py"),
-               "--field", "key", "--path", str(repo)], env)
-    if key.returncode or not key.stdout.strip():
-        raise SystemExit(f"repository key for {repo} is unavailable, so an escape could not "
-                         f"be detected: exit {key.returncode} {key.stderr.strip()}")
+    # Every arm's own name for this fixture, not just the baseline's. The migration
+    # fixture is a separate repository, so without its key arm_traces could not see an
+    # escape that happened only here; and an arm whose identity function disagrees writes
+    # under a name the baseline's key would never match, which is the same blind spot
+    # one key wider.
+    keys = sorted({repo_key(Path(str(arm["root"])), repo, arm_env(Path(str(arm["root"])), home / f"{name}-state"))
+                   for name, arm in arms.items()})
     seeded = run([*cli_for(arms["baseline"]), "begin", "--repo", str(repo),
                   "--slug", "estate-benchmark", "--intent", "migration seed"], env)
     seed_stores = stores_in(home / "seed-state")
@@ -350,18 +482,34 @@ def migration(arms: dict[str, dict[str, object]], out: Path) -> dict[str, object
     # WORKFLOW_SEQUENCE still has an unmet predecessor at this point.
     instance = str(loaded(seeded.stdout).get("workflowId"))
 
-    projections, exits, stores = {}, [], {}
+    projections, exits, stores, native = {}, [], {}, {}
     for name, arm in arms.items():
-        root = home / f"{name}-state"
-        shutil.copytree(home / "seed-state", root)
-        continued = run([*cli_for(arm), "pause", "--repo", str(repo), "--slug", "estate-benchmark",
-                         "--workflow-id", instance, "--reason", "migration differential"],
-                        arm_env(Path(str(arm["root"])), root))
-        projections[name], _ = project(continued.stdout, STATE_FIELDS)
-        exits.append(continued.returncode)
+        cli, root, probed = cli_for(arm), home / f"{name}-state", home / f"{name}-native"
+        # What this arm writes starting from nothing, measured rather than named. An arm
+        # whose probe refuses reports no store at all: the empty set is a subset of
+        # everything, so it would satisfy the comparison below without proving anything.
+        probe = run([*cli, "begin", "--repo", str(repo), "--slug", "estate-benchmark",
+                     "--intent", "native store probe"], arm_env(Path(str(arm["root"])), probed))
+        native[f"{name}NativeStores"] = [] if probe.returncode else stores_in(probed)
+        # Guarded: copying a seed that `begin` never created aborts the whole benchmark,
+        # and a baseline that cannot seed is a result the operator should still read
+        # alongside the per-arm scenarios.
+        if seed_stores:
+            shutil.copytree(home / "seed-state", root)
+            continued = run([*cli, "pause", "--repo", str(repo), "--slug", "estate-benchmark",
+                             "--workflow-id", instance, "--reason", "migration differential"],
+                            arm_env(Path(str(arm["root"])), root))
+            projections[name], _ = project(continued.stdout, STATE_FIELDS)
+            exits.append(continued.returncode)
         stores[f"{name}Stores"] = stores_in(root)
-    return {"key": key.stdout.strip(), "seedExit": seeded.returncode, "seedStores": seed_stores, "exits": exits, **stores,
-            "match": projections["baseline"] == projections["candidate"], **projections}
+    match = bool(projections) and projections["baseline"] == projections["candidate"]
+    converted = all(native[f"{name}NativeStores"]
+                    and set(native[f"{name}NativeStores"]) <= set(stores[f"{name}Stores"]) for name in arms)
+    return {"keys": keys, "seedExit": seeded.returncode, "seedStores": seed_stores,
+            "exits": exits, **stores, **native, "match": match,
+            "seconds": round(time.perf_counter() - start, 6),
+            "ok": seeded.returncode == 0 and bool(seed_stores) and exits == [0, 0] and match and converted,
+            **projections}
 
 
 def timings(runs: list[dict[str, object]]) -> dict[str, object]:
@@ -394,28 +542,45 @@ def compare(baseline: list[dict[str, object]], candidate: list[dict[str, object]
 
 def render(artifact: dict[str, object], path: Path) -> str:
     isolation, scenarios, m = artifact["isolation"], artifact["scenarios"], artifact["migration"]
+    seeds = artifact["replaySeed"]
+
+    # Representation deltas ride on their own scenario's row: they are reported
+    # for the operator's merge decision, never compared and never a failure.
+    def row(item: dict[str, object]) -> str:
+        return (f"{item['name']:26} "
+                f"{'DIFF' if item['differences'] else 'ok' if item['invariantsHeld'] else 'BROKEN':6}  median "
+                f"{item['baseline']['medianSeconds']:.3f}->{item['candidate']['medianSeconds']:.3f} "
+                f"({item['deltaMedianSeconds']:+.3f})  max {item['baseline']['maxSeconds']:.3f}->"
+                f"{item['candidate']['maxSeconds']:.3f} ({item['deltaMaxSeconds']:+.3f})"
+                + (f"  +keys {','.join(item['representationDeltas']['candidateOnly'])}"
+                   if item["representationDeltas"]["candidateOnly"] else ""))
+
+    replay = [item for item in scenarios if str(item["name"]).startswith("replay-")]
+    # Collapsed to one line while they are clean, because twelve more rows would push a
+    # passing summary past the length that makes it readable. Any replay step that
+    # diverged or failed its own invariant is printed in full underneath.
+    faulty = [item for item in replay if item["differences"] or not item["invariantsHeld"]]
     return "\n".join([
         f"A/B estate benchmark  schema={artifact['schemaVersion']}  "
         f"claude={artifact['claudeCodeVersion']}  repetitions={artifact['repetitions']}",
         *(f"{name:9} {str(arm['ref'])[:18]:18} commit {str(arm['commit'])[:12]} "
           f"tree {str(arm['tree'])[:12]}  smoke-exit {arm['configSmokeExit']}"
           for name, arm in artifact["arms"].items()),
-        # Representation deltas ride on their own scenario's row: they are reported
-        # for the operator's merge decision, never compared and never a failure.
-        *(f"{item['name']:20} "
-          f"{'DIFF' if item['differences'] else 'ok' if item['invariantsHeld'] else 'BROKEN':6}  median "
-          f"{item['baseline']['medianSeconds']:.3f}->{item['candidate']['medianSeconds']:.3f} "
-          f"({item['deltaMedianSeconds']:+.3f})  max {item['baseline']['maxSeconds']:.3f}->"
-          f"{item['candidate']['maxSeconds']:.3f} ({item['deltaMaxSeconds']:+.3f})"
-          + (f"  +keys {','.join(item['representationDeltas']['candidateOnly'])}"
-             if item["representationDeltas"]["candidateOnly"] else "")
-          for item in scenarios),
+        *(row(item) for item in scenarios if not str(item["name"]).startswith("replay-")),
+        f"workflow-state replay: {len(replay) - len(faulty)}/{len(replay)} operations ok; "
+        f"repo-context-forge once per arm, exits "
+        f"{[seed['exit'] for seed in seeds.values()]} in "
+        f"{seeds['baseline']['seconds']:.2f}->{seeds['candidate']['seconds']:.2f}s; downstream median total "
+        f"{sum(item['baseline']['medianSeconds'] for item in replay):.3f}->"
+        f"{sum(item['candidate']['medianSeconds'] for item in replay):.3f}s",
+        *(row(item) for item in faulty),
         f"isolation: {'ok' if isolation['ok'] else 'FAILED'}; estate digest "
         f"{'unchanged' if isolation['estateDigestBefore'] == isolation['estateDigestAfter'] else 'CHANGED'}; "
         f"{len(isolation['armKeys'])} arm keys, {len(isolation['leakedKeys'])} under the live root",
-        f"migration: seed {','.join(m['seedStores'])} -> baseline {','.join(m['baselineStores'])} | "
-        f"candidate {','.join(m['candidateStores'])}; exits {m['exits']}; "
-        f"state {'matches' if m['match'] else 'DIFFERS'}",
+        f"migration: seed {','.join(m['seedStores']) or 'NONE'} (exit {m['seedExit']}) -> baseline "
+        f"{','.join(m['baselineStores']) or 'none'} | candidate {','.join(m['candidateStores']) or 'none'}; "
+        f"native {','.join(m['candidateNativeStores']) or 'NONE'}; exits {m['exits']}; state "
+        f"{'matches' if m['match'] else 'DIFFERS'}; {'ok' if m['ok'] else 'FAILED'} in {m['seconds']:.3f}s",
         f"result: {'PASS' if artifact['ok'] else 'FAIL'}   artifact: {path}",
     ])
 
@@ -462,8 +627,13 @@ def main() -> int:
     arms = {name: build_arm(source, out, name, ref, commit) for name, ref, commit in pinned}
     observed: dict[str, list[list[dict[str, object]]]] = {}
     arm_keys: set[str] = set()
+    seeds = {}
     for name, arm in arms.items():
-        replays = [repetition(arm, index) for index in range(REPETITIONS)]
+        seed, seeds[name] = replay_seed(arm)
+        # The replay fixture is a repository of its own, so without its key arm_traces
+        # could not see an escape that happened only during the replayed sequence.
+        arm_keys.add(str(seed["key"]))
+        replays = [repetition(arm, index, seed) for index in range(REPETITIONS)]
         observed[name] = [scenarios for scenarios, _ in replays]
         arm_keys.update(key for _, key in replays)
 
@@ -471,14 +641,14 @@ def main() -> int:
                          [replay[index] for replay in observed["candidate"]])
                  for index in range(len(observed["baseline"][0]))]
     migrated = migration(arms, out)
-    arm_keys.add(str(migrated["key"]))
+    arm_keys.update(str(key) for key in migrated["keys"])
     estate_after = {str(home): digest(home) for home in homes}
     entries_after = {str(root): slot_names(root) for root in roots}
     leaked = sorted(trace for root in roots for trace in arm_traces(root, arm_keys))
     artifact = {
         "schemaVersion": SCHEMA_VERSION, "repetitions": REPETITIONS, "sourceRepo": str(source),
         "claudeCodeVersion": run(["claude", "--version"], dict(os.environ)).stdout.strip(),
-        "arms": arms, "scenarios": scenarios, "migration": migrated,
+        "arms": arms, "scenarios": scenarios, "migration": migrated, "replaySeed": seeds,
         "isolation": {
             "liveEstates": [str(home) for home in homes], "liveStateRoots": [str(root) for root in roots],
             "estateDigestBefore": estate_before, "estateDigestAfter": estate_after,
@@ -488,8 +658,9 @@ def main() -> int:
         },
     }
     artifact["ok"] = (artifact["isolation"]["ok"] and all(arm["configSmokeExit"] == 0 for arm in arms.values())
+                      and all(seed["exit"] == 0 and seed["beginExit"] == 0 for seed in seeds.values())
                       and all(item["invariantsHeld"] and not item["differences"] for item in scenarios)
-                      and migrated["match"] and migrated["exits"] == [0, 0])
+                      and migrated["ok"])
     path = out / "benchmark.json"
     path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(render(artifact, path))
