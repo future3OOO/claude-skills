@@ -1620,35 +1620,22 @@ def test_gate_implementation_budget() -> None:
         "wrapper_lines": 150,
         "module_lines": 1200,
         "function_lines": 180,
-        # Transitional ceiling, pinned to the measured package rather than a
-        # round number, so any further growth has to be argued rather than
-        # absorbed by slack. The steady-state ceiling stays 1800 and is
-        # enforced below against the package minus the surfaces #77 deletes.
-        "total_lines": 2050,
+        # The approved limit. It is an invariant, not a record of what the
+        # package happens to measure. This constant was re-pinned to observed
+        # growth five times in one session - 1900, 1958, 1995, 2027, 2043,
+        # 2050 - which turned the one mechanism that would have caught
+        # cumulative bloat into a log of it. If a valid review fix does not
+        # fit, consolidate or delete first, or stop and escalate for explicit
+        # approval. Review findings do not authorize cumulative growth.
+        "total_lines": 1800,
     }
-    steady_state_total = 1800
-    # The surfaces the target architecture assigns to #77 for deletion. #75
-    # must keep them: its acceptance criteria require QG-LEGACY-REUSE-ADVISORY
-    # and QG-LEGACY-GITNEXUS-CONTEXT to stay promotion-eligible through #75
-    # and #76, so they cannot leave in this slice.
-    superseded_by_77 = ("_quality_gate/reuse.py", "_quality_gate/symbols.py")
     review_triggers = {
         "module_lines": 700,
         "function_lines": 90,
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": (
-            "Approved transitional coexistence for #75, expiring with #77. The package measures "
-            "2050 lines because the schema-v2 canonical-evaluation machinery coexists with "
-            "_quality_gate/reuse.py (331) and _quality_gate/symbols.py (101) - the 432 lines the "
-            "target architecture assigns to #77 for deletion. #75's acceptance criteria require "
-            "retaining QG-LEGACY-REUSE-ADVISORY and QG-LEGACY-GITNEXUS-CONTEXT as promotion-eligible "
-            "through #75 and #76, so those surfaces cannot be removed in this slice. Without them "
-            "the package is 1612, just above the 1,500-1,600 converged envelope and under the 1800 "
-            "steady-state ceiling asserted below. When #77 deletes them the subtraction goes to "
-            "zero and that assertion becomes the plain 1800 ceiling again."
-        ),
+        "TOTAL": "schema-v2 canonical evaluation for #75, within the approved 1800-line limit",
     }
     production_files = [SCRIPT, *sorted((SCRIPT_DIR / "_quality_gate").glob("*.py"))]
     line_counts = {str(path.relative_to(SCRIPT_DIR)): len(path.read_text(encoding="utf-8").splitlines()) for path in production_files}
@@ -1657,18 +1644,6 @@ def test_gate_implementation_budget() -> None:
     assert sum(line_counts.values()) <= limits["total_lines"]
     if sum(line_counts.values()) > review_triggers["total_lines"]:
         assert "TOTAL" in justified
-
-    # The exception is bounded and self-expiring. It licenses exactly the
-    # transitional coexistence and nothing else: the architecture #75 actually
-    # ships must fit the steady-state ceiling on its own, so growth in the new
-    # surfaces fails here even while the transitional total is allowed. Once
-    # #77 deletes the superseded files this subtraction is zero and the
-    # assertion is the plain 1800 ceiling.
-    transitional = sum(line_counts.get(name, 0) for name in superseded_by_77)
-    assert sum(line_counts.values()) - transitional <= steady_state_total, (
-        f"package is {sum(line_counts.values())} lines; without the {transitional} lines #77 deletes "
-        f"it is {sum(line_counts.values()) - transitional}, over the {steady_state_total} steady-state ceiling"
-    )
 
     for rel_path, count in line_counts.items():
         if rel_path == "code_quality_gate.py":
