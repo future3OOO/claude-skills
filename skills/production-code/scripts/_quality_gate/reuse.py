@@ -30,13 +30,13 @@ def detect_reuse_issues(
     existing, gaps = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
     if not existing:
         return [], [], _reuse_rule(snapshot, [], gaps)
-    # Files absent from the baseline have only added lines, so including them
-    # would read a symbol's own definition as a call to the owner it copies —
-    # in every candidate mode, not just for untracked worktree files.
+    # Every production entry's added lines are nearby-call evidence — a new
+    # delegating wrapper legitimately calls its owner right beside its own
+    # definition. The candidate's declaration line itself is excluded in the
+    # scan, so a bare same-named definition never suppresses its own match.
     added_by_file = {
         entry.path: entry.added_lines()
         for entry in snapshot.role_entries("production")
-        if entry.base_text is not None
     }
     findings = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))
     queries = [
@@ -215,7 +215,10 @@ def _best_existing_match(
 
 def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], new_line: int) -> bool:
     pattern = re.compile(rf"\b{re.escape(symbol)}\s*\(")
-    return any(max(0, new_line - 8) <= line_no <= new_line + 20 and pattern.search(text) for line_no, text in lines)
+    return any(
+        line_no != new_line and max(0, new_line - 8) <= line_no <= new_line + 20 and pattern.search(text)
+        for line_no, text in lines
+    )
 
 
 def _should_index_existing(

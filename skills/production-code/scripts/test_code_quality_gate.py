@@ -1116,6 +1116,28 @@ def test_staged_only_reimplementation_is_detected_like_worktree_mode() -> None:
     with_repo(body)
 
 
+def test_new_file_wrapper_that_calls_the_owner_is_not_a_reimplementation() -> None:
+    # A new delegating wrapper legitimately calls the existing owner right
+    # beside its same-named definition; the nearby-call evidence must count
+    # that call while never counting the definition line itself.
+    def body(repo: Path) -> None:
+        write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "helper")
+        write(
+            repo / "src" / "adapter.py",
+            "from src import ids\n\n\n"
+            "def normalize_user_id(value: str) -> str:\n"
+            "    return ids.normalize_user_id(value.strip())\n",
+        )
+        git(repo, "add", "src/adapter.py")
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
+        assert code == 0, json.dumps(payload["errors"], indent=2)
+        assert reuse_matches(payload) == [], reuse_matches(payload)
+
+    with_repo(body)
+
+
 def test_leading_whitespace_filename_remains_fully_readable() -> None:
     # A relative path that starts with whitespace hits the old stripping
     # normalizer at the string boundary: the stripped key named a file that
@@ -1274,6 +1296,7 @@ def main() -> int:
         test_full_history_test_like_classification_is_unchanged,
         test_incompleteness_finding_identity_survives_a_path_rename,
         test_staged_only_reimplementation_is_detected_like_worktree_mode,
+        test_new_file_wrapper_that_calls_the_owner_is_not_a_reimplementation,
         test_leading_whitespace_filename_remains_fully_readable,
         test_control_character_payload_lines_stay_fully_scanned,
         test_gate_completes_on_an_unborn_repo_with_open_stdin,
