@@ -1,0 +1,130 @@
+name: PR 74 final review-fix publisher
+
+on:
+  push:
+    branches:
+      - automation/pr74-final-review-fix
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr74-final-review-fix
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct exact final candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pr74-evidence
+          cp .github/pr74-final-fix/manifest /tmp/pr74-manifest
+          cp .github/pr74-final-fix/payload.b64 /tmp/pr74-payload.b64
+          source /tmp/pr74-manifest
+
+          echo "$PAYLOAD_SHA256  /tmp/pr74-payload.b64" | sha256sum --check --strict
+          base64 --decode /tmp/pr74-payload.b64 > /tmp/pr74-review-fix.patch.gz
+          echo "$PATCH_GZ_SHA256  /tmp/pr74-review-fix.patch.gz" | sha256sum --check --strict
+          gzip --decompress --stdout /tmp/pr74-review-fix.patch.gz > /tmp/pr74-review-fix.patch
+          echo "$PATCH_SHA256  /tmp/pr74-review-fix.patch" | sha256sum --check --strict
+
+          git fetch --force origin \
+            main:refs/remotes/origin/main \
+            "$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH"
+          test "$(git rev-parse refs/remotes/origin/main)" = "$BASE_SHA"
+          test "$(git rev-parse "$BASE_SHA^{tree}")" = "$BASE_TREE"
+          test "$(git rev-parse "refs/remotes/origin/$TARGET_BRANCH")" = "$SOURCE_PR_HEAD"
+          test "$(git rev-parse "$SOURCE_PR_HEAD^{tree}")" = "$SOURCE_PR_TREE"
+
+          git config user.name future3000
+          git config user.email 46719676+future3OOO@users.noreply.github.com
+          git checkout --detach "$BASE_SHA"
+          git read-tree --reset -u "$SOURCE_PR_TREE"
+          git apply --index --binary /tmp/pr74-review-fix.patch
+          git checkout "$BASE_SHA" -- \
+            benchmarks/ab_estate_benchmark.py \
+            benchmarks/test_ab_estate_benchmark.py
+          git diff --cached --check
+          test "$(git write-tree)" = "$FINAL_TREE"
+
+          git commit -m 'fix(workflow): close final review defects'
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$FINAL_TREE"
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "BASE_TREE=$BASE_TREE"
+            echo "SOURCE_PR_HEAD=$SOURCE_PR_HEAD"
+            echo "SOURCE_PR_TREE=$SOURCE_PR_TREE"
+            echo "FINAL_SHA=$(git rev-parse HEAD)"
+            echo "FINAL_TREE=$(git rev-parse 'HEAD^{tree}')"
+          } | tee /tmp/pr74-evidence/identities.env
+
+      - name: Run complete PR contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hooks/tests/run.sh 2>&1 | tee /tmp/pr74-evidence/hooks-tests.log
+
+      - name: Run benchmark harness tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest benchmarks/test_ab_estate_benchmark.py 2>&1 \
+            | tee /tmp/pr74-evidence/benchmark-harness-tests.log
+
+      - name: Run production quality gate and diff checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/pr74-manifest
+          python3 skills/production-code/scripts/code_quality_gate.py \
+            check --repo . --base-ref "$BASE_SHA" --json \
+            | tee /tmp/pr74-evidence/quality-gate.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/pr74-evidence/quality-gate.json').read_text())
+          if result.get('ok') is not True:
+              raise SystemExit(json.dumps(result, indent=2))
+          PY
+          git diff --check "$BASE_SHA...HEAD" \
+            | tee /tmp/pr74-evidence/diff-check.txt
+          git diff --stat "$BASE_SHA...HEAD" \
+            | tee /tmp/pr74-evidence/diff-stat.txt
+
+      - name: Force-with-lease publish to PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/pr74-manifest
+          git push \
+            --force-with-lease="refs/heads/$TARGET_BRANCH:$SOURCE_PR_HEAD" \
+            origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Finalize evidence checksums
+        if: always()
+        shell: bash
+        run: |
+          if [[ -d /tmp/pr74-evidence ]]; then
+            sha256sum /tmp/pr74-evidence/* > /tmp/pr74-evidence/SHA256SUMS
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr74-final-review-fix-evidence
+          path: /tmp/pr74-evidence
+          if-no-files-found: warn
+          retention-days: 7
