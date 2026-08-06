@@ -15,7 +15,10 @@ def run_git(repo: Path, args: list[str], *, env: dict[str, str] | None = None) -
         ["git", *args],
         cwd=repo,
         encoding="utf-8",
-        errors="replace",
+        # Path bytes need not be valid UTF-8, and a lossy decode makes the blob
+        # unaddressable. surrogateescape round-trips back through the argument
+        # encoding, so a path Git reports can always be read again.
+        errors="surrogateescape",
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

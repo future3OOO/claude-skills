@@ -1001,6 +1001,65 @@ def test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied() -> None:
     with_repo(body)
 
 
+def test_non_utf8_filename_is_read_like_any_other_changed_file() -> None:
+    # Git path bytes need not be valid UTF-8. A lossy decode makes the blob
+    # unaddressable, and an unread file must never read as a clean pass.
+    def body(repo: Path) -> None:
+        escape = b"def f():\n    try:\n        g()\n    except Exception:\n        pass\n"
+        (repo / "src").mkdir(parents=True, exist_ok=True)
+        (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes(escape)
+        git(repo, "add", "-A")
+        _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        assert payload["errors"], payload
+        assert payload["ok"] is False, payload["errors"]
+        assert growth_totals(payload)["production"] == {"added": 5, "deleted": 0, "net": 5}, growth_totals(payload)
+        # The name is unusual, not unmeasurable: nothing may be recorded missing.
+        assert payload["evaluation"]["complete"] is True, payload["evaluation"]["gaps"]
+
+    with_repo(body)
+
+
+def test_finding_identity_survives_a_non_utf8_path() -> None:
+    # A finding whose identity carries a path must still hash: the content
+    # anchor is the path's real bytes, not a string the encoder can refuse.
+    def body(repo: Path) -> None:
+        owner = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
+        write(repo / "src" / "ids.py", owner)
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "owner")
+        (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes(owner.encode("utf-8"))
+        code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
+        assert code == 2, stderr
+        matches = reuse_matches(payload)
+        # The identity must actually carry the path, or this proves nothing:
+        # an empty identity hashes to a stable id too.
+        assert len(matches) == 1, matches
+        assert matches[0]["newFile"].encode("utf-8", "surrogateescape") == b"src/caf\xe9.py", matches
+        finding = reuse_finding(payload)
+        assert len(finding["findingId"]) == 16, finding
+        assert reuse_finding(run_gate(repo, "--base-ref", "HEAD")[1])["findingId"] == finding["findingId"]
+
+    with_repo(body)
+
+
+def test_a_witnessed_violation_outranks_missing_scope() -> None:
+    # Unseen scope cannot un-see a violation that was already found. The rule
+    # that caught it must say so, while a rule that found nothing and could not
+    # see everything still reports incomplete rather than a pass.
+    def body(repo: Path) -> None:
+        (repo / "src" / "unmeasured.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
+        write(repo / "src" / "escape.py", "def f():\n    try:\n        return 2\n    except Exception:\n        pass\n")
+        _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        escapes = check_named(payload, "no-quality-escapes")
+        assert escapes["passed"] is False and escapes["status"] == "finding", escapes
+        assert payload["hardRules"]["cleanup"]["passed"] is False, payload["hardRules"]["cleanup"]
+        # The other hunk-reading rule found nothing and still cannot see it all.
+        duplicates = check_named(payload, "no-duplicate-added-blocks")
+        assert duplicates["passed"] is None and duplicates["status"] == "incomplete", duplicates
+
+    with_repo(body)
+
+
 def test_promotion_follows_exact_rule_id_metadata_only() -> None:
     # QG54 rules start promotion-ineligible: a growth warning cannot fail the
     # gate even under --fail-on-warnings.
@@ -1372,6 +1431,9 @@ def main() -> int:
         test_intermediate_commits_do_not_leak_into_the_evaluation,
         test_missing_base_ref_cannot_report_a_complete_result,
         test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied,
+        test_non_utf8_filename_is_read_like_any_other_changed_file,
+        test_finding_identity_survives_a_non_utf8_path,
+        test_a_witnessed_violation_outranks_missing_scope,
         test_promotion_follows_exact_rule_id_metadata_only,
         test_snapshot_reads_the_captured_tree_not_the_moving_worktree,
         test_full_history_test_like_classification_is_unchanged,

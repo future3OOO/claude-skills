@@ -196,10 +196,16 @@ def _checks(
     attribution: tuple[str, ...],
 ) -> list[dict[str, object]]:
     def outcome(passed: bool, gaps: tuple[str, ...]) -> dict[str, object]:
-        """A rule that could not see its whole scope is unknown, never a pass."""
+        """A rule that could not see its whole scope is unknown, never a pass.
+
+        A violation it did see stays a violation: unseen scope cannot un-see
+        it, so only a would-be pass is downgraded to unknown.
+        """
+        if not passed:
+            return {"passed": False, "status": "finding", **({"gaps": list(gaps)} if gaps else {})}
         if gaps:
             return {"passed": None, "status": "incomplete", "gaps": list(gaps)}
-        return {"passed": passed, "status": "passed" if passed else "finding"}
+        return {"passed": True, "status": "passed"}
 
     def rule_outcome(rule: Finding) -> dict[str, object]:
         """A typed rule projects its own status: an active warning-only rule

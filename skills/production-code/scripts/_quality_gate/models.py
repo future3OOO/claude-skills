@@ -101,7 +101,9 @@ class Finding:
 
     def finding_id(self) -> str:
         anchor = "\x1f".join((self.rule_id, *self.identity))
-        return hashlib.sha256(anchor.encode("utf-8")).hexdigest()[:16]
+        # Identities carry paths, whose bytes need not be valid UTF-8. Encoding
+        # back through surrogateescape anchors the id on the real path bytes.
+        return hashlib.sha256(anchor.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
 
     def as_dict(self, base: str, candidate: str) -> dict[str, object]:
         serialized = {

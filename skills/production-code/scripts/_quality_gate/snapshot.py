@@ -261,7 +261,9 @@ def _unquote_git_path(value: str) -> str:
             index += 3
         else:
             return value
-    return out.decode("utf-8", errors="replace")
+    # Same lossless decode as the -z transports, or the header path and the
+    # entry path would key on different strings and the hunks would not attach.
+    return out.decode("utf-8", errors="surrogateescape")
 
 
 def _merge_numstats(records: list[Numstat]) -> dict[str, Numstat]:
