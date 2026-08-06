@@ -19,6 +19,17 @@ from hooks.lib.workflow_state import invalidate_after_edit  # noqa: E402
 GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 
+def _failure_detail(stdout: str, stderr: str) -> str:
+    """The verdict's errors as a readable list, or the raw output when the
+    failure predates a parseable verdict."""
+    try:
+        verdict = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout + stderr
+    lines = [f"- {error}" for error in verdict.get("errors", [])]
+    return "\n".join(lines) if lines else stdout + stderr
+
+
 def main() -> int:
     payload = read_hook_payload()
     path = edited_path(payload)
@@ -40,20 +51,22 @@ def main() -> int:
     if not is_code_path(relative):
         return 0
 
+    # stderr stays separate so a diagnostic on a passing run can never make
+    # the verdict unparseable and block a clean edit.
     result = subprocess.run(
         [sys.executable, str(GATE), "check", "--repo", str(identity.root), "--json"],
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
         check=False,
     )
     if result.returncode:
-        print(f"production-code gate FAILED for {path}\n{result.stdout}", file=sys.stderr, end="")
+        print(f"production-code gate FAILED for {path}\n{_failure_detail(result.stdout, result.stderr)}", file=sys.stderr)
         return 2
     try:
         verdict = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print(f"production-code gate returned unparseable output for {path}\n{result.stdout}", file=sys.stderr, end="")
+        print(f"production-code gate returned unparseable output for {path}\n{result.stdout}{result.stderr}", file=sys.stderr, end="")
         return 2
     warnings = verdict.get("warnings") or []
     if warnings:

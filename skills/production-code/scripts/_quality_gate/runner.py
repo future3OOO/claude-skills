@@ -71,13 +71,7 @@ def check(
         "changedFilesCount": len(snapshot.entries),
         "changedFilesSample": sorted(entry.path for entry in snapshot.entries)[:30],
         "sourceFilesCount": len(snapshot.role_entries("production")),
-        "evaluation": {
-            "base": {"commit": snapshot.base_identity, "source": snapshot.base_source},
-            "candidate": {"identity": snapshot.candidate_identity, "tree": snapshot.candidate_tree or None},
-            "growth": snapshot.growth(),
-            "complete": not (snapshot.gaps() or snapshot.attribution_gaps()),
-            "gaps": sorted(set(snapshot.gaps() + snapshot.attribution_gaps())),
-        },
+        "evaluation": _evaluation_summary(snapshot, findings),
         "findings": [finding.as_dict(snapshot.base_identity, snapshot.candidate_identity) for finding in findings],
         "resolvedFindings": [],
         "checks": checks,
@@ -108,6 +102,21 @@ def format_text(result: dict[str, object]) -> str:
     lines.append("Warnings:")
     lines.extend([f"- {warning}" for warning in result["warnings"]] if result["warnings"] else ["- none"])
     return "\n".join(lines)
+
+
+def _evaluation_summary(snapshot: EvaluationSnapshot, findings: list[Finding]) -> dict[str, object]:
+    """The top-level summary agrees with the rules it summarizes: capture,
+    attribution, and every rule's own gaps union into one completeness claim."""
+    gaps = set(snapshot.gaps()) | set(snapshot.attribution_gaps())
+    for finding in findings:
+        gaps.update(finding.gaps)
+    return {
+        "base": {"commit": snapshot.base_identity, "source": snapshot.base_source},
+        "candidate": {"identity": snapshot.candidate_identity, "tree": snapshot.candidate_tree or None},
+        "growth": snapshot.growth(),
+        "complete": not gaps,
+        "gaps": sorted(gaps),
+    }
 
 
 def _growth_warning(growth_rule: Finding) -> str:

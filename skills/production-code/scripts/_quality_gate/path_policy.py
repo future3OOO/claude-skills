@@ -111,7 +111,9 @@ def classify_path(path: str) -> PathClass:
     pre-existing meaning because workflow state classifies edits with it.
     """
     test_like = _test_like(path)
-    language = language_for_path(path)
+    # The stored language enum reserves real parser names for source entries;
+    # every non-source classification is "other".
+    language = language_for_path(path) if is_source_path(path) else "other"
     if is_source_path(path):
         lowered = f"/{normalize_path(path).lower()}"
         if any(marker in lowered for marker in GENERATED_MARKERS):

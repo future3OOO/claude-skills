@@ -37,31 +37,53 @@ def gitnexus_context_finding(messages: list[str]) -> Finding:
     )
 
 
-def incompleteness_findings(findings: list[Finding]) -> list[Finding]:
-    """One QG54-ANALYSIS-INCOMPLETE finding per affected rule ID and scope gap set.
+# The scope kind for each gap the gate's own producers emit. Identity uses the
+# kind, never the rendered text, so renaming a gap-referenced path cannot move
+# a finding's ID; the raw strings stay in evidence.
+_SCOPE_KINDS = (
+    ("Git reported no line counts", "measurement"),
+    ("reuse baseline", "baseline-discovery"),
+    ("diff hunks matched no changed file", "attribution"),
+    ("no caller-supplied base", "base-binding"),
+)
 
-    The affected rule already carries its gaps; this projection gives the
-    incompleteness itself a stable identity so later slices can promote or
-    resolve it per exact rule ID.
+
+def _scope_kind(gap: str) -> str:
+    for marker, kind in _SCOPE_KINDS:
+        if marker in gap:
+            return kind
+    return "capture"
+
+
+def incompleteness_findings(findings: list[Finding]) -> list[Finding]:
+    """One QG54-ANALYSIS-INCOMPLETE finding per affected rule ID and scope kind.
+
+    The affected rule already carries its gaps; this projection gives each
+    missing scope a stable identity so later slices can promote or resolve it
+    per exact rule ID and kind.
     """
     projected: list[Finding] = []
     for finding in findings:
         if finding.status != "incomplete":
             continue
-        projected.append(
-            Finding(
-                rule_id=RULE_INCOMPLETE,
-                severity="warning",
-                status="finding",
-                passed=True,
-                identity=(finding.rule_id, *sorted(finding.gaps)),
-                region={"scope": "rule", "affectedRuleId": finding.rule_id},
-                evidence={"affectedRuleId": finding.rule_id, "gaps": sorted(finding.gaps)},
-                action="Restore the missing scope (readable inputs, complete discovery, a resolvable base) and rerun.",
-                pass_condition=f"required scope for {finding.rule_id} is complete",
-                gaps=(),
+        by_kind: dict[str, list[str]] = {}
+        for gap in finding.gaps:
+            by_kind.setdefault(_scope_kind(gap), []).append(gap)
+        for kind in sorted(by_kind):
+            projected.append(
+                Finding(
+                    rule_id=RULE_INCOMPLETE,
+                    severity="warning",
+                    status="finding",
+                    passed=True,
+                    identity=(finding.rule_id, kind),
+                    region={"scope": "rule", "affectedRuleId": finding.rule_id, "scopeKind": kind},
+                    evidence={"affectedRuleId": finding.rule_id, "scopeKind": kind, "gaps": sorted(by_kind[kind])},
+                    action="Restore the missing scope (readable inputs, complete discovery, a resolvable base) and rerun.",
+                    pass_condition=f"analysis-complete: required {kind} scope for {finding.rule_id} is complete",
+                    gaps=(),
+                )
             )
-        )
     return projected
 
 

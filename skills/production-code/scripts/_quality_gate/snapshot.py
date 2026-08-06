@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .git_scope import git_text, read_git_file
 from .models import BaselineFile, Hunk, Numstat, SnapshotEntry
-from .path_policy import classify_path, normalize_path
+from .path_policy import classify_path
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -136,8 +136,7 @@ def _baseline_index(repo: Path, base: str) -> tuple[BaselineFile, ...]:
     """
     listed = git_text(repo, ["ls-tree", "-r", "--name-only", "-z", base]) if base else ""
     files: list[BaselineFile] = []
-    for raw in listed.split("\0"):
-        rel_path = normalize_path(raw)
+    for rel_path in listed.split("\0"):
         if not rel_path:
             continue
         classification = classify_path(rel_path)
@@ -173,7 +172,12 @@ def _collect_hunks(raw_diff: str) -> dict[str, tuple[Hunk, ...]]:
             )
         header, added, deleted = None, [], []
 
-    for line in raw_diff.splitlines():
+    # Split on Git's actual record delimiter only: splitlines() would also
+    # break on vertical tab, form feed, and Unicode separators inside a
+    # changed payload line, dropping the remainder without its +/- prefix.
+    for line in raw_diff.split("\n"):
+        if line.endswith("\r"):
+            line = line[:-1]
         if line.startswith("diff --git "):
             close()
             base_path = key = ""
@@ -215,11 +219,14 @@ def _collect_hunks(raw_diff: str) -> dict[str, tuple[Hunk, ...]]:
 
 
 def _diff_path(value: str) -> str:
-    value = value.strip()
+    # Git terminates a header path holding spaces with one tab; nothing else
+    # may be trimmed, or a literal-whitespace filename loses its identity.
+    if value.endswith("\t"):
+        value = value[:-1]
     if value == "/dev/null":
         return ""
     value = _unquote_git_path(value)
-    return normalize_path(value[2:] if value[:2] in {"a/", "b/"} else value)
+    return value[2:] if value[:2] in {"a/", "b/"} else value
 
 
 def _unquote_git_path(value: str) -> str:

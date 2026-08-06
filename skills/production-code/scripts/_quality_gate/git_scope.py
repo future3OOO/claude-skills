@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 
 from .models import Numstat
-from .path_policy import normalize_path
 
 
 def run_git(repo: Path, args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -42,7 +41,9 @@ def read_git_file(repo: Path, ref: str, rel_path: str) -> str | None:
 
 
 def parse_z_names(raw: str) -> set[str]:
-    return {normalize_path(item) for item in raw.split("\0") if normalize_path(item)}
+    # -z transports carry literal names: no stripping, or a filename with
+    # leading or trailing whitespace would be keyed under a different path.
+    return {item for item in raw.split("\0") if item}
 
 
 def parse_numstat_z(raw: str) -> list[Numstat]:
@@ -58,7 +59,7 @@ def parse_numstat_z(raw: str) -> list[Numstat]:
             # Git writes "-" for a file it treats as binary. Record the absence
             # so the evaluation can report it, rather than inventing counts.
             added = deleted = None
-        records.append(Numstat(added=added, deleted=deleted, path=normalize_path(parts[2])))
+        records.append(Numstat(added=added, deleted=deleted, path=parts[2]))
     return records
 
 

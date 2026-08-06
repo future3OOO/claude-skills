@@ -30,12 +30,13 @@ def detect_reuse_issues(
     existing, gaps = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
     if not existing:
         return [], [], _reuse_rule(snapshot, [], gaps)
-    # Files the change adds have no baseline, so their whole text is added
-    # lines; including them would read a symbol's own definition as a call.
+    # Files absent from the baseline have only added lines, so including them
+    # would read a symbol's own definition as a call to the owner it copies —
+    # in every candidate mode, not just for untracked worktree files.
     added_by_file = {
         entry.path: entry.added_lines()
         for entry in snapshot.role_entries("production")
-        if not entry.untracked
+        if entry.base_text is not None
     }
     findings = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))
     queries = [
