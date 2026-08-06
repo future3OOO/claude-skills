@@ -1290,9 +1290,13 @@ def test_quoted_header_keeps_non_utf8_bytes_when_quotepath_is_off(repo: Path) ->
 
 
 @with_repo
-def test_finding_identity_survives_a_non_utf8_path(repo: Path) -> None:
-    # A finding whose identity carries a path must still hash: the content
-    # anchor is the path's real bytes, not a string the encoder can refuse.
+def test_a_non_utf8_path_reaches_a_stable_finding(repo: Path) -> None:
+    # Identity no longer carries paths - that moved to symbol anchors so a
+    # rename preserves the debt's ID - so this proves what it can still prove:
+    # a path whose bytes are not valid UTF-8 survives the whole pipeline. It is
+    # matched, its real bytes are serialized back out rather than replaced by
+    # the decoder, and the finding hashes to the same ID on a repeat run
+    # instead of raising on a name the encoder refuses.
     owner = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
     write(repo / "src" / "ids.py", owner)
     git(repo, "add", ".")
@@ -1301,8 +1305,8 @@ def test_finding_identity_survives_a_non_utf8_path(repo: Path) -> None:
     code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
     assert code == 2, stderr
     matches = reuse_matches(payload)
-    # The identity must actually carry the path, or this proves nothing:
-    # an empty identity hashes to a stable id too.
+    # There must actually be a match, or this proves nothing: a finding with no
+    # matches hashes to a stable id too.
     assert len(matches) == 1, matches
     assert matches[0]["newFile"].encode("utf-8", "surrogateescape") == b"src/caf\xe9.py", matches
     finding = reuse_finding(payload)
@@ -1594,7 +1598,7 @@ def test_gate_implementation_budget() -> None:
         # round number, so any further growth has to be argued rather than
         # absorbed by slack. The steady-state ceiling stays 1800 and is
         # enforced below against the package minus the surfaces #77 deletes.
-        "total_lines": 2043,
+        "total_lines": 2050,
     }
     steady_state_total = 1800
     # The surfaces the target architecture assigns to #77 for deletion. #75
@@ -1610,8 +1614,8 @@ def test_gate_implementation_budget() -> None:
     justified: dict[str, str] = {
         "TOTAL": (
             "Approved transitional coexistence for #75, expiring with #77. The package measures "
-            "2043 lines because the schema-v2 canonical-evaluation machinery coexists with "
-            "_quality_gate/reuse.py (330) and _quality_gate/symbols.py (101) - the 431 lines the "
+            "2050 lines because the schema-v2 canonical-evaluation machinery coexists with "
+            "_quality_gate/reuse.py (331) and _quality_gate/symbols.py (101) - the 432 lines the "
             "target architecture assigns to #77 for deletion. #75's acceptance criteria require "
             "retaining QG-LEGACY-REUSE-ADVISORY and QG-LEGACY-GITNEXUS-CONTEXT as promotion-eligible "
             "through #75 and #76, so those surfaces cannot be removed in this slice. Without them "

@@ -104,7 +104,8 @@ def _stored_classification(snapshot: EvaluationSnapshot) -> dict[str, tuple[str,
 
 def _symbol_anchor(stored: dict[str, tuple[str, str]], path: str, symbol: str) -> str:
     """The symbol anchor identity and regions share, so the two cannot drift."""
-    return anchor("symbol", stored.get(path, ("unknown", "other"))[1], symbol)
+    role, language = stored.get(path, ("unknown", "other"))
+    return anchor("symbol", role, language, symbol)
 
 
 def _regions(stored: dict[str, tuple[str, str]], findings: list[ReuseFinding]) -> list[dict[str, object]]:

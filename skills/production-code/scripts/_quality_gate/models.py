@@ -7,8 +7,12 @@ from dataclasses import dataclass
 from .path_policy import PathClass
 
 
-def anchor(kind: str, language: str, content: str) -> str:
-    """A stable anchor over anchor kind, language, and the anchored content.
+def anchor(kind: str, role: str, language: str, content: str) -> str:
+    """A stable anchor over anchor kind, role, language, and anchored content.
+
+    Role and language are part of the anchor because the architecture's
+    identity formula is a fingerprint plus role/language: the same symbol name
+    in a production file and in a test fixture is not the same debt.
 
     One implementation for every family. The target architecture's *content*
     anchor hashes canonical implementation bytes; the duplicate family that
@@ -17,7 +21,7 @@ def anchor(kind: str, language: str, content: str) -> str:
     content anchor they did not compute. #76 feeds normalized bytes to this
     same function instead of adding a second implementation.
     """
-    payload = "\x1f".join((kind, language, content))
+    payload = "\x1f".join((kind, role, language, content))
     return hashlib.sha256(payload.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
 
 
@@ -130,10 +134,12 @@ class Finding:
     gaps: tuple[str, ...]
 
     def finding_id(self) -> str:
-        anchor = "\x1f".join((self.rule_id, *self.identity))
-        # Identities carry paths, whose bytes need not be valid UTF-8. Encoding
-        # back through surrogateescape anchors the id on the real path bytes.
-        return hashlib.sha256(anchor.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
+        joined = "\x1f".join((self.rule_id, *self.identity))
+        # Identity components are derived from repository bytes - symbol names
+        # read out of files whose encoding is not guaranteed - so they can carry
+        # surrogates. Encoding back through surrogateescape keeps the hash
+        # defined for those, rather than raising on a name the encoder refuses.
+        return hashlib.sha256(joined.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
 
     def as_dict(self, base: str, candidate: str) -> dict[str, object]:
         serialized = {
