@@ -99,8 +99,8 @@ Instruction files don't govern agents; enforced transactions do. Write the proce
 2. [`skills/repo-production-workflow/WORKFLOW-MAP.md`](../../skills/repo-production-workflow/WORKFLOW-MAP.md) - hook roles, Stop permit conditions, edit invalidation
 3. [`hooks/`](../../hooks/) - the five lifecycle hook scripts
 4. [`hooks/lib/workflow_state.py`](../../hooks/lib/workflow_state.py) - the ledger: ordering, producer transitions for every evidence-bearing phase, invalidation, and completion readiness
-5. [`skills/tdd/scripts/tdd-run.py`](../../skills/tdd/scripts/tdd-run.py) - the runner: executes RED/GREEN and binds both to the same behavior, command, and Seam
-6. [`skills/code-review/scripts/record-review.py`](../../skills/code-review/scripts/record-review.py) - the recorder: validates every finding and disposition before review advances
+5. [`workflow.py tdd`](../../skills/repo-production-workflow/scripts/workflow.py) - the runner: executes RED/GREEN and binds both to the same behavior, command, and Seam
+6. [`workflow.py record-review`](../../skills/repo-production-workflow/scripts/workflow.py) - the recorder: validates every finding and disposition before review advances
 7. [`skills/codex-advisor/scripts/ask-codex-advisor.sh`](../../skills/codex-advisor/scripts/ask-codex-advisor.sh) - the advisor wrapper: read-only live-evidence consult, producer-recorded result, exact terminal verdict
 8. [`settings.json`](../../settings.json) - where the hooks are registered
 9. [`CLAUDE.md`](../../CLAUDE.md) - the canonical hard invariants: real-Seam proof, demonstrated risk, root-cause first

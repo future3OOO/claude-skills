@@ -15,13 +15,17 @@ maps the remaining owners.
 Choose one short slug for the whole pass and begin state before bootstrap:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" begin \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" begin \
   --repo "$PWD" --slug "<task>" --intent "<user request>"
 ```
 
-The repository-scoped JSON file remembers phase and next action across
-compaction. It is agent-writable workflow continuity—not an attestation,
-approval, audit credential, or Git boundary.
+The repository-scoped SQLite event ledger remembers accepted transitions, logical evidence, phase, and next action across process restarts. Its disposable active projection is repaired from that history. It is agent-writable workflow continuity, not an attestation, approval, audit credential, or Git boundary.
+
+`workflow.py status` is the public `schemaVersion: 1` JSON projection consumed by
+hooks and advisor automation. It exposes semantic workflow facts and logical
+evidence identities only; database paths, table names, journals, and other
+storage mechanics are private. Missing authoritative state returns exit 2 with
+`no active workflow` and creates nothing.
 
 ## Mandatory order
 
@@ -50,7 +54,7 @@ Broader graph results may widen verification but cannot silently shrink the
 packet. Then record the completed step:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   set-phase --repo "$PWD" --phase gitnexus --status passed
 ```
 
@@ -66,21 +70,18 @@ validating its output, the lead records the separate disposition before
 production preflight:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings none
 ```
 
-The active `workflowId` comes from `pass-state.py status`. A disposition is
+The active `workflowId` comes from `workflow.py status`. A disposition is
 bound to the active workflow instance and can only move findings
 to `none` or `addressed`; it can never create a result or alter its source or
 verdict. `addressed` stays lead-owned but is now document-backed: it demands
 `--input` with the lead's structured document — the review recorder's
 findings-and-dispositions shape, every finding carrying one of `fixed`,
 `rejected-with-evidence`, or `accepted-follow-up`, the first two with their
-evidence and the follow-up with its reference. The
-document is validated structurally, then written to
-`disposition-<stage>-<slug>.json` atomically with the transition, so a refusal
-mutates nothing. An unavailable consult requires `--reason` with the measured
+evidence and the follow-up with its reference. The document is validated structurally, then stored under a logical evidence identity in the same transaction as the transition, so a refusal mutates nothing. An unavailable consult requires `--reason` with the measured
 transport failure and needs no disposition.
 
 ### 5. Production preflight
@@ -95,22 +96,24 @@ skill's structured document (all thirteen sections, `openQuestions` exactly
 `none`) and refuses without mutating state:
 
 ```bash
-python3 "$HOME/.claude/skills/production-preflight/scripts/record-preflight.py" \
-  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input <preflight.json>
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  record-preflight --repo "$PWD" --slug "<task>" \
+  --workflow-id "<active-workflowId>" --input <preflight.json>
 ```
 
 ### 6. TDD RED or not-required
 
 For behavior changes invoke `tdd` and drive one real-Seam RED/GREEN tracer
-bullet at a time. In this governed workflow `tdd-run.py` is the required producer
+bullet at a time. In this governed workflow `workflow.py tdd` is the required producer
 for behavior-change TDD state (`set-phase` does not accept the `tdd` phase);
 outside the governed workflow it stays optional. It keeps a bounded summary
 and advances the TDD state; it is not proof by itself. For genuinely
 non-behavioral work record the decision with the full producer command:
 
 ```bash
-python3 "$HOME/.claude/skills/tdd/scripts/tdd-run.py" --repo "$PWD" \
-  --slug "<task>" --not-required "<specific non-behavioral reason>"
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  tdd --repo "$PWD" --slug "<task>" \
+  --not-required "<specific non-behavioral reason>"
 ```
 
 After
@@ -128,8 +131,9 @@ clean-baseline proof over the pre-implementation tree:
 ```bash
 python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" \
   check --repo "$PWD" --json > gate.json
-python3 "$HOME/.claude/skills/production-code/scripts/record-production-code.py" \
-  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input gate.json
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  record-production-code --repo "$PWD" --slug "<task>" \
+  --workflow-id "<active-workflowId>" --input gate.json
 ```
 
 The recorder refuses anything but the gate's parseable `ok: true` verdict, and
@@ -147,7 +151,7 @@ review steps without reopening production editing. When implementation is ready
 for verification:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   set-phase --repo "$PWD" --phase implementation --status passed
 ```
 
@@ -155,29 +159,35 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
 
 Run focused tests, the integrated suite, lint/typecheck/build where applicable,
 the production quality gate, cleanup, named no-change checks, and GitNexus
-reanalysis/detect-changes when required. Verification records only through the
-runner, which executes the command it records and derives status
+reanalysis/detect-changes when required. Verification records only through the unified CLI runner, which executes the command it records and derives status
 per-command-latest — any distinct command whose latest run failed keeps
 verification pending until that same command reruns green:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/verify-run.py" \
-  --repo "$PWD" --slug "<task>" -- <verification command>
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  verify --repo "$PWD" --slug "<task>" -- <verification command>
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  verify --repo "$PWD" --slug "<task>" --kind quality-gate --base-ref "<base>"
 ```
 
-Which commands constitute sufficient verification stays lead judgment; that
-they ran does not.
+Which generic commands constitute sufficient verification stays lead judgment; that they ran does not. Completion additionally requires the typed `quality-gate` run over the current reviewable tree.
 
 ### 10. Lead structured code review
 
 Invoke `code-review` for non-trivial changes. The implementation agent may
 perform it itself in the current session: it is the lead's structured
 Standards/Spec self-check, not an independent review. Review Standards and Spec
-separately, verify every finding, and disposition each one. In this governed
-workflow `record-review.py` is the required producer for non-trivial review
-state (`set-phase` cannot record a passed review); outside the governed
+separately, verify every finding, and disposition each one. In this governed workflow `workflow.py record-review` is the required producer for non-trivial review state (`set-phase` cannot record a passed review); outside the governed
 workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
+
+Record the structured result through the unified Interface:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  record-review --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
+  --resolved-model "<model>" --review-context-id "<context-id>" --input <review.json>
+```
 
 Recording the review also binds it to the tree it reviewed, so re-recording it
 refreshes that binding and returns the final review to pending. Any correction
@@ -196,7 +206,7 @@ verification, code review where required, and final review.
 ### 12. Complete the workflow
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   complete --repo "$PWD"
 ```
 
@@ -221,6 +231,10 @@ config, an estate sync, or work the user told you not to push — the no-PR
 route is: complete the workflow, report the change and its verification in the
 final response, and name why no PR exists. The completed state then simply
 remains until the next `begin` replaces it; no reviewer gate applies.
+
+## Compatibility shims
+
+`pass-state.py`, `verify-run.py`, `tdd-run.py`, and the phase recorder scripts are temporary migration shims. They delegate to the same workflow CLI implementation and own no persistence, evidence-path, or policy behavior. New callers and documentation use `workflow.py`; the shims are retired after the installed estate has completed one verified migration cycle.
 
 ## Failure semantics
 

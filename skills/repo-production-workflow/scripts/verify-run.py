@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""Execute a verification command and record its real result on the workflow.
-
-Verification status derives per-command-latest across this instance's runs:
-any distinct command whose latest run failed keeps verification pending, and
-only rerunning that same command green clears it. Which commands constitute
-sufficient verification stays lead judgment; that they ran does not.
-"""
+"""Compatibility shim for ``workflow verify``."""
 from __future__ import annotations
 
-import argparse
-import json
-import os
-import shlex
-import subprocess
 import sys
 from pathlib import Path
 
@@ -20,108 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import read_json, repo_state_dir, utc_timestamp  # noqa: E402
-from hooks.lib.workflow_state import (  # noqa: E402
-    NO_INSTANCE_ID,
-    WorkflowError,
-    bound_state,
-    commit_evidence_phase,
-    instance_id,
-    safe_slug,
-)
-
-MAX_CAPTURE = 16000
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cwd", "--repo", dest="cwd", default=os.getcwd())
-    parser.add_argument("--slug", required=True)
-    parser.add_argument("--timeout", type=int, default=900)
-    parser.add_argument("command", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
-
-    try:
-        identity = resolve_repo_identity(args.cwd)
-        # Refusing before the command spends anything; the commit revalidates
-        # this same read under the lock. Re-verification stays open during
-        # governance revalidation by design.
-        state = bound_state(identity, safe_slug(args.slug))
-        slug, workflow_id = state["slug"], instance_id(state)
-        if workflow_id is None:
-            raise WorkflowError(NO_INSTANCE_ID)
-        if state.get("implementation") != "passed":
-            raise WorkflowError("verification requires implementation")
-        command = args.command[1:] if args.command and args.command[0] == "--" else args.command
-        if not command:
-            raise ValueError("a command is required after --")
-
-        path = repo_state_dir(identity) / f"verification-{slug}.json"
-        existing = read_json(path)
-        prior_runs = (
-            existing.get("runs")
-            if isinstance(existing, dict) and existing.get("workflowId") == workflow_id
-            and isinstance(existing.get("runs"), list)
-            else []
-        )
-
-        try:
-            result = subprocess.run(
-                command,
-                cwd=str(identity.root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=args.timeout,
-                check=False,
-            )
-            raw, exit_code, timed_out = result.stdout or b"", result.returncode, False
-        except subprocess.TimeoutExpired as exc:
-            raw = (exc.stdout or b"") + (exc.stderr or b"")
-            exit_code, timed_out = 124, True
-
-        runs = [*prior_runs, {
-            "command": shlex.join(command),
-            "exitCode": exit_code,
-            "timedOut": timed_out,
-            "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
-            "at": utc_timestamp(),
-        }]
-        latest: dict[str, bool] = {}
-        for run in runs:
-            latest[str(run.get("command"))] = run.get("exitCode") == 0 and not run.get("timedOut")
-        status = "passed" if runs and all(latest.values()) else "pending"
-        commit_evidence_phase(identity, slug, workflow_id, "verification", path, {
-            "schemaVersion": 1,
-            "slug": slug,
-            "workflowId": workflow_id,
-            "status": status,
-            "runs": runs,
-            "updatedAt": utc_timestamp(),
-        }, status=status, expected_evidence=existing)
-
-    except (RepoIdentityError, WorkflowError, ValueError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    # The run is recorded; reporting failures below must not disguise that.
-    # Exit 2 here carries the runner's second, documented meaning: the command
-    # itself failed after being recorded, distinct from a refusal that
-    # recorded nothing (which never reaches this point).
-    try:
-        output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
-        if output:
-            print(output, end="" if output.endswith("\n") else "\n")
-        print(json.dumps({
-            "evidencePath": str(path), "exitCode": exit_code, "verification": status,
-        }, sort_keys=True), flush=True)
-        if exit_code != 0 or timed_out:
-            print("verification command failed; verification stays pending until its rerun is green", file=sys.stderr)
-    except OSError:
-        # The run is durably recorded; the unwritable buffer would raise again
-        # at interpreter shutdown, so stdout is pointed at devnull instead.
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-    return 0 if exit_code == 0 and not timed_out else 2
-
+from hooks.lib.workflow_cli import main  # noqa: E402
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(["verify", *sys.argv[1:]]))

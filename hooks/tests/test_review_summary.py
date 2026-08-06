@@ -19,12 +19,8 @@ from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
-PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
-RECORDER = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
-RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
-RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
+WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
-VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
 
 
 class ReviewSummaryTests(unittest.TestCase):
@@ -47,7 +43,7 @@ class ReviewSummaryTests(unittest.TestCase):
         (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
         subprocess.run(["git", "add", "app.py"], cwd=self.repo, env=self.env, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=self.repo, env=self.env, check=True)
-        begun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
+        begun = self.run_script(WORKFLOW, "begin", "--slug", "review-summary")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         identity = resolve_repo_identity(self.repo)
         self.wid = read_workflow(identity)["workflowId"]
@@ -58,7 +54,7 @@ class ReviewSummaryTests(unittest.TestCase):
         doc_path = self.tmp / "setup-preflight.json"
         doc_path.write_text(json.dumps(build_document("suite setup")), encoding="utf-8")
         recorded = subprocess.run(
-            [sys.executable, str(RECORD_PREFLIGHT), "--repo", str(self.repo), "--slug", "review-summary",
+            [sys.executable, str(WORKFLOW), "record-preflight", "--repo", str(self.repo), "--slug", "review-summary",
              "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(doc_path)],
             cwd=str(Path(__file__).resolve().parents[2]), env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
@@ -72,18 +68,24 @@ class ReviewSummaryTests(unittest.TestCase):
         gate_path = self.tmp / "setup-gate.json"
         gate_path.write_text(gate.stdout, encoding="utf-8")
         recorded = subprocess.run(
-            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo), "--slug", "review-summary",
+            [sys.executable, str(WORKFLOW), "record-production-code", "--repo", str(self.repo), "--slug", "review-summary",
              "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(gate_path)],
             cwd=str(ROOT), env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         assert recorded.returncode == 0, recorded.stdout + recorded.stderr
         set_phase(identity, "implementation", "passed")
         verified = subprocess.run(
-            [sys.executable, str(VERIFY_RUN), "--repo", str(self.repo), "--slug", "review-summary",
+            [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo), "--slug", "review-summary",
              "--", sys.executable, "-c", "pass"],
             cwd=str(ROOT), env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         assert verified.returncode == 0, verified.stdout + verified.stderr
+        quality = subprocess.run(
+            [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo), "--slug", "review-summary",
+             "--kind", "quality-gate", "--base-ref", "HEAD"],
+            cwd=str(ROOT), env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert quality.returncode == 0, quality.stdout + quality.stderr
 
     def tearDown(self) -> None:
         if self.previous_state_root is None:
@@ -98,6 +100,16 @@ class ReviewSummaryTests(unittest.TestCase):
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
+
+    def evidence(self, evidence_id: str) -> dict[str, object]:
+        result = self.run_script(WORKFLOW, "evidence", "--evidence-id", evidence_id)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)["document"]
+
+    def event_count(self) -> int:
+        result = self.run_script(WORKFLOW, "history")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return len(json.loads(result.stdout)["events"])
 
     def test_material_findings_must_be_dispositioned_before_review_passes(self) -> None:
         review = {
@@ -116,14 +128,14 @@ class ReviewSummaryTests(unittest.TestCase):
         path = self.tmp / "review.json"
         path.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
         missing_identity = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "",
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "",
             "--review-context-id", "", "--input", str(path),
         )
         self.assertEqual(missing_identity.returncode, 2, missing_identity.stdout + missing_identity.stderr)
         self.assertIn("resolved model", missing_identity.stderr)
         path.write_text(json.dumps(review), encoding="utf-8")
         missing_consequence = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
             "--review-context-id", "fresh-review-1", "--input", str(path),
         )
         self.assertEqual(
@@ -136,26 +148,26 @@ class ReviewSummaryTests(unittest.TestCase):
         review["findings"][0]["consequence"] = "The production result would remain incorrect."
         path.write_text(json.dumps(review), encoding="utf-8")
         pending = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
             "--review-context-id", "fresh-review-1", "--input", str(path),
         )
         self.assertEqual(pending.returncode, 2, pending.stdout + pending.stderr)
-        state = json.loads(self.run_script(PASS_STATE, "status").stdout)
+        state = json.loads(self.run_script(WORKFLOW, "status").stdout)
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
 
         review["dispositions"][0] = {"finding_id": "SPEC-1", "status": "fixed", "evidence": "verified correction"}
         path.write_text(json.dumps(review), encoding="utf-8")
         recorded = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
             "--review-context-id", "fresh-review-1", "--input", str(path),
         )
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         result = json.loads(recorded.stdout)
-        summary = json.loads(Path(result["summaryPath"]).read_text(encoding="utf-8"))
+        summary = self.evidence(result["summaryId"])
         self.assertEqual(summary["status"], "passed")
         for removed in ("head", "indexTree", "sha256", "attestationId"):
             self.assertNotIn(removed, summary)
-        state = json.loads(self.run_script(PASS_STATE, "status").stdout)
+        state = json.loads(self.run_script(WORKFLOW, "status").stdout)
         self.assertEqual(state["codeReview"], {"status": "passed", "findings": "addressed"})
 
 
@@ -163,11 +175,11 @@ class ReviewSummaryTests(unittest.TestCase):
         path = self.tmp / "review.json"
         path.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
         recorded = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid, "--resolved-model", "gpt-5",
             "--review-context-id", "fresh-review-3", "--input", str(path),
         )
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
-        ready = json.loads(self.run_script(PASS_STATE, "checkpoint", "--phase", "final-review").stdout)
+        ready = json.loads(self.run_script(WORKFLOW, "checkpoint", "--phase", "final-review").stdout)
         self.assertTrue(ready["ready"], ready)
 
         subprocess.run(
@@ -175,7 +187,7 @@ class ReviewSummaryTests(unittest.TestCase):
             cwd=self.repo, env=self.env, check=True,
         )
 
-        stale = json.loads(self.run_script(PASS_STATE, "checkpoint", "--phase", "final-review").stdout)
+        stale = json.loads(self.run_script(WORKFLOW, "checkpoint", "--phase", "final-review").stdout)
         self.assertFalse(stale["ready"], "the wrapper would have spent a paid consult against a stale tree")
         self.assertTrue(
             any("review-manifest-stale" in item and "app.py" in item for item in stale["missing"]),
@@ -191,21 +203,21 @@ class ReviewSummaryTests(unittest.TestCase):
             "location": "app.py:1", "claim": "c", "evidence": "e",
             "consequence": "k", "smallest_action": "s",
         }
-        identity = resolve_repo_identity(self.repo)
-        artifact = self.tmp / "state" / identity.key / "review-review-summary.json"
         path = self.tmp / "unhashable.json"
+        before_events = self.event_count()
         path.write_text(json.dumps({
             "findings": [{**finding, "axis": []}],
             "dispositions": [{"finding_id": "F1", "status": "fixed", "evidence": "x"}],
         }), encoding="utf-8")
         refused = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid,
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid,
             "--resolved-model", "gpt-5", "--review-context-id", "unhashable-axis", "--input", str(path),
         )
         self.assertEqual(refused.returncode, 2, "an unhashable axis crashed instead of refusing")
         self.assertIn("has an invalid axis", refused.stderr)
-        self.assertFalse(artifact.exists(), "a refused document wrote review evidence")
-        state = json.loads(self.run_script(PASS_STATE, "status").stdout)
+        self.assertEqual(self.event_count(), before_events, "a refused document appended an event")
+        state = json.loads(self.run_script(WORKFLOW, "status").stdout)
+        self.assertNotIn("codeReviewEvidence", state)
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
 
         path.write_text(json.dumps({
@@ -214,13 +226,14 @@ class ReviewSummaryTests(unittest.TestCase):
         }), encoding="utf-8")
 
         refused = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid,
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid,
             "--resolved-model", "gpt-5", "--review-context-id", "unhashable-1", "--input", str(path),
         )
         self.assertEqual(refused.returncode, 2, "an unhashable finding_id crashed instead of refusing")
         self.assertIn("must reference a finding", refused.stderr)
-        self.assertFalse(artifact.exists(), "a refused document wrote review evidence")
-        state = json.loads(self.run_script(PASS_STATE, "status").stdout)
+        self.assertEqual(self.event_count(), before_events, "a refused document appended an event")
+        state = json.loads(self.run_script(WORKFLOW, "status").stdout)
+        self.assertNotIn("codeReviewEvidence", state)
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
 
         path.write_text(json.dumps({
@@ -228,33 +241,31 @@ class ReviewSummaryTests(unittest.TestCase):
             "dispositions": [{"finding_id": "F1", "status": {}, "evidence": "x"}],
         }), encoding="utf-8")
         refused = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", self.wid,
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid,
             "--resolved-model", "gpt-5", "--review-context-id", "unhashable-2", "--input", str(path),
         )
         self.assertEqual(refused.returncode, 2, "an unhashable status crashed instead of refusing")
         self.assertIn("invalid or duplicate disposition", refused.stderr)
-        self.assertFalse(artifact.exists(), "a refused document wrote review evidence")
-        state = json.loads(self.run_script(PASS_STATE, "status").stdout)
+        self.assertEqual(self.event_count(), before_events, "a refused document appended an event")
+        state = json.loads(self.run_script(WORKFLOW, "status").stdout)
+        self.assertNotIn("codeReviewEvidence", state)
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
 
-    def test_rejected_recorder_calls_leave_evidence_untouched(self) -> None:
-        rebegun = self.run_script(PASS_STATE, "begin", "--slug", "review-summary")
+    def test_rejected_recorder_call_appends_no_event(self) -> None:
+        rebegun = self.run_script(WORKFLOW, "begin", "--slug", "review-summary")
         self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
-        identity = resolve_repo_identity(self.repo)
-        new_wid = read_workflow(identity)["workflowId"]
-        review_file = self.tmp / "state" / read_workflow(identity)["repo"]["key"] / "review-review-summary.json"
-        before = review_file.read_text(encoding="utf-8") if review_file.exists() else None
+        new_wid = read_workflow(resolve_repo_identity(self.repo))["workflowId"]
+        before_events = self.event_count()
 
         payload = self.tmp / "premature.json"
         payload.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")
         premature = self.run_script(
-            RECORDER, "--slug", "review-summary", "--workflow-id", new_wid,
+            WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", new_wid,
             "--resolved-model", "gpt-5", "--review-context-id", "fresh-review-2",
             "--input", str(payload),
         )
         self.assertEqual(premature.returncode, 2, "a premature recorder call was accepted before verification")
-        after = review_file.read_text(encoding="utf-8") if review_file.exists() else None
-        self.assertEqual(after, before, "a rejected recorder call wrote review evidence")
+        self.assertEqual(self.event_count(), before_events, "a rejected recorder call appended an event")
 
 
 if __name__ == "__main__":
