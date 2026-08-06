@@ -1116,6 +1116,50 @@ def test_staged_only_reimplementation_is_detected_like_worktree_mode() -> None:
     with_repo(body)
 
 
+def test_delegation_evidence_is_qualified_calls_not_self_references() -> None:
+    # In a new Python file an unqualified same-name call binds to the local
+    # definition, so only a qualified call proves delegation to the owner:
+    # a one-line wrapper's same-line qualified call suppresses the match,
+    # while a reimplementation that merely calls itself elsewhere does not.
+    outcomes: dict[str, tuple[int, list[dict[str, object]]]] = {}
+
+    def wrapper_body(repo: Path) -> None:
+        write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "helper")
+        write(
+            repo / "src" / "oneline.py",
+            "from src import ids\n\n\n"
+            "def normalize_user_id(value: str) -> str: return ids.normalize_user_id(value)\n",
+        )
+        git(repo, "add", "src/oneline.py")
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
+        outcomes["wrapper"] = (code, reuse_matches(payload))
+
+    def self_call_body(repo: Path) -> None:
+        write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "helper")
+        write(
+            repo / "src" / "copycat.py",
+            "def normalize_user_id(value: str) -> str:\n"
+            "    return value.strip().lower()\n\n\n"
+            "def ingest(value: str) -> str:\n"
+            "    return normalize_user_id(value)\n",
+        )
+        git(repo, "add", "src/copycat.py")
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
+        outcomes["selfCall"] = (code, reuse_matches(payload))
+
+    # Both scenarios run before any assertion so one failure shows the full
+    # paired observation, not just the first scenario reached.
+    with_repo(wrapper_body)
+    with_repo(self_call_body)
+    assert outcomes["wrapper"][0] == 0 and outcomes["wrapper"][1] == [], outcomes
+    assert outcomes["selfCall"][0] == 2, outcomes
+    assert outcomes["selfCall"][1][0]["existingFile"] == "src/ids.py", outcomes
+
+
 def test_new_file_wrapper_that_calls_the_owner_is_not_a_reimplementation() -> None:
     # A new delegating wrapper legitimately calls the existing owner right
     # beside its same-named definition; the nearby-call evidence must count
@@ -1297,6 +1341,7 @@ def main() -> int:
         test_incompleteness_finding_identity_survives_a_path_rename,
         test_staged_only_reimplementation_is_detected_like_worktree_mode,
         test_new_file_wrapper_that_calls_the_owner_is_not_a_reimplementation,
+        test_delegation_evidence_is_qualified_calls_not_self_references,
         test_leading_whitespace_filename_remains_fully_readable,
         test_control_character_payload_lines_stay_fully_scanned,
         test_gate_completes_on_an_unborn_repo_with_open_stdin,

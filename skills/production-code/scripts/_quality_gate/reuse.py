@@ -32,13 +32,14 @@ def detect_reuse_issues(
         return [], [], _reuse_rule(snapshot, [], gaps)
     # Every production entry's added lines are nearby-call evidence — a new
     # delegating wrapper legitimately calls its owner right beside its own
-    # definition. The candidate's declaration line itself is excluded in the
-    # scan, so a bare same-named definition never suppresses its own match.
+    # definition, including on the declaration line itself. What counts as a
+    # call is decided per candidate in _symbol_is_called_nearby.
     added_by_file = {
         entry.path: entry.added_lines()
         for entry in snapshot.role_entries("production")
     }
-    findings = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))
+    baseline_absent = {entry.path for entry in snapshot.role_entries("production") if entry.base_text is None}
+    findings = _score_reuse_candidates(candidates, existing, added_by_file, baseline_absent, _deleted_definition_names(snapshot))
     queries = [
         f'gitnexus_context(name="{finding.existing_symbol}") and gitnexus_impact(target="{finding.existing_symbol}", direction="upstream")'
         for finding in findings
@@ -159,13 +160,14 @@ def _score_reuse_candidates(
     candidates: list[SymbolDef],
     existing: list[SymbolDef],
     added_by_file: dict[str, list[tuple[int, str]]],
+    baseline_absent: set[str],
     moved_or_deleted: set[str],
 ) -> list[ReuseFinding]:
     findings: list[ReuseFinding] = []
     for new_item in candidates:
         if new_item.name in moved_or_deleted or new_item.name.lower() in moved_or_deleted:
             continue
-        best = _best_existing_match(new_item, existing, added_by_file, moved_or_deleted)
+        best = _best_existing_match(new_item, existing, added_by_file, baseline_absent, moved_or_deleted)
         if best is None:
             continue
         score, reason, existing_item = best
@@ -182,6 +184,7 @@ def _best_existing_match(
     new_item: SymbolDef,
     existing: list[SymbolDef],
     added_by_file: dict[str, list[tuple[int, str]]],
+    baseline_absent: set[str],
     moved_or_deleted: set[str],
 ) -> tuple[int, str, SymbolDef] | None:
     best: tuple[int, str, SymbolDef] | None = None
@@ -192,7 +195,7 @@ def _best_existing_match(
             continue
         if existing_item.language != new_item.language and new_item.kind != "block":
             continue
-        if _symbol_is_called_nearby(existing_item.name, added_by_file.get(new_item.path, []), new_item.line):
+        if _symbol_is_called_nearby(existing_item.name, added_by_file.get(new_item.path, []), new_item, new_item.path in baseline_absent):
             continue
         base_score, reason = same_behavior_name(new_item, existing_item)
         if new_item.kind == "block":
@@ -213,10 +216,22 @@ def _best_existing_match(
     return best
 
 
-def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], new_line: int) -> bool:
-    pattern = re.compile(rf"\b{re.escape(symbol)}\s*\(")
+def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], candidate: SymbolDef, baseline_absent: bool) -> bool:
+    same_named_new = baseline_absent and candidate.name == symbol
+    skip_line = None
+    if same_named_new and candidate.language == "python":
+        # In a new Python file an unqualified same-name call binds to the
+        # local definition, so only a qualified call proves delegation; the
+        # declaration line can never match this form and needs no skip.
+        pattern = re.compile(rf"\.\s*{re.escape(symbol)}\s*\(")
+    else:
+        pattern = re.compile(rf"\b{re.escape(symbol)}\s*\(")
+        if same_named_new:
+            # Other languages keep the declaration-line skip so a bare
+            # definition cannot suppress its own match.
+            skip_line = candidate.line
     return any(
-        line_no != new_line and max(0, new_line - 8) <= line_no <= new_line + 20 and pattern.search(text)
+        line_no != skip_line and max(0, candidate.line - 8) <= line_no <= candidate.line + 20 and pattern.search(text)
         for line_no, text in lines
     )
 
