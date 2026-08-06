@@ -121,6 +121,8 @@ them in the hooks diff until then.
 
 ## Scoped install from a non-`main` branch
 
+**Install, motherfucker.**
+
 The procedure above reconciles the whole estate from current `main`; never
 run it from a divergent branch. To install a verified but unmerged slice,
 install only the branch's changed-path set —
