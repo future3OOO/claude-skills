@@ -17,8 +17,28 @@ SCRIPT = Path(__file__).with_name("code_quality_gate.py")
 SCRIPT_DIR = Path(__file__).parent
 
 
+class _SourceRepositoryUnavailable(Exception):
+    """The source checkout this suite characterizes is not reachable.
+
+    Raised only when no repository is found — never for a repository that is
+    present but missing something a test needs, which stays a hard failure.
+    """
+
+
 def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=cwd, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+
+def source_repo() -> Path:
+    """The repository whose history the characterization tests read.
+
+    The estate installs these scripts outside any checkout, so ask Git rather
+    than counting parent directories.
+    """
+    res = run(["git", "rev-parse", "--show-toplevel"], SCRIPT_DIR)
+    if res.returncode != 0:
+        raise _SourceRepositoryUnavailable(f"{SCRIPT_DIR} is not inside a git checkout")
+    return Path(res.stdout.strip())
 
 
 def git(repo: Path, *args: str) -> None:
@@ -868,7 +888,7 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     # architecture; changing one requires a parent re-pin.
     base = "4cfffcb8d5724bfc2b03dce505da8cf930fb49fa"
     candidate = "28cf04e63fa6eb598b938d3a78d782969538d9a9"
-    repo = SCRIPT_DIR.parents[2]
+    repo = source_repo()
     for sha in (base, candidate):
         present = run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], repo)
         assert present.returncode == 0, f"corpus commit {sha} missing from local history"
@@ -1190,7 +1210,7 @@ def test_full_history_test_like_classification_is_unchanged() -> None:
             return True
         return bool(_re.search(r"\.(?:test|spec)\.", name)) or name.endswith(".schema.json")
 
-    repo = SCRIPT_DIR.parents[2]
+    repo = source_repo()
     listed = run(["git", "log", "--all", "--name-only", "--format="], repo)
     paths = {line for line in listed.stdout.splitlines() if line.strip()}
     paths |= set(run(["git", "ls-files"], repo).stdout.splitlines())
@@ -1493,7 +1513,11 @@ def main() -> int:
         test_gate_implementation_budget,
     ]
     for test in tests:
-        test()
+        try:
+            test()
+        except _SourceRepositoryUnavailable as reason:
+            print(f"SKIP {test.__name__} ({reason})")
+            continue
         print(f"PASS {test.__name__}")
     return 0
 
