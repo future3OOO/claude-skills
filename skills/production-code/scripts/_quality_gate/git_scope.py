@@ -69,11 +69,10 @@ def _resolve_base(repo: Path, base_ref: str | None) -> tuple[str, str, list[str]
         res = run_git(repo, ["rev-parse", "--verify", f"{base_ref}^{{commit}}"])
         if res.returncode != 0:
             return "", "caller", [f"base-ref not found: {base_ref}"]
-        base = res.stdout.strip()
-        # A caller base on an advanced branch compares from the fork point, so
-        # the evaluation never counts the other branch's changes in reverse.
-        merged = run_git(repo, ["merge-base", base, "HEAD"])
-        return (merged.stdout.strip() if merged.returncode == 0 else base), "caller", []
+        # The caller Adapter selects the base; this module captures the commit
+        # it was given. Choosing a different one here would drop the very
+        # difference the caller asked about.
+        return res.stdout.strip(), "caller", []
     head = run_git(repo, ["rev-parse", "--verify", "HEAD^{commit}"])
     if head.returncode == 0:
         return head.stdout.strip(), "HEAD", []

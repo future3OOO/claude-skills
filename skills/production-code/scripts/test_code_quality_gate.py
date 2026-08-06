@@ -965,6 +965,42 @@ def test_missing_base_ref_cannot_report_a_complete_result() -> None:
     with_repo(body)
 
 
+def test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied() -> None:
+    # Base selection belongs to the caller; this Module captures the base it is
+    # given. When the supplied base is not an ancestor of HEAD, resolving it to
+    # anything else drops the very difference the caller asked about.
+    def body(repo: Path) -> None:
+        write(repo / "src" / "shared.py", "SHARED = 1\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "shared")
+        fork = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+        # The caller's chosen base drops shared.py and carries a file of its
+        # own, so against that base the candidate re-adds one and deletes the
+        # other. A merge-base reading sees neither, and can never report a
+        # deletion at all.
+        git(repo, "checkout", "-q", "-b", "side")
+        git(repo, "rm", "-q", "src/shared.py")
+        write(repo / "src" / "sideonly.py", "SIDE = 1\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "side drops shared and adds its own")
+        side = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+        git(repo, "checkout", "-q", "-b", "feature", fork)
+        write(repo / "src" / "feature.py", "FEATURE = 1\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "feature")
+
+        for extra in ((), ("--staged-only",)):
+            _, payload, _ = run_gate(repo, "--base-ref", side, *extra)
+            base = payload["evaluation"]["base"]
+            assert base["commit"] == side, (extra, base, fork)
+            assert base["source"] == "caller", (extra, base)
+            assert "src/shared.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
+            assert "src/sideonly.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
+            assert growth_totals(payload)["production"] == {"added": 2, "deleted": 1, "net": 1}, (extra, growth_totals(payload))
+
+    with_repo(body)
+
+
 def test_promotion_follows_exact_rule_id_metadata_only() -> None:
     # QG54 rules start promotion-ineligible: a growth warning cannot fail the
     # gate even under --fail-on-warnings.
@@ -1335,6 +1371,7 @@ def main() -> int:
         test_growth_finding_carries_stable_identity_and_evidence,
         test_intermediate_commits_do_not_leak_into_the_evaluation,
         test_missing_base_ref_cannot_report_a_complete_result,
+        test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied,
         test_promotion_follows_exact_rule_id_metadata_only,
         test_snapshot_reads_the_captured_tree_not_the_moving_worktree,
         test_full_history_test_like_classification_is_unchanged,
