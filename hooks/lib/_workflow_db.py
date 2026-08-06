@@ -318,7 +318,9 @@ def _legacy_evidence(
         if type(document.get("schemaVersion")) is not int or document.get("schemaVersion") != 1:
             raise LegacyImportError(f"legacy {field} has an unsupported schema")
         owner = document.get("workflowId")
-        if owner is not None and owner != workflow_id:
+        if not isinstance(owner, str) or not owner:
+            raise LegacyImportError(f"legacy {field} has no workflowId")
+        if owner != workflow_id:
             raise LegacyImportError(f"legacy {field} belongs to a different workflow")
         write = import_evidence(kind, path, document)
         converted[field] = write.evidence_id

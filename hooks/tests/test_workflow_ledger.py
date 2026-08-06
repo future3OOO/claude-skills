@@ -594,6 +594,30 @@ class WorkflowLedgerTests(unittest.TestCase):
         self.assertEqual(evidence.returncode, 0, evidence.stderr)
         self.assertEqual(json.loads(evidence.stdout)["document"]["document"], build_document("legacy"))
 
+    def test_referenced_legacy_evidence_without_an_owner_is_rejected(self) -> None:
+        legacy, evidence_path = self.legacy_state()
+        envelope = json.loads(evidence_path.read_text(encoding="utf-8"))
+        del envelope["workflowId"]
+        evidence_path.write_text(json.dumps(envelope), encoding="utf-8")
+        legacy_bytes = (self.slot / "workflow.json").read_bytes()
+
+        rejected = self.cli("status", "--repo", str(self.repo))
+        self.assertEqual(rejected.returncode, 2, rejected.stdout)
+        self.assertIn("has no workflowId", rejected.stderr)
+        self.assertEqual((self.slot / "workflow.json").read_bytes(), legacy_bytes)
+        connection = sqlite3.connect(self.database)
+        try:
+            self.assertIsNone(connection.execute(
+                "SELECT value FROM metadata WHERE key = 'authority'"
+            ).fetchone())
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM workflow_events").fetchone()[0], 0)
+        finally:
+            connection.close()
+
+        self.write_preflight_evidence(evidence_path, str(legacy["workflowId"]))
+        recovered = self.cli("status", "--repo", str(self.repo))
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+
     def test_legacy_public_status_mismatch_aborts_authority_and_is_retryable(self) -> None:
         legacy, evidence_path = self.legacy_state(evidence=False)
         failed = self.cli("status", "--repo", str(self.repo))
