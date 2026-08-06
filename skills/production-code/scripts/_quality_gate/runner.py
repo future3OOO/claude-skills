@@ -244,11 +244,14 @@ def _hard_rules(checks: list[dict[str, object]]) -> dict[str, dict[str, object]]
 
     def rule(*names: str) -> dict[str, object]:
         results = [outcome[name] for name in names]
+        # Same lattice as a single check: a contributing failure is established
+        # and an unknown sibling cannot undo it, while an unknown contributing
+        # check still leaves an otherwise-passing rule unestablished.
+        if any(result is False for result in results):
+            return {"status": "evaluated", "passed": False, "checks": list(names)}
         if any(result is None for result in results):
-            # An unknown contributing check leaves the rule unestablished; the
-            # gate must not read a truncated analysis as an evaluated pass.
             return {"status": "incomplete", "passed": None, "checks": list(names)}
-        return {"status": "evaluated", "passed": all(results), "checks": list(names)}
+        return {"status": "evaluated", "passed": True, "checks": list(names)}
 
     return {
         "noDuplication": rule("no-duplicate-added-blocks", "reuse-existing-helpers"),

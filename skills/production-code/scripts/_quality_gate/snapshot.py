@@ -245,7 +245,7 @@ def _unquote_git_path(value: str) -> str:
     while index < len(inner):
         char = inner[index]
         if char != "\\":
-            out.extend(char.encode("utf-8"))
+            out.extend(char.encode("utf-8", errors="surrogateescape"))
             index += 1
             continue
         index += 1

@@ -1019,6 +1019,49 @@ def test_non_utf8_filename_is_read_like_any_other_changed_file() -> None:
     with_repo(body)
 
 
+def test_a_failed_hard_rule_child_outranks_an_unknown_sibling() -> None:
+    # Aggregation follows the same lattice as a single check: an established
+    # failure dominates an unknown sibling, and unknown still beats a pass.
+    def body(repo: Path) -> None:
+        (repo / "src" / "unmeasured.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
+        block = (
+            "    total = compute_total(order_items, discount_rate, tax_rate)\n"
+            "    audit_log.append(record_entry(total, order_items, discount_rate))\n"
+            "    return finalize_invoice(total, order_items, discount_rate, tax_rate)\n"
+        )
+        write(repo / "src" / "dup.py", f"def a(order_items, discount_rate, tax_rate):\n{block}\ndef b(order_items, discount_rate, tax_rate):\n{block}")
+        _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+        assert check_named(payload, "no-duplicate-added-blocks")["passed"] is False, payload["checks"]
+        assert check_named(payload, "reuse-existing-helpers")["passed"] is None, payload["checks"]
+        assert payload["hardRules"]["noDuplication"] == {
+            "status": "evaluated",
+            "passed": False,
+            "checks": ["no-duplicate-added-blocks", "reuse-existing-helpers"],
+        }, payload["hardRules"]["noDuplication"]
+        # Nothing failed under cleanup, so its unreadable scope still wins.
+        assert payload["hardRules"]["cleanup"]["passed"] is None, payload["hardRules"]["cleanup"]
+
+    with_repo(body)
+
+
+def test_quoted_header_keeps_non_utf8_bytes_when_quotepath_is_off() -> None:
+    # With core.quotePath=false Git leaves the raw bytes in a header it still
+    # quotes for a tab, so decoding one must be able to re-encode them.
+    def body(repo: Path) -> None:
+        git(repo, "config", "core.quotePath", "false")
+        name = b"src/we\tir\xe9.py"
+        (repo / os.fsdecode(name)).write_bytes(b"def f():\n    return 1\n")
+        git(repo, "add", "-A")
+        res = run(["python3", str(SCRIPT), "check", "--repo", str(repo), "--json", "--base-ref", "HEAD"], repo)
+        assert res.returncode == 0, res.stderr
+        payload = json.loads(res.stdout)
+        assert [item.encode("utf-8", "surrogateescape") for item in payload["changedFilesSample"]] == [name], payload["changedFilesSample"]
+        assert growth_totals(payload)["production"] == {"added": 2, "deleted": 0, "net": 2}, growth_totals(payload)
+        assert payload["evaluation"]["complete"] is True, payload["evaluation"]["gaps"]
+
+    with_repo(body)
+
+
 def test_finding_identity_survives_a_non_utf8_path() -> None:
     # A finding whose identity carries a path must still hash: the content
     # anchor is the path's real bytes, not a string the encoder can refuse.
@@ -1432,6 +1475,8 @@ def main() -> int:
         test_missing_base_ref_cannot_report_a_complete_result,
         test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied,
         test_non_utf8_filename_is_read_like_any_other_changed_file,
+        test_a_failed_hard_rule_child_outranks_an_unknown_sibling,
+        test_quoted_header_keeps_non_utf8_bytes_when_quotepath_is_off,
         test_finding_identity_survives_a_non_utf8_path,
         test_a_witnessed_violation_outranks_missing_scope,
         test_promotion_follows_exact_rule_id_metadata_only,
