@@ -27,8 +27,12 @@ def check(
     snapshot = EvaluationSnapshot.from_scope(repo, scope, repo_context_packet, gitnexus_context_json)
 
     conflict_files, temp_files = _changed_file_failures(snapshot)
-    quality_escapes = scan_quality_escapes(snapshot)
-    duplicates = duplicate_added_blocks(snapshot)
+    found = {
+        "no-merge-conflict-markers": conflict_files,
+        "no-temp-artifacts": temp_files,
+        "no-quality-escapes": scan_quality_escapes(snapshot),
+        "no-duplicate-added-blocks": duplicate_added_blocks(snapshot),
+    }
     reuse_findings, gitnexus_queries, reuse_rule = detect_reuse_issues(snapshot)
     growth_rule = evaluate_growth(snapshot)
     findings: list[Finding] = [growth_rule, reuse_rule]
@@ -42,7 +46,7 @@ def check(
     gitnexus_rule = next((finding for finding in findings if finding.rule_id == RULE_GITNEXUS_CONTEXT), None)
     warnings = _rendered_warnings(findings, reuse_warnings, growth_warning)
 
-    errors.extend(_error_messages(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors))
+    errors.extend(_error_messages(found, reuse_errors))
     errors.extend(promoted_errors(findings, fail_on_warnings))
 
     # Hunk-reading rules cannot claim they saw the whole change when hunks are
@@ -53,7 +57,7 @@ def check(
     capture = snapshot.capture_gaps
     measurement = tuple(sorted({gap for entry in snapshot.entries if entry.source for gap in entry.gaps}))
     attribution = snapshot.attribution_gaps() + measurement + capture
-    checks = _checks(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, reuse_warnings, reuse_rule, growth_rule, growth_warning, gitnexus_rule, capture, attribution)
+    checks = _checks(found, reuse_errors, reuse_warnings, reuse_rule, growth_rule, growth_warning, gitnexus_rule, capture, attribution)
     return {
         "schemaVersion": 2,
         "gateVersion": GATE_VERSION,
@@ -162,32 +166,27 @@ def _changed_file_failures(snapshot: EvaluationSnapshot) -> tuple[list[str], lis
     return conflict_files, temp_files
 
 
-def _error_messages(
-    conflict_files: list[str],
-    temp_files: list[str],
-    quality_escapes: list[str],
-    duplicates: list[dict[str, object]],
-    reuse_errors: list[object],
-) -> list[str]:
-    errors = []
-    if conflict_files:
-        errors.append(f"merge conflict markers found in {len(conflict_files)} file(s)")
-    if temp_files:
-        errors.append(f"temporary artifact paths detected in {len(temp_files)} changed file(s)")
-    if quality_escapes:
-        errors.append(f"quality escapes detected in {len(quality_escapes)} changed location(s)")
-    if duplicates:
-        errors.append(f"duplicate added code blocks detected: {len(duplicates)}")
+# The immediate checks, each stated once: the check name, the error it reports
+# when it finds something, how much of it to sample, and which gap set makes an
+# otherwise-clean result unknown. Enumerating these separately for the error
+# list and again for the check list is how the two drifted apart.
+_SIMPLE_CHECKS = (
+    ("no-merge-conflict-markers", "merge conflict markers found in {n} file(s)", 10, "capture"),
+    ("no-temp-artifacts", "temporary artifact paths detected in {n} changed file(s)", 10, "capture"),
+    ("no-quality-escapes", "quality escapes detected in {n} changed location(s)", 10, "attribution"),
+    ("no-duplicate-added-blocks", "duplicate added code blocks detected: {n}", 4, "attribution"),
+)
+
+
+def _error_messages(found: dict[str, list], reuse_errors: list[object]) -> list[str]:
+    errors = [template.format(n=len(found[name])) for name, template, _, _ in _SIMPLE_CHECKS if found[name]]
     if reuse_errors:
         errors.append(f"new code appears to reimplement existing helpers or loops: {len(reuse_errors)}")
     return errors
 
 
 def _checks(
-    conflict_files: list[str],
-    temp_files: list[str],
-    quality_escapes: list[str],
-    duplicates: list[dict[str, object]],
+    found: dict[str, list],
     reuse_errors: list[object],
     reuse_warnings: list[object],
     reuse_rule: Finding,
@@ -217,11 +216,12 @@ def _checks(
             projected["gaps"] = sorted(rule.gaps)
         return projected
 
+    gaps_for = {"capture": capture, "attribution": attribution}
     return [
-        {"name": "no-merge-conflict-markers", "sample": conflict_files[:10], **outcome(not conflict_files, capture)},
-        {"name": "no-temp-artifacts", "sample": temp_files[:10], **outcome(not temp_files, capture)},
-        {"name": "no-quality-escapes", "sample": quality_escapes[:10], **outcome(not quality_escapes, attribution)},
-        {"name": "no-duplicate-added-blocks", "sample": duplicates[:4], **outcome(not duplicates, attribution)},
+        *(
+            {"name": name, "sample": found[name][:limit], **outcome(not found[name], gaps_for[scope])}
+            for name, _, limit, scope in _SIMPLE_CHECKS
+        ),
         {
             "name": "reuse-existing-helpers",
             "warnings": [finding.as_dict() for finding in reuse_warnings[:10]],
