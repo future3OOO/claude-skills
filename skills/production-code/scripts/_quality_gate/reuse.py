@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .findings import RULE_REUSE_ADVISORY
-from .models import BaselineFile, Finding, ReuseFinding, SymbolDef, anchor, pass_condition
+from .models import Finding, ReuseFinding, SymbolDef, anchor, pass_condition
 from .snapshot import EvaluationSnapshot
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
@@ -95,7 +95,7 @@ def _stored_classification(snapshot: EvaluationSnapshot) -> dict[str, tuple[str,
     Built once per evaluation: the baseline index can hold thousands of paths,
     so a scan per lookup would make anchoring quadratic in the change size.
     """
-    stored = {entry.path: (entry.role, entry.language) for entry in snapshot.entries}
+    stored = {entry.path: (entry.classification.role, entry.classification.language) for entry in snapshot.entries}
     stored.update({base.path: (base.role, base.language) for base in snapshot.baseline})
     return stored
 
@@ -156,7 +156,11 @@ def _existing_symbol_index(
             break
         if baseline.role != "production":
             continue
-        if not _should_index_existing(baseline, candidate_languages, candidate_roots, packet_paths, gitnexus_paths):
+        if baseline.language not in candidate_languages or not (
+            _top_dir(baseline.path) in candidate_roots
+            or baseline.path in packet_paths
+            or baseline.path in gitnexus_paths
+        ):
             continue
         text = baseline.text
         if text is None:
@@ -182,7 +186,7 @@ def _new_symbols(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     for entry in snapshot.role_entries("production"):
         source = "untracked" if entry.untracked else "added"
         for line_no, text in entry.added_lines():
-            for symbol in extract_symbols(entry.path, text, source, entry.language):
+            for symbol in extract_symbols(entry.path, text, source, entry.classification.language):
                 symbols.append(SymbolDef(symbol.name, entry.path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
     return symbols
 
@@ -204,7 +208,7 @@ def _risky_added_blocks(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
             if dedupe_shape:
                 tokens.append("dedupe")
             if dedupe_shape or len(set(tokens)) >= 2:
-                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", entry.language, tuple(tokens[:3]), "added"))
+                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", entry.classification.language, tuple(tokens[:3]), "added"))
     return blocks
 
 
@@ -213,7 +217,7 @@ def _deleted_definition_names(snapshot: EvaluationSnapshot) -> set[str]:
         symbol.name
         for entry in snapshot.role_entries("production")
         for line_no, text in entry.deleted_lines()
-        for symbol in extract_symbols(entry.path, text, "deleted", entry.language)
+        for symbol in extract_symbols(entry.path, text, "deleted", entry.classification.language)
     }
 
 
@@ -294,23 +298,6 @@ def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], candidat
     return any(
         line_no != skip_line and max(0, candidate.line - 8) <= line_no <= candidate.line + 20 and pattern.search(text)
         for line_no, text in lines
-    )
-
-
-def _should_index_existing(
-    baseline: BaselineFile,
-    candidate_languages: set[str],
-    candidate_roots: set[str],
-    packet_paths: set[str],
-    gitnexus_paths: set[str],
-) -> bool:
-    return (
-        baseline.language in candidate_languages
-        and (
-            _top_dir(baseline.path) in candidate_roots
-            or baseline.path in packet_paths
-            or baseline.path in gitnexus_paths
-        )
     )
 
 

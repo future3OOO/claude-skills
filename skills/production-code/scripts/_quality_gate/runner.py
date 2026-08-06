@@ -55,7 +55,7 @@ def check(
     # capture only. Non-source measurement gaps stay out: an image's binary
     # counts are irrelevant to rules that read source hunks.
     capture = snapshot.capture_gaps
-    measurement = tuple(sorted({gap for entry in snapshot.entries if entry.source for gap in entry.gaps}))
+    measurement = tuple(sorted({gap for entry in snapshot.entries if entry.classification.source for gap in entry.gaps}))
     attribution = snapshot.attribution_gaps() + measurement + capture
     checks = _checks(found, reuse_errors, reuse_warnings, reuse_rule, growth_rule, growth_warning, gitnexus_rule, capture, attribution)
     return {

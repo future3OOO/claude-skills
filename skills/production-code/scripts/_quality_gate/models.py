@@ -49,10 +49,6 @@ class Numstat:
 class Hunk:
     """One diff hunk, kept whole: separate hunks are never joined."""
 
-    base_start: int
-    base_lines: int
-    current_start: int
-    current_lines: int
     added: tuple[tuple[int, str], ...]
     deleted: tuple[tuple[int, str], ...]
 
@@ -84,22 +80,6 @@ class SnapshotEntry:
     deleted: int
     hunks: tuple[Hunk, ...]
     gaps: tuple[str, ...]
-
-    @property
-    def role(self) -> str:
-        return self.classification.role
-
-    @property
-    def language(self) -> str:
-        return self.classification.language
-
-    @property
-    def source(self) -> bool:
-        return self.classification.source
-
-    @property
-    def human_authored(self) -> bool:
-        return self.classification.human_authored
 
     def added_lines(self) -> list[tuple[int, str]]:
         return [line for hunk in self.hunks for line in hunk.added]

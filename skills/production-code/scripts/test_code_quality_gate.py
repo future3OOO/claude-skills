@@ -189,15 +189,6 @@ def test_standalone_entrypoint_import_bootstrap_passes(repo: Path) -> None:
 
 
 @with_repo
-def test_bare_noqa_is_still_a_quality_escape(repo: Path) -> None:
-    bare = "# no" + "qa"  # assembled so this file is not itself flagged
-    write(repo / "src" / "sloppy.py", f"import os  {bare}\n\n\ndef sloppy() -> str:\n    return os.sep\n")
-    code, payload, _ = run_gate(repo)
-    assert code != 0
-    assert payload["ok"] is False
-
-
-@with_repo
 def test_gate_creates_no_repo_artifacts(repo: Path) -> None:
     write(repo / "src" / "candidate.py", "def candidate() -> int:\n    return 2\n")
     git(repo, "add", "src/candidate.py")
@@ -229,37 +220,37 @@ def test_duplicate_added_block_fails(repo: Path) -> None:
     assert payload["hardRules"]["noDuplication"]["passed"] is False
 
 
-@with_repo
-def test_js_ts_escapes_fail(repo: Path) -> None:
-    disable = "es" + "lint-disable-next-line"  # assembled so this file is not itself flagged
-    write(repo / "src" / "bad.ts", f"export function bad(value: any) {{\n  // {disable}\n  return value as any;\n}}\n")
+# One quality-escape payload per row and the cleanup verdict it must produce.
+# The test-role rows prove the exemption boundary: typed test fakes stay
+# green, fake-green swallowed asserts do not. Markers are assembled so this
+# file is not itself flagged.
+_ESCAPE_ROWS = (
+    ("bare-noqa", "src/sloppy.py",
+     "import os  # no" + "qa\n\n\ndef sloppy() -> str:\n    return os.sep\n", True),
+    ("js-ts-escape", "src/bad.ts",
+     "export function bad(value: any) {\n  // es" + "lint-disable-next-line\n  return value as any;\n}\n", True),
+    ("python-escape", "src/bad.py",
+     "from typing import Any\n\ndef bad(value: Any):\n    try:\n        return value\n    except Exception:\n        pass\n", True),
+    ("test-any-annotation-is-allowed", "tests/test_fake.py",
+     "from typing import Any\n\nclass Fake:\n    value: Any\n", False),
+    ("test-fake-green-still-fails", "tests/test_bad.py",
+     "def test_bad():\n    try:\n        assert False\n    except Exception:\n        pass\n", True),
+)
+
+
+def test_quality_escape_verdict_holds_for_every_payload() -> None:
+    for name, path, content, fails in _ESCAPE_ROWS:
+        in_repo(lambda repo, p=path, c=content, f=fails, label=name: _escape_row(repo, p, c, f, label))
+
+
+def _escape_row(repo: Path, path: str, content: str, fails: bool, name: str) -> None:
+    write(repo / path, content)
     code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["cleanup"]["passed"] is False
-
-
-@with_repo
-def test_python_escapes_fail(repo: Path) -> None:
-    write(repo / "src" / "bad.py", "from typing import Any\n\ndef bad(value: Any):\n    try:\n        return value\n    except Exception:\n        pass\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["cleanup"]["passed"] is False
-
-
-@with_repo
-def test_test_any_annotations_do_not_fail_cleanup(repo: Path) -> None:
-    write(repo / "tests" / "test_fake.py", "from typing import Any\n\nclass Fake:\n    value: Any\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
-
-
-@with_repo
-def test_test_fake_green_escapes_still_fail(repo: Path) -> None:
-    write(repo / "tests" / "test_bad.py", "def test_bad():\n    try:\n        assert False\n    except Exception:\n        pass\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["cleanup"]["passed"] is False
+    if fails:
+        assert code == 2, (name, code, payload["errors"])
+        assert payload["hardRules"]["cleanup"]["passed"] is False, (name, payload["hardRules"]["cleanup"])
+    else:
+        assert code == 0 and payload["ok"] is True, (name, code, payload["errors"])
 
 
 @with_repo
@@ -281,201 +272,141 @@ def test_large_growth_is_warning_only(repo: Path) -> None:
     assert any("QG54-GROWTH-CUMULATIVE" in warning for warning in growth_check["warnings"]), growth_check
 
 
-@with_repo
-def test_reimplemented_existing_helper_fails(repo: Path) -> None:
-    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "helper")
-    write(repo / "src" / "users.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["noDuplication"]["passed"] is False
-    assert reuse_matches(payload)[0]["existingFile"] == "src/ids.py"
-
-
-@with_repo
-def test_reimplemented_dedupe_loop_fails(repo: Path) -> None:
-    write(
-        repo / "src" / "collections.py",
-        "def dedupe_items(items: list[str]) -> list[str]:\n"
-        "    seen = set()\n"
-        "    out = []\n"
-        "    for item in items:\n"
-        "        if item not in seen:\n"
-        "            seen.add(item)\n"
-        "            out.append(item)\n"
-        "    return out\n",
-    )
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "dedupe helper")
-    write(
-        repo / "src" / "importer.py",
-        "def import_items(items: list[str]) -> list[str]:\n"
-        "    seen = set()\n"
-        "    result = []\n"
-        "    for item in items:\n"
-        "        if item not in seen:\n"
-        "            seen.add(item)\n"
-        "            result.append(item)\n"
-        "    return result\n",
-    )
-    code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["noDuplication"]["passed"] is False
-    assert any(item["existingSymbol"] == "dedupe_items" for item in reuse_matches(payload))
-
-
-@with_repo
-def test_deleted_helper_is_not_reported_as_reuse_candidate(repo: Path) -> None:
-    helper = repo / "src" / "collections.py"
-    write(
-        helper,
-        "def dedupe_items(items: list[str]) -> list[str]:\n"
-        "    seen = set()\n"
-        "    return [item for item in items if item not in seen and not seen.add(item)]\n",
-    )
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "dedupe helper")
-    helper.unlink()
-    write(
-        repo / "src" / "importer.py",
-        "def import_items(items: list[str]) -> list[str]:\n"
-        "    seen = set()\n"
-        "    result = []\n"
-        "    for item in items:\n"
-        "        if item not in seen:\n"
-        "            seen.add(item)\n"
-        "            result.append(item)\n"
-        "    return result\n",
-    )
-    code, payload, _ = run_gate(repo)
-    assert code == 0, json.dumps(payload, indent=2)
-    assert reuse_matches(payload) == []
-
-
-@with_repo
-def test_single_token_cross_domain_reuse_warning_is_suppressed(repo: Path) -> None:
-    write(repo / "api" / "contracts.py", "def _parse_limit(value: str) -> int:\n    return int(value)\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "parse helper")
-    write(repo / "workers" / "cli.py", "def run(value: str) -> str:\n    parsed = value.split(':')\n    return parsed[0]\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
-    assert reuse_matches(payload) == []
-
-
-@with_repo
-def test_generic_serializer_method_name_is_not_reuse_evidence(repo: Path) -> None:
-    write(
-        repo / "src" / "existing.py",
-        "class Existing:\n"
-        "    def as_dict(self) -> dict[str, object]:\n"
-        "        return {'existing': True}\n",
-    )
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "existing serializer")
-    write(
-        repo / "src" / "candidate.py",
-        "class Candidate:\n"
-        "    def as_dict(self) -> dict[str, object]:\n"
-        "        return {'candidate': self.__class__.__name__}\n",
-    )
-    code, payload, _ = run_gate(repo)
-    assert code == 0, json.dumps(payload, indent=2)
-    assert reuse_matches(payload) == []
-
-
-@with_repo
-def test_pytest_named_module_is_test_source(repo: Path) -> None:
-    write(repo / "pkg" / "loader.py", "def read_current(path: str) -> str:\n    return open(path).read()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "reader")
+# Each row is one reuse-scoring behaviour: a committed baseline, a candidate
+# change, and the exact verdict the scorer must produce. "no-match" rows prove
+# the named shape never reaches the reuse evidence; match rows prove detection
+# AND that the finding names the real owner. The behaviours are the contract,
+# not the fixtures they used to live in; every row is independently
+# falsifiable.
+#
+# name, baseline files, deleted after commit, candidate files, staged,
+# extra gate args (an "@name" argument resolves to a file inside the repo),
+# expected verdict: "pass" | "no-match" | (match key, required value).
+_OWNER = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
+_LOOP = (
+    "def import_items(items: list[str]) -> list[str]:\n"
+    "    seen = set()\n"
+    "    result = []\n"
+    "    for item in items:\n"
+    "        if item not in seen:\n"
+    "            seen.add(item)\n"
+    "            result.append(item)\n"
+    "    return result\n"
+)
+_REUSE_ROWS = (
+    ("reimplemented-helper", {"src/ids.py": _OWNER}, (), {"src/users.py": _OWNER},
+     False, (), ("existingFile", "src/ids.py")),
+    ("reimplemented-dedupe-loop",
+     {"src/collections.py": _LOOP.replace("import_items", "dedupe_items").replace("result", "out")},
+     (), {"src/importer.py": _LOOP}, False, (), ("existingSymbol", "dedupe_items")),
+    ("deleted-owner-is-not-a-reuse-candidate",
+     {"src/collections.py": "def dedupe_items(items: list[str]) -> list[str]:\n"
+      "    seen = set()\n"
+      "    return [item for item in items if item not in seen and not seen.add(item)]\n"},
+     ("src/collections.py",), {"src/importer.py": _LOOP}, False, (), "no-match"),
+    ("single-token-cross-domain-suppressed",
+     {"api/contracts.py": "def _parse_limit(value: str) -> int:\n    return int(value)\n"}, (),
+     {"workers/cli.py": "def run(value: str) -> str:\n    parsed = value.split(':')\n    return parsed[0]\n"},
+     False, (), "no-match"),
+    ("generic-serializer-name-is-not-evidence",
+     {"src/existing.py": "class Existing:\n    def as_dict(self) -> dict[str, object]:\n        return {'existing': True}\n"},
+     (), {"src/candidate.py": "class Candidate:\n    def as_dict(self) -> dict[str, object]:\n        return {'candidate': self.__class__.__name__}\n"},
+     False, (), "no-match"),
     # pytest discovers test_*.py with no tests/ directory involved, so the
     # fixtures inside one are not a second implementation of the reader.
-    write(
-        repo / "pkg" / "test_loader.py",
-        "def test_reads(tmp_path) -> None:\n"
-        "    write(tmp_path / 'a.py', 'def read_current(p): return open(p).read()')\n"
-        "    assert True\n",
-    )
-    code, payload, _ = run_gate(repo)
-    assert reuse_matches(payload) == [], reuse_matches(payload)
-    assert payload["ok"] is True
-    assert code == 0
+    ("pytest-named-module-is-test-source",
+     {"pkg/loader.py": "def read_current(path: str) -> str:\n    return open(path).read()\n"}, (),
+     {"pkg/test_loader.py": "def test_reads(tmp_path) -> None:\n"
+      "    write(tmp_path / 'a.py', 'def read_current(p): return open(p).read()')\n    assert True\n"},
+     False, (), "no-match"),
+    # A comment explaining a change is prose, not a second implementation, even
+    # in the same subtree as a real reader; the .py change in the same diff is
+    # what puts the committed reader into the existing-symbol index at all.
+    ("comment-prose-is-not-a-risky-block",
+     {"skills/gate/scripts/context.py": "def read_current(path: str) -> str:\n    return open(path).read()\n"}, (),
+     {"skills/advisor/scripts/ask.sh": "#!/usr/bin/env bash\n"
+      "# Run from the canonical root: the delegate must resolve and read there.\nexec \"$@\"\n",
+      "skills/advisor/scripts/state.py": "def slug() -> str:\n    return 'x'\n"},
+     False, (), "no-match"),
+    ("action-only-wait-helper-suppressed",
+     {"src/waits.py": "def wait_for_tapi_authenticated_signal(page):\n    return page.url\n"}, (),
+     {"src/property_tree.py": "def wait_for_property_tree_authenticated_signal(page):\n    return page.url\n"},
+     False, (), "no-match"),
+    ("calling-the-existing-helper-passes", {"src/ids.py": _OWNER}, (),
+     {"src/users.py": "from src.ids import normalize_user_id\n\n"
+      "def import_user(value: str) -> str:\n    return normalize_user_id(value)\n"},
+     False, (), "pass"),
+    ("move-refactor-passes", {"src/ids.py": _OWNER}, ("src/ids.py",),
+     {"src/identity.py": _OWNER}, False, (), "pass"),
+    ("generic-name-alone-never-fails",
+     {"src/cli.py": "def handler(event: str) -> str:\n    return event\n"}, (),
+     {"src/web.py": "def handler(request: str) -> str:\n    return request\n"}, False, (), "pass"),
+    ("test-helper-is-not-reuse-evidence", {"tests/helpers.py": _OWNER}, (),
+     {"src/users.py": _OWNER}, False, (), "pass"),
+    ("repo-context-packet-boosts-confidence",
+     {"lib/users.py": "def normalize_account(value: str) -> str:\n    return value.strip().lower()\n"}, (),
+     {"app/users.py": "def normalize_account_record(value: str) -> str:\n    return value.strip().lower()\n",
+      "packet.txt": "<top_targets>\n<file path=\"lib/users.py\" />\n</top_targets>\n"},
+     False, ("--repo-context-packet", "@packet.txt"), ("existingFile", "lib/users.py")),
+    ("gitnexus-context-boosts-confidence",
+     {"lib/orders.py": "def resolve_order(value: str) -> str:\n    return value.strip()\n"}, (),
+     {"app/orders.py": "def resolve_order_key(value: str) -> str:\n    return value.strip()\n",
+      "gitnexus.json": json.dumps({"symbols": [{"name": "resolve_order", "file": "lib/orders.py",
+                                                "callers": ["checkout"], "processes": ["order-import"]}]})},
+     False, ("--gitnexus-context-json", "@gitnexus.json"), ("existingSymbol", "resolve_order")),
+    # A staged new file has no baseline, so its own definition line must not be
+    # read as a nearby call that suppresses its reuse match.
+    ("staged-only-reimplementation-detected", {"src/ids.py": _OWNER}, (),
+     {"src/users.py": _OWNER}, True, ("--base-ref", "HEAD", "--staged-only"),
+     ("existingFile", "src/ids.py")),
+    # In a new Python file an unqualified same-name call binds to the local
+    # definition, so only a qualified call proves delegation to the owner: the
+    # one-line wrapper's same-line qualified call suppresses the match, a
+    # multi-line delegating wrapper's call counts without counting its own
+    # definition line, and a reimplementation that merely calls itself
+    # elsewhere proves nothing.
+    ("one-line-wrapper-delegates", {"src/ids.py": _OWNER}, (),
+     {"src/oneline.py": "from src import ids\n\n\n"
+      "def normalize_user_id(value: str) -> str: return ids.normalize_user_id(value)\n"},
+     True, ("--base-ref", "HEAD", "--staged-only"), "no-match"),
+    ("multi-line-wrapper-delegates", {"src/ids.py": _OWNER}, (),
+     {"src/adapter.py": "from src import ids\n\n\n"
+      "def normalize_user_id(value: str) -> str:\n    return ids.normalize_user_id(value.strip())\n"},
+     True, ("--base-ref", "HEAD", "--staged-only"), "no-match"),
+    ("self-call-is-not-delegation", {"src/ids.py": _OWNER}, (),
+     {"src/copycat.py": _OWNER + "\n\ndef ingest(value: str) -> str:\n    return normalize_user_id(value)\n"},
+     True, ("--base-ref", "HEAD", "--staged-only"), ("existingFile", "src/ids.py")),
+)
 
 
-@with_repo
-def test_comment_prose_is_not_a_risky_block(repo: Path) -> None:
-    write(repo / "skills" / "gate" / "scripts" / "context.py", "def read_current(path: str) -> str:\n    return open(path).read()\n")
+def test_reuse_scoring_verdict_holds_for_every_behaviour() -> None:
+    for name, baseline, gone, candidate, staged, extra, expect in _REUSE_ROWS:
+        in_repo(lambda repo, b=baseline, g=gone, c=candidate, s=staged, x=extra, e=expect, label=name:
+                _reuse_row(repo, b, g, c, s, x, e, label))
+
+
+def _reuse_row(repo: Path, baseline, gone, candidate, staged, extra, expect, name: str) -> None:
+    for path, text in baseline.items():
+        write(repo / path, text)
     git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "reader")
-    # A comment explaining a change is prose, not a second implementation,
-    # even when it sits in the same subtree as a real reader.
-    write(
-        repo / "skills" / "advisor" / "scripts" / "ask.sh",
-        "#!/usr/bin/env bash\n"
-        "# Run from the canonical root: the delegate must resolve and read there.\n"
-        "exec \"$@\"\n",
-    )
-    # A Python change in the same diff is what puts the Python reader into
-    # the existing-symbol index, which is when the comment can match it.
-    write(repo / "skills" / "advisor" / "scripts" / "state.py", "def slug() -> str:\n    return 'x'\n")
-    code, payload, _ = run_gate(repo)
-    assert reuse_matches(payload) == [], reuse_matches(payload)
-    assert payload["ok"] is True
-    assert code == 0
-
-
-@with_repo
-def test_action_only_wait_helper_overlap_is_suppressed(repo: Path) -> None:
-    write(repo / "src" / "waits.py", "def wait_for_tapi_authenticated_signal(page):\n    return page.url\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "wait helper")
-    write(repo / "src" / "property_tree.py", "def wait_for_property_tree_authenticated_signal(page):\n    return page.url\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
-    assert reuse_matches(payload) == []
-
-
-@with_repo
-def test_calling_existing_helper_passes(repo: Path) -> None:
-    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "helper")
-    write(
-        repo / "src" / "users.py",
-        "from src.ids import normalize_user_id\n\n"
-        "def import_user(value: str) -> str:\n"
-        "    return normalize_user_id(value)\n",
-    )
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
-
-
-@with_repo
-def test_helper_move_refactor_passes(repo: Path) -> None:
-    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "helper")
-    (repo / "src" / "ids.py").unlink()
-    write(repo / "src" / "identity.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
-
-
-@with_repo
-def test_generic_name_does_not_fail_by_name_alone(repo: Path) -> None:
-    write(repo / "src" / "cli.py", "def handler(event: str) -> str:\n    return event\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "handler")
-    write(repo / "src" / "web.py", "def handler(request: str) -> str:\n    return request\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
+    git(repo, "commit", "-q", "-m", "baseline")
+    for path in gone:
+        (repo / path).unlink()
+    for path, text in candidate.items():
+        write(repo / path, text)
+    if staged:
+        git(repo, "add", "-A")
+    args = tuple(str(repo / item[1:]) if item.startswith("@") else item for item in extra)
+    code, payload, _ = run_gate(repo, *args)
+    if expect in ("pass", "no-match"):
+        assert code == 0 and payload["ok"] is True, (name, code, payload["errors"])
+        if expect == "no-match":
+            assert reuse_matches(payload) == [], (name, reuse_matches(payload))
+    else:
+        key, value = expect
+        assert code == 2, (name, code, payload["errors"])
+        assert payload["hardRules"]["noDuplication"]["passed"] is False, (name, payload["hardRules"])
+        assert any(match[key] == value for match in reuse_matches(payload)), (name, reuse_matches(payload))
 
 
 @with_repo
@@ -493,57 +424,6 @@ def test_same_file_related_helper_warns_but_function_edit_passes(repo: Path) -> 
     code, payload, _ = run_gate(repo)
     assert code == 0
     assert payload["ok"] is True
-
-
-@with_repo
-def test_test_helper_is_not_reuse_evidence(repo: Path) -> None:
-    write(repo / "tests" / "helpers.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "test helper")
-    write(repo / "src" / "users.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
-
-
-@with_repo
-def test_repo_context_packet_boosts_reuse_confidence(repo: Path) -> None:
-    write(repo / "lib" / "users.py", "def normalize_account(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "account helper")
-    write(repo / "app" / "users.py", "def normalize_account_record(value: str) -> str:\n    return value.strip().lower()\n")
-    packet = repo / "packet.txt"
-    write(packet, "<top_targets>\n<file path=\"lib/users.py\" />\n</top_targets>\n")
-    code, payload, _ = run_gate(repo, "--repo-context-packet", str(packet))
-    assert code == 2
-    assert reuse_matches(payload)[0]["existingFile"] == "lib/users.py"
-
-
-@with_repo
-def test_gitnexus_context_json_boosts_reuse_confidence(repo: Path) -> None:
-    write(repo / "lib" / "orders.py", "def resolve_order(value: str) -> str:\n    return value.strip()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "order helper")
-    write(repo / "app" / "orders.py", "def resolve_order_key(value: str) -> str:\n    return value.strip()\n")
-    context = repo / "gitnexus.json"
-    write(
-        context,
-        json.dumps(
-            {
-                "symbols": [
-                    {
-                        "name": "resolve_order",
-                        "file": "lib/orders.py",
-                        "callers": ["checkout"],
-                        "processes": ["order-import"],
-                    }
-                ]
-            }
-        ),
-    )
-    code, payload, _ = run_gate(repo, "--gitnexus-context-json", str(context))
-    assert code == 2
-    assert reuse_matches(payload)[0]["existingSymbol"] == "resolve_order"
 
 
 @with_repo
@@ -589,19 +469,6 @@ def test_duplicate_polling_loop_is_grouped(repo: Path) -> None:
     assert len(duplicate_check["sample"]) <= 3
 
 
-@with_repo
-def test_unknown_numstat_cannot_report_clean_growth(repo: Path) -> None:
-    # Real Git reports "-\t-" for a file it treats as binary, even when the
-    # suffix is source. Growth must say so instead of inventing counts.
-    (repo / "src" / "base.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
-    code, payload, _ = run_gate(repo)
-    finding = growth_finding(payload)
-    assert finding["status"] == "incomplete", finding
-    assert finding["completeness"]["complete"] is False, finding
-    assert any("src/base.py" in gap for gap in finding["completeness"]["gaps"]), finding
-    assert code == 0
-
-
 SPLIT_LINES = (
     "    resolved = normalize_identifier(candidate_value) + normalize_identifier(fallback_value)",
     "    combined = resolved.strip().lower().replace('-', '_').replace(' ', '_')",
@@ -628,31 +495,113 @@ def test_separate_hunks_do_not_form_one_duplicate(repo: Path) -> None:
     assert code == 0, json.dumps(payload["errors"], indent=2)
 
 
-@with_repo
-def test_truncated_baseline_discovery_cannot_report_clean_reuse(repo: Path) -> None:
-    # Real truncation: a committed baseline file carrying more symbols than the
-    # index ceiling, so discovery stops before it has seen every existing owner.
-    write(repo / "src" / "wide.py", "\n".join(f"def a{i}():pass" for i in range(25001)) + "\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "wide baseline")
-    # A name nothing matches: without the truncation gap this run reports a
-    # clean reuse pass while discovery never finished.
-    write(repo / "src" / "candidate.py", "def unrelated_widget_label():\n    return 0\n")
-    _, payload, _ = run_gate(repo)
-    finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY")
-    assert finding["status"] == "incomplete", finding
-    assert finding["completeness"]["complete"] is False, finding
-    assert any("stopped at" in gap for gap in finding["completeness"]["gaps"]), finding
-    assert any("QG54-ANALYSIS-INCOMPLETE for QG-LEGACY-REUSE-ADVISORY" in w for w in payload["warnings"]), payload["warnings"]
-    # No representation of the rule may read as an evaluated clean pass.
-    check = next(item for item in payload["checks"] if item["name"] == "reuse-existing-helpers")
-    assert check["passed"] is None and check["status"] == "incomplete", check
-    for name in ("noDuplication",):
-        assert payload["hardRules"][name] == {
-            "status": "incomplete",
-            "passed": None,
-            "checks": payload["hardRules"][name]["checks"],
-        }, payload["hardRules"][name]
+# Every way scope can go missing, and the proof that none of them may read as
+# clean. The affected rule reports incomplete and names the gap; its check and
+# hard-rule projections drop to unknown; error-class capture failures fail the
+# run outright while every repo-reading check stays not-passed. "*" sweeps all
+# checks/hard rules except gitnexus-context and consequenceCoverage, which
+# evaluate caller input only and are legitimately untouched by capture gaps.
+#
+# name, git config, baseline files, candidate files (bytes stay unmeasured
+# binary), staged, gate args, expectations.
+_BINARY = b"def ok() -> int:\n    return 1\n\x00\x00binary\n"
+# 25001 definitions exceed the symbol ceiling, so discovery really stops; the
+# oversized baseline holds a real owner in a file the index refuses to read.
+# Both live in the candidate's top directory, or the baseline filter would
+# skip them and there would be no gap to test.
+_WIDE = "\n".join(f"def a{i}():pass" for i in range(25001)) + "\n"
+_UNREADABLE_OWNER = "def normalize_user_identifier(value):\n    return value.strip().lower()\n"
+_OVERSIZED = _UNREADABLE_OWNER + "\n".join(f"# pad {i}" * 6 for i in range(9000))
+_INCOMPLETE_ROWS = (
+    ("unknown-numstat", None, {}, {"src/base.py": _BINARY}, False, (),
+     {"code": 0, "growth": "src/base.py"}),
+    ("truncated-baseline-discovery", None, {"src/wide.py": _WIDE},
+     {"src/candidate.py": "def unrelated_widget_label():\n    return 0\n"}, False, (),
+     {"code": 0, "reuse": "stopped at",
+      "warning": "QG54-ANALYSIS-INCOMPLETE for QG-LEGACY-REUSE-ADVISORY",
+      "checks": ("reuse-existing-helpers",), "hardRules": ("noDuplication",)}),
+    ("skipped-oversized-baseline", None, {"src/huge.py": _OVERSIZED},
+     {"src/dup.py": _UNREADABLE_OWNER}, False, (), {"code": 0, "reuse": "huge.py"}),
+    ("unmeasured-production-file", None, {}, {"src/base.py": _BINARY}, False, ("--base-ref", "HEAD"),
+     {"code": 0, "growth": "src/base.py", "reuse": "src/base.py",
+      "checks": ("reuse-existing-helpers", "no-quality-escapes", "no-duplicate-added-blocks"),
+      "hardRules": ("noDuplication",)}),
+    ("unbased-run", None, {}, {"src/app.py": "VALUE = 1\n"}, False, (),
+     {"code": 0, "growth": "no caller-supplied base", "warning": "QG54-GROWTH-CUMULATIVE",
+      "evalGap": "no caller-supplied base"}),
+    ("missing-base-ref", None, {}, {"src/app.py": "VALUE = 1\n"}, False, ("--base-ref", "deadbeef"),
+     {"code": 2, "error": "base-ref not found", "growth": "", "reuse": "", "checks": "*", "hardRules": "*"}),
+    # A clean filter that emits different bytes on every read makes each
+    # capture pass stage different content: a tree assembled from moving
+    # content describes no state that ever existed, so the gate reports drift
+    # rather than evaluating it.
+    ("capture-drift", ("filter.drift.clean", "sh -c 'cat >/dev/null; date +%s%N'"), {},
+     {".gitattributes": "drifty.txt filter=drift\n", "drifty.txt": "content the filter rewrites every read\n"},
+     False, ("--base-ref", "HEAD"),
+     {"code": 2, "error": "capture drift", "evalGap": "capture drift", "checksNotTrue": True}),
+    # A rejected repo-level diff config fails every diff read with empty
+    # output while base resolution and capture stay healthy; read that failure
+    # as "" and every rule passes over a change nobody looked at.
+    ("failed-diff-read", ("diff.algorithm", "bogus"), {},
+     {"src/app.py": "def one():\n    return 1\n"}, True, ("--base-ref", "HEAD"),
+     {"code": 2, "error": "read failed", "evalGap": "", "checksNotTrue": True}),
+)
+
+
+def test_missing_scope_never_reads_as_a_clean_pass() -> None:
+    for name, config, baseline, candidate, staged, args, expect in _INCOMPLETE_ROWS:
+        in_repo(lambda repo, cf=config, b=baseline, c=candidate, s=staged, a=args, e=expect, label=name:
+                _incomplete_row(repo, cf, b, c, s, a, e, label))
+
+
+def _incomplete_row(repo, config, baseline, candidate, staged, args, expect, name: str) -> None:
+    if config:
+        git(repo, "config", *config)
+    for path, text in baseline.items():
+        write(repo / path, text)
+    if baseline:
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "baseline")
+    for path, content in candidate.items():
+        if isinstance(content, bytes):
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_bytes(content)
+        else:
+            write(repo / path, content)
+    if staged:
+        git(repo, "add", ".")
+    code, payload, _ = run_gate(repo, *args)
+    assert code == expect["code"], (name, code, payload["errors"])
+    assert payload["ok"] is (code == 0), (name, payload["errors"])
+    if "error" in expect:
+        assert any(expect["error"] in item for item in payload["errors"]), (name, payload["errors"])
+    if "warning" in expect:
+        assert any(expect["warning"] in item for item in payload["warnings"]), (name, payload["warnings"])
+    for rule, finding_of in (("growth", growth_finding), ("reuse", reuse_finding)):
+        if rule in expect:
+            finding = finding_of(payload)
+            assert finding["status"] == "incomplete", (name, rule, finding)
+            assert finding["completeness"]["complete"] is False, (name, rule, finding)
+            assert any(expect[rule] in gap for gap in finding["completeness"]["gaps"]), (name, rule, finding)
+    checks = expect.get("checks", ())
+    if checks == "*":
+        checks = [item["name"] for item in payload["checks"] if item["name"] != "gitnexus-context"]
+    for check_name in checks:
+        item = check_named(payload, check_name)
+        assert item["passed"] is None and item["status"] == "incomplete", (name, item)
+    hard_rules = expect.get("hardRules", ())
+    if hard_rules == "*":
+        hard_rules = [key for key in payload["hardRules"] if key != "consequenceCoverage"]
+    for rule_name in hard_rules:
+        rule = payload["hardRules"][rule_name]
+        assert rule["status"] == "incomplete" and rule["passed"] is None, (name, rule_name, rule)
+    if expect.get("checksNotTrue"):
+        for item in payload["checks"]:
+            if item["name"] != "gitnexus-context":
+                assert item["passed"] is not True, (name, item)
+    if "evalGap" in expect:
+        assert payload["evaluation"]["complete"] is False, (name, payload["evaluation"])
+        assert any(expect["evalGap"] in gap for gap in payload["evaluation"]["gaps"]), (name, payload["evaluation"]["gaps"])
 
 
 @with_repo
@@ -670,18 +619,13 @@ def test_promotion_requires_an_active_intrinsically_passed_warning(repo: Path) -
     #   found-and-blind          the rule DID find warnings and also could not
     #                            see everything. Both facts survive: the
     #                            incompleteness is reported AND it promotes.
-    owner = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
     orders = "def resolve_order(value: str) -> str:\n    return value.strip()\n"
-    # 25001 definitions exceeds the symbol ceiling, so discovery really stops.
-    # Kept in the same top directory as the candidate, or the baseline filter
-    # would skip it and there would be no gap to test.
-    wide = "\n".join(f"def a{i}():pass" for i in range(25001)) + "\n"
 
     # name, baseline files under src/, candidate src/candidate.py, promoted?, exit
     rows = (
-        ("found-nothing-and-blind", {"wide.py": wide}, "def unrelated_widget_label():\n    return 0\n", False, 0),
-        ("clean", {"ids.py": owner}, "def call_it(v):\n    return ids.normalize_user_id(v)\n", False, 0),
-        ("found-and-blind", {"orders.py": orders, "wide.py": wide},
+        ("found-nothing-and-blind", {"wide.py": _WIDE}, "def unrelated_widget_label():\n    return 0\n", False, 0),
+        ("clean", {"ids.py": _OWNER}, "def call_it(v):\n    return ids.normalize_user_id(v)\n", False, 0),
+        ("found-and-blind", {"orders.py": orders, "wide.py": _WIDE},
          "def resolve_order_record(value: str) -> str:\n    return value.strip()\n", True, 2),
     )
     for name, baseline, candidate, expect_promoted, expect_code in rows:
@@ -710,51 +654,36 @@ def _promotion_row(repo: Path, baseline: dict, candidate: str, name: str, expect
 
 
 @with_repo
-def test_a_worktree_that_will_not_hold_still_reports_capture_drift(repo: Path) -> None:
-    # Deterministic drift through a real Git clean filter rather than a racing
-    # writer: the filter emits different bytes on every invocation, so each
-    # capture pass stages different content and the two trees disagree. A tree
-    # assembled from content that keeps moving describes no state that ever
-    # existed, so the gate must report drift instead of evaluating it.
-    git(repo, "config", "filter.drift.clean", "sh -c 'cat >/dev/null; date +%s%N'")
-    write(repo / ".gitattributes", "drifty.txt filter=drift\n")
-    write(repo / "drifty.txt", "content the filter rewrites every read\n")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-
-    assert any("capture drift" in error for error in payload["errors"]), payload["errors"]
-    assert payload["ok"] is False and code == 2, payload
-    # A drifted capture cannot leave any rule that reads the change reporting
-    # an evaluated clean pass. gitnexus-context is scoped to caller-supplied
-    # input rather than the capture, so it is legitimately unaffected.
-    assert payload["evaluation"]["complete"] is False, payload["evaluation"]
-    assert any("capture drift" in gap for gap in payload["evaluation"]["gaps"]), payload["evaluation"]["gaps"]
-    for name in (
-        "no-merge-conflict-markers", "no-temp-artifacts", "no-quality-escapes",
-        "no-duplicate-added-blocks", "reuse-existing-helpers", "cumulative-growth",
-    ):
-        assert check_named(payload, name)["passed"] is not True, check_named(payload, name)
-
-
-@with_repo
-def test_reuse_finding_identity_survives_an_unrelated_inserted_line(repo: Path) -> None:
+def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -> None:
     # Content-anchored identity: line numbers are display provenance, so an
     # unrelated insertion above a match must move the reported region without
     # moving the finding's ID. An ID that shifts with a rebase or a comment
     # cannot carry a disposition across rounds, which is the whole point of it.
-    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
+    # Paths are provenance too: "Rename/move-only therefore preserves the
+    # debt's ID" (ADR :410-411), so moving the reimplementation to a different
+    # path keeps the ID a disposition was attached to, while the region still
+    # reports the new path.
+    write(repo / "src" / "ids.py", _OWNER)
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "owner")
-    body = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
-    write(repo / "src" / "copycat.py", body)
+    write(repo / "src" / "copycat.py", _OWNER)
     _, before, _ = run_gate(repo, "--base-ref", "HEAD")
 
-    write(repo / "src" / "copycat.py", "# an unrelated leading comment\n" + body)
+    write(repo / "src" / "copycat.py", "# an unrelated leading comment\n" + _OWNER)
     _, after, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    (repo / "src" / "copycat.py").unlink()
+    write(repo / "src" / "moved" / "copycat.py", "# an unrelated leading comment\n" + _OWNER)
+    _, moved_payload, _ = run_gate(repo, "--base-ref", "HEAD")
 
     first = reuse_finding(before)
     second = reuse_finding(after)
-    assert first["evidence"]["matches"], first
-    assert first["findingId"] == second["findingId"], (first["findingId"], second["findingId"])
+    third = reuse_finding(moved_payload)
+    assert first["evidence"]["matches"] and third["evidence"]["matches"], (first, third)
+    assert first["findingId"] == second["findingId"] == third["findingId"], (
+        first["findingId"], second["findingId"], third["findingId"])
+    # The move is still visible where it belongs - in the display region.
+    assert "src/moved/copycat.py" in {region["path"] for region in third["region"]["regions"]}, third["region"]
 
     # Regions carry the full contract and are canonically ordered, so the
     # serialized order is a property of the finding, not of match order.
@@ -831,30 +760,6 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
 
 
 @with_repo
-def test_a_failed_diff_read_reports_incompleteness_not_an_empty_change(repo: Path) -> None:
-    # A rejected repo-level diff config fails every diff read with exit 128 and
-    # empty output, while base resolution, worktree capture, the baseline
-    # ls-tree and untracked discovery all stay healthy. That isolates the diff
-    # transport exactly: read the failure as "" and the change set is empty, so
-    # every rule passes over a change nobody looked at. The reads are checked,
-    # so the run reports the failure instead.
-    write(repo / "src" / "app.py", "def one():\n    return 1\n")
-    git(repo, "add", ".")
-    git(repo, "config", "diff.algorithm", "bogus")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-
-    assert any("diff" in error and "read failed" in error for error in payload["errors"]), payload["errors"]
-    assert payload["ok"] is False and code == 2, payload
-    assert payload["evaluation"]["complete"] is False, payload["evaluation"]
-    # The failure must not be laundered into a clean, empty evaluation.
-    for name in (
-        "no-merge-conflict-markers", "no-temp-artifacts", "no-quality-escapes",
-        "no-duplicate-added-blocks", "reuse-existing-helpers", "cumulative-growth",
-    ):
-        assert check_named(payload, name)["passed"] is not True, check_named(payload, name)
-
-
-@with_repo
 def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
     # Schema v2 requires emitted regions to carry a content anchor over
     # canonical implementation bytes (ADR :390, :399). Producing those bytes is
@@ -895,32 +800,6 @@ def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
         if finding["ruleId"] == ANCHOR_DEFERRED_RULE:
             for region in finding["region"]["regions"]:
                 assert region["symbolAnchor"], region
-
-
-@with_repo
-def test_reuse_finding_identity_survives_a_rename(repo: Path) -> None:
-    # Paths are provenance, not identity: "Rename/move-only therefore preserves
-    # the debt's ID" (ADR :410-411). Moving the reimplementation to a different
-    # path is the same debt, so the ID a disposition was attached to must not
-    # move with the file. Identity anchors the symbol pair; the region still
-    # reports the new path as display provenance.
-    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "owner")
-    body = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
-    write(repo / "src" / "copycat.py", body)
-    _, before, _ = run_gate(repo, "--base-ref", "HEAD")
-
-    (repo / "src" / "copycat.py").unlink()
-    write(repo / "src" / "moved" / "copycat.py", body)
-    _, after, _ = run_gate(repo, "--base-ref", "HEAD")
-
-    first, second = reuse_finding(before), reuse_finding(after)
-    assert first["evidence"]["matches"] and second["evidence"]["matches"], (first, second)
-    assert first["findingId"] == second["findingId"], (first["findingId"], second["findingId"])
-    # The move is still visible where it belongs - in the display region.
-    paths = {region["path"] for region in second["region"]["regions"]}
-    assert "src/moved/copycat.py" in paths, paths
 
 
 @with_repo
@@ -965,6 +844,11 @@ _DECODER_ROWS = (
     ("control-char-payload", None, {},
      {"src/ctl.py": "Z = 'a\x0bb'  # " + "TO" + "DO: hidden after a control character\n"},
      None, "quality escapes", None),
+    # A lossy decode would make the blob unaddressable; the unread file must
+    # never read as a clean pass, and its five escape lines stay measured.
+    ("non-utf8-escape-payload", None, {},
+     {b"src/caf\xe9.py": b"def f():\n    try:\n        g()\n    except Exception:\n        pass\n"},
+     {"added": 5, "deleted": 0, "net": 5}, "quality escapes", None),
 )
 
 
@@ -1040,120 +924,6 @@ def test_failing_diff_helper_cannot_empty_the_evaluated_change(repo: Path) -> No
 
 
 @with_repo
-def test_skipped_oversized_baseline_cannot_report_clean_reuse(repo: Path) -> None:
-    # The real owner lives in a file the index refuses to read, so a
-    # reimplementation of it must not come back as a clean reuse pass.
-    owner = "def normalize_user_identifier(value):\n    return value.strip().lower()\n"
-    padding = "\n".join(f"# pad {i}" * 6 for i in range(9000))
-    write(repo / "src" / "huge.py", owner + padding)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "oversized baseline")
-    write(repo / "src" / "dup.py", owner)
-    _, payload, _ = run_gate(repo)
-    finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY")
-    assert finding["status"] == "incomplete", finding
-    assert any("huge.py" in gap for gap in finding["completeness"]["gaps"]), finding
-
-
-@with_repo
-def test_unmeasured_production_file_cannot_report_clean_reuse_or_growth(repo: Path) -> None:
-    # A binary-classified production source file has no measured counts and no
-    # readable hunks, so neither growth nor reuse may claim a complete result.
-    (repo / "src" / "base.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
-    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert growth_finding(payload)["status"] == "incomplete", growth_finding(payload)
-    reuse = reuse_finding(payload)
-    assert reuse["status"] == "incomplete", reuse
-    assert any("src/base.py" in gap for gap in reuse["completeness"]["gaps"]), reuse
-    check = check_named(payload, "reuse-existing-helpers")
-    assert check["passed"] is None and check["status"] == "incomplete", check
-    assert payload["hardRules"]["noDuplication"]["status"] == "incomplete", payload["hardRules"]
-    # Git supplied no hunks for the unmeasured source file, so the
-    # hunk-reading checks saw none of its content and cannot claim a pass.
-    for name in ("no-quality-escapes", "no-duplicate-added-blocks"):
-        hunk_check = check_named(payload, name)
-        assert hunk_check["passed"] is None and hunk_check["status"] == "incomplete", (name, hunk_check)
-
-
-@with_repo
-def test_deleting_a_production_file_counts_as_deletions(repo: Path) -> None:
-    # One owner of per-entry counts means a removed file's lines are deletions;
-    # they used to vanish because the file had no current text to read.
-    write(repo / "src" / "legacy.py", "\n".join(f"OLD_{i} = {i}" for i in range(40)) + "\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "legacy")
-    (repo / "src" / "legacy.py").unlink()
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert growth_totals(payload)["production"] == {"added": 0, "deleted": 40, "net": -40}
-    assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
-    assert code == 0
-
-
-@with_repo
-def test_staged_deletion_with_unstaged_recreation_measures_the_candidate(repo: Path) -> None:
-    # The evaluation is base to final candidate tree. A tracked file whose
-    # deletion is staged but which exists recreated on disk is a modification
-    # of the base file, never a pure deletion plus an unmeasured new file.
-    write(repo / "src" / "thing.py", "OLD_A = 1\nOLD_B = 2\nOLD_C = 3\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "tracked baseline")
-    git(repo, "rm", "-q", "src/thing.py")
-    write(repo / "src" / "thing.py", "NEW_A = 1\nNEW_B = 2\nNEW_C = 3\nNEW_D = 4\n")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    growth = growth_totals(payload)
-    assert growth["production"] == {"added": 4, "deleted": 3, "net": 1}, growth
-    assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
-    assert code == 0, json.dumps(payload["errors"], indent=2)
-
-
-@with_repo
-def test_growth_reports_each_role_separately(repo: Path) -> None:
-    write(repo / "src" / "app.py", "\n".join(f"VALUE_{i} = {i}" for i in range(10)) + "\n")
-    write(repo / "tests" / "test_app.py", "\n".join(f"def test_{i}():\n    assert {i} == {i}" for i in range(4)) + "\n")
-    write(repo / "tests" / "fixtures" / "sample.py", "SAMPLE = {'a': 1}\n")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    growth = growth_totals(payload)
-    assert growth["production"] == {"added": 10, "deleted": 0, "net": 10}, growth
-    assert growth["test"] == {"added": 8, "deleted": 0, "net": 8}, growth
-    assert growth["testSupport"] == {"added": 1, "deleted": 0, "net": 1}, growth
-    assert growth["humanAuthored"] == {"added": 19, "deleted": 0, "net": 19}, growth
-    assert growth_finding(payload)["status"] == "passed", growth_finding(payload)
-    assert code == 0
-
-
-@with_repo
-def test_unbased_run_reports_the_cumulative_claim_incomplete(repo: Path) -> None:
-    # Without a caller-supplied base the totals cover only the working delta,
-    # so the cumulative-growth claim is visibly incomplete, never silently clean.
-    write(repo / "src" / "app.py", "VALUE = 1\n")
-    code, payload, _ = run_gate(repo)
-    finding = growth_finding(payload)
-    assert finding["status"] == "incomplete", finding
-    assert any("no caller-supplied base" in gap for gap in finding["completeness"]["gaps"]), finding
-    assert any("QG54-GROWTH-CUMULATIVE" in warning for warning in payload["warnings"]), payload["warnings"]
-    # The top-level summary must agree with the rules it summarizes: an
-    # incomplete finding can never coexist with evaluation.complete=true.
-    assert payload["evaluation"]["complete"] is False, payload["evaluation"]
-    assert any("no caller-supplied base" in gap for gap in payload["evaluation"]["gaps"]), payload["evaluation"]
-    assert code == 0
-    assert payload["ok"] is True
-
-
-@with_repo
-def test_generated_and_non_source_stay_out_of_human_authored_growth(repo: Path) -> None:
-    write(repo / "src" / "real.py", "REAL = 1\nREAL_TWO = 2\n")
-    write(repo / "src" / "generated" / "client.py", "\n".join(f"GEN_{i} = {i}" for i in range(30)) + "\n")
-    write(repo / "src" / "payload.schema.json", '{"type": "object"}\n')
-    write(repo / "docs" / "notes.md", "# notes\n\nprose\n")
-    code, payload, _ = run_gate(repo)
-    growth = growth_totals(payload)
-    assert growth["production"] == {"added": 2, "deleted": 0, "net": 2}, growth
-    assert growth["generated"] == {"added": 30, "deleted": 0, "net": 30}, growth
-    assert growth["humanAuthored"] == {"added": 2, "deleted": 0, "net": 2}, growth
-    assert code == 0
-
-
-@with_repo
 def test_growth_finding_carries_stable_identity_and_evidence(repo: Path) -> None:
     write(repo / "src" / "app.py", "VALUE = 1\n")
     first = growth_finding(run_gate(repo)[1])
@@ -1169,6 +939,81 @@ def test_growth_finding_carries_stable_identity_and_evidence(repo: Path) -> None
     assert set(first["passCondition"]) == {"kind", "requires", "statement"}, first["passCondition"]
     write(repo / "src" / "app.py", "VALUE = 1\nOTHER = 2\n")
     assert growth_finding(run_gate(repo)[1])["findingId"] != first["findingId"]
+
+
+# Growth accounting per row: which bucket counts each change, that deletions
+# and staged-deletion-plus-recreation are measured against the base rather
+# than vanishing, and that intermediate-only content neither leaks into the
+# escape rules nor double-counts. A based, fully measured run must also report
+# its growth claim passed and complete, never merely quiet.
+# name, baseline files, ops after the baseline commit, candidate files,
+# base-bound, expected buckets, clean check that must stay green.
+_GROWTH_ROWS = (
+    ("deleting-a-production-file-counts-as-deletions",
+     {"src/legacy.py": "\n".join(f"OLD_{i} = {i}" for i in range(40)) + "\n"},
+     (("unlink", "src/legacy.py"),), {}, True,
+     {"production": {"added": 0, "deleted": 40, "net": -40}}, None),
+    ("staged-deletion-with-unstaged-recreation-measures-the-candidate",
+     {"src/thing.py": "OLD_A = 1\nOLD_B = 2\nOLD_C = 3\n"},
+     (("rm", "src/thing.py"),),
+     {"src/thing.py": "NEW_A = 1\nNEW_B = 2\nNEW_C = 3\nNEW_D = 4\n"}, True,
+     {"production": {"added": 4, "deleted": 3, "net": 1}}, None),
+    ("each-role-counts-separately", {}, (),
+     {"src/app.py": "\n".join(f"VALUE_{i} = {i}" for i in range(10)) + "\n",
+      "tests/test_app.py": "\n".join(f"def test_{i}():\n    assert {i} == {i}" for i in range(4)) + "\n",
+      "tests/fixtures/sample.py": "SAMPLE = {'a': 1}\n"}, True,
+     {"production": {"added": 10, "deleted": 0, "net": 10}, "test": {"added": 8, "deleted": 0, "net": 8},
+      "testSupport": {"added": 1, "deleted": 0, "net": 1},
+      "humanAuthored": {"added": 19, "deleted": 0, "net": 19}}, None),
+    ("generated-and-non-source-stay-out-of-human-authored", {}, (),
+     {"src/real.py": "REAL = 1\nREAL_TWO = 2\n",
+      "src/generated/client.py": "\n".join(f"GEN_{i} = {i}" for i in range(30)) + "\n",
+      "src/payload.schema.json": '{"type": "object"}\n',
+      "docs/notes.md": "# notes\n\nprose\n"}, False,
+     {"production": {"added": 2, "deleted": 0, "net": 2}, "generated": {"added": 30, "deleted": 0, "net": 30},
+      "humanAuthored": {"added": 2, "deleted": 0, "net": 2}}, None),
+    ("intermediate-commits-do-not-leak", {},
+     (("commit", {"src/base.py": "def ok() -> int:  # TO" + "DO: temporary\n    return 1\n"}),),
+     {"src/base.py": "def ok() -> int:\n    return 2\n"}, True,
+     {"production": {"added": 1, "deleted": 1, "net": 0}}, "no-quality-escapes"),
+)
+
+
+def test_growth_accounting_holds_for_every_bucket() -> None:
+    for name, baseline, ops, candidate, based, buckets, clean_check in _GROWTH_ROWS:
+        in_repo(lambda repo, b=baseline, o=ops, c=candidate, bb=based, x=buckets, k=clean_check, label=name:
+                _growth_row(repo, b, o, c, bb, x, k, label))
+
+
+def _growth_row(repo, baseline, ops, candidate, based, buckets, clean_check, name: str) -> None:
+    for path, text in baseline.items():
+        write(repo / path, text)
+    if baseline:
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "baseline")
+    base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    for op, arg in ops:
+        if op == "unlink":
+            (repo / arg).unlink()
+        elif op == "rm":
+            git(repo, "rm", "-q", arg)
+        else:
+            for path, text in arg.items():
+                write(repo / path, text)
+            git(repo, "add", ".")
+            git(repo, "commit", "-q", "-m", "intermediate")
+    for path, text in candidate.items():
+        write(repo / path, text)
+    code, payload, _ = run_gate(repo, *(("--base-ref", base) if based else ()))
+    growth = growth_totals(payload)
+    for bucket, expected in buckets.items():
+        assert growth[bucket] == expected, (name, bucket, growth)
+    if based:
+        finding = growth_finding(payload)
+        assert finding["status"] == "passed" and finding["completeness"]["complete"] is True, (name, finding)
+    if clean_check:
+        assert check_named(payload, clean_check)["passed"] is True, (name, check_named(payload, clean_check))
+    assert code == 0, (name, code, payload["errors"])
 
 
 def test_captured_round_six_corpus_reports_pinned_totals() -> None:
@@ -1234,43 +1079,6 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
 
 
 @with_repo
-def test_intermediate_commits_do_not_leak_into_the_evaluation(repo: Path) -> None:
-    # The evaluation is one base-to-final-candidate comparison: content that
-    # existed only in an intermediate commit neither triggers escape rules nor
-    # double-counts as growth.
-    base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    escape = "TO" + "DO"
-    write(repo / "src" / "base.py", f"def ok() -> int:  # {escape}: temporary\n    return 1\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "intermediate with escape")
-    write(repo / "src" / "base.py", "def ok() -> int:\n    return 2\n")
-    code, payload, _ = run_gate(repo, "--base-ref", base)
-    escapes = check_named(payload, "no-quality-escapes")
-    assert escapes["passed"] is True, escapes
-    assert growth_totals(payload)["production"] == {"added": 1, "deleted": 1, "net": 0}, growth_totals(payload)
-    assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
-    assert code == 0, json.dumps(payload["errors"], indent=2)
-
-
-@with_repo
-def test_missing_base_ref_cannot_report_a_complete_result(repo: Path) -> None:
-    write(repo / "src" / "app.py", "VALUE = 1\n")
-    code, payload, _ = run_gate(repo, "--base-ref", "deadbeef")
-    assert code == 2
-    assert any("base-ref not found" in error for error in payload["errors"]), payload["errors"]
-    assert growth_finding(payload)["status"] == "incomplete", growth_finding(payload)
-    assert reuse_finding(payload)["status"] == "incomplete", reuse_finding(payload)
-    for item in payload["checks"]:
-        # gitnexus-context evaluates only the optional caller input, which
-        # a missing base does not affect; every repo-reading rule is dirty.
-        if item["name"] != "gitnexus-context":
-            assert item["status"] == "incomplete", item
-    for name, rule in payload["hardRules"].items():
-        if name != "consequenceCoverage":
-            assert rule["status"] == "incomplete", (name, rule)
-
-
-@with_repo
 def test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied(repo: Path) -> None:
     # Base selection belongs to the caller; this Module captures the base it is
     # given. When the supplied base is not an ancestor of HEAD, resolving it to
@@ -1302,22 +1110,6 @@ def test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied(repo: Path
         assert "src/shared.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
         assert "src/sideonly.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
         assert growth_totals(payload)["production"] == {"added": 2, "deleted": 1, "net": 1}, (extra, growth_totals(payload))
-
-
-@with_repo
-def test_non_utf8_filename_is_read_like_any_other_changed_file(repo: Path) -> None:
-    # Git path bytes need not be valid UTF-8. A lossy decode makes the blob
-    # unaddressable, and an unread file must never read as a clean pass.
-    escape = b"def f():\n    try:\n        g()\n    except Exception:\n        pass\n"
-    (repo / "src").mkdir(parents=True, exist_ok=True)
-    (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes(escape)
-    git(repo, "add", "-A")
-    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert payload["errors"], payload
-    assert payload["ok"] is False, payload["errors"]
-    assert growth_totals(payload)["production"] == {"added": 5, "deleted": 0, "net": 5}, growth_totals(payload)
-    # The name is unusual, not unmeasurable: nothing may be recorded missing.
-    assert payload["evaluation"]["complete"] is True, payload["evaluation"]["gaps"]
 
 
 @with_repo
@@ -1483,12 +1275,10 @@ def test_full_history_test_like_classification_is_unchanged() -> None:
 def test_incompleteness_finding_identity_survives_a_path_rename(repo: Path) -> None:
     # Identity is the affected rule plus scope kind; the path-bearing gap text
     # is evidence only, so renaming the unreadable owner cannot move the ID.
-    owner = "def normalize_user_identifier(value):\n    return value.strip().lower()\n"
-    padding = "\n".join(f"# pad {i}" * 6 for i in range(9000))
-    write(repo / "src" / "huge.py", owner + padding)
+    write(repo / "src" / "huge.py", _OVERSIZED)
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "oversized baseline")
-    write(repo / "src" / "dup.py", owner)
+    write(repo / "src" / "dup.py", _UNREADABLE_OWNER)
 
     def incompleteness_id(payload: dict[str, object]) -> str:
         found = [
@@ -1505,84 +1295,6 @@ def test_incompleteness_finding_identity_survives_a_path_rename(repo: Path) -> N
     git(repo, "commit", "-q", "-m", "rename oversized baseline")
     second = incompleteness_id(run_gate(repo, "--base-ref", "HEAD")[1])
     assert first == second, (first, second)
-
-
-@with_repo
-def test_staged_only_reimplementation_is_detected_like_worktree_mode(repo: Path) -> None:
-    # A staged new file has no baseline, so its own definition line must not be
-    # read as a nearby call that suppresses its reuse match.
-    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "helper")
-    write(repo / "src" / "users.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", "src/users.py")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
-    assert code == 2, json.dumps(payload["errors"], indent=2)
-    assert reuse_matches(payload)[0]["existingFile"] == "src/ids.py", reuse_matches(payload)
-
-
-def test_delegation_evidence_is_qualified_calls_not_self_references() -> None:
-    # In a new Python file an unqualified same-name call binds to the local
-    # definition, so only a qualified call proves delegation to the owner:
-    # a one-line wrapper's same-line qualified call suppresses the match,
-    # while a reimplementation that merely calls itself elsewhere does not.
-    outcomes: dict[str, tuple[int, list[dict[str, object]]]] = {}
-
-    def wrapper_body(repo: Path) -> None:
-        write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-        git(repo, "add", ".")
-        git(repo, "commit", "-q", "-m", "helper")
-        write(
-            repo / "src" / "oneline.py",
-            "from src import ids\n\n\n"
-            "def normalize_user_id(value: str) -> str: return ids.normalize_user_id(value)\n",
-        )
-        git(repo, "add", "src/oneline.py")
-        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
-        outcomes["wrapper"] = (code, reuse_matches(payload))
-
-    def self_call_body(repo: Path) -> None:
-        write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-        git(repo, "add", ".")
-        git(repo, "commit", "-q", "-m", "helper")
-        write(
-            repo / "src" / "copycat.py",
-            "def normalize_user_id(value: str) -> str:\n"
-            "    return value.strip().lower()\n\n\n"
-            "def ingest(value: str) -> str:\n"
-            "    return normalize_user_id(value)\n",
-        )
-        git(repo, "add", "src/copycat.py")
-        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
-        outcomes["selfCall"] = (code, reuse_matches(payload))
-
-    # Both scenarios run before any assertion so one failure shows the full
-    # paired observation, not just the first scenario reached.
-    in_repo(wrapper_body)
-    in_repo(self_call_body)
-    assert outcomes["wrapper"][0] == 0 and outcomes["wrapper"][1] == [], outcomes
-    assert outcomes["selfCall"][0] == 2, outcomes
-    assert outcomes["selfCall"][1][0]["existingFile"] == "src/ids.py", outcomes
-
-
-@with_repo
-def test_new_file_wrapper_that_calls_the_owner_is_not_a_reimplementation(repo: Path) -> None:
-    # A new delegating wrapper legitimately calls the existing owner right
-    # beside its same-named definition; the nearby-call evidence must count
-    # that call while never counting the definition line itself.
-    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "helper")
-    write(
-        repo / "src" / "adapter.py",
-        "from src import ids\n\n\n"
-        "def normalize_user_id(value: str) -> str:\n"
-        "    return ids.normalize_user_id(value.strip())\n",
-    )
-    git(repo, "add", "src/adapter.py")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
-    assert code == 0, json.dumps(payload["errors"], indent=2)
-    assert reuse_matches(payload) == [], reuse_matches(payload)
 
 
 def test_gate_completes_on_an_unborn_repo_with_open_stdin() -> None:

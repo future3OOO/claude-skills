@@ -55,7 +55,7 @@ def scan_quality_escapes(snapshot: EvaluationSnapshot) -> list[str]:
     hits: list[str] = []
     tracked_added: dict[str, list[tuple[int, str]]] = {}
     for entry in snapshot.entries:
-        if not entry.source:
+        if not entry.classification.source:
             continue
         lines = entry.added_lines()
         hits.extend(_line_hits(entry.path, lines, rules_for_entry(entry)))
@@ -70,11 +70,11 @@ def scan_quality_escapes(snapshot: EvaluationSnapshot) -> list[str]:
 
 def rules_for_entry(entry: SnapshotEntry) -> list[re.Pattern[str]]:
     rules = list(GENERAL_ESCAPE_RULES)
-    if entry.role != "production":
+    if entry.classification.role != "production":
         return rules
-    if entry.language == "python":
+    if entry.classification.language == "python":
         rules.extend(PYTHON_ESCAPE_RULES)
-    if entry.language == "javascript":
+    if entry.classification.language == "javascript":
         rules.extend(TS_ESCAPE_RULES)
     return rules
 

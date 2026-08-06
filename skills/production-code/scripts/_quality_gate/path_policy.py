@@ -54,21 +54,8 @@ def normalize_path(value: str) -> str:
 
 def is_binary_path(path: str) -> bool:
     return Path(path).suffix.lower() in {
-        ".avif",
-        ".bin",
-        ".bmp",
-        ".gif",
-        ".ico",
-        ".jpeg",
-        ".jpg",
-        ".lock",
-        ".map",
-        ".pdf",
-        ".png",
-        ".snap",
-        ".svg",
-        ".webp",
-        ".zip",
+        ".avif", ".bin", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".lock",
+        ".map", ".pdf", ".png", ".snap", ".svg", ".webp", ".zip",
     }
 
 

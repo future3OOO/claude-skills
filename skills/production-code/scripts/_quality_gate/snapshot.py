@@ -1,13 +1,50 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from .git_scope import git_read, read_git_file
-from .inputs import parse_gitnexus_context_json, parse_repo_context_packet
 from .models import BaselineFile, Hunk, Numstat, SnapshotEntry
-from .path_policy import classify_path
+from .path_policy import classify_path, normalize_path
+
+
+def parse_repo_context_packet(text: str) -> set[str]:
+    """Paths a Repo Context Forge packet names, for owner-discovery boosts."""
+    paths: set[str] = set()
+    for match in re.finditer(r'(?:path|file)=["\']([^"\']+)["\']', text):
+        paths.add(normalize_path(match.group(1)))
+    for line in text.splitlines():
+        for match in re.finditer(r"[\w./-]+\.(?:cjs|cts|go|js|jsx|mjs|mts|php|py|rb|rs|sh|ts|tsx)", line):
+            paths.add(normalize_path(match.group(0).strip("`'\"(),:;")))
+    return {path for path in paths if path}
+
+
+def parse_gitnexus_context_json(text: str) -> tuple[dict[str, int], list[str]]:
+    if not text.strip():
+        return {}, []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {}, [f"gitnexus context JSON ignored: {exc}"]
+    symbols = payload.get("symbols", []) if isinstance(payload, dict) else []
+    if not isinstance(symbols, list):
+        return {}, []
+    boosts: dict[str, int] = {}
+    for item in symbols:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("symbol") or "").strip()
+        path = normalize_path(str(item.get("file") or item.get("path") or "").strip())
+        if not name or not path:
+            continue
+        boost = (8 if item.get("callers") or item.get("calleeOf") or item.get("references") else 0) + (
+            7 if item.get("processes") or item.get("flows") or item.get("workflows") else 0
+        )
+        if boost:
+            boosts[f"{path}:{name}"] = min(15, boost)
+    return boosts, []
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -65,9 +102,8 @@ class EvaluationSnapshot:
         )
         baseline, baseline_gaps = _baseline_index(repo, base)
         boosts, warnings = parse_gitnexus_context_json(gitnexus_context_json)
-        packet = parse_repo_context_packet(repo_context_packet)
         return cls(
-            packet_paths=frozenset(str(path) for path in packet.get("paths", set()) if str(path)),
+            packet_paths=frozenset(parse_repo_context_packet(repo_context_packet)),
             gitnexus_boosts=boosts,
             gitnexus_warnings=tuple(warnings),
             base_identity=base,
@@ -92,7 +128,7 @@ class EvaluationSnapshot:
         return self._by_path.get(rel_path)
 
     def role_entries(self, *roles: str) -> list[SnapshotEntry]:
-        return [entry for entry in self.entries if entry.role in roles]
+        return [entry for entry in self.entries if entry.classification.role in roles]
 
     def growth(self) -> dict[str, dict[str, int]]:
         buckets = {
@@ -100,7 +136,7 @@ class EvaluationSnapshot:
             "test": _totals(self.role_entries("test")),
             "testSupport": _totals(self.role_entries("test-support")),
             "generated": _totals(self.role_entries("generated")),
-            "humanAuthored": _totals([entry for entry in self.entries if entry.human_authored]),
+            "humanAuthored": _totals([entry for entry in self.entries if entry.classification.human_authored]),
         }
         return buckets
 
@@ -186,15 +222,13 @@ def _collect_hunks(raw_diff: str) -> dict[str, tuple[Hunk, ...]]:
     base_line = current_line = 0
     added: list[tuple[int, str]] = []
     deleted: list[tuple[int, str]] = []
-    header: tuple[int, int, int, int] | None = None
+    in_hunk = False
 
     def close() -> None:
-        nonlocal header, added, deleted
-        if header is not None and key:
-            collected.setdefault(key, []).append(
-                Hunk(header[0], header[1], header[2], header[3], tuple(added), tuple(deleted))
-            )
-        header, added, deleted = None, [], []
+        nonlocal in_hunk, added, deleted
+        if in_hunk and key:
+            collected.setdefault(key, []).append(Hunk(tuple(added), tuple(deleted)))
+        in_hunk, added, deleted = False, [], []
 
     # Split on Git's actual record delimiter only: splitlines() would also
     # break on vertical tab, form feed, and Unicode separators inside a
@@ -208,10 +242,10 @@ def _collect_hunks(raw_diff: str) -> dict[str, tuple[Hunk, ...]]:
             continue
         # File headers only precede the first hunk. Inside a hunk, "--- x" is a
         # deleted line whose own text began with "-- ", not a header.
-        if header is None and line.startswith("--- "):
+        if not in_hunk and line.startswith("--- "):
             base_path = _diff_path(line[len("--- ") :])
             continue
-        if header is None and line.startswith("+++ "):
+        if not in_hunk and line.startswith("+++ "):
             # A deleted file has no "+++ b/" path; its hunks belong to the path
             # that was removed, which is the path the change set records.
             key = _diff_path(line[len("+++ ") :]) or base_path
@@ -220,14 +254,9 @@ def _collect_hunks(raw_diff: str) -> dict[str, tuple[Hunk, ...]]:
         if match:
             close()
             base_line, current_line = int(match.group(1)), int(match.group(3))
-            header = (
-                base_line,
-                int(match.group(2)) if match.group(2) is not None else 1,
-                current_line,
-                int(match.group(4)) if match.group(4) is not None else 1,
-            )
+            in_hunk = True
             continue
-        if header is None or not key:
+        if not in_hunk or not key:
             continue
         if line.startswith("+"):
             added.append((current_line, line[1:]))
