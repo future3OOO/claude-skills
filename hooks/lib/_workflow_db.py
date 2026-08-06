@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, NoReturn, Sequence
+from .preflight_document import validate_document
 from .repo_identity import RepoIdentity
 from .state_store import claude_home, read_json, repo_state_dir, utc_timestamp
 DATABASE_NAME = "workflow.sqlite3"
@@ -272,6 +273,12 @@ def _legacy_evidence(
     manifests: list[ManifestWrite] = []
     latest: dict[str, tuple[datetime, str, str]] = {}
     def import_evidence(kind: str, path: Path, document: JsonObject) -> EvidenceWrite:
+        if kind == "preflight":
+            try:
+                validate_document(document.get("document"))
+            except ValueError as exc:
+                raise LegacyImportError(
+                    f"legacy preflight evidence is incomplete: {path}: {exc}") from exc
         recorded_at: str | None = None
         parsed_at: datetime | None = None
         for field in ("recordedAt", "updatedAt", "createdAt"):

@@ -102,18 +102,22 @@ class WorkflowLedgerTests(unittest.TestCase):
         document.write_text(json.dumps(build_document("ledger proof")), encoding="utf-8")
         return state, document
 
+    def write_preflight_evidence(self, path: Path, workflow_id: str) -> None:
+        """The envelope the preflight recorder writes: identity plus the document."""
+        path.write_text(json.dumps({
+            "schemaVersion": 1,
+            "slug": "legacy",
+            "workflowId": workflow_id,
+            "document": build_document("legacy"),
+            "recordedAt": "2026-08-01T00:00:00+00:00",
+        }), encoding="utf-8")
+
     def legacy_state(self, *, evidence: bool = True) -> tuple[dict[str, object], Path]:
         self.slot.mkdir(parents=True, mode=0o700)
         workflow_id = uuid.uuid4().hex
         evidence_path = self.slot / "preflight-legacy.json"
         if evidence:
-            evidence_path.write_text(json.dumps({
-                "schemaVersion": 1,
-                "slug": "legacy",
-                "workflowId": workflow_id,
-                "document": build_document("legacy"),
-                "recordedAt": "2026-08-01T00:00:00+00:00",
-            }), encoding="utf-8")
+            self.write_preflight_evidence(evidence_path, workflow_id)
         state: dict[str, object] = {
             "schemaVersion": 1,
             "repo": self.identity.as_dict(),
@@ -551,25 +555,50 @@ class WorkflowLedgerTests(unittest.TestCase):
         finally:
             connection.close()
 
-        evidence_path.write_text(json.dumps({
-            "schemaVersion": 1,
-            "workflowId": legacy["workflowId"],
-            "recordedAt": "2026-08-01T00:00:00+00:00",
-        }), encoding="utf-8")
+        self.write_preflight_evidence(evidence_path, str(legacy["workflowId"]))
         recovered = self.cli("status", "--repo", str(self.repo))
         self.assertEqual(recovered.returncode, 0, recovered.stderr)
         history = json.loads(self.cli("history", "--repo", str(self.repo)).stdout)["events"]
         self.assertEqual(len(history), 1)
 
-    def test_legacy_public_status_mismatch_aborts_authority_and_is_retryable(self) -> None:
-        legacy, evidence_path = self.legacy_state(evidence=False)
-        failed = self.cli("status", "--repo", str(self.repo))
-        self.assertEqual(failed.returncode, 2)
+    def test_incomplete_legacy_preflight_evidence_is_rejected_and_rolled_back(self) -> None:
+        legacy, evidence_path = self.legacy_state()
         evidence_path.write_text(json.dumps({
             "schemaVersion": 1,
             "workflowId": legacy["workflowId"],
             "recordedAt": "2026-08-01T00:00:00+00:00",
         }), encoding="utf-8")
+        legacy_bytes = (self.slot / "workflow.json").read_bytes()
+
+        rejected = self.cli("status", "--repo", str(self.repo))
+        self.assertEqual(rejected.returncode, 2, rejected.stdout)
+        self.assertIn("legacy preflight evidence is incomplete", rejected.stderr)
+        self.assertEqual((self.slot / "workflow.json").read_bytes(), legacy_bytes)
+        connection = sqlite3.connect(self.database)
+        try:
+            self.assertIsNone(connection.execute(
+                "SELECT value FROM metadata WHERE key = 'authority'"
+            ).fetchone())
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM workflow_events").fetchone()[0], 0)
+        finally:
+            connection.close()
+
+        self.write_preflight_evidence(evidence_path, str(legacy["workflowId"]))
+        recovered = self.cli("status", "--repo", str(self.repo))
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        state = json.loads(recovered.stdout)
+        evidence = self.cli(
+            "evidence", "--repo", str(self.repo),
+            "--evidence-id", str(state["preflightEvidence"]),
+        )
+        self.assertEqual(evidence.returncode, 0, evidence.stderr)
+        self.assertEqual(json.loads(evidence.stdout)["document"]["document"], build_document("legacy"))
+
+    def test_legacy_public_status_mismatch_aborts_authority_and_is_retryable(self) -> None:
+        legacy, evidence_path = self.legacy_state(evidence=False)
+        failed = self.cli("status", "--repo", str(self.repo))
+        self.assertEqual(failed.returncode, 2)
+        self.write_preflight_evidence(evidence_path, str(legacy["workflowId"]))
 
         connection = sqlite3.connect(self.database)
         connection.execute("""
