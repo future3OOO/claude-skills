@@ -656,27 +656,57 @@ def test_truncated_baseline_discovery_cannot_report_clean_reuse(repo: Path) -> N
 
 
 @with_repo
-def test_incomplete_discovery_does_not_disarm_warning_promotion(repo: Path) -> None:
-    # Real truncation again, but asking the gate to fail on warnings. An
-    # eligible legacy rule that could not finish discovery is still an active
-    # warning: if incompleteness silently stopped promoting it, missing scope
-    # would be the one way to get a green --fail-on-warnings run. Both facts
-    # have to survive - the incompleteness AND the promotion.
-    write(repo / "src" / "wide.py", "\n".join(f"def a{i}():pass" for i in range(25001)) + "\n")
+def test_promotion_requires_an_active_intrinsically_passed_warning(repo: Path) -> None:
+    # --fail-on-warnings promotes an eligible ACTIVE warning. Three states of
+    # the same eligible rule, each an independently falsifiable row:
+    #
+    #   found-nothing-and-blind  the rule could not finish discovery and found
+    #                            nothing, so its intrinsic result is unknown.
+    #                            Promoting it would make missing scope itself
+    #                            the failure, and would fail every truncated
+    #                            run that had nothing to say.
+    #   clean                    nothing found, nothing missed. Promoting this
+    #                            would fail every clean run on the planet.
+    #   found-and-blind          the rule DID find warnings and also could not
+    #                            see everything. Both facts survive: the
+    #                            incompleteness is reported AND it promotes.
+    owner = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
+    orders = "def resolve_order(value: str) -> str:\n    return value.strip()\n"
+    # 25001 definitions exceeds the symbol ceiling, so discovery really stops.
+    # Kept in the same top directory as the candidate, or the baseline filter
+    # would skip it and there would be no gap to test.
+    wide = "\n".join(f"def a{i}():pass" for i in range(25001)) + "\n"
+
+    # name, baseline files under src/, candidate src/candidate.py, promoted?, exit
+    rows = (
+        ("found-nothing-and-blind", {"wide.py": wide}, "def unrelated_widget_label():\n    return 0\n", False, 0),
+        ("clean", {"ids.py": owner}, "def call_it(v):\n    return ids.normalize_user_id(v)\n", False, 0),
+        ("found-and-blind", {"orders.py": orders, "wide.py": wide},
+         "def resolve_order_record(value: str) -> str:\n    return value.strip()\n", True, 2),
+    )
+    for name, baseline, candidate, expect_promoted, expect_code in rows:
+        in_repo(lambda scratch, b=baseline, c=candidate, n=name, p=expect_promoted, e=expect_code: _promotion_row(scratch, b, c, n, p, e))
+
+
+def _promotion_row(repo: Path, baseline: dict, candidate: str, name: str, expect_promoted: bool, expect_code: int) -> None:
+    for filename, text in baseline.items():
+        write(repo / "src" / filename, text)
     git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "wide baseline")
-    write(repo / "src" / "candidate.py", "def unrelated_widget_label():\n    return 0\n")
+    git(repo, "commit", "-q", "-m", "baseline")
+    write(repo / "src" / "candidate.py", candidate)
     code, payload, _ = run_gate(repo, "--fail-on-warnings")
 
-    finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY")
-    assert finding["status"] == "incomplete", finding
-    assert finding["completeness"]["complete"] is False, finding
-    assert finding["severity"] == "warning" and finding["passed"] is None, finding
-    promoted = [error for error in payload["errors"] if "QG-LEGACY-REUSE-ADVISORY" in error]
-    assert promoted == [f"warning promoted to failure: QG-LEGACY-REUSE-ADVISORY [{finding['findingId']}]"], payload["errors"]
-    assert payload["ok"] is False and code == 2, payload
-    # Promotion adds an error; it never retypes the finding or its check.
-    assert check_named(payload, "reuse-existing-helpers")["status"] == "incomplete", payload["checks"]
+    finding = next((item for item in payload["findings"] if item["ruleId"] == ANCHOR_DEFERRED_RULE), None)
+    assert finding is not None, (name, payload["findings"])
+    promoted = [error for error in payload["errors"] if ANCHOR_DEFERRED_RULE in error]
+    assert bool(promoted) is expect_promoted, (name, payload["errors"], finding)
+    assert code == expect_code, (name, code, payload["errors"])
+    # Promotion never retypes the finding or its intrinsic check.
+    assert finding["severity"] == "warning", (name, finding)
+    if expect_promoted:
+        assert finding["passed"] is True, (name, finding)
+    else:
+        assert finding["passed"] is not False, (name, finding)
 
 
 @with_repo

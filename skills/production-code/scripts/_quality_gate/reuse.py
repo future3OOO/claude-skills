@@ -65,7 +65,10 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
         rule_id=RULE_REUSE_ADVISORY,
         severity="error" if errors else "warning",
         status="incomplete" if gaps else "finding" if findings else "passed",
-        passed=None if gaps else not errors,
+        # Gaps make the rule incomplete, but they only make its intrinsic
+        # result unknown when it also found nothing: a rule that DID find
+        # warnings knows that much, whatever else discovery missed.
+        passed=None if (gaps and not findings) else not errors,
         # Identity is the anchor pair and nothing else. Paths and lines are
         # provenance, so a rename or move preserves the debt's ID and the
         # disposition attached to it, and an inserted line cannot shift it.
