@@ -722,6 +722,30 @@ def test_reuse_finding_identity_survives_an_unrelated_inserted_line(repo: Path) 
     assert second["region"]["anchors"][0]["line"] != first["region"]["anchors"][0]["line"], second["region"]
 
 
+@with_repo
+def test_a_failed_diff_read_reports_incompleteness_not_an_empty_change(repo: Path) -> None:
+    # A rejected repo-level diff config fails every diff read with exit 128 and
+    # empty output, while base resolution, worktree capture, the baseline
+    # ls-tree and untracked discovery all stay healthy. That isolates the diff
+    # transport exactly: read the failure as "" and the change set is empty, so
+    # every rule passes over a change nobody looked at. The reads are checked,
+    # so the run reports the failure instead.
+    write(repo / "src" / "app.py", "def one():\n    return 1\n")
+    git(repo, "add", ".")
+    git(repo, "config", "diff.algorithm", "bogus")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    assert any("diff" in error and "read failed" in error for error in payload["errors"]), payload["errors"]
+    assert payload["ok"] is False and code == 2, payload
+    assert payload["evaluation"]["complete"] is False, payload["evaluation"]
+    # The failure must not be laundered into a clean, empty evaluation.
+    for name in (
+        "no-merge-conflict-markers", "no-temp-artifacts", "no-quality-escapes",
+        "no-duplicate-added-blocks", "reuse-existing-helpers", "cumulative-growth",
+    ):
+        assert check_named(payload, name)["passed"] is not True, check_named(payload, name)
+
+
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
     return next(item for item in payload["checks"] if item["name"] == name)
 
