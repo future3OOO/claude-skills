@@ -267,7 +267,7 @@ def repetition(arm: dict[str, object], index: int) -> tuple[list[dict[str, objec
     if identity.returncode or not key:
         raise SystemExit(f"repository key for {repo} is unavailable, so an escape could not "
                          f"be detected: exit {identity.returncode} {identity.stderr.strip()}")
-    cli = [sys.executable, str(root / "home/skills/repo-production-workflow/scripts/pass-state.py")]
+    cli = cli_for(arm)
     hook = str(root / "home/hooks/code-quality-gate.py")
     scenarios = []
 
@@ -305,6 +305,65 @@ def repetition(arm: dict[str, object], index: int) -> tuple[list[dict[str, objec
     return scenarios, key
 
 
+def cli_for(arm: dict[str, object]) -> list[str]:
+    return [sys.executable, str(Path(str(arm["root"])) / "home/skills/repo-production-workflow/scripts/pass-state.py")]
+
+
+def stores_in(root: Path) -> list[str]:
+    """Every storage file the slots hold, so the artifact records the engine rather than assuming it.
+
+    All of them, not the first: a candidate that imports legacy JSON into SQLite leaves both,
+    and reporting one name would hide the very conversion this comparison exists to show.
+    """
+    return sorted({path.name for slot in slot_names(root)
+                   for path in (root / slot).iterdir() if path.suffix in {".json", ".sqlite3"}})
+
+
+def migration(arms: dict[str, dict[str, object]], out: Path) -> dict[str, object]:
+    """Continue one baseline-seeded state root on both arms, which is the only way a legacy import runs.
+
+    repetition() gives every arm a private, empty state root, so nothing there can ever
+    exercise a candidate's import of state an older version wrote. Here the baseline CLI
+    seeds a root, the seed is copied so both continuations start byte-identical, and each
+    arm continues its own copy. Runs in its own directory outside both arms' state roots,
+    so the per-arm freshness guarantee is untouched.
+    """
+    home = out / "migration"
+    # Recreated per run like each arm root, so a rerun against the same --out cannot
+    # inherit the previous run's seed or fail on an existing fixture.
+    shutil.rmtree(home, ignore_errors=True)
+    env = arm_env(Path(str(arms["baseline"]["root"])), home / "seed-state")
+    repo = fixture(home / "repo", env)
+    # Asked of the identity owner like every repetition key: the migration fixture is a
+    # separate repository, so without its key arm_traces could not see an escape that
+    # happened only here.
+    key = run([sys.executable, str(Path(str(arms["baseline"]["root"])) / "home/hooks/lib/repo_identity.py"),
+               "--field", "key", "--path", str(repo)], env)
+    if key.returncode or not key.stdout.strip():
+        raise SystemExit(f"repository key for {repo} is unavailable, so an escape could not "
+                         f"be detected: exit {key.returncode} {key.stderr.strip()}")
+    seeded = run([*cli_for(arms["baseline"]), "begin", "--repo", str(repo),
+                  "--slug", "estate-benchmark", "--intent", "migration seed"], env)
+    seed_stores = stores_in(home / "seed-state")
+    # A write, because #74 imports legacy state on first write rather than on read. `pause`
+    # is the one state-advancing command a freshly begun workflow accepts: every phase in
+    # WORKFLOW_SEQUENCE still has an unmet predecessor at this point.
+    instance = str(loaded(seeded.stdout).get("workflowId"))
+
+    projections, exits, stores = {}, [], {}
+    for name, arm in arms.items():
+        root = home / f"{name}-state"
+        shutil.copytree(home / "seed-state", root)
+        continued = run([*cli_for(arm), "pause", "--repo", str(repo), "--slug", "estate-benchmark",
+                         "--workflow-id", instance, "--reason", "migration differential"],
+                        arm_env(Path(str(arm["root"])), root))
+        projections[name], _ = project(continued.stdout, STATE_FIELDS)
+        exits.append(continued.returncode)
+        stores[f"{name}Stores"] = stores_in(root)
+    return {"key": key.stdout.strip(), "seedExit": seeded.returncode, "seedStores": seed_stores, "exits": exits, **stores,
+            "match": projections["baseline"] == projections["candidate"], **projections}
+
+
 def timings(runs: list[dict[str, object]]) -> dict[str, object]:
     seconds = [float(run["seconds"]) for run in runs]
     return {"seconds": seconds, "medianSeconds": round(statistics.median(seconds), 6),
@@ -334,7 +393,7 @@ def compare(baseline: list[dict[str, object]], candidate: list[dict[str, object]
 
 
 def render(artifact: dict[str, object], path: Path) -> str:
-    isolation, scenarios = artifact["isolation"], artifact["scenarios"]
+    isolation, scenarios, m = artifact["isolation"], artifact["scenarios"], artifact["migration"]
     return "\n".join([
         f"A/B estate benchmark  schema={artifact['schemaVersion']}  "
         f"claude={artifact['claudeCodeVersion']}  repetitions={artifact['repetitions']}",
@@ -354,6 +413,9 @@ def render(artifact: dict[str, object], path: Path) -> str:
         f"isolation: {'ok' if isolation['ok'] else 'FAILED'}; estate digest "
         f"{'unchanged' if isolation['estateDigestBefore'] == isolation['estateDigestAfter'] else 'CHANGED'}; "
         f"{len(isolation['armKeys'])} arm keys, {len(isolation['leakedKeys'])} under the live root",
+        f"migration: seed {','.join(m['seedStores'])} -> baseline {','.join(m['baselineStores'])} | "
+        f"candidate {','.join(m['candidateStores'])}; exits {m['exits']}; "
+        f"state {'matches' if m['match'] else 'DIFFERS'}",
         f"result: {'PASS' if artifact['ok'] else 'FAIL'}   artifact: {path}",
     ])
 
@@ -381,7 +443,7 @@ def main() -> int:
     # That guard resolves `out` only, so an arm root that is itself a link still escapes:
     # rmtree(ignore_errors=True) leaves a symlink alone and the arm is then built through
     # it. Both roots are checked here, before either is built.
-    for arm in (out / "baseline", out / "candidate"):
+    for arm in (out / "baseline", out / "candidate", out / "migration"):
         if arm.is_symlink():
             raise SystemExit(f"arm root must not be a symlink: {arm}")
     out.mkdir(parents=True, exist_ok=True)
@@ -408,13 +470,15 @@ def main() -> int:
     scenarios = [compare([replay[index] for replay in observed["baseline"]],
                          [replay[index] for replay in observed["candidate"]])
                  for index in range(len(observed["baseline"][0]))]
+    migrated = migration(arms, out)
+    arm_keys.add(str(migrated["key"]))
     estate_after = {str(home): digest(home) for home in homes}
     entries_after = {str(root): slot_names(root) for root in roots}
     leaked = sorted(trace for root in roots for trace in arm_traces(root, arm_keys))
     artifact = {
         "schemaVersion": SCHEMA_VERSION, "repetitions": REPETITIONS, "sourceRepo": str(source),
         "claudeCodeVersion": run(["claude", "--version"], dict(os.environ)).stdout.strip(),
-        "arms": arms, "scenarios": scenarios,
+        "arms": arms, "scenarios": scenarios, "migration": migrated,
         "isolation": {
             "liveEstates": [str(home) for home in homes], "liveStateRoots": [str(root) for root in roots],
             "estateDigestBefore": estate_before, "estateDigestAfter": estate_after,
@@ -424,7 +488,8 @@ def main() -> int:
         },
     }
     artifact["ok"] = (artifact["isolation"]["ok"] and all(arm["configSmokeExit"] == 0 for arm in arms.values())
-                      and all(item["invariantsHeld"] and not item["differences"] for item in scenarios))
+                      and all(item["invariantsHeld"] and not item["differences"] for item in scenarios)
+                      and migrated["match"] and migrated["exits"] == [0, 0])
     path = out / "benchmark.json"
     path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(render(artifact, path))

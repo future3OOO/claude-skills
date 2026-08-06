@@ -76,7 +76,12 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         return result, json.loads(artifact.read_text(encoding="utf-8"))
 
     def benchmark_at(self, out: Path) -> tuple[subprocess.CompletedProcess[str], dict]:
-        """Run the real command against a fixed output directory, so a rerun reuses arm keys."""
+        """Run the real command against a fixed output directory, so a rerun reuses arm keys.
+
+        The previous artifact is removed first: without that, a rerun that dies before
+        writing one is read as the earlier run's success.
+        """
+        (out / "benchmark.json").unlink(missing_ok=True)
         result = subprocess.run(
             [sys.executable, str(BENCHMARK), "--baseline", "HEAD", "--candidate", "HEAD",
              "--out", str(out)],
@@ -199,8 +204,11 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         # Derived from the fixture path through the same POSIX contract the estate uses,
         # not read back from arm state: a redirect failure would leave that state empty,
         # so keys learned from it would be exactly the ones an escape hides behind.
+        # The migration fixture is a separate repository, so its key belongs in the
+        # traced set too; without it an escape during migration would go unseen.
         expected = {self.repo_key(out / arm / "repos" / str(index))
                     for arm in ("baseline", "candidate") for index in range(5)}
+        expected.add(self.repo_key(out / "migration" / "repo"))
         self.assertEqual(set(artifact["isolation"]["armKeys"]), expected,
                          "arm keys are not derived from the fixture paths")
         key = sorted(expected)[0]
@@ -311,6 +319,24 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         resolutions = [line for line in trace.read_text(encoding="utf-8", errors="replace").splitlines()
                        if "rev-parse" in line and "moving^{commit}" in line]
         self.assertEqual(len(resolutions), 3, f"expected one resolution per run, got {resolutions}")
+
+    def test_the_migration_differential_continues_a_baseline_seeded_state_root(self) -> None:
+        """The candidate reads state the baseline wrote, which is the only way #74's import runs.
+
+        Both arms are the same ref here, so this proves the mechanism: a real legacy
+        seed, two real continuations, equal projected state. The two-engine differential
+        is the acceptance run against a candidate whose store is SQLite.
+        """
+        _, artifact = self.benchmark("HEAD", "HEAD")
+        migration = artifact["migration"]
+
+        self.assertEqual(migration["seedStores"], ["workflow.json"],
+                         "the baseline CLI did not leave legacy state for the candidate to import")
+        self.assertEqual(migration["exits"], [0, 0], "a continuation refused the seeded state root")
+        self.assertTrue(migration["match"], json.dumps(migration, indent=2)[:2000])
+        self.assertEqual(migration["baseline"]["slug"], migration["candidate"]["slug"])
+        self.assertIn("workflow.json", migration["candidateStores"],
+                      "the candidate did not read the legacy store it was given")
 
     def test_a_candidate_that_escapes_its_state_root_is_caught(self) -> None:
         """An arm whose redirect genuinely fails, not a planted trace.
