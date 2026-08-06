@@ -944,53 +944,72 @@ def test_growth_warning_survives_base_binding_incompleteness(repo: Path) -> None
     assert code == 0 and payload["ok"] is True, (code, payload["errors"])
 
 
+# Each row is one decoder or transport branch Git can put in front of the gate,
+# with the exact result that branch must produce. #75 requires that missing,
+# skipped or unreadable scope can never read as a clean pass, so a path the
+# decoder mishandles must never silently drop out of the measured change.
+#
+# name, git config, baseline files, candidate files, expected production
+# growth, expected error substring, expected sample path.
+_DECODER_ROWS = (
+    ("c-quoted-tab", None, {"src/we\tird.py": "A = 1\n"}, {"src/we\tird.py": "A = 1\nB = 2\n"},
+     {"added": 1, "deleted": 0, "net": 1}, None, None),
+    ("literal-leading-quote", None, {}, {'src/"weird.py': "A = 1\nB = 2\n"},
+     {"added": 2, "deleted": 0, "net": 2}, None, None),
+    ("non-utf8-with-quotepath-off", ("core.quotePath", "false"), {},
+     {b"src/we\tir\xe9.py": b"def f():\n    return 1\n"},
+     {"added": 2, "deleted": 0, "net": 2}, None, b"src/we\tir\xe9.py"),
+    ("leading-whitespace-dir", None, {" pad/app.py": "A = 1\n"},
+     {" pad/app.py": "A = 1\n<<<<<<< theirs\nB = 2\n=======\nC = 3\n>>>>>>> ours\n"},
+     None, "merge conflict markers", b" pad/app.py"),
+    ("control-char-payload", None, {},
+     {"src/ctl.py": "Z = 'a\x0bb'  # " + "TO" + "DO: hidden after a control character\n"},
+     None, "quality escapes", None),
+)
+
+
+@with_repo
+def test_every_decoder_branch_stays_fully_measured(repo: Path) -> None:
+    for name, config, baseline, candidate, growth, error, sample in _DECODER_ROWS:
+        in_repo(lambda scratch, c=config, b=baseline, n=candidate, g=growth, e=error, s=sample, label=name:
+                _decoder_row(scratch, c, b, n, g, e, s, label))
+
+
+def _decoder_row(repo: Path, config, baseline: dict, candidate: dict, growth, error, sample, name: str) -> None:
+    if config:
+        git(repo, "config", *config)
+    for path, content in baseline.items():
+        write(repo / path, content)
+    if baseline:
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "baseline")
+    for path, content in candidate.items():
+        target = repo / (os.fsdecode(path) if isinstance(path, bytes) else path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding="utf-8")
+    git(repo, "add", "-A")
+    code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
+
+    if error:
+        assert any(error in item for item in payload["errors"]), (name, payload["errors"])
+        assert code == 2, (name, code, stderr)
+    else:
+        assert payload["errors"] == [], (name, payload["errors"])
+        assert code == 0, (name, code, stderr)
+    if growth is not None:
+        assert growth_totals(payload)["production"] == growth, (name, growth_totals(payload))
+        # The odd name is unusual, not unmeasurable: it contributes no gap.
+        assert payload["evaluation"]["complete"] is True, (name, payload["evaluation"]["gaps"])
+    if sample is not None:
+        encoded = [item.encode("utf-8", "surrogateescape") for item in payload["changedFilesSample"]]
+        assert sample in encoded, (name, payload["changedFilesSample"])
+
+
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
     return next(item for item in payload["checks"] if item["name"] == name)
-
-
-@with_repo
-def test_special_character_filename_remains_fully_measurable(repo: Path) -> None:
-    # Git C-quotes a tab-holding name in the textual diff header while the -z
-    # transports carry the literal name. Decoding the header reunites the hunks
-    # with their entry, so the file is measured, never silently skipped.
-    quoted = repo / "src" / "we\tird.py"
-    write(quoted, "A = 1\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "quoted path")
-    quoted.write_text("A = 1\nB = 2\n", encoding="utf-8")
-    for extra in (("--base-ref", "HEAD"), ()):
-        _, payload, _ = run_gate(repo, *extra)
-        growth = growth_totals(payload)
-        assert growth["production"] == {"added": 1, "deleted": 0, "net": 1}, (extra, growth)
-        assert check_named(payload, "no-duplicate-added-blocks")["passed"] is True, (extra, payload["checks"])
-        # The only permitted gap is the unbased iteration's cumulative-claim
-        # binding; the file itself must contribute none.
-        unexpected = [gap for gap in payload["evaluation"]["gaps"] if "no caller-supplied base" not in gap]
-        assert unexpected == [], (extra, unexpected)
-
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "quoted change")
-    quoted.write_text("A = 1\nB = 2\nC = 3\n", encoding="utf-8")
-    git(repo, "add", "-A")
-    for extra in (("--base-ref", "HEAD~1"), ("--base-ref", "HEAD~1", "--staged-only")):
-        _, ranged, _ = run_gate(repo, *extra)
-        assert growth_totals(ranged)["production"] == {"added": 2, "deleted": 0, "net": 2}, (extra, growth_totals(ranged))
-        assert growth_finding(ranged)["completeness"]["complete"] is True, (extra, growth_finding(ranged))
-        for item in ranged["checks"]:
-            assert item["status"] != "incomplete", (extra, item)
-
-
-@with_repo
-def test_literal_leading_quote_filename_remains_fully_measurable(repo: Path) -> None:
-    # A literal name that merely begins with a quote character is not evidence
-    # of Git quoting; the file must stay a fully measured ordinary entry.
-    write(repo / "src" / '"weird.py', "A = 1\nB = 2\n")
-    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    growth = growth_totals(payload)
-    assert growth["production"] == {"added": 2, "deleted": 0, "net": 2}, growth
-    assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)
-    for item in payload["checks"]:
-        assert item["status"] != "incomplete", item
 
 
 @with_repo
@@ -1325,22 +1344,6 @@ def test_a_failed_hard_rule_child_outranks_an_unknown_sibling(repo: Path) -> Non
 
 
 @with_repo
-def test_quoted_header_keeps_non_utf8_bytes_when_quotepath_is_off(repo: Path) -> None:
-    # With core.quotePath=false Git leaves the raw bytes in a header it still
-    # quotes for a tab, so decoding one must be able to re-encode them.
-    git(repo, "config", "core.quotePath", "false")
-    name = b"src/we\tir\xe9.py"
-    (repo / os.fsdecode(name)).write_bytes(b"def f():\n    return 1\n")
-    git(repo, "add", "-A")
-    res = run(["python3", str(SCRIPT), "check", "--repo", str(repo), "--json", "--base-ref", "HEAD"], repo)
-    assert res.returncode == 0, res.stderr
-    payload = json.loads(res.stdout)
-    assert [item.encode("utf-8", "surrogateescape") for item in payload["changedFilesSample"]] == [name], payload["changedFilesSample"]
-    assert growth_totals(payload)["production"] == {"added": 2, "deleted": 0, "net": 2}, growth_totals(payload)
-    assert payload["evaluation"]["complete"] is True, payload["evaluation"]["gaps"]
-
-
-@with_repo
 def test_a_non_utf8_path_reaches_a_stable_finding(repo: Path) -> None:
     # Identity no longer carries paths - that moved to symbol anchors so a
     # rename preserves the debt's ID - so this proves what it can still prove:
@@ -1580,34 +1583,6 @@ def test_new_file_wrapper_that_calls_the_owner_is_not_a_reimplementation(repo: P
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--staged-only")
     assert code == 0, json.dumps(payload["errors"], indent=2)
     assert reuse_matches(payload) == [], reuse_matches(payload)
-
-
-@with_repo
-def test_leading_whitespace_filename_remains_fully_readable(repo: Path) -> None:
-    # A relative path that starts with whitespace hits the old stripping
-    # normalizer at the string boundary: the stripped key named a file that
-    # does not exist, so its captured text was unreadable and content checks
-    # silently skipped it. Conflict markers in such a file must still fail.
-    write(repo / " pad" / "app.py", "A = 1\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "leading-space directory")
-    write(repo / " pad" / "app.py", "A = 1\n<<<<<<< theirs\nB = 2\n=======\nC = 3\n>>>>>>> ours\n")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert code == 2, json.dumps(payload["errors"], indent=2)
-    assert any("merge conflict markers" in error for error in payload["errors"]), payload["errors"]
-    assert " pad/app.py" in payload["changedFilesSample"], payload["changedFilesSample"]
-
-
-@with_repo
-def test_control_character_payload_lines_stay_fully_scanned(repo: Path) -> None:
-    # The diff parser splits on newlines only: a vertical tab inside a changed
-    # line must not orphan the remainder from its +/- prefix, or an escape
-    # after the control character would go unscanned.
-    escape = "TO" + "DO"
-    write(repo / "src" / "ctl.py", f"Z = 'a\x0bb'  # {escape}: hidden after a control character\n")
-    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert code == 2, json.dumps(payload, indent=2)
-    assert any("quality escapes" in error for error in payload["errors"]), payload["errors"]
 
 
 def test_gate_completes_on_an_unborn_repo_with_open_stdin() -> None:
