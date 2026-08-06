@@ -27,9 +27,21 @@ def run_git(repo: Path, args: list[str], *, env: dict[str, str] | None = None) -
     )
 
 
-def git_text(repo: Path, args: list[str]) -> str:
+def git_read(repo: Path, args: list[str]) -> tuple[str, str]:
+    """Output and the failure reason, which is empty when the command succeeded.
+
+    One place runs Git and interprets its exit status, so a caller that needs
+    to report a failed read and a caller that tolerates absence cannot drift.
+    """
     res = run_git(repo, args)
-    return res.stdout if res.returncode == 0 else ""
+    if res.returncode != 0:
+        return "", res.stderr.strip() or str(res.returncode)
+    return res.stdout, ""
+
+
+def git_text(repo: Path, args: list[str]) -> str:
+    # For callers where absence and failure are the same answer.
+    return git_read(repo, args)[0]
 
 
 def git_ok(repo: Path, args: list[str]) -> bool:
@@ -86,7 +98,27 @@ def _resolve_base(repo: Path, base_ref: str | None) -> tuple[str, str, list[str]
 
 
 def _capture_worktree(repo: Path) -> tuple[str, list[str]]:
-    """Capture the full worktree (tracked, staged, and untracked) as one tree OID."""
+    """Capture the worktree as one tree OID, or report that it would not hold still.
+
+    `git add -A` walks the worktree over a span of time, so a tree built while
+    content is still moving can describe a state that never existed at any
+    instant. Two captures of a settled worktree produce the same OID, so a
+    disagreement is drift — and drift is reported rather than evaluated,
+    because a candidate nobody can reproduce is not a candidate.
+    """
+    first, errors = _write_worktree_tree(repo)
+    if errors or not first:
+        return "", errors
+    second, errors = _write_worktree_tree(repo)
+    if errors or not second:
+        return "", errors
+    if first != second:
+        return "", [f"candidate capture drift: worktree changed during capture ({first[:12]} then {second[:12]})"]
+    return first, []
+
+
+def _write_worktree_tree(repo: Path) -> tuple[str, list[str]]:
+    """One capture pass over the worktree (tracked, staged, and untracked)."""
     handle = tempfile.NamedTemporaryFile(prefix="quality-gate-index-", delete=False)
     handle.close()
     env = {"GIT_INDEX_FILE": handle.name}
@@ -104,12 +136,29 @@ def _capture_worktree(repo: Path) -> tuple[str, list[str]]:
         Path(handle.name).unlink(missing_ok=True)
 
 
-def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], str, list[Numstat]]:
-    diff = ["diff", "--no-renames", base, tree]
-    changed = parse_z_names(git_text(repo, [*diff, "--name-only", "-z"]))
-    raw_diff = git_text(repo, [*diff, "--unified=0", "--no-color"])
-    numstats = parse_numstat_z(git_text(repo, [*diff, "--numstat", "-z"]))
-    return changed, raw_diff, numstats
+def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], str, list[Numstat], list[str]]:
+    """The evaluated diff, plus the reads that failed to produce it.
+
+    The diff belongs to the gate, not to repository configuration: an external
+    driver or textconv filter may rewrite or empty the textual patch while
+    --name-only and --numstat still succeed, which would leave every
+    hunk-reading rule scanning nothing and reporting a clean pass. A non-zero
+    exit becomes a recorded gap rather than an empty string that reads as
+    "no change".
+    """
+    diff = ["diff", "--no-renames", "--no-ext-diff", "--no-textconv", base, tree]
+    errors: list[str] = []
+
+    def read(args: list[str], transport: str) -> str:
+        text, failure = git_read(repo, [*diff, *args])
+        if failure:
+            errors.append(f"diff {transport} read failed: {failure}")
+        return text
+
+    changed = parse_z_names(read(["--name-only", "-z"], "name-only"))
+    raw_diff = read(["--unified=0", "--no-color"], "unified")
+    numstats = parse_numstat_z(read(["--numstat", "-z"], "numstat"))
+    return changed, raw_diff, numstats, errors
 
 
 def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False) -> dict[str, object]:
@@ -121,8 +170,12 @@ def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False
     tree, capture_errors = _capture_worktree(repo)
     if capture_errors:
         return _scope(base, base_source, f"commit-range:{base}...worktree", set(), set(), "", [], capture_errors)
-    changed, raw_diff, numstats = _diff_scope(repo, base, tree)
-    untracked = parse_z_names(git_text(repo, ["ls-files", "--others", "--exclude-standard", "-z"]))
+    changed, raw_diff, numstats, errors = _diff_scope(repo, base, tree)
+    listed, failure = git_read(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
+    if failure:
+        # Failed discovery is not an absence of untracked files.
+        errors.append(f"untracked discovery failed: {failure}")
+    untracked = parse_z_names(listed)
     return _scope(
         base,
         base_source,
@@ -131,7 +184,7 @@ def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False
         untracked & changed,
         raw_diff,
         numstats,
-        [],
+        errors,
         candidate_source="worktree-snapshot",
         candidate_tree=tree,
     )
@@ -151,7 +204,7 @@ def _collect_index_scope(repo: Path, base_ref: str | None) -> dict[str, object]:
     tree = git_text(repo, ["write-tree"]).strip()
     if not tree:
         return _scope(base, "caller", f"index-tree:{base_ref}...unresolved", set(), set(), "", [], ["git write-tree failed"], candidate_source="index", candidate_tree="")
-    changed, raw_diff, numstats = _diff_scope(repo, base, tree)
+    changed, raw_diff, numstats, errors = _diff_scope(repo, base, tree)
     return _scope(
         base,
         "caller",
@@ -160,7 +213,7 @@ def _collect_index_scope(repo: Path, base_ref: str | None) -> dict[str, object]:
         set(),
         raw_diff,
         numstats,
-        [],
+        errors,
         candidate_source="index",
         candidate_tree=tree,
     )

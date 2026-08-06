@@ -111,11 +111,11 @@ def classify_path(path: str) -> PathClass:
     pre-existing meaning because workflow state classifies edits with it.
     """
     test_like = _test_like(path)
-    # The stored language enum reserves real parser names for source entries;
-    # every non-source classification is "other".
-    language = language_for_path(path) if is_source_path(path) else "other"
+    lowered = f"/{normalize_path(path).lower()}"
     if is_source_path(path):
-        lowered = f"/{normalize_path(path).lower()}"
+        # The stored language enum reserves real parser names for source
+        # entries; every non-source classification is "other".
+        language = language_for_path(path)
         if any(marker in lowered for marker in GENERATED_MARKERS):
             return PathClass(ROLE_GENERATED, language, False, True, test_like, "generated path")
         if not test_like:
@@ -123,16 +123,15 @@ def classify_path(path: str) -> PathClass:
         support = any(marker in lowered for marker in SUPPORT_MARKERS)
         return PathClass(ROLE_TEST_SUPPORT if support else ROLE_TEST, language, True, True, test_like, None)
     if not path:
-        return PathClass(ROLE_UNKNOWN, language, False, False, test_like, "empty path")
+        return PathClass(ROLE_UNKNOWN, "other", False, False, test_like, "empty path")
     if is_excluded_path(path):
-        parts = {part.lower() for part in normalize_path(path).split("/") if part}
+        parts = {part for part in lowered.split("/") if part}
         role = ROLE_VENDORED if parts & VENDORED_DIRS else ROLE_UNKNOWN
-        return PathClass(role, language, False, False, test_like, "excluded directory")
+        return PathClass(role, "other", False, False, test_like, "excluded directory")
     if is_binary_path(path):
-        return PathClass(ROLE_UNKNOWN, language, False, False, test_like, "binary extension")
-    if Path(path).suffix.lower() in DOC_EXTENSIONS:
-        return PathClass(ROLE_DOCS, language, False, False, test_like, "non-source extension")
-    return PathClass(ROLE_UNKNOWN, language, False, False, test_like, "non-source extension")
+        return PathClass(ROLE_UNKNOWN, "other", False, False, test_like, "binary extension")
+    role = ROLE_DOCS if Path(path).suffix.lower() in DOC_EXTENSIONS else ROLE_UNKNOWN
+    return PathClass(role, "other", False, False, test_like, "non-source extension")
 
 
 def language_for_path(path: str) -> str:

@@ -30,11 +30,16 @@ class Hunk:
 
 @dataclass(frozen=True)
 class BaselineFile:
-    """One base-tree source file with its stored classification."""
+    """One base-tree source file with its classification and captured text.
+
+    `text` is `None` when the file was never read: either its role puts it
+    outside owner discovery, or the read itself failed.
+    """
 
     path: str
     role: str
     language: str
+    text: str | None
 
 
 @dataclass(frozen=True)

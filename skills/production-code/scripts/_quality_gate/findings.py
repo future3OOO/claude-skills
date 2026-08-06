@@ -92,11 +92,20 @@ def promoted_errors(findings: list[Finding], fail_on_warnings: bool) -> list[str
 
     Promotion never retypes the source finding or its intrinsic check; the
     caller only appends these errors and lets top-level ok become false.
+
+    A rule is active whenever it did not evaluate clean, so `incomplete`
+    promotes exactly like `finding`. Reading only `finding` let missing scope
+    silently disarm --fail-on-warnings: the rule that could not see everything
+    stopped promoting, which is the case a caller asking to fail on warnings
+    least wants to pass. Both facts survive - the finding keeps its
+    incompleteness and still promotes.
     """
     if not fail_on_warnings:
         return []
     return [
         f"warning promoted to failure: {finding.rule_id} [{finding.finding_id()}]"
         for finding in findings
-        if finding.severity == "warning" and finding.status == "finding" and _PROMOTION_ELIGIBLE.get(finding.rule_id, False)
+        if finding.severity == "warning"
+        and finding.status in ("finding", "incomplete")
+        and _PROMOTION_ELIGIBLE.get(finding.rule_id, False)
     ]

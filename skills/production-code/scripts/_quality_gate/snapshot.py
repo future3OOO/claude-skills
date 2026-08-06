@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .git_scope import git_text, read_git_file
+from .git_scope import git_read, read_git_file
 from .models import BaselineFile, Hunk, Numstat, SnapshotEntry
 from .path_policy import classify_path
 
@@ -23,7 +23,6 @@ class EvaluationSnapshot:
     worktree that keeps moving cannot produce a mixed snapshot.
     """
 
-    repo: Path
     base_identity: str
     base_source: str
     candidate_source: str
@@ -50,17 +49,17 @@ class EvaluationSnapshot:
             _entry(repo, path, base, tree, hunks, counts, path in untracked)
             for path in sorted(changed)
         )
+        baseline, baseline_gaps = _baseline_index(repo, base)
         return cls(
-            repo=repo,
             base_identity=base,
             base_source=str(scope["base_source"]),
             candidate_source=str(scope["candidate_source"]),
             candidate_tree=tree,
             changed_scope=str(scope["changed_scope"]),
             entries=entries,
-            baseline=_baseline_index(repo, base),
+            baseline=baseline,
             unattributed=tuple(sorted(set(hunks) - changed)),
-            capture_gaps=capture_gaps,
+            capture_gaps=capture_gaps + baseline_gaps,
         )
 
     @property
@@ -75,10 +74,6 @@ class EvaluationSnapshot:
 
     def role_entries(self, *roles: str) -> list[SnapshotEntry]:
         return [entry for entry in self.entries if entry.role in roles]
-
-    def read_baseline(self, rel_path: str) -> str | None:
-        """Baseline content from the captured base commit, never the live tree."""
-        return read_git_file(self.repo, self.base_identity, rel_path)
 
     def growth(self) -> dict[str, dict[str, int]]:
         buckets = {
@@ -128,21 +123,31 @@ def _entry(
     )
 
 
-def _baseline_index(repo: Path, base: str) -> tuple[BaselineFile, ...]:
+def _baseline_index(repo: Path, base: str) -> tuple[tuple[BaselineFile, ...], tuple[str, ...]]:
     """Source files in the base tree: the owners a change could reimplement.
 
     A path the change adds has no base entry, so its absence is absence, not
-    discovery that failed.
+    discovery that failed — but a listing that failed is neither, and says so.
+    Owner text is captured here, before the snapshot freezes, so no detector
+    reads Git while evaluating.
     """
-    listed = git_text(repo, ["ls-tree", "-r", "--name-only", "-z", base]) if base else ""
+    if not base:
+        return (), ()
+    listed, failure = git_read(repo, ["ls-tree", "-r", "--name-only", "-z", base])
+    if failure:
+        return (), (f"baseline listing failed: {failure}",)
     files: list[BaselineFile] = []
     for rel_path in listed.split("\0"):
         if not rel_path:
             continue
         classification = classify_path(rel_path)
-        if classification.source:
-            files.append(BaselineFile(rel_path, classification.role, classification.language))
-    return tuple(files)
+        if not classification.source:
+            continue
+        # Only production baselines take part in owner discovery, so only they
+        # are worth the read.
+        text = read_git_file(repo, base, rel_path) if classification.role == "production" else None
+        files.append(BaselineFile(rel_path, classification.role, classification.language, text))
+    return tuple(files), ()
 
 
 def _counts_for(rel_path: str, record: Numstat | None) -> tuple[int, int, tuple[str, ...]]:

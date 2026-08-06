@@ -65,11 +65,25 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
         severity="error" if errors else "warning",
         status="incomplete" if gaps else "finding" if findings else "passed",
         passed=None if gaps else not errors,
+        # Identity is the anchor pair, never the line: a comment inserted above
+        # a match, or a rebase, moves every line number while the finding and
+        # its disposition stay the same one.
         identity=tuple(
-            f"{item.new_file}:{item.new_line}:{item.new_symbol}->{item.existing_file}:{item.existing_line}:{item.existing_symbol}"
+            f"{item.new_file}:{item.new_symbol}->{item.existing_file}:{item.existing_symbol}"
             for item in findings
         ),
-        region={"scope": "evaluation", "changedScope": snapshot.changed_scope, "fileCount": len(snapshot.entries)},
+        region={
+            "scope": "evaluation",
+            "changedScope": snapshot.changed_scope,
+            "fileCount": len(snapshot.entries),
+            # Display provenance, ordered as the matches are: where each anchor
+            # sits in this evaluation, which a later evaluation may move.
+            "anchors": [
+                {"path": item.new_file, "line": item.new_line, "symbol": item.new_symbol,
+                 "ownerPath": item.existing_file, "ownerLine": item.existing_line, "ownerSymbol": item.existing_symbol}
+                for item in findings
+            ],
+        },
         evidence={"errors": len(errors), "warnings": len(findings) - len(errors), "matches": matches},
         action="Call the existing owner instead of reimplementing it, or widen discovery until the baseline scan completes.",
         pass_condition="duplicate-absent: no reimplementation of an existing owner, with baseline discovery complete",
@@ -97,7 +111,7 @@ def _existing_symbol_index(
             continue
         if not _should_index_existing(baseline, candidate_languages, candidate_roots, packet_paths, gitnexus_paths):
             continue
-        text = snapshot.read_baseline(baseline.path)
+        text = baseline.text
         if text is None:
             # An owner defined in a file discovery never read cannot be matched,
             # so the rule must say so rather than report no reimplementation.
