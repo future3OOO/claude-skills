@@ -21,6 +21,13 @@ SCRIPT_DIR = Path(__file__).parent
 PINNED_PRE_75 = "9f01e5f"
 POLICY_PATH = "skills/production-code/scripts/_quality_gate/path_policy.py"
 
+# The one rule ID permitted to emit regions without a content anchor over
+# canonical implementation bytes, because producing those bytes is the
+# normalized fingerprint the target architecture assigns to #76. Named exactly,
+# never "the legacy rules": a singleton fails loudly when a second rule joins,
+# where an exemption list would quietly accept one.
+ANCHOR_DEFERRED_RULE = "QG-LEGACY-REUSE-ADVISORY"
+
 
 def _load_path_policy(path: Path):
     """Load a path_policy module standalone, the way workflow state loads it."""
@@ -746,13 +753,24 @@ def test_reuse_finding_identity_survives_an_unrelated_inserted_line(repo: Path) 
 
 
 def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
-    # Fix 6 is enforced structurally rather than behaviourally: the CLI
-    # captures and evaluates in one process, so there is no window at the
-    # public Interface in which to observe a post-freeze read. What can be
-    # asserted is that the detector modules hold nothing capable of one -
-    # EvaluationSnapshot carries no repository handle, and no detector imports
-    # the Git transport or touches the filesystem. This guards against a later
-    # slice quietly reintroducing a detector-time read.
+    # DELIBERATE PROOF-CLASS EXCEPTION, operator-approved. This is structural
+    # enforcement, not public-CLI RED/GREEN, and is not claimed as the latter.
+    #
+    # The path this guards is:
+    #   runner.check -> detect_reuse_issues -> _existing_symbol_index
+    #     -> EvaluationSnapshot.read_baseline -> read_git_file
+    # which runs after the snapshot freezes. The CLI captures and evaluates in
+    # one process, so the public Interface offers no window in which to observe
+    # that read, and no observation window was added solely for testing.
+    # test_snapshot_reads_the_captured_tree_not_the_moving_worktree does not
+    # cover it either: that test drives pre-freeze candidate capture.
+    #
+    # Observed RED at 9da2246, where EvaluationSnapshot still carried repo and
+    # read_baseline: "read_baseline is a detector-time Git read". GREEN here,
+    # where both are deleted and every current detector is barred from Git and
+    # the filesystem outright.
+    #
+    # Issue #76 must extend this guard to any new detector module it adds.
     detectors = ("checks.py", "reuse.py", "symbols.py", "findings.py")
     banned_calls = {"run_git", "git_text", "git_read", "read_git_file", "open", "read_text", "read_bytes"}
     for name in detectors:
@@ -804,6 +822,49 @@ def test_a_failed_diff_read_reports_incompleteness_not_an_empty_change(repo: Pat
         "no-duplicate-added-blocks", "reuse-existing-helpers", "cumulative-growth",
     ):
         assert check_named(payload, name)["passed"] is not True, check_named(payload, name)
+
+
+@with_repo
+def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
+    # Schema v2 requires emitted regions to carry a content anchor over
+    # canonical implementation bytes (ADR :390, :399). Producing those bytes is
+    # the normalized implementation fingerprint the ADR assigns to #76 at
+    # :402-403, and this slice is barred from implementing #76, so exactly one
+    # rule defers it. The ADR tolerates a deferred anchor: incompleteness
+    # identity is "relevant content anchor when present" (:407-408), and
+    # unresolved anchors leave a finding active rather than void (:121-122).
+    #
+    # The assertion is positive and singleton, not an exemption list: any other
+    # rule emitting an anchorless region fails here immediately. And it expires
+    # mechanically - `deferred` is intersected with the rules actually emitted,
+    # so when #77 deletes lexical reuse scoring the rule stops being emitted,
+    # the exemption evaporates with it, and no cleanup commit is needed.
+    write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(repo / "src" / "copycat.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    emitted = {finding["ruleId"] for finding in payload["findings"]}
+    with_regions = {finding["ruleId"] for finding in payload["findings"] if finding["region"].get("regions")}
+    assert with_regions, payload["findings"]
+
+    anchorless = {
+        finding["ruleId"]
+        for finding in payload["findings"]
+        for region in finding["region"].get("regions", [])
+        if "contentAnchor" not in region
+    }
+    deferred = {ANCHOR_DEFERRED_RULE} & emitted
+    assert anchorless <= deferred, (sorted(anchorless), sorted(deferred))
+
+    # Deferring the content anchor is not the same as being anchorless: the one
+    # exempt rule still anchors every region on symbol identity, which is what
+    # keeps its finding ID stable across inserted lines.
+    for finding in payload["findings"]:
+        if finding["ruleId"] == ANCHOR_DEFERRED_RULE:
+            for region in finding["region"]["regions"]:
+                assert region["symbolAnchor"], region
 
 
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
