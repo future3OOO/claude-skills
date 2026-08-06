@@ -578,8 +578,11 @@ def render(artifact: dict[str, object], path: Path) -> str:
         f"{'unchanged' if isolation['estateDigestBefore'] == isolation['estateDigestAfter'] else 'CHANGED'}; "
         f"{len(isolation['armKeys'])} arm keys, {len(isolation['leakedKeys'])} under the live root",
         f"migration: seed {','.join(m['seedStores']) or 'NONE'} (exit {m['seedExit']}) -> baseline "
-        f"{','.join(m['baselineStores']) or 'none'} | candidate {','.join(m['candidateStores']) or 'none'}; "
-        f"native {','.join(m['candidateNativeStores']) or 'NONE'}; exits {m['exits']}; state "
+        f"{','.join(m['baselineStores']) or 'none'} | candidate {','.join(m['candidateStores']) or 'none'}",
+        # Both arms, because acceptance judges both: a line reporting FAILED while showing
+        # only one of them cannot tell the operator which arm left its own engine behind.
+        f"  native baseline {','.join(m['baselineNativeStores']) or 'NONE'} | "
+        f"candidate {','.join(m['candidateNativeStores']) or 'NONE'}; exits {m['exits']}; state "
         f"{'matches' if m['match'] else 'DIFFERS'}; {'ok' if m['ok'] else 'FAILED'} in {m['seconds']:.3f}s",
         f"result: {'PASS' if artifact['ok'] else 'FAIL'}   artifact: {path}",
     ])

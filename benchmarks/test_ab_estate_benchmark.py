@@ -435,6 +435,13 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertFalse(migration["ok"], "an unconverted store was accepted")
         self.assertFalse(artifact["ok"])
         self.assertNotEqual(result.returncode, 0, "an unconverted store was reported as a pass")
+        # The public summary, not only the artifact. Acceptance judges both arms, so a line
+        # that reports FAILED while showing one of them tells the operator nothing about
+        # which arm caused it. These two arms hold deliberately different native stores, so
+        # a swapped or duplicated label cannot satisfy this assertion.
+        self.assertEqual(migration["baselineNativeStores"], ["workflow.json"])
+        self.assertIn("native baseline workflow.json | candidate workflow.v2.json", result.stdout,
+                      f"the summary does not name the arm that failed\n{result.stdout}")
 
     def test_the_workflow_state_replay_times_every_downstream_operation(self) -> None:
         """Capability 2: the governed sequence past Repo Context Forge, timed per operation.
