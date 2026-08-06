@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -698,6 +700,54 @@ class PassLifecycleTests(unittest.TestCase):
             )
             self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
         return result
+
+    def test_quality_gate_refuses_a_tree_that_changed_during_the_run(self) -> None:
+        # The persisted manifest must be the tree the gate actually checked. A
+        # tracked file mutating while the gate runs cannot be blessed as green.
+        slug = "mid-gate-mutation"
+        wid = self.begin_slug(slug)
+        self.advance_to_preflight(slug, wid)
+        self.owner_phase("tdd", "not-required")
+        self.record_real_gate(wid)
+        self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
+        generic = self.verify_run(sys.executable, "-c", "pass")
+        self.assertEqual(generic.returncode, 0, generic.stdout + generic.stderr)
+
+        mutated = self.repo / "app.py"
+        stop = threading.Event()
+        writes = []
+
+        def mutate() -> None:
+            counter = 0
+            while not stop.is_set():
+                counter += 1
+                mutated.write_text(f"value = {counter}\n", encoding="utf-8")
+                writes.append(counter)
+                time.sleep(0.001)
+
+        thread = threading.Thread(target=mutate)
+        thread.start()
+        try:
+            result = subprocess.run(
+                [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo),
+                 "--slug", slug, "--kind", "quality-gate", "--base-ref", "HEAD"],
+                cwd=ROOT, env=self.env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+        finally:
+            stop.set()
+            thread.join()
+        # The refusal is meaningless unless the tree really changed mid-run.
+        self.assertGreater(len(writes), 1, "mutator never ran during the gate")
+
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        emitted = json.loads(result.stdout.splitlines()[-1])
+        run = self.evidence(emitted["evidenceId"])["runs"][-1]
+        self.assertFalse(run["valid"])
+        self.assertEqual(run["bindingError"], "reviewable tree changed during the quality-gate run")
+        self.assertEqual(state["verification"], "pending")
+        self.assertNotIn("qualityGateManifestId", state)
 
     def test_committed_verification_is_not_reported_as_refused_when_stdout_is_gone(self) -> None:
         # An unbuffered write to a pipe whose reader is already closed takes

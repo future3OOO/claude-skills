@@ -724,7 +724,7 @@ def history(identity: RepoIdentity, workflow_id: str | None = None) -> JsonObjec
                     "activatesWorkflow": bool(row["activates_workflow"]),
                     "evidenceIds": evidence_ids,
                     "manifestIds": manifest_ids,
-                    "state": json.loads(str(row["state_json"])),
+                    "state": _event_state(row, str(row["workflow_id"])),
                 })
             connection.commit()
             return {"events": events}

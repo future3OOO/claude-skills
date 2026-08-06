@@ -55,7 +55,11 @@ never includes a database path, SQLite table or column name, journal detail, or
 other storage mechanism. With no authoritative workflow it prints no JSON,
 returns exit 2, names `no active workflow`, and creates no state.
 
-Preflight, production-code, TDD, verification, advisor dispositions, and review record only with their native validated documents as logical evidence, inserted in the same SQLite transaction as the accepted event; a refusal names the missing evidence and mutates nothing.
+Preflight, production-code, TDD, verification, review, and addressed advisor
+dispositions record only with their native validated documents as logical
+evidence, inserted in the same SQLite transaction as the accepted event; a
+findings-none advisor disposition intentionally carries no document, and a
+refusal names the missing evidence and mutates nothing.
 Exit 2 alone does not prove a refusal: the verification, TDD, and review
 producers each document a path that commits first and returns 2 after — a
 command that failed after being recorded, an invalid TDD run recorded as

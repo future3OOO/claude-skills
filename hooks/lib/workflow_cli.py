@@ -375,12 +375,17 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     )
     quality_tree: dict[str, str] | None = None
     binding_error: str | None = None
+    tree_before: dict[str, str] | None = None
 
     if args.kind == "quality-gate":
         if not args.base_ref:
             raise ValueError("quality-gate verification requires --base-ref")
         if args.runner_command:
             raise ValueError("quality-gate verification runs the bundled gate and accepts no command")
+        try:
+            tree_before = tree_manifest(identity)
+        except RuntimeError as exc:
+            binding_error = str(exc)
         command = [
             sys.executable,
             str(ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"),
@@ -402,6 +407,8 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     valid = not timed_out and exit_code == 0
     gate: dict[str, object] | None = None
     if args.kind == "quality-gate":
+        if binding_error is not None:
+            valid = False
         try:
             gate = validate_gate_result(json.loads(raw.decode("utf-8")))
             valid = valid and gate.get("ok") is True
@@ -414,6 +421,12 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
             except RuntimeError as exc:
                 valid = False
                 binding_error = str(exc)
+            # The manifest must be the tree the gate checked, not whatever the
+            # tree became while it ran.
+            if quality_tree is not None and quality_tree != tree_before:
+                valid = False
+                quality_tree = None
+                binding_error = "reviewable tree changed during the quality-gate run"
 
     run = _run_entry(
         raw, exit_code, timed_out,

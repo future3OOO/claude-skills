@@ -520,6 +520,27 @@ class WorkflowLedgerTests(unittest.TestCase):
                 finally:
                     connection.close()
 
+    def test_history_refuses_an_invalid_older_event_instead_of_publishing_it(self) -> None:
+        # history must fail closed on rows _event_state refuses, exactly like
+        # every other authoritative read path — never publish them raw.
+        self.begin("first")
+        self.begin("second")
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute(
+                "UPDATE workflow_events SET state_json = '{}' "
+                "WHERE event_id = (SELECT MIN(event_id) FROM workflow_events)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        status = self.cli("status", "--repo", str(self.repo))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        history = self.cli("history", "--repo", str(self.repo))
+        self.assertEqual(history.returncode, 2, history.stdout)
+        self.assertIn("invalid state schema", history.stderr)
+
     def test_future_event_schema_or_policy_fails_closed(self) -> None:
         for column in ("state_schema_version", "policy_version"):
             with self.subTest(column=column):
