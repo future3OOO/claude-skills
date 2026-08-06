@@ -923,6 +923,27 @@ def test_reuse_finding_identity_survives_a_rename(repo: Path) -> None:
     assert "src/moved/copycat.py" in paths, paths
 
 
+@with_repo
+def test_growth_warning_survives_base_binding_incompleteness(repo: Path) -> None:
+    # Without --base-ref the cumulative claim is incomplete, because the totals
+    # cover the working delta rather than branch-cumulative growth. That
+    # incompleteness is real and must be reported - but it is not a reason to
+    # stop reporting the growth that WAS measured. Suppressing the warning
+    # meant the noisiest run in the repository, an unbased edit-time hook call,
+    # printed "analysis incomplete" and never mentioned that the change was
+    # hundreds of lines over the review budget.
+    write(repo / "src" / "big.py", "".join(f"VALUE_{i} = {i}\n" for i in range(600)))
+    code, payload, _ = run_gate(repo)
+
+    assert payload["evaluation"]["growth"]["humanAuthored"]["net"] > 500, payload["evaluation"]["growth"]
+    incomplete = [w for w in payload["warnings"] if "QG54-ANALYSIS-INCOMPLETE" in w and "no caller-supplied base" in w]
+    growth = [w for w in payload["warnings"] if w.startswith("QG54-GROWTH-CUMULATIVE:")]
+    assert incomplete, payload["warnings"]
+    assert growth, payload["warnings"]
+    # Warning-only: the hook contract keeps exit zero.
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+
+
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
     return next(item for item in payload["checks"] if item["name"] == name)
 

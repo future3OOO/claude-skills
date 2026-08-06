@@ -18,16 +18,11 @@ GENERIC_MATCH_TOKENS = {
 }
 
 
-def detect_reuse_issues(
-    snapshot: EvaluationSnapshot,
-    repo_context: dict[str, object],
-    gitnexus_boosts: dict[str, int],
-) -> tuple[list[ReuseFinding], list[str], Finding]:
-    packet_paths = {str(path) for path in repo_context.get("paths", set()) if str(path)}
+def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding], list[str], Finding]:
     candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
         return [], [], _reuse_rule(snapshot, [], ())
-    existing, gaps = _existing_symbol_index(snapshot, candidates, packet_paths, gitnexus_boosts)
+    existing, gaps = _existing_symbol_index(snapshot, candidates)
     if not existing:
         return [], [], _reuse_rule(snapshot, [], gaps)
     # Every production entry's added lines are nearby-call evidence — a new
@@ -146,12 +141,12 @@ def _regions(stored: dict[str, tuple[str, str]], findings: list[ReuseFinding]) -
 def _existing_symbol_index(
     snapshot: EvaluationSnapshot,
     candidates: list[SymbolDef],
-    packet_paths: set[str],
-    gitnexus_boosts: dict[str, int],
 ) -> tuple[list[SymbolDef], tuple[str, ...]]:
     symbols: list[SymbolDef] = []
     gaps: list[str] = []
     indexed = 0
+    packet_paths = snapshot.packet_paths
+    gitnexus_boosts = snapshot.gitnexus_boosts
     candidate_languages = {item.language for item in candidates}
     candidate_roots = {_top_dir(item.path) for item in candidates}
     gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}

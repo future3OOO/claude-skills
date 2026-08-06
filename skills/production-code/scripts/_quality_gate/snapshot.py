@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .git_scope import git_read, read_git_file
+from .inputs import parse_gitnexus_context_json, parse_repo_context_packet
 from .models import BaselineFile, Hunk, Numstat, SnapshotEntry
 from .path_policy import classify_path
 
@@ -32,12 +33,25 @@ class EvaluationSnapshot:
     baseline: tuple[BaselineFile, ...]
     unattributed: tuple[str, ...]
     capture_gaps: tuple[str, ...]
+    # Caller-supplied evidence, parsed once and frozen here with everything
+    # else a detector reads. Threading it separately let a detector see
+    # evidence the snapshot did not, which is the second source of truth the
+    # canonical evaluation exists to remove.
+    packet_paths: frozenset[str]
+    gitnexus_boosts: dict[str, int]
+    gitnexus_warnings: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_by_path", {entry.path: entry for entry in self.entries})
 
     @classmethod
-    def from_scope(cls, repo: Path, scope: dict[str, object]) -> "EvaluationSnapshot":
+    def from_scope(
+        cls,
+        repo: Path,
+        scope: dict[str, object],
+        repo_context_packet: str = "",
+        gitnexus_context_json: str = "",
+    ) -> "EvaluationSnapshot":
         base = str(scope["base_commit"])
         tree = str(scope["candidate_tree"])
         hunks = _collect_hunks(str(scope["raw_diff"]))
@@ -50,7 +64,12 @@ class EvaluationSnapshot:
             for path in sorted(changed)
         )
         baseline, baseline_gaps = _baseline_index(repo, base)
+        boosts, warnings = parse_gitnexus_context_json(gitnexus_context_json)
+        packet = parse_repo_context_packet(repo_context_packet)
         return cls(
+            packet_paths=frozenset(str(path) for path in packet.get("paths", set()) if str(path)),
+            gitnexus_boosts=boosts,
+            gitnexus_warnings=tuple(warnings),
             base_identity=base,
             base_source=str(scope["base_source"]),
             candidate_source=str(scope["candidate_source"]),

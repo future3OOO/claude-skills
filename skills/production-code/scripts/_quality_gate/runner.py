@@ -6,7 +6,6 @@ from pathlib import Path
 from .checks import duplicate_added_blocks, evaluate_growth, scan_quality_escapes
 from .findings import RULE_GITNEXUS_CONTEXT, RULE_GROWTH, RULE_INCOMPLETE, gitnexus_context_finding, incompleteness_findings, promoted_errors
 from .git_scope import collect_scope
-from .inputs import parse_gitnexus_context_json, parse_repo_context_packet
 from .models import Finding
 from .path_policy import is_binary_path, is_temp_artifact
 from .reuse import detect_reuse_issues
@@ -25,21 +24,16 @@ def check(
 ) -> dict[str, object]:
     scope = collect_scope(repo, base_ref, staged_only=staged_only)
     errors: list[str] = list(scope["errors"])
-    gitnexus_boosts, gitnexus_warnings = parse_gitnexus_context_json(gitnexus_context_json)
-    snapshot = EvaluationSnapshot.from_scope(repo, scope)
+    snapshot = EvaluationSnapshot.from_scope(repo, scope, repo_context_packet, gitnexus_context_json)
 
     conflict_files, temp_files = _changed_file_failures(snapshot)
     quality_escapes = scan_quality_escapes(snapshot)
     duplicates = duplicate_added_blocks(snapshot)
-    reuse_findings, gitnexus_queries, reuse_rule = detect_reuse_issues(
-        snapshot,
-        parse_repo_context_packet(repo_context_packet),
-        gitnexus_boosts,
-    )
+    reuse_findings, gitnexus_queries, reuse_rule = detect_reuse_issues(snapshot)
     growth_rule = evaluate_growth(snapshot)
     findings: list[Finding] = [growth_rule, reuse_rule]
-    if gitnexus_warnings:
-        findings.append(gitnexus_context_finding(gitnexus_warnings))
+    if snapshot.gitnexus_warnings:
+        findings.append(gitnexus_context_finding(list(snapshot.gitnexus_warnings)))
     findings.extend(incompleteness_findings(findings))
 
     reuse_errors = [finding for finding in reuse_findings if finding.severity == "error"]
@@ -120,9 +114,17 @@ def _evaluation_summary(snapshot: EvaluationSnapshot, findings: list[Finding]) -
 
 
 def _growth_warning(growth_rule: Finding) -> str:
-    if growth_rule.status != "finding":
-        return ""
+    """The measured growth, whether or not the claim is also incomplete.
+
+    Keying on `status == "finding"` suppressed this whenever the run also had
+    gaps - which is every unbased edit-time run, the noisiest caller there is.
+    Those runs reported "analysis incomplete" and never mentioned that the
+    change was hundreds of lines over budget. Incompleteness qualifies the
+    number; it does not delete it.
+    """
     net = growth_rule.evidence["humanAuthored"]["net"]
+    if net <= 500:
+        return ""
     return f"{RULE_GROWTH}: human-authored net growth {net} exceeds the 500-line review budget"
 
 
