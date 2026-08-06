@@ -55,14 +55,21 @@ never includes a database path, SQLite table or column name, journal detail, or
 other storage mechanism. With no authoritative workflow it prints no JSON,
 returns exit 2, names `no active workflow`, and creates no state.
 
-Preflight, production-code, TDD, verification, advisor dispositions, and review record only with their native validated documents as logical evidence, inserted in the same SQLite transaction as the accepted event; a refusal names the missing evidence and mutates nothing, and
-a recorder's exit 2 always means nothing was recorded (the verification
-runner's exit 2 has one further documented meaning: the command itself failed
-after being recorded). An evidence reference lives only while its phase stands
-producer-recorded as passed — every other transition of that phase drops it,
-so a bare replay can never resurrect prior evidence — and tdd entry demands
-the recorded preflight evidence, not just its status. Each producer stamps the workflow instance into its evidence and the ledger keeps its logical identity, so a passed phase without one — legacy state, or a bare
-library claim — reads pending at completion, never success. Evidence proves the
+Preflight, production-code, TDD, verification, advisor dispositions, and review record only with their native validated documents as logical evidence, inserted in the same SQLite transaction as the accepted event; a refusal names the missing evidence and mutates nothing.
+Exit 2 alone does not prove a refusal: the verification, TDD, and review
+producers each document a path that commits first and returns 2 after — a
+command that failed after being recorded, an invalid TDD run recorded as
+`reopen` or `in-progress`, and a review whose material findings remain
+unresolved. Preflight, production-code, and verification keep their accepted
+reference only while producer-recorded as passed — every other transition drops
+it, so a bare replay can never resurrect prior evidence. Tdd and code review
+instead keep a current producer reference across their own non-passed states —
+tdd while in-progress and when not-required, code review while pending — so a
+later run can validate or supersede it; only tdd's in-progress reference serves
+GREEN's validation of the RED it follows. Tdd entry demands
+the recorded preflight evidence, not just its status. Each producer stamps the workflow instance into its evidence and the ledger keeps its logical identity, so a passed preflight, production-code, or verification phase without one — legacy state, or a bare
+library claim — reads pending at completion, never success; completion gates tdd
+on its status and both reviews on their own record predicates. Evidence proves the
 output exists, not that the analysis is good; fabrication remains deception and
 stays covered by the transcript audit.
 

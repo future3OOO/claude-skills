@@ -277,7 +277,7 @@ finding rejected without a measurement is indistinguishable from one ignored.
 ## Recording
 
 In the governed workflow this preflight records only through
-`python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-preflight`, which demands the full thirteen-section document
+`python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-preflight --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input <preflight.json>`, which demands the full thirteen-section document
 as JSON (every section non-empty, `openQuestions` exactly `none`) and refuses
 without mutating state. Write the document to a file and pass it with
 `--input`; response prose is not evidence.
