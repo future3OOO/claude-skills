@@ -233,7 +233,13 @@ def _run_entry(raw: bytes, exit_code: int, timed_out: bool, **fields: object) ->
 def _print_output(raw: bytes) -> None:
     output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
     if output:
-        print(output, end="" if output.endswith("\n") else "\n")
+        try:
+            print(output, end="" if output.endswith("\n") else "\n")
+        except OSError:
+            # A successful run is already committed by the time it reports, so a
+            # lost reporting channel must not be re-labelled as a refusal; a run
+            # that genuinely failed still returns 2 through the branch below.
+            _mute_stdout()
 
 
 def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:

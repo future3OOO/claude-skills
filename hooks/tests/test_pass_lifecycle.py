@@ -699,6 +699,33 @@ class PassLifecycleTests(unittest.TestCase):
             self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
         return result
 
+    def test_committed_verification_is_not_reported_as_refused_when_stdout_is_gone(self) -> None:
+        # An unbuffered write to a pipe whose reader is already closed takes
+        # EPIPE at the print itself, after commit_verification has persisted the
+        # run. A reporting failure must not be re-labelled as a refusal.
+        slug = "closed-stdout-verify"
+        wid = self.begin_slug(slug)
+        self.advance_to_preflight(slug, wid)
+        self.owner_phase("tdd", "not-required")
+        self.record_real_gate(wid)
+        self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
+
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            result = subprocess.run(
+                [sys.executable, "-u", str(WORKFLOW), "verify", "--repo", str(self.repo),
+                 "--slug", slug, "--", sys.executable, "-c", "print('x' * 200)"],
+                cwd=ROOT, env={**self.env, "PYTHONUNBUFFERED": "1"}, text=True,
+                stdout=write_fd, stderr=subprocess.PIPE, check=False,
+            )
+        finally:
+            os.close(write_fd)
+
+        self.assertEqual(self.history_events()[-1]["kind"], "record-verification")
+        self.assertEqual(json.loads(self.cli("status").stdout)["verification"], "passed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_verification_records_only_through_the_runner_per_command_latest(self) -> None:
         wid = self.begin_slug("evidence-verification")
         self.advance_to_preflight("evidence-verification", wid)
