@@ -210,8 +210,10 @@ inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion
 
-Commit, push, and open/update the PR when intended for integration. Then run the
-PR Reviewer Completion Gate from `CLAUDE.md` on the current head. A reviewer-fix
+Commit, push, and open/update the PR when intended for integration. For changed
+paths mapped into the live estate: **install, motherfucker.** Follow the README's
+scoped install contract and record the branch, commit, and path set. Then run the PR
+Reviewer Completion Gate from `CLAUDE.md` on the current head. A reviewer-fix
 round begins a new production pass; pushing is not completion.
 
 When the completed work is intentionally not delivered as a PR — local-only
