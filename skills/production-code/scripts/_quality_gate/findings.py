@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import Finding
+from .models import Finding, pass_condition
 
 RULE_GROWTH = "QG54-GROWTH-CUMULATIVE"
 RULE_INCOMPLETE = "QG54-ANALYSIS-INCOMPLETE"
@@ -32,7 +32,11 @@ def gitnexus_context_finding(messages: list[str]) -> Finding:
         region={"scope": "input", "input": "gitnexus-context-json"},
         evidence={"messages": sorted(messages)},
         action="Supply well-formed GitNexus context JSON or drop the input.",
-        pass_condition="supplied GitNexus context parses",
+        pass_condition=pass_condition(
+            "input-parses",
+            ("gitnexus-context-json",),
+            "supplied GitNexus context parses",
+        ),
         gaps=(),
     )
 
@@ -80,7 +84,11 @@ def incompleteness_findings(findings: list[Finding]) -> list[Finding]:
                     region={"scope": "rule", "affectedRuleId": finding.rule_id, "scopeKind": kind},
                     evidence={"affectedRuleId": finding.rule_id, "scopeKind": kind, "gaps": sorted(by_kind[kind])},
                     action="Restore the missing scope (readable inputs, complete discovery, a resolvable base) and rerun.",
-                    pass_condition=f"analysis-complete: required {kind} scope for {finding.rule_id} is complete",
+                    pass_condition=pass_condition(
+                        "analysis-complete",
+                        (f"scope:{kind}", f"rule:{finding.rule_id}"),
+                        f"required {kind} scope for {finding.rule_id} is complete",
+                    ),
                     gaps=(),
                 )
             )

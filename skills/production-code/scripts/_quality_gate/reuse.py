@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .findings import RULE_REUSE_ADVISORY
-from .models import BaselineFile, Finding, ReuseFinding, SymbolDef, content_anchor
+from .models import BaselineFile, Finding, ReuseFinding, SymbolDef, anchor, pass_condition
 from .snapshot import EvaluationSnapshot
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
@@ -80,7 +80,11 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
         },
         evidence={"errors": len(errors), "warnings": len(findings) - len(errors), "matches": matches},
         action="Call the existing owner instead of reimplementing it, or widen discovery until the baseline scan completes.",
-        pass_condition="duplicate-absent: no reimplementation of an existing owner, with baseline discovery complete",
+        pass_condition=pass_condition(
+            "duplicate-absent",
+            ("symbol anchors of both owners", "complete baseline discovery"),
+            "no reimplementation of an existing owner, with baseline discovery complete",
+        ),
         gaps=gaps,
     )
 
@@ -107,14 +111,16 @@ def _regions(snapshot: EvaluationSnapshot, findings: list[ReuseFinding]) -> list
                 "role": role,
                 "language": language,
                 "displayLine": line,
-                # Anchor kind, language, and symbol: stable under the line
-                # moves and rebases that shift displayLine. The normalized
-                # implementation fingerprint the duplicate family needs is
-                # #76's work and is deliberately not invented here.
-                "contentAnchor": content_anchor("symbol", language, symbol),
+                # A SYMBOL anchor, named for what it hashes. The architecture's
+                # content anchor hashes canonical implementation bytes; the
+                # normalization that produces them belongs to #76's duplicate
+                # family, so this slice does not claim one it did not compute.
+                # Stable under the line moves and rebases that shift
+                # displayLine, which is what the finding ID relies on.
+                "symbolAnchor": anchor("symbol", language, symbol),
                 "evidenceRole": evidence_role,
             })
-    return sorted(regions, key=lambda item: (item["contentAnchor"], item["evidenceRole"], item["path"], item["displayLine"]))
+    return sorted(regions, key=lambda item: (item["symbolAnchor"], item["evidenceRole"], item["path"], item["displayLine"]))
 
 
 def _existing_symbol_index(

@@ -7,15 +7,29 @@ from dataclasses import dataclass
 from .path_policy import PathClass
 
 
-def content_anchor(kind: str, language: str, content: str) -> str:
+def anchor(kind: str, language: str, content: str) -> str:
     """A stable anchor over anchor kind, language, and the anchored content.
 
-    One implementation for every family: a later rule that anchors normalized
-    implementation bytes rather than a symbol name feeds the same function, so
-    anchors stay comparable instead of drifting per rule.
+    One implementation for every family. The target architecture's *content*
+    anchor hashes canonical implementation bytes; the duplicate family that
+    normalizes those bytes is #76's work, so the anchors this slice emits are
+    symbol anchors and say so in their field name rather than claiming a
+    content anchor they did not compute. #76 feeds normalized bytes to this
+    same function instead of adding a second implementation.
     """
     payload = "\x1f".join((kind, language, content))
     return hashlib.sha256(payload.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
+
+
+def pass_condition(kind: str, requires: tuple[str, ...], statement: str) -> dict[str, object]:
+    """A discriminated, mechanically rerunnable pass condition.
+
+    `kind` is the discriminator a consumer switches on; `requires` names the
+    anchors and scopes that must be present to rerun the condition on a later
+    evaluation; `statement` is the human-readable form. Free text alone cannot
+    be rerun, which is why the kind and its requirements are separate fields.
+    """
+    return {"kind": kind, "requires": list(requires), "statement": statement}
 
 
 @dataclass(frozen=True)
@@ -112,7 +126,7 @@ class Finding:
     region: dict[str, object]
     evidence: dict[str, object]
     action: str
-    pass_condition: str
+    pass_condition: dict[str, object]
     gaps: tuple[str, ...]
 
     def finding_id(self) -> str:

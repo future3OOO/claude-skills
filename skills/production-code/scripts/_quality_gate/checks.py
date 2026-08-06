@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .findings import RULE_GROWTH
-from .models import Finding, SnapshotEntry
+from .models import Finding, SnapshotEntry, pass_condition
 from .snapshot import EvaluationSnapshot
 
 
@@ -125,7 +125,11 @@ def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:
         region={"scope": "evaluation", "changedScope": snapshot.changed_scope, "fileCount": len(snapshot.entries)},
         evidence=growth,
         action="Reduce the change, or split it, until human-authored net growth is at or under the 500-line review budget.",
-        pass_condition="growth-below: human-authored net <= 500 against a caller-supplied base with every changed path measured",
+        pass_condition=pass_condition(
+            "growth-below",
+            ("caller-supplied base", "every changed path measured"),
+            "human-authored net at or under the 500-line review budget",
+        ),
         gaps=gaps,
     )
 

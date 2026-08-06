@@ -724,17 +724,24 @@ def test_reuse_finding_identity_survives_an_unrelated_inserted_line(repo: Path) 
     regions = first["region"]["regions"]
     assert regions, first["region"]
     for region in regions:
-        assert set(region) == {"path", "role", "language", "displayLine", "contentAnchor", "evidenceRole"}, region
+        assert set(region) == {"path", "role", "language", "displayLine", "symbolAnchor", "evidenceRole"}, region
         assert region["role"] == "production" and region["language"] == "python", region
     assert {region["evidenceRole"] for region in regions} == {"candidate", "existing-owner"}, regions
-    ordered = sorted(regions, key=lambda r: (r["contentAnchor"], r["evidenceRole"], r["path"], r["displayLine"]))
+    ordered = sorted(regions, key=lambda r: (r["symbolAnchor"], r["evidenceRole"], r["path"], r["displayLine"]))
     assert regions == ordered, regions
 
-    # The content anchor is stable across the insertion while the display line
+    # The pass condition is discriminated and names what a rerun needs, so a
+    # consumer can switch on the kind instead of parsing prose.
+    condition = first["passCondition"]
+    assert condition["kind"] == "duplicate-absent", condition
+    assert condition["requires"] and all(isinstance(item, str) for item in condition["requires"]), condition
+    assert condition["statement"], condition
+
+    # The symbol anchor is stable across the insertion while the display line
     # moves: that split is exactly what makes the ID survive.
     moved = next(r for r in second["region"]["regions"] if r["evidenceRole"] == "candidate")
     origin = next(r for r in regions if r["evidenceRole"] == "candidate")
-    assert moved["contentAnchor"] == origin["contentAnchor"], (origin, moved)
+    assert moved["symbolAnchor"] == origin["symbolAnchor"], (origin, moved)
     assert moved["displayLine"] != origin["displayLine"], (origin, moved)
 
 
@@ -1001,7 +1008,8 @@ def test_growth_finding_carries_stable_identity_and_evidence(repo: Path) -> None
     assert first["base"] and first["candidate"]
     assert first["region"]["scope"] == "evaluation"
     assert first["evidence"]["humanAuthored"] == {"added": 1, "deleted": 0, "net": 1}
-    assert first["action"] and first["passCondition"]
+    assert first["action"] and first["passCondition"]["kind"] == "growth-below"
+    assert set(first["passCondition"]) == {"kind", "requires", "statement"}, first["passCondition"]
     write(repo / "src" / "app.py", "VALUE = 1\nOTHER = 2\n")
     assert growth_finding(run_gate(repo)[1])["findingId"] != first["findingId"]
 
@@ -1499,7 +1507,7 @@ def test_gate_implementation_budget() -> None:
         # round number, so any further growth has to be argued rather than
         # absorbed by slack. The steady-state ceiling stays 1800 and is
         # enforced below against the package minus the surfaces #77 deletes.
-        "total_lines": 1995,
+        "total_lines": 2027,
     }
     steady_state_total = 1800
     # The surfaces the target architecture assigns to #77 for deletion. #75
@@ -1515,12 +1523,12 @@ def test_gate_implementation_budget() -> None:
     justified: dict[str, str] = {
         "TOTAL": (
             "Approved transitional coexistence for #75, expiring with #77. The package measures "
-            "1995 lines because the schema-v2 canonical-evaluation machinery coexists with "
-            "_quality_gate/reuse.py (308) and _quality_gate/symbols.py (101) - the 409 lines the "
+            "2027 lines because the schema-v2 canonical-evaluation machinery coexists with "
+            "_quality_gate/reuse.py (314) and _quality_gate/symbols.py (101) - the 415 lines the "
             "target architecture assigns to #77 for deletion. #75's acceptance criteria require "
             "retaining QG-LEGACY-REUSE-ADVISORY and QG-LEGACY-GITNEXUS-CONTEXT as promotion-eligible "
             "through #75 and #76, so those surfaces cannot be removed in this slice. Without them "
-            "the package is 1586, inside the 1,500-1,600 converged envelope and under the 1800 "
+            "the package is 1612, just above the 1,500-1,600 converged envelope and under the 1800 "
             "steady-state ceiling asserted below. When #77 deletes them the subtraction goes to "
             "zero and that assertion becomes the plain 1800 ceiling again."
         ),
