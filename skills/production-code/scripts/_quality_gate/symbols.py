@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 
 from .findings import SymbolDef
@@ -57,6 +58,8 @@ def split_name_tokens(name: str) -> tuple[str, ...]:
 def extract_symbols(path: str, text: str, source: str, language: str, context_boost: int = 0) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
     lines = text.splitlines()
+    try: python_ends = {node.lineno: node.end_lineno for node in ast.walk(ast.parse(text)) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))} if language == "python" else {}
+    except (SyntaxError, UnicodeError, ValueError): python_ends = {}
     for line_no, line in enumerate(lines, 1):
         for kind, pattern in _SYMBOL_PATTERNS.get(language, []):
             match = pattern.search(line)
@@ -64,17 +67,29 @@ def extract_symbols(path: str, text: str, source: str, language: str, context_bo
                 name = match.group(1)
                 symbols.append(SymbolDef(
                     name, path, line_no, kind, language, split_name_tokens(name), source, context_boost,
-                    _definition_content(lines, line_no),
+                    _definition_content(lines, line_no, language, python_ends.get(line_no)),
                 ))
                 break
     return symbols
 
 
-def _definition_content(lines: list[str], line_no: int) -> str:
-    indent = len(lines[line_no - 1]) - len(lines[line_no - 1].lstrip())
-    end = next((index for index in range(line_no, len(lines)) if lines[index].strip()
-                and len(lines[index]) - len(lines[index].lstrip()) <= indent), len(lines))
-    return "\n".join(lines[line_no - 1 : end]).rstrip()
+def _definition_content(lines: list[str], line_no: int, language: str, known_end: int | None) -> str:
+    start, end = line_no - 1, known_end or len(lines)
+    if known_end is None and language == "ruby":
+        depth = 1
+        for index in range(line_no, len(lines)):
+            token = lines[index].strip()
+            depth += bool(re.match(r"(?:def|class|module|if|unless|case|while|until|for|begin)\b", token) or re.search(r"\bdo\b", token)) - bool(re.match(r"end\b", token))
+            if not depth: end = index + 1; break
+    elif known_end is None and language in {"javascript", "go", "rust", "shell", "php"} and not (language == "javascript" and "=>" in lines[start] and "{" not in lines[start]) and any("{" in line for line in lines[start:]):
+        depth = 0
+        for index in range(next(index for index in range(start, len(lines)) if "{" in lines[index]), len(lines)):
+            depth += lines[index].count("{") - lines[index].count("}")
+            if depth <= 0: end = index + 1; break
+    elif known_end is None:
+        indent = len(lines[start]) - len(lines[start].lstrip())
+        end = next((index for index in range(line_no, len(lines)) if lines[index].strip() and len(lines[index]) - len(lines[index].lstrip()) <= indent), end)
+    return "\n".join(lines[start:end]).rstrip()
 
 
 def subtree_score(path_a: str, path_b: str) -> int:

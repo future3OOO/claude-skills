@@ -533,6 +533,23 @@ def test_reuse_evidence_is_never_silently_truncated(repo: Path) -> None:
 
 
 @with_repo
+def test_multiline_header_identity_moves_with_the_body(repo: Path) -> None:
+    # A multiline signature is part of the definition, not its boundary: the
+    # anchored content must include the body, so editing the body moves the
+    # match ID even when the closing paren shares the declaration's indent.
+    write(repo / "src" / "ids.py", "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.strip().lower()\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(repo / "src" / "a.py", "def normalize_user_id(\n    value,\n):\n    return value.strip().lower()\n")
+    _, payload, _ = run_gate(repo)
+    before = {m["newFile"]: m["findingId"] for m in reuse_matches(payload)}
+    write(repo / "src" / "a.py", "def normalize_user_id(\n    value,\n):\n    return value.casefold()\n")
+    _, payload, _ = run_gate(repo)
+    after = {m["newFile"]: m["findingId"] for m in reuse_matches(payload)}
+    assert after["src/a.py"] != before["src/a.py"], (before, after)
+
+
+@with_repo
 def test_ambiguous_reuse_warns_with_gitnexus_query(repo: Path) -> None:
     write(repo / "lib" / "orders.py", "def resolve_order(value: str) -> str:\n    return value.strip()\n")
     git(repo, "add", ".")
@@ -1322,6 +1339,65 @@ def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -
     assert condition["statement"], condition
 
 
+def test_reuse_identity_uses_complete_language_definition_extent() -> None:
+    rows = (
+        ("python", "py",
+         "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.strip().lower()\n",
+         "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.strip().casefold()\n",
+         "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.replace(' ', '').lower()\n",
+         "def normalize_user_id(\n    value: str,\n) -> str:\n    return '-'.join(value.split()).lower()\n"),
+        ("javascript", "js",
+         "function normalizeUserId(value) {\nreturn value.trim().toLowerCase();\n}\n",
+         "function normalizeUserId(value) {\nreturn value.trim().toLocaleLowerCase();\n}\n",
+         "function normalizeUserId(value) {\nreturn value.replaceAll(' ', '').toLowerCase();\n}\n",
+         "function normalizeUserId(value) {\nreturn value.split(' ').join('-').toLowerCase();\n}\n"),
+        ("ruby", "rb",
+         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.downcase\nend # done\n",
+         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.downcase(:fold)\nend # done\n",
+         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.delete(' ').downcase\nend # done\n",
+         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.split.join('-').downcase\nend # done\n"),
+    )
+    collisions = []
+
+    def verify(repo: Path, name: str, extension: str, owner: str, first: str, second: str, edited: str) -> None:
+        write(repo / "src" / f"owner.{extension}", owner)
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "owner")
+        write(repo / "src" / f"copy_a.{extension}", first)
+        write(repo / "src" / f"copy_b.{extension}", second)
+        initial = {match["newFile"]: match for match in reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])}
+        if len({match["findingId"] for match in initial.values()}) != 2:
+            collisions.append((name, initial))
+            return
+        write(repo / "src" / f"copy_a.{extension}", edited)
+        changed = {match["newFile"]: match for match in reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])}
+        assert changed[f"src/copy_a.{extension}"]["findingId"] != initial[f"src/copy_a.{extension}"]["findingId"]
+        assert changed[f"src/copy_b.{extension}"]["findingId"] == initial[f"src/copy_b.{extension}"]["findingId"]
+        if name == "ruby":
+            with (repo / "src" / f"copy_a.{extension}").open("a", encoding="utf-8") as handle:
+                handle.write("UNRELATED = {enabled: true}\n")
+            unrelated = {match["newFile"]: match for match in reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])}
+            assert unrelated[f"src/copy_a.{extension}"]["findingId"] == changed[f"src/copy_a.{extension}"]["findingId"]
+
+    for row in rows:
+        in_repo(lambda repo, values=row: verify(repo, *values))
+
+    def verify_braceless_arrow(repo: Path) -> None:
+        arrow = "const normalizeUserId = value => value.trim().toLowerCase();\n"
+        write(repo / "src" / "owner.js", arrow)
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "owner")
+        write(repo / "src" / "copy.js", arrow.replace("toLowerCase", "toLocaleLowerCase"))
+        before = reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])[0]["findingId"]
+        with (repo / "src" / "copy.js").open("a", encoding="utf-8") as handle:
+            handle.write("const UNRELATED = {enabled: true};\n")
+        after = reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])[0]["findingId"]
+        if after != before:
+            collisions.append(("javascript-unrelated", before, after))
+
+    in_repo(verify_braceless_arrow)
+    assert not collisions, collisions
+
 
 @with_repo
 def test_every_emitted_region_has_a_content_anchor(repo: Path) -> None:
@@ -1412,7 +1488,7 @@ def test_a_non_utf8_path_reaches_a_stable_finding(repo: Path) -> None:
     write(repo / "src" / "ids.py", _OWNER)
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "owner")
-    (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes(_OWNER.encode("utf-8"))
+    (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes(_OWNER.encode("utf-8").replace(b"    return", b"    # \xff\n    return"))
     code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
     assert code == 2, stderr
     matches = reuse_matches(payload)
