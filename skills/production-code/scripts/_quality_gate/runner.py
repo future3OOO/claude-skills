@@ -36,6 +36,10 @@ def check(
     errors.extend(_error_messages(conflict_files, temp_files, quality_escapes, duplicates, reuse_errors, bloat_errors))
     warnings.extend(bloat_warnings)
     warnings.extend(_reuse_warning_messages(reuse_warnings))
+    # Missing or unattributed required scope is never a silent clean pass:
+    # stored per-entry measurement gaps and unmatched diff hunks surface as
+    # warnings. Capture-class failures stay errors above and are not repeated.
+    warnings.extend(sorted({*(gap for entry in snapshot.entries for gap in entry.gaps), *snapshot.baseline_gaps, *snapshot.attribution_gaps()}))
     if fail_on_warnings and warnings:
         errors.extend(f"warning promoted to failure: {warning}" for warning in warnings)
 

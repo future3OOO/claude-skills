@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generic production code quality gate for changed source scope.
 
-Never modifies the working tree, index, refs, or tracked state. Capturing the
-candidate tree can leave unreferenced loose objects in the object database;
-git gc prunes them and no repository state references them.
+Never modifies the working tree, staged content, refs, or tracked state.
+Staged-mode capture may refresh the index's cache-tree extension, and
+capturing the candidate tree can leave unreferenced loose objects in the
+object database; git gc prunes them and no repository state references them.
 """
 
 from __future__ import annotations

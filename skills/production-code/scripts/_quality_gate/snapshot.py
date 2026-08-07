@@ -50,6 +50,15 @@ _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 _QUOTED_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "\\": "\\"}
 
+# Baseline capture bounds: how many owner files may be read and how large one
+# may be. They live with the capture because the cap must prevent the read.
+MAX_INDEX_FILES = 4000
+MAX_INDEX_FILE_BYTES = 500_000
+
+
+def top_dir(path: str) -> str:
+    return path.split("/", 1)[0]
+
 
 @dataclass(frozen=True)
 class EvaluationSnapshot:
@@ -68,6 +77,7 @@ class EvaluationSnapshot:
     changed_scope: str
     entries: tuple[SnapshotEntry, ...]
     baseline: tuple[BaselineFile, ...]
+    baseline_gaps: tuple[str, ...]
     unattributed: tuple[str, ...]
     capture_gaps: tuple[str, ...]
     # Caller-supplied evidence, parsed once and frozen here with everything
@@ -91,17 +101,21 @@ class EvaluationSnapshot:
         tree = str(scope["candidate_tree"])
         hunks = _collect_hunks(str(scope["raw_diff"]))
         changed = set(scope["changed_files"])
+        renamed = dict(scope["renamed"])
         counts = _merge_numstats(list(scope["numstats"]))
         untracked = set(scope["untracked"])
         capture_gaps = tuple(str(error) for error in scope["errors"])
         entries = tuple(
-            _entry(repo, path, base, tree, hunks, counts, path in untracked)
+            _entry(repo, path, renamed.get(path, path), base, tree, hunks, counts, path in untracked)
             for path in sorted(changed)
         )
-        baseline, baseline_gaps = _baseline_index(repo, base)
+        packet_paths = frozenset(parse_repo_context_packet(repo_context_packet))
         boosts, warnings = parse_gitnexus_context_json(gitnexus_context_json)
+        baseline, baseline_gaps = _baseline_index(
+            repo, base, entries, packet_paths, {key.rsplit(":", 1)[0] for key in boosts}
+        )
         return cls(
-            packet_paths=frozenset(parse_repo_context_packet(repo_context_packet)),
+            packet_paths=packet_paths,
             gitnexus_boosts=boosts,
             gitnexus_warnings=tuple(warnings),
             base_identity=base,
@@ -111,8 +125,9 @@ class EvaluationSnapshot:
             changed_scope=str(scope["changed_scope"]),
             entries=entries,
             baseline=baseline,
+            baseline_gaps=baseline_gaps,
             unattributed=tuple(sorted(set(hunks) - changed)),
-            capture_gaps=capture_gaps + baseline_gaps,
+            capture_gaps=capture_gaps,
         )
 
     @property
@@ -139,9 +154,9 @@ class EvaluationSnapshot:
         return buckets
 
     def gaps(self) -> tuple[str, ...]:
-        """Per-entry measurement gaps plus capture-level gaps."""
+        """Per-entry measurement gaps plus baseline and capture-level gaps."""
         entry_gaps = {gap for entry in self.entries for gap in entry.gaps}
-        return tuple(sorted(entry_gaps)) + self.capture_gaps
+        return tuple(sorted(entry_gaps)) + self.baseline_gaps + self.capture_gaps
 
     def attribution_gaps(self) -> tuple[str, ...]:
         """Diff paths whose hunks belong to no evaluated entry."""
@@ -151,6 +166,7 @@ class EvaluationSnapshot:
 def _entry(
     repo: Path,
     rel_path: str,
+    base_path: str,
     base: str,
     tree: str,
     hunks: dict[str, tuple[Hunk, ...]],
@@ -159,9 +175,11 @@ def _entry(
 ) -> SnapshotEntry:
     classification = classify_path(rel_path)
     # Candidate text is read for every entry: a temp artifact is detected by its
-    # presence, whatever its suffix. Base text only serves source-role rules.
+    # presence, whatever its suffix. Base text only serves source-role rules and
+    # lives at the pre-rename path for a renamed entry, so a pure rename never
+    # reads as new content.
     current_text = read_git_file(repo, tree, rel_path)
-    base_text = read_git_file(repo, base, rel_path) if classification.source else None
+    base_text = read_git_file(repo, base, base_path) if classification.source else None
     added, deleted, gaps = _counts_for(rel_path, counts.get(rel_path))
     return SnapshotEntry(
         path=rel_path,
@@ -176,31 +194,63 @@ def _entry(
     )
 
 
-def _baseline_index(repo: Path, base: str) -> tuple[tuple[BaselineFile, ...], tuple[str, ...]]:
-    """Source files in the base tree: the owners a change could reimplement.
+def _baseline_index(
+    repo: Path,
+    base: str,
+    entries: tuple[SnapshotEntry, ...],
+    packet_paths: frozenset[str],
+    gitnexus_paths: set[str],
+) -> tuple[tuple[BaselineFile, ...], tuple[str, ...]]:
+    """Bounded owner capture: the base-tree source files a change could
+    reimplement, read before the snapshot freezes so no detector reads Git.
 
-    A path the change adds has no base entry, so its absence is absence, not
-    discovery that failed — but a listing that failed is neither, and says so.
-    Owner text is captured here, before the snapshot freezes, so no detector
-    reads Git while evaluating.
+    Candidate-independent eligibility (owner language among the changed
+    production languages, and a shared top directory or packet/GitNexus
+    naming) and the file and size caps all apply before any blob read. A file
+    skipped by a cap, or whose read failed, is a recorded gap — unread scope
+    never reads as absence — while a path the change adds simply has no base
+    entry.
     """
     if not base:
         return (), ()
-    listed, failure = git_read(repo, ["ls-tree", "-r", "--name-only", "-z", base])
+    listed, failure = git_read(repo, ["ls-tree", "-r", "-l", "-z", base])
     if failure:
         return (), (f"baseline listing failed: {failure}",)
+    production = [entry for entry in entries if entry.classification.role == "production"]
+    languages = {entry.classification.language for entry in production}
+    roots = {top_dir(entry.path) for entry in production}
     files: list[BaselineFile] = []
-    for rel_path in listed.split("\0"):
-        if not rel_path:
+    gaps: list[str] = []
+    read_count = 0
+    for record in listed.split("\0"):
+        # ls-tree -l: "<mode> <type> <oid> <size>\t<path>".
+        meta, sep, rel_path = record.partition("\t")
+        fields = meta.split()
+        if not sep or not rel_path or len(fields) < 4 or fields[1] != "blob":
             continue
         classification = classify_path(rel_path)
         if not classification.source:
             continue
-        # Only production baselines take part in owner discovery, so only they
-        # are worth the read.
-        text = read_git_file(repo, base, rel_path) if classification.role == "production" else None
+        eligible = (
+            classification.role == "production"
+            and classification.language in languages
+            and (top_dir(rel_path) in roots or rel_path in packet_paths or rel_path in gitnexus_paths)
+        )
+        text = None
+        if eligible and int(fields[3]) > MAX_INDEX_FILE_BYTES:
+            gaps.append(f"{rel_path}: reuse baseline exceeds {MAX_INDEX_FILE_BYTES} bytes")
+        elif eligible and read_count >= MAX_INDEX_FILES:
+            gaps.append(f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files")
+        elif eligible:
+            # Attempts consume the cap, not successes: confirmed read failures
+            # must not buy unbounded extra Git reads.
+            read_count += 1
+            text, read_failure = git_read(repo, ["show", f"{base}:{rel_path}"])
+            if read_failure:
+                text = None
+                gaps.append(f"{rel_path}: reuse baseline could not be read")
         files.append(BaselineFile(rel_path, classification.role, classification.language, text))
-    return tuple(files), ()
+    return tuple(files), tuple(dict.fromkeys(gaps))
 
 
 def _counts_for(rel_path: str, record: Numstat | None) -> tuple[int, int, tuple[str, ...]]:

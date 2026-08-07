@@ -5,7 +5,7 @@
 - current state: child issues published; governing plan merged in PR #78;
   target architecture under review in PR #79
 - governing artifact: this document
-- last updated: 2026-08-06
+- last updated: 2026-08-07
 
 ## Objective
 
@@ -205,20 +205,20 @@ Out of scope:
   merges
 - regroup rule: keep runtime and its proof together. If a slice forecasts over
   650 net human-authored source lines, shrink it at preflight and return to
-  parent #54 before inventing a fourth child. No slice may approach the 1,000
+  parent #54 before inventing another child. No slice may approach the 1,000
   net split threshold without explicit operator approval.
 
 ## PR plan
 
 | PR | Branch | Base | Owner slice | Commit structure | Budget | Entry | Exit |
 |---|---|---|---|---|---:|---|---|
-| A1 | `feat/issue-75-captured-evaluation` (PR #90) | current `origin/main` at takeover | #75 captured evaluation: one scope collector, frozen snapshot, stored classification, migrated detectors, growth accounting under preserved schema v1 | real-CLI RED proof; deep Module replacement plus deletion of superseded modules | under 1,000 net (measured +567) | operator takeover directive | capture/decoder/corpus proof green, package under the 1800 ceiling, required checks green |
+| A1 | `feat/issue-75-captured-evaluation` (PR #90) | current `origin/main` at takeover | #75 captured evaluation: one scope collector with rename detection, frozen snapshot, stored classification, migrated detectors, bounded baseline capture, growth accounting and gap surfacing under preserved schema v1 | real-CLI RED proof; deep Module replacement plus deletion of superseded modules | under 1,000 net (measured +725; package 1693 of 1800) | operator takeover directive | capture/decoder/corpus proof green, operator-confirmed regressions fixed, package under the 1800 ceiling, required checks green |
 | A2 | slice-2 branch from A1 | A1 merge SHA on `origin/main` | #75 completion: typed findings, warning-only cumulative growth, exact-ID `fail_on_warnings`, schema v2, hook warning surfacing | detector-policy behavior and promotion proof | under 1,000 net | A1 merged | #75 acceptance complete, active warnings visible through the real hook with exit zero, package at or under 1800, required checks green |
 | B | `feat/issue-54-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
 | C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | every owner evidence class evaluated; no duplicate prerequisite; candidates calibrated and warning-only; required checks green |
 
 PR C may approach 600 net because its calibrated positive and negative proof
-must ship with the behavior; splitting that proof into a fourth PR would create
+must ship with the behavior; splitting that proof into its own PR would create
 a horizontal administrative slice. It must still be reduced toward 500 during
 preflight and must stop well below 1,000.
 
@@ -253,7 +253,8 @@ Required proof includes:
 
 ## Execution checklist
 
-- [x] Three-slice structure approved by the operator.
+- [x] Three-slice structure approved by the operator (2026-08-05); PR A
+  re-sliced into A1/A2 by the 2026-08-07 operator takeover directive.
 - [x] Governing artifact created from `origin/main` without touching PR #74.
 - [x] Child #75 published and linked to parent #54.
 - [x] Child #76 published, linked, and blocked by #75.

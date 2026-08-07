@@ -167,9 +167,10 @@ def test_standalone_entrypoint_import_bootstrap_passes(repo: Path) -> None:
 
 @with_repo
 def test_gate_creates_no_repo_artifacts(repo: Path) -> None:
-    # The non-mutation contract this pins: working tree, index, and refs are
-    # untouched. Capture may leave unreferenced loose objects in .git/objects
-    # that git gc prunes; nothing references them, so they are out of scope.
+    # The non-mutation contract this pins: working tree, staged content, and
+    # refs are untouched. Capture may refresh the index's cache-tree extension
+    # and leave unreferenced loose objects that git gc prunes; nothing
+    # references those, so they are out of scope here.
     write(repo / "src" / "candidate.py", "def candidate() -> int:\n    return 2\n")
     git(repo, "add", "src/candidate.py")
     worktree_only = "# TO" + "DO worktree-only text must not enter index evidence\n"
@@ -373,6 +374,13 @@ _REUSE_ROWS = (
     ("self-call-is-not-delegation", {"src/ids.py": _OWNER}, (),
      {"src/copycat.py": _OWNER + "\n\ndef ingest(value: str) -> str:\n    return normalize_user_id(value)\n"},
      True, ("--base-ref", "HEAD", "--staged-only"), ("existingFile", "src/ids.py")),
+    # A one-line non-Python wrapper delegates on its own declaration line: the
+    # qualified owner call there is delegation evidence, while a bare
+    # declaration token alone still never suppresses its own match.
+    ("js-one-line-wrapper-delegates",
+     {"src/ids.js": "export function normalizeUserId(value) {\n  return value.trim().toLowerCase();\n}\n"}, (),
+     {"src/wrapper.js": "import * as ids from \"./ids.js\";\nexport function normalizeUserId(v) { return ids.normalizeUserId(v); }\n"},
+     True, ("--base-ref", "HEAD", "--staged-only"), "no-match"),
 )
 
 
@@ -747,6 +755,58 @@ def test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied(repo: Path
         assert "src/shared.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
         assert "src/sideonly.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
         assert growth_totals(payload)["production"] == {"added": 2, "deleted": 1, "net": 1}, (extra, growth_totals(payload))
+
+
+_UNREADABLE_OWNER = "def normalize_user_identifier(value):\n    return value.strip().lower()\n"
+_OVERSIZED = _UNREADABLE_OWNER + "\n".join(f"# pad {i}" * 6 for i in range(9000))
+
+
+@with_repo
+def test_skipped_baseline_scope_is_reported_not_silent(repo: Path) -> None:
+    # An owner discovery never read cannot say "no reimplementation". A
+    # baseline file over the size cap is skipped before its blob is read, and
+    # the verdict names the unread scope instead of passing silently.
+    write(repo / "src" / "huge.py", _OVERSIZED)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "oversized baseline")
+    write(repo / "src" / "dup.py", _UNREADABLE_OWNER)
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+    assert any("huge.py" in warning and "baseline" in warning for warning in payload["warnings"]), payload["warnings"]
+
+
+@with_repo
+def test_unmeasured_binary_source_change_is_never_silently_clean(repo: Path) -> None:
+    # Git reports "-" counts for a file it treats as binary. The stored
+    # measurement gap must reach the verdict as a visible warning — never a
+    # silent clean pass — while the run stays warning-only with exit zero.
+    (repo / "src" / "unmeasured.py").write_bytes(b"def ok() -> int:\n    return 1\n\x00\x00binary\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+    assert any("no line counts" in warning for warning in payload["warnings"]), payload["warnings"]
+
+
+@with_repo
+def test_rename_only_change_keeps_preexisting_content_clean(repo: Path) -> None:
+    # A pure rename must evaluate as it did before the captured-tree rewrite:
+    # no added lines, so content that predates the change — even an escape
+    # marker — is not newly introduced. An EDIT riding on the rename is still
+    # evaluated at the new path.
+    marker = "# TO" + "DO: predates the rename"
+    write(repo / "src" / "old_name.py", f"{marker}\ndef f() -> int:\n    return 1\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "baseline with marker")
+    git(repo, "mv", "src/old_name.py", "src/new_name.py")
+    code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
+    assert payload["errors"] == [], payload["errors"]
+    assert code == 0, (code, stderr)
+
+    text = (repo / "src" / "new_name.py").read_text(encoding="utf-8")
+    write(repo / "src" / "new_name.py", text + "X = 1  # " + "FIX" + "ME later\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert code == 2, (code, payload["errors"])
+    escapes = check_named(payload, "no-quality-escapes")
+    assert any("src/new_name.py" in sample for sample in escapes["sample"]), escapes
 
 
 @with_repo

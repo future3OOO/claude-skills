@@ -3,12 +3,10 @@ from __future__ import annotations
 import re
 
 from .models import ReuseFinding, SymbolDef
-from .snapshot import EvaluationSnapshot
+from .snapshot import EvaluationSnapshot, top_dir
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
 
-MAX_INDEX_FILES = 4000
-MAX_INDEX_FILE_BYTES = 500_000
 MAX_INDEX_SYMBOLS = 25_000
 
 GENERIC_MATCH_TOKENS = {
@@ -21,7 +19,7 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding
     candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
         return [], []
-    existing = _existing_symbol_index(snapshot, candidates)
+    existing = _existing_symbol_index(snapshot)
     if not existing:
         return [], []
     # Every production entry's added lines are nearby-call evidence — a new
@@ -41,37 +39,20 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding
     return findings[:30], sorted(set(queries))[:10]
 
 
-def _existing_symbol_index(
-    snapshot: EvaluationSnapshot,
-    candidates: list[SymbolDef],
-) -> list[SymbolDef]:
+def _existing_symbol_index(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
+    """Symbols of the captured owners. Snapshot baseline capture already
+    applied eligibility and the file/byte caps; unread files carry no text."""
     symbols: list[SymbolDef] = []
-    indexed = 0
     packet_paths = snapshot.packet_paths
     gitnexus_boosts = snapshot.gitnexus_boosts
-    candidate_languages = {item.language for item in candidates}
-    candidate_roots = {_top_dir(item.path) for item in candidates}
-    gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
     for baseline in snapshot.baseline:
-        if indexed >= MAX_INDEX_FILES or len(symbols) >= MAX_INDEX_SYMBOLS:
-            break
-        if baseline.role != "production":
+        if baseline.role != "production" or baseline.text is None:
             continue
-        if baseline.language not in candidate_languages or not (
-            _top_dir(baseline.path) in candidate_roots
-            or baseline.path in packet_paths
-            or baseline.path in gitnexus_paths
-        ):
-            continue
-        text = baseline.text
-        if text is None or len(text.encode("utf-8", errors="ignore")) > MAX_INDEX_FILE_BYTES:
-            continue
-        indexed += 1
-        for symbol in extract_symbols(baseline.path, text, "baseline", baseline.language, 12 if baseline.path in packet_paths else 0):
+        for symbol in extract_symbols(baseline.path, baseline.text, "baseline", baseline.language, 12 if baseline.path in packet_paths else 0):
             boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{baseline.path}:{symbol.name}", 0))
             symbols.append(SymbolDef(symbol.name, symbol.path, symbol.line, symbol.kind, symbol.language, symbol.tokens, symbol.source, boost))
             if len(symbols) >= MAX_INDEX_SYMBOLS:
-                break
+                return symbols
     return symbols
 
 
@@ -177,20 +158,25 @@ def _best_existing_match(
 
 def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], candidate: SymbolDef, baseline_absent: bool) -> bool:
     same_named_new = baseline_absent and candidate.name == symbol
-    skip_line = None
-    if same_named_new and candidate.language == "python":
-        # In a new Python file an unqualified same-name call binds to the
-        # local definition, so only a qualified call proves delegation; the
-        # declaration line can never match this form and needs no skip.
-        pattern = re.compile(rf"\.\s*{re.escape(symbol)}\s*\(")
-    else:
-        pattern = re.compile(rf"\b{re.escape(symbol)}\s*\(")
-        if same_named_new:
-            # Other languages keep the declaration-line skip so a bare
-            # definition cannot suppress its own match.
-            skip_line = candidate.line
+    qualified = re.compile(rf"\.\s*{re.escape(symbol)}\s*\(")
+    bare = re.compile(rf"\b{re.escape(symbol)}\s*\(")
+
+    def is_call(line_no: int, text: str) -> bool:
+        if not same_named_new:
+            return bool(bare.search(text))
+        if candidate.language == "python":
+            # In a new Python file an unqualified same-name call binds to the
+            # local definition, so only a qualified call proves delegation.
+            return bool(qualified.search(text))
+        # Other languages: the bare token on the declaration line is the
+        # definition itself, never delegation — but a qualified owner call
+        # sharing that line, the one-line-wrapper shape, still counts.
+        if line_no == candidate.line:
+            return bool(qualified.search(text))
+        return bool(bare.search(text))
+
     return any(
-        line_no != skip_line and max(0, candidate.line - 8) <= line_no <= candidate.line + 20 and pattern.search(text)
+        max(0, candidate.line - 8) <= line_no <= candidate.line + 20 and is_call(line_no, text)
         for line_no, text in lines
     )
 
@@ -203,8 +189,4 @@ def _warning_is_actionable(new_item: SymbolDef, existing_item: SymbolDef) -> boo
 
 
 def _same_reuse_neighborhood(path_a: str, path_b: str, context_boost: int) -> bool:
-    return context_boost > 0 or _top_dir(path_a) == _top_dir(path_b)
-
-
-def _top_dir(path: str) -> str:
-    return path.split("/", 1)[0]
+    return context_boost > 0 or top_dir(path_a) == top_dir(path_b)

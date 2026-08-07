@@ -60,9 +60,12 @@ def parse_z_names(raw: str) -> set[str]:
 
 def parse_numstat_z(raw: str) -> list[Numstat]:
     records: list[Numstat] = []
-    for item in raw.split("\0"):
-        parts = item.split("\t", 2)
-        if len(parts) < 3 or not parts[2]:
+    tokens = raw.split("\0")
+    index = 0
+    while index < len(tokens):
+        parts = tokens[index].split("\t", 2)
+        if len(parts) < 3:
+            index += 1
             continue
         try:
             added: int | None = int(parts[0])
@@ -71,8 +74,44 @@ def parse_numstat_z(raw: str) -> list[Numstat]:
             # Git writes "-" for a file it treats as binary. Record the absence
             # so the evaluation can report it, rather than inventing counts.
             added = deleted = None
-        records.append(Numstat(added=added, deleted=deleted, path=parts[2]))
+        if parts[2]:
+            records.append(Numstat(added=added, deleted=deleted, path=parts[2]))
+            index += 1
+        elif index + 2 < len(tokens):
+            # A rename record carries an empty path field, then the old and new
+            # names as their own NUL fields; the counts belong to the new path.
+            records.append(Numstat(added=added, deleted=deleted, path=tokens[index + 2]))
+            index += 3
+        else:
+            index += 1
     return records
+
+
+def _parse_name_status(raw: str) -> tuple[set[str], dict[str, str]]:
+    """Changed paths plus the new-to-old rename map from one -z transport.
+
+    A rename record is R<score> followed by the old and new names. The entry,
+    hunks, and counts all key on the new path; the old path is where the base
+    text lives, which is what keeps a pure rename from reading as new content.
+    """
+    changed: set[str] = set()
+    renamed: dict[str, str] = {}
+    tokens = raw.split("\0")
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        if not status:
+            index += 1
+        elif status.startswith("R") and index + 2 < len(tokens):
+            renamed[tokens[index + 2]] = tokens[index + 1]
+            changed.add(tokens[index + 2])
+            index += 3
+        elif index + 1 < len(tokens):
+            changed.add(tokens[index + 1])
+            index += 2
+        else:
+            index += 1
+    return changed, renamed
 
 
 def _resolve_base(repo: Path, base_ref: str | None) -> tuple[str, str, list[str]]:
@@ -131,15 +170,16 @@ def _write_worktree_tree(repo: Path) -> tuple[str, list[str]]:
         Path(handle.name).unlink(missing_ok=True)
 
 
-def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], str, list[Numstat], list[str]]:
+def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], dict[str, str], str, list[Numstat], list[str]]:
     """The evaluated diff, plus the reads that failed to produce it.
 
     The diff belongs to the gate, not to repository configuration: an external
-    driver or textconv filter can empty the textual patch while --name-only
+    driver or textconv filter can empty the textual patch while --name-status
     and --numstat still succeed. A non-zero exit becomes a recorded gap rather
-    than an empty string that reads as "no change".
+    than an empty string that reads as "no change". Rename detection is pinned
+    with -M so evaluation does not depend on repository diff configuration.
     """
-    diff = ["diff", "--no-renames", "--no-ext-diff", "--no-textconv", base, tree]
+    diff = ["diff", "-M", "--no-ext-diff", "--no-textconv", base, tree]
     errors: list[str] = []
 
     def read(args: list[str], transport: str) -> str:
@@ -148,10 +188,10 @@ def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], str, list[N
             errors.append(f"diff {transport} read failed: {failure}")
         return text
 
-    changed = parse_z_names(read(["--name-only", "-z"], "name-only"))
+    changed, renamed = _parse_name_status(read(["--name-status", "-z"], "name-status"))
     raw_diff = read(["--unified=0", "--no-color"], "unified")
     numstats = parse_numstat_z(read(["--numstat", "-z"], "numstat"))
-    return changed, raw_diff, numstats, errors
+    return changed, renamed, raw_diff, numstats, errors
 
 
 def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False) -> dict[str, object]:
@@ -176,7 +216,7 @@ def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False
     if capture_errors:
         scope_name = unresolved if staged_only else f"commit-range:{base}...worktree"
         return _scope(base, base_source, scope_name, capture_errors, candidate_source=source)
-    changed, raw_diff, numstats, errors = _diff_scope(repo, base, tree)
+    changed, renamed, raw_diff, numstats, errors = _diff_scope(repo, base, tree)
     untracked: set[str] = set()
     if not staged_only:
         listed, failure = git_read(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
@@ -191,6 +231,7 @@ def collect_scope(repo: Path, base_ref: str | None, *, staged_only: bool = False
         scope_name,
         errors,
         changed_files=changed,
+        renamed=renamed,
         untracked=untracked,
         raw_diff=raw_diff,
         numstats=numstats,
@@ -206,6 +247,7 @@ def _scope(
     errors: list[str],
     *,
     changed_files: set[str] | None = None,
+    renamed: dict[str, str] | None = None,
     untracked: set[str] | None = None,
     raw_diff: str = "",
     numstats: list[Numstat] | None = None,
@@ -217,6 +259,7 @@ def _scope(
         "base_source": base_source,
         "changed_scope": changed_scope,
         "changed_files": changed_files or set(),
+        "renamed": renamed or {},
         "untracked": untracked or set(),
         "raw_diff": raw_diff,
         "numstats": numstats or [],
