@@ -76,7 +76,12 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         return result, json.loads(artifact.read_text(encoding="utf-8"))
 
     def benchmark_at(self, out: Path) -> tuple[subprocess.CompletedProcess[str], dict]:
-        """Run the real command against a fixed output directory, so a rerun reuses arm keys."""
+        """Run the real command against a fixed output directory, so a rerun reuses arm keys.
+
+        The previous artifact is removed first: without that, a rerun that dies before
+        writing one is read as the earlier run's success.
+        """
+        (out / "benchmark.json").unlink(missing_ok=True)
         result = subprocess.run(
             [sys.executable, str(BENCHMARK), "--baseline", "HEAD", "--candidate", "HEAD",
              "--out", str(out)],
@@ -199,8 +204,15 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         # Derived from the fixture path through the same POSIX contract the estate uses,
         # not read back from arm state: a redirect failure would leave that state empty,
         # so keys learned from it would be exactly the ones an escape hides behind.
+        # The migration fixture is a separate repository, so its key belongs in the
+        # traced set too; without it an escape during migration would go unseen.
+        # The replay gives each arm a fixture of its own, and the migration fixture is a
+        # separate repository again; without all of them an escape during the replayed
+        # sequence or during migration would go unseen.
         expected = {self.repo_key(out / arm / "repos" / str(index))
                     for arm in ("baseline", "candidate") for index in range(5)}
+        expected.update(self.repo_key(out / arm / "replay" / "repo") for arm in ("baseline", "candidate"))
+        expected.add(self.repo_key(out / "migration" / "repo"))
         self.assertEqual(set(artifact["isolation"]["armKeys"]), expected,
                          "arm keys are not derived from the fixture paths")
         key = sorted(expected)[0]
@@ -312,6 +324,23 @@ class ABEstateBenchmarkTests(unittest.TestCase):
                        if "rev-parse" in line and "moving^{commit}" in line]
         self.assertEqual(len(resolutions), 3, f"expected one resolution per run, got {resolutions}")
 
+    def test_the_migration_differential_continues_a_baseline_seeded_state_root(self) -> None:
+        """The candidate reads state the baseline wrote, which is the only way #74's import runs.
+
+        Both arms are the same ref here, so this proves the mechanism: a real legacy
+        seed, two real continuations, equal projected state. The two-engine differential
+        is the acceptance run against a candidate whose store is SQLite.
+        """
+        _, artifact = self.benchmark("HEAD", "HEAD")
+        migration = artifact["migration"]
+
+        self.assertEqual(migration["seedStores"], ["workflow.json"],
+                         "the baseline CLI did not leave legacy state for the candidate to import")
+        self.assertEqual(migration["exits"], [0, 0], "a continuation refused the seeded state root")
+        self.assertTrue(migration["match"], json.dumps(migration, indent=2)[:2000])
+        self.assertIn("workflow.json", migration["candidateStores"],
+                      "the candidate did not read the legacy store it was given")
+
     def test_a_candidate_that_escapes_its_state_root_is_caught(self) -> None:
         """An arm whose redirect genuinely fails, not a planted trace.
 
@@ -374,6 +403,138 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertIn("gitnexus", differences[0]["baseline"]["missing"])
         self.assertIn("gitnexus-graph", differences[0]["candidate"]["missing"])
         self.assertTrue(artifact["isolation"]["ok"], "a behavioural mismatch is not an isolation failure")
+
+    def test_a_candidate_that_never_converts_the_seeded_store_fails(self) -> None:
+        """The false green the migration differential exists to catch.
+
+        This candidate reads and writes the baseline's legacy file perfectly, so its
+        projection matches and both continuations exit zero. What it never does is move
+        that state to the engine it uses everywhere else. Comparing projections cannot
+        see that; comparing each arm's own native store against what it left behind can.
+        """
+        parent = self.run_git("rev-parse", "HEAD")
+        state = self.clone / "hooks" / "lib" / "workflow_state.py"
+        original = state.read_text(encoding="utf-8")
+        perturbed_text = original.replace(
+            '    return repo_state_dir(identity) / "workflow.json"',
+            '    legacy = repo_state_dir(identity) / "workflow.json"\n'
+            '    return legacy if legacy.exists() else repo_state_dir(identity) / "workflow.v2.json"')
+        self.assertNotEqual(perturbed_text, original, "the workflow store path moved")
+        state.write_text(perturbed_text, encoding="utf-8")
+        self.run_git("commit", "--quiet", "--all", "-m", "adopt a new store without converting legacy state")
+        unconverted = self.run_git("rev-parse", "HEAD")
+
+        result, artifact = self.benchmark(parent, unconverted)
+
+        migration = artifact["migration"]
+        self.assertEqual(migration["exits"], [0, 0], "the candidate refused the seeded root for some other reason")
+        self.assertTrue(migration["match"], "this candidate must agree on state; only its storage differs")
+        self.assertEqual(migration["candidateNativeStores"], ["workflow.v2.json"])
+        self.assertEqual(migration["candidateStores"], ["workflow.json"],
+                         "the candidate was supposed to leave the legacy file unconverted")
+        self.assertFalse(migration["ok"], "an unconverted store was accepted")
+        self.assertFalse(artifact["ok"])
+        self.assertNotEqual(result.returncode, 0, "an unconverted store was reported as a pass")
+        # The public summary, not only the artifact. Acceptance judges both arms, so a line
+        # that reports FAILED while showing one of them tells the operator nothing about
+        # which arm caused it. These two arms hold deliberately different native stores, so
+        # a swapped or duplicated label cannot satisfy this assertion.
+        self.assertEqual(migration["baselineNativeStores"], ["workflow.json"])
+        self.assertIn("native baseline workflow.json | candidate workflow.v2.json", result.stdout,
+                      f"the summary does not name the arm that failed\n{result.stdout}")
+
+    def test_the_workflow_state_replay_times_every_downstream_operation(self) -> None:
+        """Capability 2: the governed sequence past Repo Context Forge, timed per operation.
+
+        This proves that two estate refs persist identical state from identical input and
+        what each operation costs. It is not evidence that an advisor consult or a code
+        review happened; the inputs are benchmark stimulus.
+        """
+        head = self.run_git("rev-parse", "HEAD")
+        result, artifact = self.benchmark(head, head)
+
+        for name in ("baseline", "candidate"):
+            seed = artifact["replaySeed"][name]
+            self.assertEqual(seed["exit"], 0, f"{name} could not run its own Repo Context Forge: {seed['blocker']}")
+            self.assertEqual(seed["repoContextForge"], "passed", "the real adapter did not record the phase")
+            self.assertGreater(seed["seconds"], 0)
+        replay = [item for item in artifact["scenarios"] if item["name"].startswith("replay-")]
+        self.assertEqual([item["name"] for item in replay], [
+            "replay-gitnexus", "replay-advisor-preflight", "replay-advisor-disposition", "replay-preflight",
+            "replay-tdd", "replay-production-code", "replay-implementation", "replay-verification",
+            "replay-code-review", "replay-advisor-final", "replay-final-disposition", "replay-complete"])
+        for item in replay:
+            self.assertTrue(item["invariantsHeld"], f"{item['name']} did not make its own transition")
+            self.assertFalse(item["differences"], f"{item['name']}: {json.dumps(item['differences'])[:400]}")
+            self.assertGreater(item["baseline"]["medianSeconds"], 0, item["name"])
+            self.assertGreater(item["candidate"]["medianSeconds"], 0, item["name"])
+        self.assertEqual(replay[-1]["observed"]["phase"], "complete", "the replay never reached completion")
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        self.assertLessEqual(len(result.stdout.strip().splitlines()), 20, "the clean summary outgrew its budget")
+
+    def test_the_migration_fixture_is_traced_under_both_arms_keys(self) -> None:
+        """A candidate that names repositories differently must still be searched for.
+
+        Only the baseline is asked for the migration fixture's key. A candidate whose
+        identity function disagrees writes under a name nothing looks for, so an escape
+        that happened only during the migration comparison leaves no trace the run reads.
+        """
+        parent = self.run_git("rev-parse", "HEAD")
+        identity = self.clone / "hooks" / "lib" / "repo_identity.py"
+        original = identity.read_text(encoding="utf-8")
+        perturbed_text = original.replace(
+            "        key = checksum_output.split()[0]",
+            '        key = f"9{checksum_output.split()[0]}"')
+        self.assertTrue(perturbed_text != original, "the key derivation moved")
+        identity.write_text(perturbed_text, encoding="utf-8")
+        self.run_git("commit", "--quiet", "--all", "-m", "name repositories differently")
+        renaming = self.run_git("rev-parse", "HEAD")
+
+        out = self.tmp / "out-identity"
+        result = subprocess.run(
+            [sys.executable, str(BENCHMARK), "--baseline", parent, "--candidate", renaming, "--out", str(out)],
+            cwd=self.clone, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        artifact = json.loads((out / "benchmark.json").read_text(encoding="utf-8"))
+        asked = subprocess.run(
+            [sys.executable, str(out / "candidate/home/hooks/lib/repo_identity.py"),
+             "--field", "key", "--path", str(out / "migration/repo")],
+            env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        self.assertIn(asked.stdout.strip(), artifact["isolation"]["armKeys"],
+                      "the candidate's own name for the migration fixture is never searched for")
+        self.assertTrue(result.stdout, "the run produced no summary")
+
+    def test_a_baseline_that_cannot_seed_is_reported_rather_than_crashing(self) -> None:
+        """A failed seed must reach the artifact, because a traceback reports nothing.
+
+        Only the seed is broken here, so the five per-arm scenarios still run and the
+        operator still gets their comparison alongside the migration failure.
+        """
+        parent = self.run_git("rev-parse", "HEAD")
+        cli = self.clone / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
+        original = cli.read_text(encoding="utf-8")
+        perturbed_text = original.replace(
+            "def main() -> int:\n    arguments = parser()",
+            "def main() -> int:\n"
+            '    if "migration seed" in sys.argv:\n'
+            '        sys.stderr.write("seeding refused\\n")\n'
+            "        return 3\n"
+            "    arguments = parser()")
+        self.assertTrue(perturbed_text != original, "the CLI entry point moved")
+        cli.write_text(perturbed_text, encoding="utf-8")
+        self.run_git("commit", "--quiet", "--all", "-m", "refuse the migration seed")
+        refusing = self.run_git("rev-parse", "HEAD")
+
+        result, artifact = self.benchmark(refusing, parent)
+
+        self.assertEqual(artifact["migration"]["seedExit"], 3)
+        self.assertFalse(artifact["migration"]["ok"], "a failed seed was accepted")
+        self.assertFalse(artifact["ok"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(artifact["scenarios"], "the per-arm scenarios must still be reported")
 
 
 if __name__ == "__main__":
