@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import namedtuple
 from pathlib import Path
 
 
@@ -12,9 +13,38 @@ EXCLUDE_DIRS = {
     "build", "coverage", "dist", "node_modules", "target", "vendor", "venv",
 }
 
+VENDORED_DIRS = {"node_modules", "vendor"}
+
 TEST_MARKERS = (
     "/__fixtures__/", "/__mocks__/", "/__snapshots__/", "/__tests__/", "/fixture/",
     "/fixtures/", "/generated/", "/snapshots/", "/test/", "/tests/",
+)
+
+ROLE_PRODUCTION = "production"
+ROLE_TEST = "test"
+ROLE_TEST_SUPPORT = "test-support"
+ROLE_GENERATED = "generated"
+ROLE_DOCS = "docs"
+ROLE_VENDORED = "vendored"
+ROLE_UNKNOWN = "unknown"
+
+DOC_EXTENSIONS = {".adoc", ".md", ".rst", ".txt"}
+
+# Machine-written source is not human-authored, so it is excluded from the
+# human-authored totals rather than folded into the test-support bucket.
+GENERATED_MARKERS = ("/generated/",)
+
+# Material that supports tests without being test code itself.
+SUPPORT_MARKERS = ("/__fixtures__/", "/__mocks__/", "/__snapshots__/", "/fixture/", "/fixtures/", "/snapshots/")
+
+
+# One resolved classification, computed once and stored on the snapshot. A
+# namedtuple, not a dataclass: workflow state loads this file standalone via
+# spec_from_file_location without registering it in sys.modules, and dataclass
+# creation resolves annotations through sys.modules on Python 3.12.
+PathClass = namedtuple(
+    "PathClass",
+    ["role", "language", "human_authored", "source", "test_like_compat", "exclusion_reason"],
 )
 
 
@@ -24,21 +54,8 @@ def normalize_path(value: str) -> str:
 
 def is_binary_path(path: str) -> bool:
     return Path(path).suffix.lower() in {
-        ".avif",
-        ".bin",
-        ".bmp",
-        ".gif",
-        ".ico",
-        ".jpeg",
-        ".jpg",
-        ".lock",
-        ".map",
-        ".pdf",
-        ".png",
-        ".snap",
-        ".svg",
-        ".webp",
-        ".zip",
+        ".avif", ".bin", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".lock",
+        ".map", ".pdf", ".png", ".snap", ".svg", ".webp", ".zip",
     }
 
 
@@ -54,6 +71,11 @@ def is_excluded_path(path: str) -> bool:
 
 
 def is_test_like_path(path: str) -> bool:
+    """The standalone compatibility predicate workflow state loads directly."""
+    return classify_path(path).test_like_compat
+
+
+def _test_like(path: str) -> bool:
     lowered = f"/{normalize_path(path).lower()}"
     if any(marker in lowered for marker in TEST_MARKERS):
         return True
@@ -69,8 +91,34 @@ def is_source_path(path: str) -> bool:
     return bool(path) and not is_excluded_path(path) and not is_binary_path(path) and Path(path).suffix.lower() in SOURCE_EXTENSIONS
 
 
-def is_production_source_path(path: str) -> bool:
-    return is_source_path(path) and not is_test_like_path(path)
+def classify_path(path: str) -> PathClass:
+    """The single classification every quality-gate consumer reads.
+
+    Additive over the predicates above: the test-like truth keeps its exact
+    pre-existing meaning because workflow state classifies edits with it.
+    """
+    test_like = _test_like(path)
+    lowered = f"/{normalize_path(path).lower()}"
+    if is_source_path(path):
+        # The stored language enum reserves real parser names for source
+        # entries; every non-source classification is "other".
+        language = language_for_path(path)
+        if any(marker in lowered for marker in GENERATED_MARKERS):
+            return PathClass(ROLE_GENERATED, language, False, True, test_like, "generated path")
+        if not test_like:
+            return PathClass(ROLE_PRODUCTION, language, True, True, test_like, None)
+        support = any(marker in lowered for marker in SUPPORT_MARKERS)
+        return PathClass(ROLE_TEST_SUPPORT if support else ROLE_TEST, language, True, True, test_like, None)
+    if not path:
+        return PathClass(ROLE_UNKNOWN, "other", False, False, test_like, "empty path")
+    if is_excluded_path(path):
+        parts = {part for part in lowered.split("/") if part}
+        role = ROLE_VENDORED if parts & VENDORED_DIRS else ROLE_UNKNOWN
+        return PathClass(role, "other", False, False, test_like, "excluded directory")
+    if is_binary_path(path):
+        return PathClass(ROLE_UNKNOWN, "other", False, False, test_like, "binary extension")
+    role = ROLE_DOCS if Path(path).suffix.lower() in DOC_EXTENSIONS else ROLE_UNKNOWN
+    return PathClass(role, "other", False, False, test_like, "non-source extension")
 
 
 def language_for_path(path: str) -> str:

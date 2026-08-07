@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 
 from .models import SymbolDef
-from .path_policy import language_for_path, normalize_path
 
 
 GENERIC_SYMBOLS = {
@@ -55,8 +54,7 @@ def split_name_tokens(name: str) -> tuple[str, ...]:
     return tokens or (name.lower(),)
 
 
-def extract_symbols(path: str, text: str, source: str, context_boost: int = 0) -> list[SymbolDef]:
-    language = language_for_path(path)
+def extract_symbols(path: str, text: str, source: str, language: str, context_boost: int = 0) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
     for line_no, line in enumerate(text.splitlines(), 1):
         for kind, pattern in _SYMBOL_PATTERNS.get(language, []):
@@ -69,8 +67,8 @@ def extract_symbols(path: str, text: str, source: str, context_boost: int = 0) -
 
 
 def subtree_score(path_a: str, path_b: str) -> int:
-    parts_a = normalize_path(path_a).split("/")[:-1]
-    parts_b = normalize_path(path_b).split("/")[:-1]
+    parts_a = path_a.split("/")[:-1]
+    parts_b = path_b.split("/")[:-1]
     if not parts_a or not parts_b:
         return 0
     if parts_a == parts_b:

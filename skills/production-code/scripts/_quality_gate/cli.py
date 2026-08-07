@@ -7,8 +7,18 @@ import sys
 from pathlib import Path
 
 from .git_scope import git_ok, git_text
-from .inputs import read_optional_input
 from .runner import check, format_text
+
+
+def read_optional_input(value: str) -> tuple[str, str | None]:
+    if not value:
+        return "", None
+    if value == "-":
+        return sys.stdin.read(), None
+    try:
+        return Path(value).read_text(encoding="utf-8", errors="replace"), None
+    except OSError as exc:
+        return "", f"could not read optional input {value}: {exc}"
 
 
 def main(argv: list[str]) -> int:

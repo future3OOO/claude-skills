@@ -281,3 +281,11 @@ Required proof includes:
   candidate-tree self-attestation.
 - 2026-08-06: recorded the operator-approved exact-rule schema-v2
   `fail_on_warnings` policy and PR #74 as #49's active, separate implementation.
+- 2026-08-07: PR #80 (PR A at `89d5ff2`, package 1956 vs the 1800 ceiling, net
+  +1372) preserved as reference under operator direction; PR A is rebuilt from
+  current `main` as two vertical slices through `runner.check`, each under
+  1,000 net with the package ceiling green at every head. Slice 1 delivers the
+  captured base-to-candidate evaluation, stored classification, migrated
+  detectors, and growth accounting under the preserved schema-v1 contract;
+  slice 2 completes #75 with typed findings, warning-only cumulative growth,
+  exact-ID promotion, and schema v2.

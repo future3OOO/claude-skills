@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-from .context import GateContext
-from .git_scope import git_text, read_file, read_git_file
 from .models import ReuseFinding, SymbolDef
-from .path_policy import is_production_source_path, language_for_path, normalize_path
+from .snapshot import EvaluationSnapshot
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
 
@@ -20,19 +17,22 @@ GENERIC_MATCH_TOKENS = {
 }
 
 
-def detect_reuse_issues(
-    ctx: GateContext,
-    repo_context: dict[str, object],
-    gitnexus_boosts: dict[str, int],
-) -> tuple[list[ReuseFinding], list[str]]:
-    packet_paths = {normalize_path(str(path)) for path in repo_context.get("paths", set()) if str(path)}
-    candidates = _new_symbols(ctx) + _risky_added_blocks(ctx)
+def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding], list[str]]:
+    candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
         return [], []
-    existing = _existing_symbol_index(ctx, candidates, packet_paths, gitnexus_boosts)
+    existing = _existing_symbol_index(snapshot, candidates)
     if not existing:
         return [], []
-    findings = _score_reuse_candidates(candidates, existing, ctx.added_lines, _deleted_definition_names(ctx.raw_diff))
+    # Every production entry's added lines are nearby-call evidence — a new
+    # delegating wrapper legitimately calls its owner right beside its own
+    # definition; what counts as a call is per-candidate in _symbol_is_called_nearby.
+    added_by_file = {
+        entry.path: entry.added_lines()
+        for entry in snapshot.role_entries("production")
+    }
+    baseline_absent = {entry.path for entry in snapshot.role_entries("production") if entry.base_text is None}
+    findings = _score_reuse_candidates(candidates, existing, added_by_file, baseline_absent, _deleted_definition_names(snapshot))
     queries = [
         f'gitnexus_context(name="{finding.existing_symbol}") and gitnexus_impact(target="{finding.existing_symbol}", direction="upstream")'
         for finding in findings
@@ -42,60 +42,54 @@ def detect_reuse_issues(
 
 
 def _existing_symbol_index(
-    ctx: GateContext,
+    snapshot: EvaluationSnapshot,
     candidates: list[SymbolDef],
-    packet_paths: set[str],
-    gitnexus_boosts: dict[str, int],
 ) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
     indexed = 0
-    tracked_args = ["ls-tree", "-r", "--name-only", ctx.base_for_file] if ctx.candidate_source == "index" else ["ls-files"]
-    tracked = [normalize_path(line) for line in git_text(ctx.repo, tracked_args).splitlines() if normalize_path(line)]
+    packet_paths = snapshot.packet_paths
+    gitnexus_boosts = snapshot.gitnexus_boosts
     candidate_languages = {item.language for item in candidates}
     candidate_roots = {_top_dir(item.path) for item in candidates}
     gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
-    for rel_path in tracked:
+    for baseline in snapshot.baseline:
         if indexed >= MAX_INDEX_FILES or len(symbols) >= MAX_INDEX_SYMBOLS:
             break
-        if rel_path in ctx.untracked or not is_production_source_path(rel_path):
+        if baseline.role != "production":
             continue
-        if not _should_index_existing(rel_path, candidate_languages, candidate_roots, packet_paths, gitnexus_paths):
+        if baseline.language not in candidate_languages or not (
+            _top_dir(baseline.path) in candidate_roots
+            or baseline.path in packet_paths
+            or baseline.path in gitnexus_paths
+        ):
             continue
-        if ctx.candidate_source == "index":
-            text = read_git_file(ctx.repo, ctx.base_for_file, rel_path)
-        else:
-            text = read_git_file(ctx.repo, ctx.base_for_file, rel_path) if rel_path in ctx.changed_files else read_file(ctx.repo / rel_path)
+        text = baseline.text
         if text is None or len(text.encode("utf-8", errors="ignore")) > MAX_INDEX_FILE_BYTES:
             continue
         indexed += 1
-        for symbol in extract_symbols(rel_path, text, "baseline", 12 if rel_path in packet_paths else 0):
-            boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{rel_path}:{symbol.name}", 0))
+        for symbol in extract_symbols(baseline.path, text, "baseline", baseline.language, 12 if baseline.path in packet_paths else 0):
+            boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{baseline.path}:{symbol.name}", 0))
             symbols.append(SymbolDef(symbol.name, symbol.path, symbol.line, symbol.kind, symbol.language, symbol.tokens, symbol.source, boost))
             if len(symbols) >= MAX_INDEX_SYMBOLS:
                 break
     return symbols
 
 
-def _new_symbols(ctx: GateContext) -> list[SymbolDef]:
+def _new_symbols(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
-    for rel_path, lines in ctx.added_lines.items():
-        if not is_production_source_path(rel_path):
-            continue
-        for line_no, text in lines:
-            for symbol in extract_symbols(rel_path, text, "added"):
-                symbols.append(SymbolDef(symbol.name, rel_path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
-    for rel_path in sorted(ctx.untracked):
-        if is_production_source_path(rel_path) and (text := ctx.read_current(rel_path)) is not None:
-            symbols.extend(extract_symbols(rel_path, text, "untracked"))
+    for entry in snapshot.role_entries("production"):
+        source = "untracked" if entry.untracked else "added"
+        for line_no, text in entry.added_lines():
+            for symbol in extract_symbols(entry.path, text, source, entry.classification.language):
+                symbols.append(SymbolDef(symbol.name, entry.path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
     return symbols
 
 
-def _risky_added_blocks(ctx: GateContext) -> list[SymbolDef]:
+def _risky_added_blocks(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     blocks: list[SymbolDef] = []
-    for rel_path, lines in ctx.added_lines_with_untracked(production_only=True).items():
-        if not is_production_source_path(rel_path):
-            continue
-        for line_no, text in lines:
+    for entry in snapshot.role_entries("production"):
+        rel_path = entry.path
+        for line_no, text in entry.added_lines():
             # Prose cannot reimplement a helper. Without this, a comment naming
             # what the code does ("must resolve and read there") is mined for
             # behavior tokens and reported as a duplicate implementation.
@@ -108,34 +102,31 @@ def _risky_added_blocks(ctx: GateContext) -> list[SymbolDef]:
             if dedupe_shape:
                 tokens.append("dedupe")
             if dedupe_shape or len(set(tokens)) >= 2:
-                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", language_for_path(rel_path), tuple(tokens[:3]), "added"))
+                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", entry.classification.language, tuple(tokens[:3]), "added"))
     return blocks
 
 
-def _deleted_definition_names(raw_diff: str) -> set[str]:
-    deleted: set[str] = set()
-    current = ""
-    for line in raw_diff.splitlines():
-        if line.startswith("diff --git "):
-            current = ""
-        elif line.startswith("--- a/"):
-            current = normalize_path(line[len("--- a/") :])
-        elif current and is_production_source_path(current) and line.startswith("-") and not line.startswith("---"):
-            deleted.update(symbol.name for symbol in extract_symbols(current, line[1:], "deleted"))
-    return deleted
+def _deleted_definition_names(snapshot: EvaluationSnapshot) -> set[str]:
+    return {
+        symbol.name
+        for entry in snapshot.role_entries("production")
+        for line_no, text in entry.deleted_lines()
+        for symbol in extract_symbols(entry.path, text, "deleted", entry.classification.language)
+    }
 
 
 def _score_reuse_candidates(
     candidates: list[SymbolDef],
     existing: list[SymbolDef],
     added_by_file: dict[str, list[tuple[int, str]]],
+    baseline_absent: set[str],
     moved_or_deleted: set[str],
 ) -> list[ReuseFinding]:
     findings: list[ReuseFinding] = []
     for new_item in candidates:
         if new_item.name in moved_or_deleted or new_item.name.lower() in moved_or_deleted:
             continue
-        best = _best_existing_match(new_item, existing, added_by_file, moved_or_deleted)
+        best = _best_existing_match(new_item, existing, added_by_file, baseline_absent, moved_or_deleted)
         if best is None:
             continue
         score, reason, existing_item = best
@@ -152,6 +143,7 @@ def _best_existing_match(
     new_item: SymbolDef,
     existing: list[SymbolDef],
     added_by_file: dict[str, list[tuple[int, str]]],
+    baseline_absent: set[str],
     moved_or_deleted: set[str],
 ) -> tuple[int, str, SymbolDef] | None:
     best: tuple[int, str, SymbolDef] | None = None
@@ -162,7 +154,7 @@ def _best_existing_match(
             continue
         if existing_item.language != new_item.language and new_item.kind != "block":
             continue
-        if _symbol_is_called_nearby(existing_item.name, added_by_file.get(new_item.path, []), new_item.line):
+        if _symbol_is_called_nearby(existing_item.name, added_by_file.get(new_item.path, []), new_item, new_item.path in baseline_absent):
             continue
         base_score, reason = same_behavior_name(new_item, existing_item)
         if new_item.kind == "block":
@@ -183,25 +175,23 @@ def _best_existing_match(
     return best
 
 
-def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], new_line: int) -> bool:
-    pattern = re.compile(rf"\b{re.escape(symbol)}\s*\(")
-    return any(max(0, new_line - 8) <= line_no <= new_line + 20 and pattern.search(text) for line_no, text in lines)
-
-
-def _should_index_existing(
-    rel_path: str,
-    candidate_languages: set[str],
-    candidate_roots: set[str],
-    packet_paths: set[str],
-    gitnexus_paths: set[str],
-) -> bool:
-    return (
-        language_for_path(rel_path) in candidate_languages
-        and (
-            _top_dir(rel_path) in candidate_roots
-            or rel_path in packet_paths
-            or rel_path in gitnexus_paths
-        )
+def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], candidate: SymbolDef, baseline_absent: bool) -> bool:
+    same_named_new = baseline_absent and candidate.name == symbol
+    skip_line = None
+    if same_named_new and candidate.language == "python":
+        # In a new Python file an unqualified same-name call binds to the
+        # local definition, so only a qualified call proves delegation; the
+        # declaration line can never match this form and needs no skip.
+        pattern = re.compile(rf"\.\s*{re.escape(symbol)}\s*\(")
+    else:
+        pattern = re.compile(rf"\b{re.escape(symbol)}\s*\(")
+        if same_named_new:
+            # Other languages keep the declaration-line skip so a bare
+            # definition cannot suppress its own match.
+            skip_line = candidate.line
+    return any(
+        line_no != skip_line and max(0, candidate.line - 8) <= line_no <= candidate.line + 20 and pattern.search(text)
+        for line_no, text in lines
     )
 
 
@@ -217,4 +207,4 @@ def _same_reuse_neighborhood(path_a: str, path_b: str, context_boost: int) -> bo
 
 
 def _top_dir(path: str) -> str:
-    return normalize_path(path).split("/", 1)[0]
+    return path.split("/", 1)[0]

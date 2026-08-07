@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generic non-mutating production code quality gate for changed source scope."""
+"""Generic production code quality gate for changed source scope.
+
+Never modifies the working tree, index, refs, or tracked state. Capturing the
+candidate tree can leave unreferenced loose objects in the object database;
+git gc prunes them and no repository state references them.
+"""
 
 from __future__ import annotations
 
