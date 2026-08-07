@@ -27,48 +27,57 @@ flowchart LR
 
 ## State Interface
 
-One repository-scoped file records the active slug, phase, next action, step
-statuses, code-review disposition state, and final-review result. See
-[Workflow state root](https://github.com/future3OOO/claude-skills/blob/main/README.md#workflow-state-root)
-for which root holds it.
+One repository-scoped SQLite event ledger records accepted transitions, logical evidence, review manifests, and complete canonical resulting state. A disposable projection names the active workflow and latest event; reads repair it from the ledger when it is missing, dangling, or stale. See [Workflow state root](https://github.com/future3OOO/claude-skills/blob/main/README.md#workflow-state-root) for which root holds it.
 
 ```text
-begin              # assigns the pass's random workflowId
-set-phase          # lead-owned step recording for gitnexus, implementation,
-                   # and code-review not-required only (ordered; instance-checked)
-record-preflight   # producer: demands the preflight skill's 13-section document
-record-production-code  # producer: demands the bundled gate's ok:true JSON verdict
-verify-run.py         # runner: executes the command it records; per-command-latest
-tdd-run.py            # runner: RED/GREEN evidence, refuses before preflight evidence
-record-review.py   # producer: structured findings with lead dispositions
-advisor-result     # producer-recorded raw consult, slug + workflowId bound
-advisor-disposition  # lead-owned findings disposition, instance bound;
-                   # addressed demands --input with the structured document
-pause              # instance-bound honest wait; releases the Stop latch
-checkpoint         # read-only consult readiness for the advisor phases
-complete           # terminal; same optional instance check; only begin
-                   # starts another pass
-summary
-status
+workflow begin                 # assigns and activates a random workflowId
+workflow status|summary        # active canonical state
+workflow history               # ordered accepted events and logical references
+workflow evidence              # read one logical evidence record
+workflow set-phase             # lead-owned gitnexus, implementation, trivial review
+workflow record-preflight      # validates the thirteen-section document
+workflow record-production-code # validates the bundled gate verdict
+workflow tdd                   # runs RED/GREEN or records not-required
+workflow verify                # generic commands or typed final-tree quality gate
+workflow record-review         # structured lead review plus tree manifest
+workflow advisor-result|advisor-disposition
+workflow pause|checkpoint|complete|prune
 ```
 
-Preflight, production-code, and verification record only with their skill's
-native output as evidence, validated structurally and written atomically with
-the transition; a refusal names the missing evidence and mutates nothing, and
-a recorder's exit 2 always means nothing was recorded (the verification
-runner's exit 2 has one further documented meaning: the command itself failed
-after being recorded). An evidence reference lives only while its phase stands
-producer-recorded as passed — every other transition of that phase drops it,
-so a bare replay can never resurrect prior evidence — and tdd entry demands
-the recorded preflight evidence, not just its status. Each
-producer stamps the workflow instance into its evidence and the ledger keeps an
-evidence reference, so a passed phase without one — legacy state, or a bare
-library claim — reads pending at completion, never success. Evidence proves the
+### `workflow status` contract
+
+`workflow status` is a public JSON Interface, not a dump of persistence internals.
+It returns the active canonical `schemaVersion: 1` projection. Callers may rely
+on the semantic workflow fields: repository identity, `slug`, `workflowId`,
+`phase`, `nextAction`, phase statuses, advisor/review records, logical evidence
+identities, and the optional `paused` and `revalidation` state. The projection
+never includes a database path, SQLite table or column name, journal detail, or
+other storage mechanism. With no authoritative workflow it prints no JSON,
+returns exit 2, names `no active workflow`, and creates no state.
+
+Preflight, production-code, TDD, verification, review, and addressed advisor
+dispositions record only with their native validated documents as logical
+evidence, inserted in the same SQLite transaction as the accepted event; a
+findings-none advisor disposition intentionally carries no document, and a
+refusal names the missing evidence and mutates nothing.
+Exit 2 alone does not prove a refusal: the verification, TDD, and review
+producers each document a path that commits first and returns 2 after — a
+command that failed after being recorded, an invalid TDD run recorded as
+`reopen` or `in-progress`, and a review whose material findings remain
+unresolved. Preflight, production-code, and verification keep their accepted
+reference only while producer-recorded as passed — every other transition drops
+it, so a bare replay can never resurrect prior evidence. Tdd and code review
+instead keep a current producer reference across their own non-passed states —
+tdd while in-progress and when not-required, code review while pending — so a
+later run can validate or supersede it; only tdd's in-progress reference serves
+GREEN's validation of the RED it follows. Tdd entry demands
+the recorded preflight evidence, not just its status. Each producer stamps the workflow instance into its evidence and the ledger keeps its logical identity, so a passed preflight, production-code, or verification phase without one — legacy state, or a bare
+library claim — reads pending at completion, never success; completion gates tdd
+on its status and both reviews on their own record predicates. Evidence proves the
 output exists, not that the analysis is good; fabrication remains deception and
 stays covered by the transcript audit.
 
-The state file is atomic, private, and agent-writable. It provides continuity
-after compaction; it is not tamper-proof and does not authorize Git. A normal
+The database and its containing directory are private and agent-writable. Committed transactions provide continuity across process restart and compaction; it is not tamper-proof and does not authorize Git. A normal
 commit or HEAD change does not invalidate it. After production preflight,
 test-like edits are admitted while TDD is pending; production edits stay
 blocked until a valid RED or a recorded not-required decision. A normally
@@ -95,6 +104,8 @@ readiness for the advisor phases without mutating anything.
 - final review from `codex-advisor` with `commit-ready` and no pending material
   findings;
 - the reviewable working tree unchanged since the recorded lead review.
+
+The historical `pass-state.py`, recorder, TDD, and verification scripts are temporary compatibility adapters. They call the same unified CLI Module and contain no persistence or path logic; new callers use `workflow.py` directly.
 
 ## Edit invalidation
 
@@ -161,8 +172,7 @@ session and defers the rest here.
 |---|---|
 | `PreToolUse(Edit\|Write\|NotebookEdit)` | Require the recorded before-edit sequence through production preflight |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback |
-| `PreCompact(manual\|auto)` | Atomically flush existing state without advancing it |
-| `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary |
+| `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
 | `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success, because any Stop output re-prompts the model (progress on that instance re-latches); surfaces the bounded summary otherwise. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there, and is not a firing or an outcome: it is a per-Stop selection event counting one latch the association rule withheld, so it counts stops rather than distinct passes or sessions |
 
 `Stop` consults the workflows the session actually edited in, not the directory

@@ -109,14 +109,18 @@ if not evidence:
 PY
 fi
 
-pass_state="$script_dir/../../repo-production-workflow/scripts/pass-state.py"
+workflow_cli="$script_dir/../../repo-production-workflow/scripts/workflow.py"
 producer_slug=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.workflow_state import safe_slug; print(safe_slug(sys.argv[2]))' "$script_dir/../../.." "$slug")
-active_wid=""; active_tdd=""; active_review=""
+active_wid=""; active_tdd=""; active_review=""; active_tdd_evidence=""; active_review_evidence=""
 if [[ -n "$phase" ]]; then
-  checkpoint_json=$(python3 "$pass_state" checkpoint --repo "$repo_root" --phase "$phase" 2>/dev/null) || {
-    printf 'error: %s requires an active workflow; begin the pass before consulting\n' "$phase" >&2
+  if ! checkpoint_json=$(python3 "$workflow_cli" checkpoint --repo "$repo_root" --phase "$phase" 2>&1); then
+    if [[ "$checkpoint_json" == *"no active workflow"* ]]; then
+      printf 'error: %s requires an active workflow; begin the pass before consulting\n' "$phase" >&2
+    else
+      printf '%s\n' "$checkpoint_json" >&2
+    fi
     exit 2
-  }
+  fi
   # "|" is a non-whitespace delimiter, so bash read preserves empty fields
   # (IFS whitespace like tab collapses them and shifts every later field).
   IFS='|' read -r active_slug active_wid active_tdd active_review checkpoint_ready checkpoint_missing < <(printf '%s' "$checkpoint_json" | python3 -c 'import json,sys
@@ -130,10 +134,15 @@ print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") o
     printf 'error: %s checkpoint is not ready; missing: %s\n' "$phase" "$checkpoint_missing" >&2
     exit 2
   fi
+  status_json=$(python3 "$workflow_cli" status --repo "$repo_root" 2>/dev/null) || {
+    printf 'error: cannot read the active workflow after its checkpoint\n' >&2
+    exit 2
+  }
+  IFS='|' read -r active_tdd_evidence active_review_evidence < <(printf '%s' "$status_json" | python3 -c 'import json,sys
+state = json.load(sys.stdin)
+print(state.get("tddEvidence") or "", state.get("codeReviewEvidence") or "", sep="|")')
 fi
 
-# The same state-root resolution the recorded-summary attach uses below, so
-# the pointer store and the workflow state can never split across roots.
 state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/_advisor-sessions"
 mkdir -p "$state_dir"; chmod 700 "$state_dir"
 sid_file="$state_dir/${repo_key}-${normalized_slug}${active_wid:+-$active_wid}.sid"
@@ -181,18 +190,21 @@ if [[ -n "$phase" ]]; then
   gitnexus_excerpt=""; [[ -n "$gitnexus_file" ]] && gitnexus_excerpt=$(head -c 12000 -- "$gitnexus_file")
   tdd_excerpt=""; review_excerpt=""
   if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
-    workflow_state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/$repo_key"
-    owned_excerpt() { python3 -c 'import json,sys
-from pathlib import Path
+    owned_excerpt() {
+      python3 "$workflow_cli" evidence --repo "$repo_root" --evidence-id "$1" 2>/dev/null |
+        python3 -c 'import json,sys
 try:
-    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-except (OSError, ValueError):
+    record = json.load(sys.stdin)
+except (ValueError, OSError):
     raise SystemExit
-if data.get("workflowId") == sys.argv[2]:
-    print(json.dumps(data, sort_keys=True)[:4000])' "$1" "$active_wid"; }
-    [[ "$active_tdd" != "pending" ]] && tdd_excerpt=$(owned_excerpt "$workflow_state_dir/tdd-$producer_slug.json")
+if record.get("workflowId") == sys.argv[1]:
+    print(json.dumps(record.get("document"), sort_keys=True)[:4000])' "$active_wid"
+    }
+    [[ "$active_tdd" != "pending" && -n "$active_tdd_evidence" ]] &&
+      tdd_excerpt=$(owned_excerpt "$active_tdd_evidence")
     case "$active_review" in
-      passed|not-required) review_excerpt=$(owned_excerpt "$workflow_state_dir/review-$producer_slug.json") ;;
+      passed|not-required)
+        [[ -n "$active_review_evidence" ]] && review_excerpt=$(owned_excerpt "$active_review_evidence") ;;
     esac
   fi
   evidence="
@@ -247,7 +259,7 @@ if [[ ! -s "$output_file" ]] || [[ -z "$(tr -d '[:space:]' <"$output_file")" ]];
 fi
 
 if [[ "$phase" == "preflight-advice" ]]; then
-  python3 "$pass_state" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
+  python3 "$workflow_cli" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
     --stage preflight --source codex-advisor --verdict completed >/dev/null
 elif [[ "$phase" == "final-review" ]]; then
   last_line=$(awk 'NF {line=$0} END {print line}' "$output_file")
@@ -257,7 +269,7 @@ elif [[ "$phase" == "final-review" ]]; then
     "Verdict: context-mismatch") verdict=context-mismatch ;;
     *) printf 'error: final-review output lacks an exact terminal Verdict line\n' >&2; exit 2 ;;
   esac
-  python3 "$pass_state" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
+  python3 "$workflow_cli" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
     --stage final --source codex-advisor --verdict "$verdict" >/dev/null
 fi
 

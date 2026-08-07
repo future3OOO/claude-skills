@@ -93,7 +93,7 @@ If there are no findings, use empty arrays and name remaining proof gaps.
 After lead disposition, record the ordinary workflow summary:
 
 ```bash
-<review-json-producer> | python3 "$HOME/.claude/skills/code-review/scripts/record-review.py" \
+<review-json-producer> | python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-review \
   --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
   --resolved-model "<actual-model>" \
   --review-context-id "<review-context-id>" --input -

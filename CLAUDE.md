@@ -116,7 +116,7 @@ Use the `repo-production-workflow` skill as the default first skill for producti
 
 The full chain, in order — every named skill is INVOKED with the Skill tool by exact name (reading its `SKILL.md` does not satisfy the step):
 
-`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `record-production-code.py` and the gate's JSON verdict) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
+`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `workflow.py record-production-code` and the gate's JSON verdict) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
 
 Invocation policy:
 
@@ -172,13 +172,13 @@ Choose one stable task slug, begin its workflow state, then run the installed
 bootstrap wrapper with the same slug:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" begin \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" begin \
   --repo "$PWD" --slug "<stable-task-slug>" --intent "<user request>"
 python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
   --repo "$PWD" --workflow-slug "<stable-task-slug>" --intent "<user request>"
 ```
 
-The state file is workflow continuity only. It is not an attestation,
+The SQLite event ledger and its active projection are workflow continuity only. They are not an attestation,
 permission object, or Git authorization boundary.
 
 The output must begin with `REPO_CONTEXT_FORGE_REQUIRED_INTAKE`. Treat that intake and the following packet as the initial repository context. If the packet emits a blocker, stop normal repo analysis and surface the blocker; do not continue with empty target context.
@@ -226,7 +226,7 @@ Hook configuration lives in `~/.claude/settings.json`. Five facts govern how hoo
 
 - Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded before-edit sequence through production preflight, and docs, scratch, and non-repository paths are exempt.
 - Every admitted production edit, and every governance edit, invalidates downstream review readiness before quality feedback returns, so review and final review must be earned again. A production edit against a completed workflow remains blocked and terminal.
-- `PreCompact` and `SessionStart(compact|resume)` preserve and restore the chain; compaction never advances or waives a step.
+- `SessionStart(compact|resume)` restores the chain from committed SQLite state; compaction never advances or waives a step.
 - Incomplete work latches `Stop` with the exact `nextAction`; record an instance-bound `pause --slug <slug> --workflow-id <id> --reason` for a blocker the payload cannot show.
 - No hook parses Bash or authorizes Git.
 

@@ -1,0 +1,597 @@
+"""One public command-line Interface for repository workflow operations."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+from ._workflow_db import LedgerError, history
+from .preflight_document import validated_document
+from .repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity
+from .state_prune import prune
+from .state_store import tree_manifest, utc_timestamp
+from .workflow_documents import (
+    advisor_disposition_document,
+    gate_verdict,
+    review_summary,
+    validate_gate_result,
+)
+from .workflow_state import (
+    NO_INSTANCE_ID,
+    TDD_CLOSED,
+    WorkflowError,
+    advisor_disposition,
+    begin,
+    bound_state,
+    checkpoint,
+    commit_evidence_phase,
+    commit_review,
+    commit_tdd,
+    commit_verification,
+    complete,
+    evidence_document,
+    evidence_record,
+    instance_id,
+    pause,
+    read_workflow,
+    record_advisor_result,
+    safe_slug,
+    set_phase,
+    summary,
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+MAX_CAPTURE = 16000
+LEAD_PHASES = {"gitnexus", "implementation", "code-review"}
+PRODUCER_OWNED = {
+    "preflight": "preflight is recorder-owned; use workflow record-preflight",
+    "production-code": "production-code is recorder-owned; use workflow record-production-code",
+    "verification": "verification is runner-owned; use workflow verify",
+}
+
+
+def _repo(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--repo", "--cwd", dest="repo", default=".")
+
+
+def _instance(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--slug", required=True)
+    command.add_argument("--workflow-id", required=True)
+
+
+def _instance_command(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+    name: str,
+    help_text: str,
+) -> argparse.ArgumentParser:
+    command = commands.add_parser(name, help=help_text)
+    _repo(command)
+    _instance(command)
+    return command
+
+
+def _document_command(command: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    command.add_argument("--input", required=True)
+    return command
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog="workflow", description=__doc__)
+    commands = result.add_subparsers(dest="command", required=True)
+
+    command = commands.add_parser("begin", help="start and activate a workflow pass")
+    _repo(command)
+    command.add_argument("--slug", required=True)
+    command.add_argument("--intent", default="")
+
+    for name in ("status", "summary"):
+        command = commands.add_parser(name)
+        _repo(command)
+
+    command = commands.add_parser("history", help="read ordered accepted events")
+    _repo(command)
+    command.add_argument("--workflow-id")
+
+    command = commands.add_parser("evidence", help="read a logical evidence record")
+    _repo(command)
+    command.add_argument("--evidence-id", required=True)
+
+    command = commands.add_parser("set-phase", help="record a lead-owned phase")
+    _repo(command)
+    command.add_argument("--phase", required=True)
+    command.add_argument("--status", required=True)
+    command.add_argument("--findings")
+    command.add_argument("--slug")
+    command.add_argument("--workflow-id")
+
+    command = _instance_command(commands, "advisor-result", "record a completed advisor result")
+    command.add_argument("--stage", required=True)
+    command.add_argument("--source", required=True)
+    command.add_argument("--verdict", required=True)
+    command.add_argument("--findings")
+    command.add_argument("--reason")
+
+    command = _instance_command(commands, "advisor-disposition", "record lead disposition of advisor findings")
+    command.add_argument("--stage", required=True)
+    command.add_argument("--findings", required=True)
+    command.add_argument("--input")
+
+    command = _instance_command(commands, "pause", "record an instance-bound honest wait")
+    command.add_argument("--reason", required=True)
+
+    command = commands.add_parser("checkpoint", help="query advisor readiness without mutation")
+    _repo(command)
+    command.add_argument("--phase", required=True)
+
+    command = commands.add_parser("complete", help="complete a ready workflow")
+    _repo(command)
+    command.add_argument("--slug")
+    command.add_argument("--workflow-id")
+
+    _document_command(_instance_command(commands, "record-preflight", "validate and record production preflight"))
+    _document_command(_instance_command(commands, "record-production-code", "validate and record the pre-edit quality gate"))
+
+    command = commands.add_parser("tdd", help="run and record one real RED/GREEN candidate")
+    _repo(command)
+    command.add_argument("--slug", required=True)
+    mode = command.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--phase", choices=("red", "green"))
+    mode.add_argument("--not-required", metavar="REASON")
+    command.add_argument("--behavior")
+    command.add_argument("--seam", default="")
+    command.add_argument("--expected-failure", default="")
+    command.add_argument("--timeout", type=int, default=900)
+    command.add_argument("runner_command", nargs=argparse.REMAINDER)
+
+    command = commands.add_parser("verify", help="execute and record typed verification")
+    _repo(command)
+    command.add_argument("--slug", required=True)
+    command.add_argument("--kind", choices=("generic", "quality-gate"), default="generic")
+    command.add_argument("--base-ref")
+    command.add_argument("--timeout", type=int, default=900)
+    command.add_argument("runner_command", nargs=argparse.REMAINDER)
+
+    command = _document_command(_instance_command(commands, "record-review", "validate and record the lead code review"))
+    command.add_argument("--resolved-model", required=True)
+    command.add_argument("--review-context-id", required=True)
+
+    command = commands.add_parser("prune", help="report or apply workflow-state retirement")
+    command.add_argument("--apply", action="store_true")
+
+    return result
+
+
+def _mute_stdout() -> None:
+    descriptor = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(descriptor, sys.stdout.fileno())
+    finally:
+        os.close(descriptor)
+
+
+def _emit_json(value: object) -> None:
+    try:
+        print(json.dumps(value, sort_keys=True), flush=True)
+    except OSError:
+        # The command's mutation, when any, is already committed. A reporting
+        # failure cannot be re-labelled as a refused transition.
+        _mute_stdout()
+
+
+def _state(identity: RepoIdentity) -> dict[str, object]:
+    value = read_workflow(identity)
+    if value is None:
+        raise WorkflowError("no active workflow")
+    return value
+
+
+def _active_candidate(identity: RepoIdentity, value: str) -> tuple[dict[str, object], str, str]:
+    state = bound_state(identity, safe_slug(value))
+    if state.get("revalidation"):
+        raise WorkflowError(TDD_CLOSED)
+    if state.get("preflight") != "passed" or not state.get("preflightEvidence"):
+        raise WorkflowError("tdd requires recorded preflight evidence")
+    return state, str(state["slug"]), _workflow_id(state)
+
+
+def _run(command: list[str], identity: RepoIdentity, timeout: int) -> tuple[bytes, int, bool]:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(identity.root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+        return result.stdout or b"", result.returncode, False
+    except subprocess.TimeoutExpired as exc:
+        return (exc.stdout or b"") + (exc.stderr or b""), 124, True
+
+
+def _workflow_id(state: dict[str, object]) -> str:
+    value = instance_id(state)
+    if value is None:
+        raise WorkflowError(NO_INSTANCE_ID)
+    return value
+
+
+def _run_entry(raw: bytes, exit_code: int, timed_out: bool, **fields: object) -> dict[str, object]:
+    return {
+        **fields,
+        "exitCode": exit_code,
+        "timedOut": timed_out,
+        "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
+        "at": utc_timestamp(),
+    }
+
+
+def _print_output(raw: bytes) -> None:
+    output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
+    if output:
+        try:
+            print(output, end="" if output.endswith("\n") else "\n")
+        except OSError:
+            # A successful run is already committed by the time it reports, so a
+            # lost reporting channel must not be re-labelled as a refusal; a run
+            # that genuinely failed still returns 2 through the branch below.
+            _mute_stdout()
+
+
+def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:
+    state, slug, workflow_id = _active_candidate(identity, args.slug)
+    existing_id = state.get("tddEvidence") if isinstance(state.get("tddEvidence"), str) else None
+    existing = evidence_document(identity, existing_id)
+
+    if args.not_required is not None:
+        reason = args.not_required.strip()
+        if not reason:
+            raise ValueError("--not-required requires a non-empty reason")
+        if args.runner_command:
+            raise ValueError("--not-required does not accept a command")
+        runs = existing.get("runs") if isinstance(existing, dict) else None
+        if isinstance(runs, list) and any(isinstance(run, dict) and run.get("valid") is True for run in runs):
+            raise WorkflowError("--not-required cannot replace valid TDD evidence")
+        _, evidence_id = commit_tdd(
+            identity,
+            slug,
+            workflow_id,
+            {
+                "schemaVersion": 1,
+                "slug": slug,
+                "workflowId": workflow_id,
+                "status": "not-required",
+                "reason": reason,
+                "updatedAt": utc_timestamp(),
+            },
+            "not-required",
+            expected_evidence_id=existing_id,
+        )
+        _emit_json({"summaryId": evidence_id, "status": "not-required"})
+        return 0
+
+    behavior = str(args.behavior or "").strip()
+    seam = str(args.seam or "").strip()
+    command = args.runner_command[1:] if args.runner_command and args.runner_command[0] == "--" else args.runner_command
+    if not behavior:
+        raise ValueError("--behavior is required for RED/GREEN")
+    if not seam:
+        raise ValueError("--seam is required: name the real production Interface")
+    if not command:
+        raise ValueError("a command is required after --")
+
+    command_text = shlex.join(command)
+    same_instance = isinstance(existing, dict) and existing.get("workflowId") == workflow_id
+    matches = same_instance and all(existing.get(key) == value for key, value in {
+        "slug": slug,
+        "behavior": behavior,
+        "seam": seam,
+        "command": command_text,
+    }.items())
+    completed_cycle = same_instance and existing.get("status") in {"passed", "not-required"}
+    drifted = same_instance and not matches
+    if drifted and (args.phase == "green" or not completed_cycle):
+        raise WorkflowError("candidate does not match the active cycle; finish or regress the current candidate first")
+
+    raw, exit_code, timed_out = _run(command, identity, args.timeout)
+    expected = str(args.expected_failure or "").strip()
+    observed = bool(expected) and expected in raw.decode("utf-8", errors="replace")
+    prior_runs = existing.get("runs") if matches and isinstance(existing.get("runs"), list) else []
+    prior_red = any(
+        isinstance(run, dict) and run.get("phase") == "red" and run.get("valid") is True
+        for run in prior_runs
+    )
+    valid = (
+        not timed_out and exit_code != 0 and observed
+        if args.phase == "red"
+        else not timed_out and exit_code == 0 and prior_red
+    )
+    preserved = args.phase == "red" and matches and not valid and completed_cycle
+    new_cycle = args.phase == "red" and valid and not matches and (not same_instance or completed_cycle)
+    recorded = not preserved and (matches or new_cycle)
+    regression = args.phase == "green" and matches and not valid
+    run = _run_entry(
+        raw, exit_code, timed_out,
+        phase=args.phase, expectedFailure=expected or None, valid=valid,
+    )
+    evidence_id = existing_id
+    if recorded:
+        reopen = regression or (args.phase == "red" and valid and (new_cycle or completed_cycle))
+        action = "passed" if args.phase == "green" and valid else "reopen" if reopen else "in-progress"
+        _, evidence_id = commit_tdd(
+            identity,
+            slug,
+            workflow_id,
+            {
+                "schemaVersion": 1,
+                "slug": slug,
+                "workflowId": workflow_id,
+                "status": "passed" if args.phase == "green" and valid else "pending",
+                "behavior": behavior,
+                "seam": seam,
+                "command": command_text,
+                "runs": [*prior_runs, run] if matches else [run],
+                "updatedAt": utc_timestamp(),
+            },
+            action,
+            expected_evidence_id=existing_id,
+        )
+
+    _print_output(raw)
+    _emit_json({"summaryId": evidence_id, "phase": args.phase, "valid": valid, "exitCode": exit_code})
+    if not valid:
+        print(
+            "RED must fail for the expected reason."
+            if args.phase == "red"
+            else "GREEN must pass after a valid RED for the same command, behavior, and Seam.",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
+def _verification_key(run: dict[str, object]) -> str:
+    kind = run.get("kind")
+    return "quality-gate" if kind == "quality-gate" else f"generic:{run.get('command')}"
+
+
+def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
+    state = bound_state(identity, safe_slug(args.slug))
+    slug = str(state["slug"])
+    workflow_id = _workflow_id(state)
+    if state.get("implementation") != "passed":
+        raise WorkflowError("verification requires implementation")
+
+    existing_id = state.get("verificationLatestEvidence") if isinstance(state.get("verificationLatestEvidence"), str) else None
+    existing = evidence_document(identity, existing_id)
+    prior_runs = (
+        existing.get("runs")
+        if isinstance(existing, dict) and existing.get("workflowId") == workflow_id and isinstance(existing.get("runs"), list)
+        else []
+    )
+    quality_tree: dict[str, str] | None = None
+    binding_error: str | None = None
+    tree_before: dict[str, str] | None = None
+
+    if args.kind == "quality-gate":
+        if not args.base_ref:
+            raise ValueError("quality-gate verification requires --base-ref")
+        if args.runner_command:
+            raise ValueError("quality-gate verification runs the bundled gate and accepts no command")
+        try:
+            tree_before = tree_manifest(identity)
+        except RuntimeError as exc:
+            binding_error = str(exc)
+        command = [
+            sys.executable,
+            str(ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"),
+            "check",
+            "--repo",
+            str(identity.root),
+            "--base-ref",
+            args.base_ref,
+            "--json",
+        ]
+    else:
+        if args.base_ref:
+            raise ValueError("--base-ref belongs to --kind quality-gate")
+        command = args.runner_command[1:] if args.runner_command and args.runner_command[0] == "--" else args.runner_command
+        if not command:
+            raise ValueError("a command is required after --")
+
+    raw, exit_code, timed_out = _run(command, identity, args.timeout)
+    valid = not timed_out and exit_code == 0
+    gate: dict[str, object] | None = None
+    if args.kind == "quality-gate":
+        if binding_error is not None:
+            valid = False
+        try:
+            gate = validate_gate_result(json.loads(raw.decode("utf-8")))
+            valid = valid and gate.get("ok") is True
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            valid = False
+            binding_error = str(exc)
+        if valid:
+            try:
+                quality_tree = tree_manifest(identity)
+            except RuntimeError as exc:
+                valid = False
+                binding_error = str(exc)
+            # The manifest must be the tree the gate checked, not whatever the
+            # tree became while it ran.
+            if quality_tree is not None and quality_tree != tree_before:
+                valid = False
+                quality_tree = None
+                binding_error = "reviewable tree changed during the quality-gate run"
+
+    run = _run_entry(
+        raw, exit_code, timed_out,
+        kind=args.kind, command=shlex.join(command), valid=valid,
+    )
+    if args.kind == "quality-gate":
+        run["baseRef"] = args.base_ref
+        run["gate"] = gate
+        run["bindingError"] = binding_error
+    runs = [*prior_runs, run]
+    latest: dict[str, bool] = {}
+    for item in runs:
+        if isinstance(item, dict):
+            latest[_verification_key(item)] = item.get("valid") is True
+    has_generic = any(key.startswith("generic:") for key in latest)
+    status = "passed" if runs and has_generic and all(latest.values()) else "pending"
+    quality_gate_green = latest.get("quality-gate") is True
+    document = {
+        "schemaVersion": 1,
+        "slug": slug,
+        "workflowId": workflow_id,
+        "status": status,
+        "runs": runs,
+        "updatedAt": utc_timestamp(),
+    }
+    _, evidence_id = commit_verification(
+        identity,
+        slug,
+        workflow_id,
+        document,
+        status=status,
+        expected_evidence_id=existing_id,
+        quality_gate_tree=quality_tree,
+        quality_gate_green=quality_gate_green,
+    )
+
+    _print_output(raw)
+    _emit_json({
+        "evidenceId": evidence_id,
+        "exitCode": exit_code,
+        "kind": args.kind,
+        "verification": status,
+        "valid": valid,
+    })
+    if not valid:
+        print("verification command failed; verification stays pending until its rerun is green", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _record_phase(args: argparse.Namespace, identity: RepoIdentity, phase: str, key: str, value: object) -> int:
+    slug = safe_slug(args.slug)
+    document = {
+        "schemaVersion": 1,
+        "slug": slug,
+        "workflowId": args.workflow_id,
+        key: value,
+        "recordedAt": utc_timestamp(),
+    }
+    _, evidence_id = commit_evidence_phase(identity, slug, args.workflow_id, phase, document)
+    _emit_json({"evidenceId": evidence_id, "status": "passed"})
+    return 0
+
+
+def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "prune":
+        _emit_json(prune(apply=args.apply))
+        return 0
+
+    identity = resolve_repo_identity(args.repo)
+    if args.command == "begin":
+        _emit_json(begin(identity, args.slug, args.intent))
+    elif args.command == "status":
+        _emit_json(_state(identity))
+    elif args.command == "summary":
+        print(summary(identity))
+    elif args.command == "history":
+        _emit_json(history(identity, args.workflow_id))
+    elif args.command == "evidence":
+        value = evidence_record(identity, args.evidence_id)
+        if value is None:
+            raise WorkflowError("evidence not found")
+        _emit_json(value)
+    elif args.command == "set-phase":
+        phase = args.phase
+        if phase in PRODUCER_OWNED:
+            raise ValueError(PRODUCER_OWNED[phase])
+        if phase not in LEAD_PHASES:
+            raise ValueError("set-phase is lead-owned only for gitnexus, implementation, and code-review not-required")
+        if phase == "code-review" and (args.status != "not-required" or args.findings != "none"):
+            raise ValueError("code-review passed is recorder-owned; lead-owned set-phase permits only not-required with findings none")
+        _emit_json(set_phase(
+            identity,
+            phase,
+            args.status,
+            findings=args.findings,
+            slug=args.slug,
+            workflow_id=args.workflow_id,
+        ))
+    elif args.command == "advisor-result":
+        _emit_json(record_advisor_result(
+            identity,
+            args.slug,
+            args.workflow_id,
+            args.stage,
+            args.source,
+            args.verdict,
+            findings=args.findings,
+            reason=args.reason,
+        ))
+    elif args.command == "advisor-disposition":
+        if args.findings == "addressed" and args.input is None:
+            raise ValueError("an addressed disposition requires --input with the lead's disposition document")
+        if args.findings == "none" and args.input is not None:
+            raise ValueError("--input records an addressed disposition; findings none carries no document")
+        document = advisor_disposition_document(
+            args.input,
+            slug=safe_slug(args.slug),
+            workflow_id=args.workflow_id,
+            stage=args.stage,
+        ) if args.input else None
+        _emit_json(advisor_disposition(
+            identity,
+            args.slug,
+            args.workflow_id,
+            args.stage,
+            args.findings,
+            document=document,
+        ))
+    elif args.command == "pause":
+        _emit_json(pause(identity, args.slug, args.workflow_id, args.reason))
+    elif args.command == "checkpoint":
+        _emit_json(checkpoint(identity, args.phase))
+    elif args.command == "complete":
+        _emit_json(complete(identity, slug=args.slug, workflow_id=args.workflow_id))
+    elif args.command == "record-preflight":
+        return _record_phase(args, identity, "preflight", "document", validated_document(args.input))
+    elif args.command == "record-production-code":
+        return _record_phase(args, identity, "production-code", "gate", gate_verdict(args.input))
+    elif args.command == "tdd":
+        return _tdd(args, identity)
+    elif args.command == "verify":
+        return _verify(args, identity)
+    elif args.command == "record-review":
+        slug = safe_slug(args.slug)
+        document, status, findings = review_summary(
+            args.input,
+            slug=slug,
+            workflow_id=args.workflow_id,
+            resolved_model=args.resolved_model,
+            review_context_id=args.review_context_id,
+        )
+        _, evidence_id = commit_review(identity, slug, args.workflow_id, document, status, findings)
+        _emit_json({"summaryId": evidence_id, "status": status})
+        if status != "passed":
+            print("error: material review findings remain unresolved", file=sys.stderr)
+            return 2
+    else:
+        raise ValueError(f"unsupported workflow command: {args.command}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _dispatch(parser().parse_args(argv))
+    except (RepoIdentityError, LedgerError, WorkflowError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2

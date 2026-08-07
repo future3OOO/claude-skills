@@ -17,6 +17,13 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from ._workflow_db import (
+    DATABASE_FILES,
+    DATABASE_NAME,
+    WorkflowRetentionItem,
+    apply_retention,
+    retention_inventory,
+)
 from .state_store import _flock, claude_home, read_json
 
 # Measured review chains commonly span two to four passes, against a current
@@ -195,6 +202,9 @@ def _classify(slot: Path, workflow: dict[str, object] | str | None) -> list[dict
             entries.append({"path": path.name, "decision": "retained", "reason": "telemetry"})
         elif path.name == LOCK:
             entries.append({"path": path.name, "decision": "retained", "reason": "lock"})
+        elif path.name in DATABASE_FILES:
+            entries.append({"path": path.name, "decision": "retained",
+                            "reason": "non-authoritative-database"})
         elif path.name == WORKFLOW:
             if workflow:
                 entries.append({"path": path.name, "decision": "retained",
@@ -318,6 +328,76 @@ def _remove(slot: Path, entries: list[dict[str, str]], planned: dict[str, tuple[
                 entry["decision"], entry["reason"] = "skipped", f"unlink-failed: {exc}"
 
 
+
+def _workflow_entries(
+    inventory: tuple[WorkflowRetentionItem, ...],
+) -> list[dict[str, object]]:
+    """Apply estate retention policy to ledger-owned history facts."""
+    historical = [item.workflow_id for item in inventory if not item.active]
+    keep = set(historical[:RETAINED_HISTORIES])
+    entries: list[dict[str, object]] = []
+    for item in inventory:
+        if item.active:
+            decision, reason = "retained", "active-workflow"
+        elif item.workflow_id in keep:
+            decision, reason = "retained", "recent-history"
+        else:
+            decision, reason = "removable", "beyond-retention"
+        entries.append({
+            "workflowId": item.workflow_id,
+            "slug": item.slug,
+            "latestEventId": item.latest_event_id,
+            "decision": decision,
+            "reason": reason,
+        })
+    return entries
+
+
+def _apply_database(
+    database: Path,
+    inventory: tuple[WorkflowRetentionItem, ...],
+    workflows: list[dict[str, object]],
+) -> str:
+    """Map the ledger transaction outcome onto estate-owned report reasons."""
+    remove_ids = {
+        str(entry["workflowId"])
+        for entry in workflows
+        if entry["decision"] == "removable"
+    }
+    result = apply_retention(database, database.parent.name, inventory, remove_ids)
+    if result.status == "applied":
+        for entry in workflows:
+            if entry["decision"] == "removable":
+                entry["decision"] = "removed"
+        return "applied"
+    if result.status == "changed":
+        workflows[:] = _workflow_entries(result.current)
+    reason = {
+        "busy": "busy-database",
+        "changed": "reclassified-under-lock",
+        "not-authoritative": "database-not-authoritative",
+    }.get(result.status, f"database-apply-failed: {result.error or 'unknown failure'}")
+    for entry in workflows:
+        if entry["decision"] == "removable":
+            entry["decision"], entry["reason"] = "skipped", reason
+    return "skipped"
+
+
+def _sqlite_entries(slot: Path) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for child in sorted(slot.iterdir()):
+        if child.name in DATABASE_FILES:
+            reason = "authoritative-database"
+        elif child.name == TELEMETRY:
+            reason = "telemetry"
+        elif child.name == LOCK:
+            reason = "lock"
+        else:
+            reason = "legacy-awaiting-measured-retirement"
+        entries.append({"path": child.name, "decision": "retained", "reason": reason})
+    return entries
+
+
 def _retire_sessions(root: Path, retired: dict[str, str], pinned: set[str], apply: bool) -> list[dict[str, str]]:
     """Classifiable advisor pointers follow their workflow's decision.
 
@@ -388,9 +468,10 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
     """Classify every artifact under the state root, deleting only when applying.
 
     Reporting never creates the root, a slot, or a lock file, so a dry run
-    cannot bring into existence the state it is describing. Applying takes each
-    slot's lock non-blocking inside a directory that already exists; a slot held
-    by a live writer is skipped whole and reported, and its lock is left alone.
+    cannot bring into existence the state it is describing. Legacy apply uses
+    the slot's non-blocking filesystem lock. SQLite apply delegates transaction
+    ordering and under-lock inventory revalidation to the ledger owner; a busy
+    store is skipped whole and reported.
     """
     if root is None:
         # Resolved the way state_root() does, minus its secure_dir call: that
@@ -402,18 +483,40 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
         return {"root": str(root), "applied": apply, "slots": slots}
 
     for slot in sorted(root.iterdir()):
-        # `sessions` is shared and out of scope; `_advisor-sessions` is
-        # handled after the loop, where pointers follow their workflow's fate.
-        # A symlink is rejected before is_dir would follow it: no writer
-        # creates one, and traversing it could delete outside the root.
+        # Shared association stores are handled after repository slots.
         if not _walkable(slot) or slot.name.startswith("_") or slot.name == "sessions":
             continue
         try:
+            database = slot / DATABASE_NAME
+            if database.is_file() and not database.is_symlink():
+                inventory, error = retention_inventory(database, slot.name)
+                if inventory is not None:
+                    workflows = _workflow_entries(inventory)
+                    status = _apply_database(database, inventory, workflows) if apply else "reported"
+                    slots.append({
+                        "slot": slot.name,
+                        "store": "sqlite",
+                        "status": status,
+                        "workflows": workflows,
+                        "entries": _sqlite_entries(slot),
+                    })
+                    continue
+                if error is not None:
+                    slots.append({
+                        "slot": slot.name,
+                        "store": "unknown",
+                        "status": "skipped",
+                        "reason": f"database-unreadable: {error}",
+                        "workflows": [],
+                        "entries": [
+                            {"path": child.name, "decision": "retained", "reason": "database-unreadable"}
+                            for child in sorted(slot.iterdir())
+                        ],
+                    })
+                    continue
             entries = _classify(slot, _live(slot))
         except OSError as exc:
-            # One slot's filesystem failure stays inside that slot; the rest
-            # of the estate is still classified and reported.
-            slots.append({"slot": slot.name, "status": "skipped",
+            slots.append({"slot": slot.name, "store": "unknown", "status": "skipped",
                           "reason": f"classification-failed: {exc}", "entries": []})
             continue
         planned = {
@@ -426,17 +529,16 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
                     if acquired:
                         _remove(slot, entries, planned)
                     else:
-                        slots.append({"slot": slot.name, "status": "skipped",
+                        slots.append({"slot": slot.name, "store": "legacy", "status": "skipped",
                                       "reason": "busy: another process holds the workflow lock",
                                       "entries": entries})
                         continue
             except OSError as exc:
-                # A lock that cannot even be opened is this slot's failure,
-                # not the estate's; nothing was removed, so skip it whole.
-                slots.append({"slot": slot.name, "status": "skipped",
+                slots.append({"slot": slot.name, "store": "legacy", "status": "skipped",
                               "reason": f"lock-failed: {exc}", "entries": entries})
                 continue
-        slots.append({"slot": slot.name, "status": "applied" if apply else "reported", "entries": entries})
+        slots.append({"slot": slot.name, "store": "legacy",
+                      "status": "applied" if apply else "reported", "entries": entries})
 
     # A pointer may follow its workflow out only when this run really removed
     # that history; any other outcome for the instance pins the pointer.
@@ -444,7 +546,7 @@ def prune(root: Path | None = None, *, apply: bool = False) -> dict[str, object]
     pinned: set[str] = set()
     removed_like = "removed" if apply else "removable"
     for report_slot in slots:
-        for entry in report_slot["entries"]:
+        for entry in [*report_slot.get("workflows", []), *report_slot.get("entries", [])]:
             instance = entry.get("workflowId")
             if not isinstance(instance, str):
                 continue

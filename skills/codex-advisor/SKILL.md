@@ -79,7 +79,7 @@ rather than a review. The envelope's `graphEvidence` should carry `context`
 for each edited symbol plus `impact` in both directions with `includeTests`.
 
 Before the expensive consult the wrapper runs the read-only
-`pass-state.py checkpoint --phase <phase>` query and refuses when the
+`workflow.py checkpoint --phase <phase>` query and refuses when the
 checkpoint is not ready: `preflight-advice` requires Repo Context Forge and
 GitNexus recorded; `final-review` requires verification passed and a terminal
 code-review state. The delayed result still revalidates slug and workflowId at
@@ -150,7 +150,7 @@ The wrapper itself records the raw result. After a completed preflight
 consult, record its lead-owned disposition before production preflight:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings none
 ```
 
@@ -165,9 +165,7 @@ with exactly one entry per finding and no extras. Each disposition is `fixed`,
 `evidence` text, and `accepted-follow-up` carries a `reference` in its place,
 validated as present, not as true. Validation is structural — it proves every
 finding carries a dispositioned claim at a fixed path, never that the judgment
-is right. The document lands
-at `disposition-<stage>-<slug>.json` in the pass's state directory, written
-atomically with the transition, so a refusal changes neither. `--findings none`
+is right. The document is stored under a logical evidence identity in the same SQLite transaction as the disposition, so a refusal changes neither. `--findings none`
 takes no document and clears any earlier one for that stage.
 
 For an unavailable consult, record the full
@@ -175,7 +173,7 @@ slug- and instance-bound command; no disposition is needed and final review
 has no unavailable route:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   advisor-result --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
   --stage preflight --source codex-advisor \
   --verdict unavailable --reason "<measured transport failure>"
@@ -185,7 +183,7 @@ After validating final-review output, record the final disposition the same
 way:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
   --stage final --findings addressed --input <disposition.json>
 ```

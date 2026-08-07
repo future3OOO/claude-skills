@@ -11,7 +11,7 @@ Use the production-preflight skill first on before-edit turns that require expli
 In a governed production workflow, invoke this skill after the RED or
 not-required TDD decision and before production, configuration, or runtime
 implementation edits; the test edit that establishes RED may precede it. Record
-the step with `record-production-code.py` and the bundled gate's JSON verdict
+the step with `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-production-code` and the bundled gate's JSON verdict
 (a clean-baseline run over the pre-implementation tree), then keep
 this doctrine active through implementation and final verification.
 

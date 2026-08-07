@@ -24,6 +24,7 @@ from hooks.lib.state_store import (  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     NO_INSTANCE_ID,
     JsonObject,
+    WorkflowError,
     completion_missing,
     instance_id,
     read_workflow,
@@ -54,14 +55,21 @@ def _terminal(state: JsonObject) -> bool:
     return state.get("phase") == "complete" and not state.get("revalidation")
 
 
-def _latchable(state: JsonObject | None) -> bool:
+def _read_candidate(identity: RepoIdentity) -> tuple[JsonObject | None, str | None]:
+    try:
+        return read_workflow(identity), None
+    except WorkflowError as exc:
+        return None, str(exc)
+
+
+def _latchable(state: JsonObject | None, read_error: str | None = None) -> bool:
     """A pass with work genuinely outstanding, ignoring this stop's transient conditions.
 
     One predicate for both the latch decision and the measurement below, so the
     condition that withholds a latch cannot drift from the condition that counts
     one as withheld.
     """
-    return (
+    return bool(read_error) or (
         state is not None
         and not _terminal(state)
         and not state.get("paused")
@@ -71,7 +79,7 @@ def _latchable(state: JsonObject | None) -> bool:
 
 def _candidates(
     payload: dict[str, object], session: str | None, running_work: bool,
-) -> list[tuple[RepoIdentity, JsonObject | None]]:
+) -> list[tuple[RepoIdentity, JsonObject | None, str | None]]:
     """The slots this Stop consults: the repositories the session edited in.
 
     Associations replace the candidate set; they never extend it. The payload's
@@ -91,29 +99,43 @@ def _candidates(
     # No session, no associations: a payload that carries no id belongs to no
     # session, so it reads nothing and takes the cwd fallback below, which is
     # exactly what it did before associations existed.
-    associated = (
-        [(identity, read_workflow(identity)) for identity in session_associations(session)]
-        if session is not None else []
-    )
+    associated = []
+    if session is not None:
+        for identity in session_associations(session):
+            state, read_error = _read_candidate(identity)
+            associated.append((identity, state, read_error))
     if not associated:
         identity = try_resolve_repo_identity(working_directory(payload))
-        return [] if identity is None else [(identity, read_workflow(identity))]
-    if not running_work and not any(_latchable(state) for _, state in associated):
+        if identity is None:
+            return []
+        state, read_error = _read_candidate(identity)
+        return [(identity, state, read_error)]
+    if not running_work and not any(_latchable(state, read_error) for _, state, read_error in associated):
         # Only a latch this rule actually cost: with work running, or with an
         # association still able to latch, the baseline would not have blocked
         # here either, and counting that would overstate the gap.
         identity = try_resolve_repo_identity(working_directory(payload))
-        if identity is not None and all(identity.key != other.key for other, _ in associated):
-            suppressed = read_workflow(identity)
-            if _latchable(suppressed):
+        if identity is not None and all(identity.key != other.key for other, _, _ in associated):
+            suppressed, suppressed_error = _read_candidate(identity)
+            if _latchable(suppressed, suppressed_error):
                 append_stop_latch_event(identity, {
                     "event": "cwd-suppressed", "session": session, "repo": identity.key,
-                    "slug": suppressed.get("slug"), "workflowId": instance_id(suppressed),
+                    "slug": suppressed.get("slug") if suppressed else None,
+                    "workflowId": instance_id(suppressed) if suppressed else None,
                 })
     return associated
 
 
-def _context(identity: RepoIdentity, state: JsonObject | None) -> str | None:
+def _state_summary(identity: RepoIdentity, read_error: str | None) -> str:
+    if read_error:
+        return (
+            f"Workflow state unavailable: {read_error}. Unknown is not green; "
+            "repair or explicitly retire the authoritative state before continuing."
+        )
+    return summary(identity)
+
+
+def _context(identity: RepoIdentity, state: JsonObject | None, read_error: str | None) -> str | None:
     """One slot's bounded feedback, or None when it has nothing to report."""
     tracked = _tracked(identity.root)
     try:
@@ -138,7 +160,7 @@ def _context(identity: RepoIdentity, state: JsonObject | None) -> str | None:
         "Non-blocking completion feedback. Unknown is not green.\n"
         + changed_line
         + "\n"
-        + summary(identity)
+        + _state_summary(identity, read_error)
         + "\nblast radius: callers=unknown; callees=unknown until packet-scoped GitNexus analysis runs"
         + "\nAny production edit after review makes code review and final review pending."
     )[:3600]
@@ -158,14 +180,14 @@ def main() -> int:
     repeat = payload.get("stop_hook_active") is True
 
     already_shown = False
-    for identity, state in candidates:
+    for identity, state, read_error in candidates:
         # running_work first: it is the cheap release the original guard
         # short-circuited on, and evaluating the readiness check ahead of it would
         # run completion_missing on a stop that is being permitted anyway.
-        if running_work or not _latchable(state):
+        if running_work or not _latchable(state, read_error):
             continue
-        latch_summary = summary(identity)
-        workflow_id = instance_id(state)
+        latch_summary = _state_summary(identity, read_error)
+        workflow_id = instance_id(state) if state else None
         # A replacement pass can reproduce the previous summary verbatim, so the
         # release compares the instance too and never inherits another pass's block.
         fingerprint = f"{workflow_id}:{latch_summary}"
@@ -177,25 +199,30 @@ def main() -> int:
             # been shown yet, and one already-shown slot must not starve it.
             append_stop_latch_event(identity, {
                 "event": "spun", "session": feedback_session, "repo": identity.key,
-                "slug": state.get("slug"), "workflowId": workflow_id,
+                "slug": state.get("slug") if state else None, "workflowId": workflow_id,
             })
             already_shown = True
             continue
         recovery = (
-            f"Continue that action, or record an honest wait with pass-state.py pause "
+            "Recovery: repair or explicitly retire the corrupt authoritative workflow state before continuing."
+            if read_error
+            else
+            f"Continue that action, or record an honest wait with workflow.py pause "
             f"--slug '{state.get('slug')}' --workflow-id '{workflow_id}' --reason '<why>' for blockers "
             "the payload cannot see (running background tasks and scheduled wakeups already release the latch)."
             if workflow_id
             else f"Recovery: {NO_INSTANCE_ID}."
         )
+        next_action = state.get("nextAction") if state else "repair-workflow-state"
         reason = (
             latch_summary
-            + f"\nStop latched: the active workflow is incomplete. nextAction: {state.get('nextAction')}. "
+            + f"\nStop latched: the active workflow is incomplete. nextAction: {next_action}. "
             + recovery
         )[:3600]
         append_stop_latch_event(identity, {
-            "event": "latched", "session": feedback_session, "repo": identity.key, "slug": state.get("slug"),
-            "workflowId": workflow_id, "nextAction": state.get("nextAction"),
+            "event": "latched", "session": feedback_session, "repo": identity.key,
+            "slug": state.get("slug") if state else None,
+            "workflowId": workflow_id, "nextAction": next_action,
         })
         print(json.dumps({"decision": "block", "reason": reason}))
         return 0
@@ -203,7 +230,7 @@ def main() -> int:
         return 0
 
     sections = []
-    for identity, state in candidates:
+    for identity, state, read_error in candidates:
         # The latch condition no longer holds: log how the last-latched episode
         # ended so the log carries outcomes, not just firings, and clear the
         # fingerprint so the next incomplete pass latches fresh. Guarded on state
@@ -215,7 +242,7 @@ def main() -> int:
                 "event": "resolved", "how": how, "session": feedback_session, "repo": identity.key,
                 "slug": state.get("slug"), "workflowId": instance_id(state),
             })
-        context = _context(identity, state)
+        context = _context(identity, state, read_error)
         if context is not None and stop_session_swap(identity, feedback_session, "message", context) != context:
             sections.append(context)
 
