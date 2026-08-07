@@ -105,10 +105,8 @@ def duplicate_added_blocks(snapshot: EvaluationSnapshot) -> list[dict[str, objec
 def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:
     """Cumulative growth per role, reported every run and warning-only.
 
-    The repository's ~500 net review budget only chooses pass or warn; it never
-    suppresses the evidence. Without a caller-supplied base the totals cover
-    only the working delta, so the cumulative claim is visibly incomplete
-    rather than silently clean.
+    The ~500 net budget only chooses pass or warn, never suppresses evidence;
+    an unbased run's cumulative claim is visibly incomplete, never silently clean.
     """
     growth = snapshot.growth()
     gaps = snapshot.gaps()

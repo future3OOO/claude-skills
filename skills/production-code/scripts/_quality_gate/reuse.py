@@ -27,8 +27,7 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding
         return [], [], _reuse_rule(snapshot, [], gaps)
     # Every production entry's added lines are nearby-call evidence — a new
     # delegating wrapper legitimately calls its owner right beside its own
-    # definition, including on the declaration line itself. What counts as a
-    # call is decided per candidate in _symbol_is_called_nearby.
+    # definition; what counts as a call is per-candidate in _symbol_is_called_nearby.
     added_by_file = {
         entry.path: entry.added_lines()
         for entry in snapshot.role_entries("production")
@@ -46,10 +45,9 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding
 def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps: tuple[str, ...]) -> Finding:
     """The reuse rule's own evaluation record.
 
-    Truncated or skipped baseline discovery reports `incomplete`: a scan that
-    never read a file has not seen the owner it would have matched. The
-    candidate side is incomplete too when hunks are unattributed, capture
-    failed, or a production entry's counts were never measured.
+    Truncated or skipped discovery reports `incomplete`: a scan that never
+    read a file has not seen the owner it would have matched; unattributed
+    hunks, failed capture, and unmeasured counts do the same.
     """
     stored = _stored_classification(snapshot)
     errors = [finding for finding in findings if finding.severity == "error"]
@@ -90,11 +88,8 @@ def _reuse_rule(snapshot: EvaluationSnapshot, findings: list[ReuseFinding], gaps
 
 
 def _stored_classification(snapshot: EvaluationSnapshot) -> dict[str, tuple[str, str]]:
-    """Role and language per path, as the snapshot already resolved them.
-
-    Built once per evaluation: the baseline index can hold thousands of paths,
-    so a scan per lookup would make anchoring quadratic in the change size.
-    """
+    """Role and language per path, built once per evaluation: a scan per
+    lookup would make anchoring quadratic in the change size."""
     stored = {entry.path: (entry.classification.role, entry.classification.language) for entry in snapshot.entries}
     stored.update({base.path: (base.role, base.language) for base in snapshot.baseline})
     return stored
@@ -109,10 +104,9 @@ def _symbol_anchor(stored: dict[str, tuple[str, str]], path: str, symbol: str) -
 def _regions(stored: dict[str, tuple[str, str]], findings: list[ReuseFinding]) -> list[dict[str, object]]:
     """Ordered exact regions: the candidate anchor and the owner it matched.
 
-    Role and language come from the snapshot's stored classification, never
-    re-derived here. Ordering is canonical - anchor, evidence role, path, then
-    display line - so the serialized order is a property of the finding rather
-    than of the order matches happened to be scored in.
+    Role and language come from the stored classification, never re-derived;
+    canonical ordering makes serialized order a property of the finding, not
+    of match scoring order.
     """
     regions = []
     for item in findings:
@@ -126,12 +120,8 @@ def _regions(stored: dict[str, tuple[str, str]], findings: list[ReuseFinding]) -
                 "role": role,
                 "language": language,
                 "displayLine": line,
-                # A SYMBOL anchor, named for what it hashes. The architecture's
-                # content anchor hashes canonical implementation bytes; the
-                # normalization that produces them belongs to #76's duplicate
-                # family, so this slice does not claim one it did not compute.
-                # Stable under the line moves and rebases that shift
-                # displayLine, which is what the finding ID relies on.
+                # A symbol anchor, stable under the line moves and rebases
+                # that shift displayLine, which is what the finding ID relies on.
                 "symbolAnchor": _symbol_anchor(stored, path, symbol),
                 "evidenceRole": evidence_role,
             })

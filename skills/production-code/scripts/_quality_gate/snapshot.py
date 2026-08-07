@@ -71,9 +71,7 @@ class EvaluationSnapshot:
     unattributed: tuple[str, ...]
     capture_gaps: tuple[str, ...]
     # Caller-supplied evidence, parsed once and frozen here with everything
-    # else a detector reads. Threading it separately let a detector see
-    # evidence the snapshot did not, which is the second source of truth the
-    # canonical evaluation exists to remove.
+    # else a detector reads.
     packet_paths: frozenset[str]
     gitnexus_boosts: dict[str, int]
     gitnexus_warnings: tuple[str, ...]

@@ -120,11 +120,7 @@ def _evaluation_summary(snapshot: EvaluationSnapshot, findings: list[Finding]) -
 def _growth_warning(growth_rule: Finding) -> str:
     """The measured growth, whether or not the claim is also incomplete.
 
-    Keying on `status == "finding"` suppressed this whenever the run also had
-    gaps - which is every unbased edit-time run, the noisiest caller there is.
-    Those runs reported "analysis incomplete" and never mentioned that the
-    change was hundreds of lines over budget. Incompleteness qualifies the
-    number; it does not delete it.
+    Incompleteness qualifies the number; it does not delete it.
     """
     net = growth_rule.evidence["humanAuthored"]["net"]
     if net <= 500:
@@ -166,10 +162,8 @@ def _changed_file_failures(snapshot: EvaluationSnapshot) -> tuple[list[str], lis
     return conflict_files, temp_files
 
 
-# The immediate checks, each stated once: the check name, the error it reports
-# when it finds something, how much of it to sample, and which gap set makes an
-# otherwise-clean result unknown. Enumerating these separately for the error
-# list and again for the check list is how the two drifted apart.
+# The immediate checks, each stated once: name, the error reported on a find,
+# sample size, and which gap set makes an otherwise-clean result unknown.
 _SIMPLE_CHECKS = (
     ("no-merge-conflict-markers", "merge conflict markers found in {n} file(s)", 10, "capture"),
     ("no-temp-artifacts", "temporary artifact paths detected in {n} changed file(s)", 10, "capture"),
@@ -197,11 +191,8 @@ def _checks(
     attribution: tuple[str, ...],
 ) -> list[dict[str, object]]:
     def outcome(passed: bool, gaps: tuple[str, ...]) -> dict[str, object]:
-        """A rule that could not see its whole scope is unknown, never a pass.
-
-        A violation it did see stays a violation: unseen scope cannot un-see
-        it, so only a would-be pass is downgraded to unknown.
-        """
+        """A rule that could not see its whole scope is unknown, never a pass;
+        a violation it did see stays a violation."""
         if not passed:
             return {"passed": False, "status": "finding", **({"gaps": list(gaps)} if gaps else {})}
         if gaps:

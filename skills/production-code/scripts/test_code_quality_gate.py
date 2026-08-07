@@ -38,11 +38,8 @@ def _load_path_policy(path: Path):
 
 
 class _SourceRepositoryUnavailable(Exception):
-    """The source checkout this suite characterizes is not reachable.
-
-    Raised only when no repository is found — never for a repository that is
-    present but missing something a test needs, which stays a hard failure.
-    """
+    """Raised only when no source checkout is found — a repository that is
+    present but missing something a test needs stays a hard failure."""
 
 
 def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -50,11 +47,8 @@ def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 def source_repo() -> Path:
-    """The repository whose history the characterization tests read.
-
-    The estate installs these scripts outside any checkout, so ask Git rather
-    than counting parent directories.
-    """
+    """The repository whose history the characterization tests read; the
+    estate installs these scripts outside any checkout, so ask Git."""
     res = run(["git", "rev-parse", "--show-toplevel"], SCRIPT_DIR)
     if res.returncode != 0:
         raise _SourceRepositoryUnavailable(f"{SCRIPT_DIR} is not inside a git checkout")
@@ -118,11 +112,7 @@ def snapshot_paths(repo: Path) -> set[str]:
 
 
 def in_repo(fn) -> None:
-    """Run fn against a fresh real repository, always cleaned up.
-
-    The imperative form, for a test that runs several scenarios before it
-    asserts across them.
-    """
+    """Run fn against a fresh real repository, always cleaned up."""
     repo = create_repo()
     try:
         fn(repo)
@@ -220,10 +210,8 @@ def test_duplicate_added_block_fails(repo: Path) -> None:
     assert payload["hardRules"]["noDuplication"]["passed"] is False
 
 
-# One quality-escape payload per row and the cleanup verdict it must produce.
-# The test-role rows prove the exemption boundary: typed test fakes stay
-# green, fake-green swallowed asserts do not. Markers are assembled so this
-# file is not itself flagged.
+# One quality-escape payload per row: typed test fakes stay green, fake-green
+# swallowed asserts do not. Markers are assembled so this file is not flagged.
 _ESCAPE_ROWS = (
     ("bare-noqa", "src/sloppy.py",
      "import os  # no" + "qa\n\n\ndef sloppy() -> str:\n    return os.sep\n", True),
@@ -272,12 +260,9 @@ def test_large_growth_is_warning_only(repo: Path) -> None:
     assert any("QG54-GROWTH-CUMULATIVE" in warning for warning in growth_check["warnings"]), growth_check
 
 
-# Each row is one reuse-scoring behaviour: a committed baseline, a candidate
-# change, and the exact verdict the scorer must produce. "no-match" rows prove
-# the named shape never reaches the reuse evidence; match rows prove detection
-# AND that the finding names the real owner. The behaviours are the contract,
-# not the fixtures they used to live in; every row is independently
-# falsifiable.
+# Each row is one reuse-scoring behaviour: "no-match" rows prove the named
+# shape never reaches the reuse evidence; match rows prove detection AND that
+# the finding names the real owner.
 #
 # name, baseline files, deleted after commit, candidate files, staged,
 # extra gate args (an "@name" argument resolves to a file inside the repo),
@@ -319,8 +304,7 @@ _REUSE_ROWS = (
      {"pkg/test_loader.py": "def test_reads(tmp_path) -> None:\n"
       "    write(tmp_path / 'a.py', 'def read_current(p): return open(p).read()')\n    assert True\n"},
      False, (), "no-match"),
-    # A comment explaining a change is prose, not a second implementation, even
-    # in the same subtree as a real reader; the .py change in the same diff is
+    # Prose is not a second implementation; the .py change in the same diff is
     # what puts the committed reader into the existing-symbol index at all.
     ("comment-prose-is-not-a-risky-block",
      {"skills/gate/scripts/context.py": "def read_current(path: str) -> str:\n    return open(path).read()\n"}, (),
@@ -360,11 +344,8 @@ _REUSE_ROWS = (
      {"src/users.py": _OWNER}, True, ("--base-ref", "HEAD", "--staged-only"),
      ("existingFile", "src/ids.py")),
     # In a new Python file an unqualified same-name call binds to the local
-    # definition, so only a qualified call proves delegation to the owner: the
-    # one-line wrapper's same-line qualified call suppresses the match, a
-    # multi-line delegating wrapper's call counts without counting its own
-    # definition line, and a reimplementation that merely calls itself
-    # elsewhere proves nothing.
+    # definition, so only a qualified call proves delegation to the owner;
+    # a reimplementation that merely calls itself elsewhere proves nothing.
     ("one-line-wrapper-delegates", {"src/ids.py": _OWNER}, (),
      {"src/oneline.py": "from src import ids\n\n\n"
       "def normalize_user_id(value: str) -> str: return ids.normalize_user_id(value)\n"},
@@ -495,12 +476,11 @@ def test_separate_hunks_do_not_form_one_duplicate(repo: Path) -> None:
     assert code == 0, json.dumps(payload["errors"], indent=2)
 
 
-# Every way scope can go missing, and the proof that none of them may read as
-# clean. The affected rule reports incomplete and names the gap; its check and
-# hard-rule projections drop to unknown; error-class capture failures fail the
-# run outright while every repo-reading check stays not-passed. "*" sweeps all
-# checks/hard rules except gitnexus-context and consequenceCoverage, which
-# evaluate caller input only and are legitimately untouched by capture gaps.
+# Every way scope can go missing: the affected rule reports incomplete and
+# names the gap, its projections drop to unknown, and error-class capture
+# failures fail the run outright. "*" sweeps all checks/hard rules except
+# gitnexus-context and consequenceCoverage, which evaluate caller input only
+# and are legitimately untouched by capture gaps.
 #
 # name, git config, baseline files, candidate files (bytes stay unmeasured
 # binary), staged, gate args, expectations.
@@ -531,10 +511,9 @@ _INCOMPLETE_ROWS = (
       "evalGap": "no caller-supplied base"}),
     ("missing-base-ref", None, {}, {"src/app.py": "VALUE = 1\n"}, False, ("--base-ref", "deadbeef"),
      {"code": 2, "error": "base-ref not found", "growth": "", "reuse": "", "checks": "*", "hardRules": "*"}),
-    # A clean filter that emits different bytes on every read makes each
-    # capture pass stage different content: a tree assembled from moving
-    # content describes no state that ever existed, so the gate reports drift
-    # rather than evaluating it.
+    # A clean filter that emits different bytes on every read stages different
+    # content per capture pass: the gate must report drift, never evaluate a
+    # state that never existed.
     ("capture-drift", ("filter.drift.clean", "sh -c 'cat >/dev/null; date +%s%N'"), {},
      {".gitattributes": "drifty.txt filter=drift\n", "drifty.txt": "content the filter rewrites every read\n"},
      False, ("--base-ref", "HEAD"),
@@ -608,17 +587,11 @@ def _incomplete_row(repo, config, baseline, candidate, staged, args, expect, nam
 def test_promotion_requires_an_active_intrinsically_passed_warning(repo: Path) -> None:
     # --fail-on-warnings promotes an eligible ACTIVE warning. Three states of
     # the same eligible rule, each an independently falsifiable row:
-    #
-    #   found-nothing-and-blind  the rule could not finish discovery and found
-    #                            nothing, so its intrinsic result is unknown.
-    #                            Promoting it would make missing scope itself
-    #                            the failure, and would fail every truncated
-    #                            run that had nothing to say.
-    #   clean                    nothing found, nothing missed. Promoting this
-    #                            would fail every clean run on the planet.
-    #   found-and-blind          the rule DID find warnings and also could not
-    #                            see everything. Both facts survive: the
-    #                            incompleteness is reported AND it promotes.
+    #   found-nothing-and-blind  intrinsic result unknown; promoting would
+    #                            make missing scope itself the failure.
+    #   clean                    promoting would fail every clean run.
+    #   found-and-blind          both facts survive: the incompleteness is
+    #                            reported AND it promotes.
     orders = "def resolve_order(value: str) -> str:\n    return value.strip()\n"
 
     # name, baseline files under src/, candidate src/candidate.py, promoted?, exit
@@ -655,14 +628,10 @@ def _promotion_row(repo: Path, baseline: dict, candidate: str, name: str, expect
 
 @with_repo
 def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -> None:
-    # Content-anchored identity: line numbers are display provenance, so an
-    # unrelated insertion above a match must move the reported region without
-    # moving the finding's ID. An ID that shifts with a rebase or a comment
-    # cannot carry a disposition across rounds, which is the whole point of it.
-    # Paths are provenance too: "Rename/move-only therefore preserves the
-    # debt's ID" (ADR :410-411), so moving the reimplementation to a different
-    # path keeps the ID a disposition was attached to, while the region still
-    # reports the new path.
+    # Content-anchored identity: line numbers and paths are display
+    # provenance, so an unrelated insertion moves the reported region without
+    # moving the finding's ID, and "Rename/move-only therefore preserves the
+    # debt's ID" (ADR :410-411) while the region still reports the new path.
     write(repo / "src" / "ids.py", _OWNER)
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "owner")
@@ -713,21 +682,10 @@ def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -
 
 def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
     # DELIBERATE PROOF-CLASS EXCEPTION, operator-approved. This is structural
-    # enforcement, not public-CLI RED/GREEN, and is not claimed as the latter.
-    #
-    # The path this guards is:
-    #   runner.check -> detect_reuse_issues -> _existing_symbol_index
-    #     -> EvaluationSnapshot.read_baseline -> read_git_file
-    # which runs after the snapshot freezes. The CLI captures and evaluates in
-    # one process, so the public Interface offers no window in which to observe
-    # that read, and no observation window was added solely for testing.
-    # test_snapshot_reads_the_captured_tree_not_the_moving_worktree does not
-    # cover it either: that test drives pre-freeze candidate capture.
-    #
-    # Observed RED at 9da2246, where EvaluationSnapshot still carried repo and
-    # read_baseline: "read_baseline is a detector-time Git read". GREEN here,
-    # where both are deleted and every current detector is barred from Git and
-    # the filesystem outright.
+    # enforcement, not public-CLI RED/GREEN, and is not claimed as the latter:
+    # detector reads run after the snapshot freezes, and the CLI captures and
+    # evaluates in one process, so the public Interface offers no window in
+    # which to observe such a read, and none was added solely for testing.
     #
     # Issue #76 must extend this guard to any new detector module it adds.
     detectors = ("checks.py", "reuse.py", "symbols.py", "findings.py")
@@ -762,18 +720,13 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
 @with_repo
 def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
     # Schema v2 requires emitted regions to carry a content anchor over
-    # canonical implementation bytes (ADR :390, :399). Producing those bytes is
-    # the normalized implementation fingerprint the ADR assigns to #76 at
-    # :402-403, and this slice is barred from implementing #76, so exactly one
-    # rule defers it. The ADR tolerates a deferred anchor: incompleteness
-    # identity is "relevant content anchor when present" (:407-408), and
-    # unresolved anchors leave a finding active rather than void (:121-122).
-    #
-    # The assertion is positive and singleton, not an exemption list: any other
-    # rule emitting an anchorless region fails here immediately. And it expires
-    # mechanically - `deferred` is intersected with the rules actually emitted,
-    # so when #77 deletes lexical reuse scoring the rule stops being emitted,
-    # the exemption evaporates with it, and no cleanup commit is needed.
+    # canonical implementation bytes (ADR :390, :399); producing those bytes is
+    # the fingerprint the ADR assigns to #76 at :402-403, so exactly one rule
+    # defers it. The ADR tolerates a deferred anchor: incompleteness identity
+    # is "relevant content anchor when present" (:407-408), and unresolved
+    # anchors leave a finding active rather than void (:121-122). The exemption
+    # expires mechanically: `deferred` is intersected with the rules actually
+    # emitted, so when #77 stops emitting the rule it evaporates unedited.
     write(repo / "src" / "ids.py", "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n")
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "owner")
@@ -804,13 +757,9 @@ def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
 
 @with_repo
 def test_growth_warning_survives_base_binding_incompleteness(repo: Path) -> None:
-    # Without --base-ref the cumulative claim is incomplete, because the totals
-    # cover the working delta rather than branch-cumulative growth. That
-    # incompleteness is real and must be reported - but it is not a reason to
-    # stop reporting the growth that WAS measured. Suppressing the warning
-    # meant the noisiest run in the repository, an unbased edit-time hook call,
-    # printed "analysis incomplete" and never mentioned that the change was
-    # hundreds of lines over the review budget.
+    # Without --base-ref the cumulative claim is incomplete, and that must be
+    # reported - but it is not a reason to stop reporting the growth that WAS
+    # measured. Incompleteness qualifies the warning; it never suppresses it.
     write(repo / "src" / "big.py", "".join(f"VALUE_{i} = {i}\n" for i in range(600)))
     code, payload, _ = run_gate(repo)
 
@@ -823,10 +772,9 @@ def test_growth_warning_survives_base_binding_incompleteness(repo: Path) -> None
     assert code == 0 and payload["ok"] is True, (code, payload["errors"])
 
 
-# Each row is one decoder or transport branch Git can put in front of the gate,
-# with the exact result that branch must produce. #75 requires that missing,
-# skipped or unreadable scope can never read as a clean pass, so a path the
-# decoder mishandles must never silently drop out of the measured change.
+# Each row is one decoder or transport branch Git can put in front of the
+# gate: a path the decoder mishandles must never silently drop out of the
+# measured change.
 #
 # name, git config, baseline files, candidate files, expected production
 # growth, expected error substring, expected sample path.
@@ -941,11 +889,10 @@ def test_growth_finding_carries_stable_identity_and_evidence(repo: Path) -> None
     assert growth_finding(run_gate(repo)[1])["findingId"] != first["findingId"]
 
 
-# Growth accounting per row: which bucket counts each change, that deletions
-# and staged-deletion-plus-recreation are measured against the base rather
-# than vanishing, and that intermediate-only content neither leaks into the
-# escape rules nor double-counts. A based, fully measured run must also report
-# its growth claim passed and complete, never merely quiet.
+# Growth accounting per row: which bucket counts each change, deletions and
+# staged-deletion-plus-recreation measured rather than vanishing, and
+# intermediate-only content neither leaking into escape rules nor
+# double-counting.
 # name, baseline files, ops after the baseline commit, candidate files,
 # base-bound, expected buckets, clean check that must stay green.
 _GROWTH_ROWS = (
@@ -1087,10 +1034,8 @@ def test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied(repo: Path
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "shared")
     fork = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    # The caller's chosen base drops shared.py and carries a file of its
-    # own, so against that base the candidate re-adds one and deletes the
-    # other. A merge-base reading sees neither, and can never report a
-    # deletion at all.
+    # The caller's chosen base drops shared.py and carries a file of its own;
+    # a merge-base reading sees neither, and can never report a deletion.
     git(repo, "checkout", "-q", "-b", "side")
     git(repo, "rm", "-q", "src/shared.py")
     write(repo / "src" / "sideonly.py", "SIDE = 1\n")
@@ -1137,12 +1082,9 @@ def test_a_failed_hard_rule_child_outranks_an_unknown_sibling(repo: Path) -> Non
 
 @with_repo
 def test_a_non_utf8_path_reaches_a_stable_finding(repo: Path) -> None:
-    # Identity no longer carries paths - that moved to symbol anchors so a
-    # rename preserves the debt's ID - so this proves what it can still prove:
-    # a path whose bytes are not valid UTF-8 survives the whole pipeline. It is
-    # matched, its real bytes are serialized back out rather than replaced by
-    # the decoder, and the finding hashes to the same ID on a repeat run
-    # instead of raising on a name the encoder refuses.
+    # A path whose bytes are not valid UTF-8 survives the whole pipeline: it
+    # is matched, its real bytes are serialized back out, and the finding
+    # hashes to the same ID on a repeat run instead of raising.
     owner = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
     write(repo / "src" / "ids.py", owner)
     git(repo, "add", ".")
@@ -1236,13 +1178,10 @@ def test_snapshot_reads_the_captured_tree_not_the_moving_worktree(repo: Path) ->
 
 def test_full_history_test_like_classification_is_unchanged() -> None:
     # The standalone predicate workflow state loads must keep the exact
-    # pre-snapshot truth table over every path that ever existed in this
-    # repository, including generated paths and *.schema.json staying test-like.
-    #
-    # The oracle is the real predicate shipped at the pinned pre-#75 commit,
-    # never a copy of its regexes: a copied oracle is derived from the same
-    # reading of the rules as the implementation, so it can be wrong in exactly
-    # the way the implementation is wrong and still agree with it.
+    # pre-snapshot truth table over every path that ever existed here. The
+    # oracle is the real predicate shipped at the pinned pre-#75 commit, never
+    # a copy of its regexes: a copied oracle can be wrong in exactly the way
+    # the implementation is wrong and still agree with it.
     module = _load_path_policy(SCRIPT_DIR / "_quality_gate" / "path_policy.py")
     repo = source_repo()
     pinned = run(["git", "show", f"{PINNED_PRE_75}:{POLICY_PATH}"], repo)
@@ -1332,13 +1271,8 @@ def test_gate_implementation_budget() -> None:
         "wrapper_lines": 150,
         "module_lines": 1200,
         "function_lines": 180,
-        # The approved limit. It is an invariant, not a record of what the
-        # package happens to measure. This constant was re-pinned to observed
-        # growth five times in one session - 1900, 1958, 1995, 2027, 2043,
-        # 2050 - which turned the one mechanism that would have caught
-        # cumulative bloat into a log of it. If a valid review fix does not
-        # fit, consolidate or delete first, or stop and escalate for explicit
-        # approval. Review findings do not authorize cumulative growth.
+        # The ceiling is invariant: reduce the package or obtain external
+        # approval. #88 owns the durable history and rule.
         "total_lines": 1800,
     }
     review_triggers = {

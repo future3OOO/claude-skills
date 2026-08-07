@@ -13,13 +13,6 @@ def anchor(kind: str, role: str, language: str, content: str) -> str:
     Role and language are part of the anchor because the architecture's
     identity formula is a fingerprint plus role/language: the same symbol name
     in a production file and in a test fixture is not the same debt.
-
-    One implementation for every family. The target architecture's *content*
-    anchor hashes canonical implementation bytes; the duplicate family that
-    normalizes those bytes is #76's work, so the anchors this slice emits are
-    symbol anchors and say so in their field name rather than claiming a
-    content anchor they did not compute. #76 feeds normalized bytes to this
-    same function instead of adding a second implementation.
     """
     payload = "\x1f".join((kind, role, language, content))
     return hashlib.sha256(payload.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
@@ -96,10 +89,9 @@ class Finding:
     `incomplete`, or `not-evaluated` — and is `incomplete` whenever the rule's
     required scope had gaps, so a rule that could not see everything can never
     read as a clean pass. `passed` is the intrinsic check result (null while
-    unknown); `state` is null for every rule family this slice ships, and a
-    null-state finding is active when emitted. `identity` carries the
-    rule-family identity anchors; paths and line numbers in `region` are
-    display provenance, never identity.
+    unknown); a null-state finding is active when emitted. `identity` carries
+    the rule-family anchors; paths and line numbers in `region` are display
+    provenance, never identity.
     """
 
     rule_id: str
@@ -115,10 +107,8 @@ class Finding:
 
     def finding_id(self) -> str:
         joined = "\x1f".join((self.rule_id, *self.identity))
-        # Identity components are derived from repository bytes - symbol names
-        # read out of files whose encoding is not guaranteed - so they can carry
-        # surrogates. Encoding back through surrogateescape keeps the hash
-        # defined for those, rather than raising on a name the encoder refuses.
+        # Identity components come from repository bytes and can carry
+        # surrogates; surrogateescape keeps the hash defined for those names.
         return hashlib.sha256(joined.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
 
     def as_dict(self, base: str, candidate: str) -> dict[str, object]:

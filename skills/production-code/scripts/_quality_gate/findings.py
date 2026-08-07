@@ -9,10 +9,8 @@ RULE_GITNEXUS_CONTEXT = "QG-LEGACY-GITNEXUS-CONTEXT"
 
 # Warning promotion is decided by this immutable per-exact-rule-ID metadata and
 # nothing else: never rendered text, prefixes, families, roles, or scores.
-# Every QG54 rule starts ineligible until parent #54 approves its exact ID; the
-# two legacy IDs preserve schema-v1 fail-on-warnings behavior through #75/#76.
-# CLI optional-input transport failures are governed by the CLI contract and
-# never reach this table.
+# QG54 rules start ineligible until parent #54 approves the exact ID. CLI
+# optional-input transport failures never reach this table.
 _PROMOTION_ELIGIBLE = {
     RULE_GROWTH: False,
     RULE_INCOMPLETE: False,
@@ -60,12 +58,8 @@ def _scope_kind(gap: str) -> str:
 
 
 def incompleteness_findings(findings: list[Finding]) -> list[Finding]:
-    """One QG54-ANALYSIS-INCOMPLETE finding per affected rule ID and scope kind.
-
-    The affected rule already carries its gaps; this projection gives each
-    missing scope a stable identity so later slices can promote or resolve it
-    per exact rule ID and kind.
-    """
+    """One QG54-ANALYSIS-INCOMPLETE finding per affected rule ID and scope
+    kind, giving each missing scope a stable identity."""
     projected: list[Finding] = []
     for finding in findings:
         if finding.status != "incomplete":
@@ -101,13 +95,11 @@ def promoted_errors(findings: list[Finding], fail_on_warnings: bool) -> list[str
     Promotion never retypes the source finding or its intrinsic check; the
     caller only appends these errors and lets top-level ok become false.
 
-    Three conditions, each excluding a different wrong promotion. `passed is
+    Three conditions, each excluding a different wrong promotion: `passed is
     True` excludes a rule whose intrinsic result is unknown, so missing scope
-    alone never becomes the failure. An active status excludes a clean pass,
+    alone never becomes the failure; an active status excludes a clean pass,
     which is also `severity=warning` with `passed=True` and would otherwise
-    fail every green run. Eligibility is the exact-ID metadata. What survives
-    is the case that matters: a rule that found warnings AND could not see
-    everything keeps its incompleteness and still promotes.
+    fail every green run; eligibility is the exact-ID metadata.
     """
     if not fail_on_warnings:
         return []

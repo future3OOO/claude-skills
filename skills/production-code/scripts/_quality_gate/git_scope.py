@@ -28,11 +28,8 @@ def run_git(repo: Path, args: list[str], *, env: dict[str, str] | None = None) -
 
 
 def git_read(repo: Path, args: list[str]) -> tuple[str, str]:
-    """Output and the failure reason, which is empty when the command succeeded.
-
-    One place runs Git and interprets its exit status, so a caller that needs
-    to report a failed read and a caller that tolerates absence cannot drift.
-    """
+    """Output and the failure reason ("" on success). One place interprets Git
+    exit status, so failure-reporting and absence-tolerating callers cannot drift."""
     res = run_git(repo, args)
     if res.returncode != 0:
         return "", res.stderr.strip() or str(res.returncode)
@@ -100,11 +97,9 @@ def _resolve_base(repo: Path, base_ref: str | None) -> tuple[str, str, list[str]
 def _capture_worktree(repo: Path) -> tuple[str, list[str]]:
     """Capture the worktree as one tree OID, or report that it would not hold still.
 
-    `git add -A` walks the worktree over a span of time, so a tree built while
-    content is still moving can describe a state that never existed at any
-    instant. Two captures of a settled worktree produce the same OID, so a
-    disagreement is drift — and drift is reported rather than evaluated,
-    because a candidate nobody can reproduce is not a candidate.
+    Two captures of a settled worktree produce the same OID, so a disagreement
+    is drift — reported rather than evaluated, because a candidate nobody can
+    reproduce is not a candidate.
     """
     first, errors = _write_worktree_tree(repo)
     if errors or not first:
@@ -140,11 +135,9 @@ def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], str, list[N
     """The evaluated diff, plus the reads that failed to produce it.
 
     The diff belongs to the gate, not to repository configuration: an external
-    driver or textconv filter may rewrite or empty the textual patch while
-    --name-only and --numstat still succeed, which would leave every
-    hunk-reading rule scanning nothing and reporting a clean pass. A non-zero
-    exit becomes a recorded gap rather than an empty string that reads as
-    "no change".
+    driver or textconv filter can empty the textual patch while --name-only
+    and --numstat still succeed. A non-zero exit becomes a recorded gap rather
+    than an empty string that reads as "no change".
     """
     diff = ["diff", "--no-renames", "--no-ext-diff", "--no-textconv", base, tree]
     errors: list[str] = []
