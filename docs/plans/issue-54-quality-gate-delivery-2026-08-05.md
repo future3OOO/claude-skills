@@ -196,7 +196,9 @@ Out of scope:
 ## Delivery map
 
 - plan type: sequential tracer-bullet PR program
-- PR count: three
+- PR count: four — the operator-directed 2026-08-07 rebuild delivers PR A as
+  two slices (A1, A2) with PR #80 preserved as reference; B and C are
+  unchanged
 - active stack depth: one; do not start a child branch before its blocker
   merges
 - regroup rule: keep runtime and its proof together. If a slice forecasts over
@@ -208,7 +210,8 @@ Out of scope:
 
 | PR | Branch | Base | Owner slice | Commit structure | Budget | Entry | Exit |
 |---|---|---|---|---|---:|---|---|
-| A | `feat/issue-54-canonical-evaluation` | exact `origin/main` SHA recorded in #75 at dispatch | #75 canonical evaluation and cumulative growth | Interface-level RED proof; deep Module replacement plus cleanup | about 500 net | #75 ready; no blocker | role consumers migrated, captured totals proven, active warnings visible through the real hook with exit zero, required checks green |
+| A1 | `feat/issue-75-captured-evaluation` (PR #90) | current `origin/main` at takeover | #75 captured evaluation: one scope collector, frozen snapshot, stored classification, migrated detectors, growth accounting under preserved schema v1 | real-CLI RED proof; deep Module replacement plus deletion of superseded modules | under 1,000 net (measured +567) | operator takeover directive | capture/decoder/corpus proof green, package under the 1800 ceiling, required checks green |
+| A2 | slice-2 branch from A1 | A1 merge SHA on `origin/main` | #75 completion: typed findings, warning-only cumulative growth, exact-ID `fail_on_warnings`, schema v2, hook warning surfacing | detector-policy behavior and promotion proof | under 1,000 net | A1 merged | #75 acceptance complete, active warnings visible through the real hook with exit zero, package at or under 1800, required checks green |
 | B | `feat/issue-54-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
 | C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | every owner evidence class evaluated; no duplicate prerequisite; candidates calibrated and warning-only; required checks green |
 
@@ -255,7 +258,10 @@ Required proof includes:
 - [x] Child #77 published, linked, and blocked by #76.
 - [x] Parent #54 seven-slice list replaced by the approved structure.
 - [x] Governing plan reviewed and merged in PR #78.
-- [ ] PR A merged with its checklist and reviewer loop complete.
+- [ ] PR A1 (#90) merged with its checklist and reviewer loop complete;
+  PR #80 remains open as the preserved reference until A2 lands.
+- [ ] PR A2 merged with its checklist and reviewer loop complete, completing
+  #75 and superseding PR #80.
 - [ ] PR B merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
   before PR C is dispatched.
