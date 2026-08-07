@@ -170,16 +170,17 @@ from hooks.lib import workflow_state as w
 identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
 w.begin(identity, slug)
 wid = w.read_workflow(identity)["workflowId"]
-for phase in ("repo-context-forge", "gitnexus"):
-    w.set_phase(identity, phase, "passed")
-w.record_advisor_result(identity, slug, wid, "preflight", "codex-advisor", "completed")
-w.advisor_disposition(identity, slug, wid, "preflight", "none")
+w.set_phase(identity, "repo-context-forge", "passed")
 import json as j, subprocess as sp, tempfile as tf, os as o
 root = sys.argv[1]
 def producer(script, *extra):
     r = sp.run([sys.executable, script, "--repo", sys.argv[2], "--slug", slug, "--workflow-id", wid, *extra],
                capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+fd, gnx_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, j.dumps({"context": "suite setup"}).encode()); o.close(fd)
+producer(root + "/skills/repo-production-workflow/scripts/record-gitnexus.py", "--input", gnx_path)
+w.record_advisor_result(identity, slug, wid, "preflight", "codex-advisor", "completed")
+w.advisor_disposition(identity, slug, wid, "preflight", "none")
 sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan", "reusePath",
             "chosenApproach", "rejectedAlternatives", "touchpoints", "verify", "update",
             "modularityPlan", "riskChecks", "openQuestions")

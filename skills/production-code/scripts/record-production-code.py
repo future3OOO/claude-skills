@@ -16,10 +16,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.evidence_recorder import recorder_main  # noqa: E402
+from hooks.lib.repo_identity import RepoIdentity  # noqa: E402
 
 
-def _verdict(path: str) -> dict[str, object]:
-    """The gate's parsed verdict, or a refusal naming what is wrong."""
+def _verdict(path: str, _identity: RepoIdentity) -> dict[str, object]:
+    """The gate's parsed verdict, or a refusal naming what is wrong.
+
+    The verdict already names the repository it ran against, so the identity
+    is unused here.
+    """
     try:
         raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
         value = json.loads(raw)

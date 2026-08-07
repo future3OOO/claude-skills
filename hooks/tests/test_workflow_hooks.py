@@ -22,6 +22,7 @@ from hooks.lib.workflow_state import set_phase  # noqa: E402
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run.py"
 RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
+RECORD_GITNEXUS = ROOT / "skills" / "repo-production-workflow" / "scripts" / "record-gitnexus.py"
 RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
@@ -128,6 +129,17 @@ class WorkflowHookTests(unittest.TestCase):
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
 
+    def record_gitnexus_evidence(self, slug: str, wid: str) -> None:
+        evidence_path = self.tmp / "gitnexus-doc.json"
+        evidence_path.write_text(json.dumps({"context": "hook-suite setup"}), encoding="utf-8")
+        recorded = subprocess.run(
+            [sys.executable, str(RECORD_GITNEXUS), "--repo", str(self.repo),
+             "--slug", slug, "--workflow-id", wid, "--input", str(evidence_path)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+
     def record_preflight_evidence(self, slug: str, wid: str) -> None:
         document = build_document("hook-suite setup")
         doc_path = self.tmp / "preflight-doc.json"
@@ -174,14 +186,14 @@ class WorkflowHookTests(unittest.TestCase):
             self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
             wid = json.loads(begun.stdout)["workflowId"]
         self.owner_phase("repo-context-forge", "passed")
+        self.record_gitnexus_evidence(slug, wid)
         transitions = (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
         )
         for index, transition in enumerate(transitions):
-            if index == 3:
+            if index == 2:
                 # These tests exercise the hooks; the evidence phases advance
                 # through the real producers, whose contracts are proven in
                 # test_pass_lifecycle.
@@ -225,8 +237,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
         self.owner_phase("repo-context-forge", "passed")
+        self.record_gitnexus_evidence("hook-sequence", wid)
         transitions = (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         )
@@ -247,8 +259,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
         self.owner_phase("repo-context-forge", "passed")
+        self.record_gitnexus_evidence("tdd-ordering", wid)
         for transition in (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         ):
@@ -291,8 +303,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
         self.owner_phase("repo-context-forge", "passed")
+        self.record_gitnexus_evidence("production-code-gate", wid)
         for transition in (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         ):
@@ -415,8 +427,8 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
         self.owner_phase("repo-context-forge", "passed")
+        self.record_gitnexus_evidence("governance-sequence", wid)
         for transition in (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         ):
@@ -489,8 +501,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(stalled.returncode, 0, stalled.stdout + stalled.stderr)
         self.assertEqual(stalled.stdout, "", "no-progress re-stop must be silent, not re-prompt")
 
-        progressed = self.state("set-phase", "--phase", "gitnexus", "--status", "passed")
-        self.assertEqual(progressed.returncode, 0, progressed.stdout + progressed.stderr)
+        self.record_gitnexus_evidence("stop-real", json.loads(self.state("status").stdout)["workflowId"])
         relatched = self.stop(shape="active")
         self.assertEqual(
             json.loads(relatched.stdout).get("decision"), "block",

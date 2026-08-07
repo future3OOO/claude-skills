@@ -30,8 +30,9 @@ from hooks.lib.workflow_state import (  # noqa: E402
 
 MEASURED = {"fixed", "rejected-with-evidence"}
 DISPOSITIONS = MEASURED | {"accepted-follow-up"}
-LEAD_PHASES = {"gitnexus", "implementation", "code-review"}
+LEAD_PHASES = {"implementation", "code-review"}
 PRODUCER_OWNED = {
+    "gitnexus": "gitnexus is recorder-owned; record it with record-gitnexus.py and the graph evidence the pass gathered",
     "preflight": "preflight is recorder-owned; record it with record-preflight.py and the skill's structured document",
     "production-code": "production-code is recorder-owned; record it with record-production-code.py and the bundled gate's JSON verdict",
     "verification": "verification is runner-owned; record it with verify-run.py, which executes the command it records",
@@ -163,7 +164,7 @@ def main() -> int:
                 raise ValueError(PRODUCER_OWNED[phase])
             if phase not in LEAD_PHASES:
                 raise ValueError(
-                    "set-phase is lead-owned only for gitnexus, implementation, and code-review not-required"
+                    "set-phase is lead-owned only for implementation and code-review not-required"
                 )
             status = required(args.status, "--status")
             if phase == "code-review" and (status != "not-required" or args.findings != "none"):

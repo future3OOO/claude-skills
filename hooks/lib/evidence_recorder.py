@@ -4,6 +4,10 @@ Each recorder owns its phase's validation; this owns the identical adapter
 skeleton around it — arguments, identity, the atomic evidence commit, and the
 refuse-without-mutation error path. It carries no cross-phase evidence schema:
 what a phase's evidence looks like stays entirely in its validator.
+
+Validators receive the resolved identity alongside their input so a phase whose
+evidence is bound to the checkout reads that checkout from the same `--repo`
+the commit uses, never from the process working directory.
 """
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ import os
 import sys
 from typing import Callable
 
-from .repo_identity import RepoIdentityError, resolve_repo_identity
+from .repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity
 from .state_store import repo_state_dir, utc_timestamp
 from .workflow_state import WorkflowError, commit_evidence_phase, safe_slug
 
@@ -23,7 +27,7 @@ def recorder_main(
     phase: str,
     prefix: str,
     key: str,
-    validate: Callable[[str], object],
+    validate: Callable[[str, RepoIdentity], object],
 ) -> int:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--repo", default=".")
@@ -34,7 +38,7 @@ def recorder_main(
     try:
         identity = resolve_repo_identity(args.repo)
         slug = safe_slug(args.slug)
-        evidence = validate(args.input)
+        evidence = validate(args.input, identity)
         path = repo_state_dir(identity) / f"{prefix}-{slug}.json"
         commit_evidence_phase(identity, slug, args.workflow_id, phase, path, {
             "schemaVersion": 1,

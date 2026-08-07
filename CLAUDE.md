@@ -210,14 +210,22 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
   the change has to keep green; always pass it explicitly.
 - Also run `impact` with `direction: downstream, includeTests: true` when
   behavior is moved, deepened, consolidated, or hidden behind an Interface.
-- When the change touches shared state — the same table, row, file, lease, claim
-  token, or transition helper — run `mcp__gitnexus__context` on EVERY symbol
-  that mutates that state, not only the one being edited. Compare their risk
-  ratings against each other. Two writers to one row is the exact case a single
-  upstream impact call always misses, and the second writer is routinely the
-  higher-risk one.
+- When the change touches shared state — the same table, row, file, connection,
+  lease, claim token, or transition helper — run `mcp__gitnexus__context` on
+  THE SHARED RESOURCE ITSELF, not only on the symbols you are adding or
+  editing. Its existing consumers are already indexed and they tell you what
+  the codebase assumes about that state. Then name every function in your
+  change that reads or mutates it and state whether they agree with those
+  assumptions and with each other. A precondition asserted by one function and
+  not by its sibling is the finding. Two writers to one row is the exact case a
+  single upstream impact call always misses, and the second writer is routinely
+  the higher-risk one.
 - Consuming an internal seam from a NEW file (tests, smokes, harnesses, scripts) requires `mcp__gitnexus__context` on that seam BEFORE writing the consumer — a new file has no indexed symbols, so the edit-time impact rule alone never fires for it. Import the existing tested owner of the behavior instead of writing a second parsing/lifecycle client.
-- Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
+- Record the completed gitnexus step with `record-gitnexus.py` and the graph
+evidence the pass gathered; `set-phase` does not accept `gitnexus`, because a
+step whose evidence proves it is never a bare status.
+
+Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
 - Reindex after structural changes or Git mutations when staleness is detected. Run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status`; workflow state records that the check ran but does not certify a HEAD or tree.
 
 ### Hooks

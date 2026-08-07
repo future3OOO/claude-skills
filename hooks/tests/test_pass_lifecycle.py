@@ -22,6 +22,7 @@ RECORD_REVIEW = ROOT / "skills" / "code-review" / "scripts" / "record-review.py"
 RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
 RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
 VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
+RECORD_GITNEXUS = ROOT / "skills" / "repo-production-workflow" / "scripts" / "record-gitnexus.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
@@ -121,9 +122,23 @@ class PassLifecycleTests(unittest.TestCase):
             result = self.cli(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def record_gitnexus(self, evidence: object = None) -> subprocess.CompletedProcess[str]:
+        payload = self.tmp / "gitnexus-input.json"
+        payload.write_text(json.dumps(
+            {"context": "callers and callees for the changed symbol"} if evidence is None else evidence,
+        ), encoding="utf-8")
+        state = json.loads(self.cli("status").stdout)
+        return subprocess.run(
+            [sys.executable, str(RECORD_GITNEXUS), "--repo", str(self.repo),
+             "--slug", state["slug"], "--workflow-id", state["workflowId"], "--input", str(payload)],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
     def advance_to_gitnexus(self) -> None:
         self.owner_phase("repo-context-forge", "passed")
-        self.run_cli(("set-phase", "--phase", "gitnexus", "--status", "passed"))
+        recorded = self.record_gitnexus()
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
 
     def advance_to_preflight(self, slug: str, wid: str) -> None:
         self.advance_to_gitnexus()
@@ -940,10 +955,10 @@ class PassLifecycleTests(unittest.TestCase):
         wid = self.begin_slug("derived-next")
         self.advance_to_preflight("derived-next", wid)
 
-        rerecorded = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed")
+        rerecorded = self.record_gitnexus()
         self.assertEqual(rerecorded.returncode, 0, rerecorded.stdout + rerecorded.stderr)
         self.assertEqual(
-            json.loads(rerecorded.stdout)["nextAction"], "tdd",
+            json.loads(self.cli("status").stdout)["nextAction"], "tdd",
             "re-recording an earlier phase rewound nextAction instead of deriving it",
         )
 
@@ -1343,7 +1358,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("repo-context-forge", "passed")
 
         for label, transition in (
-            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+            ("set-phase", ("set-phase", "--phase", "implementation", "--status", "passed",
                            "--slug", "lead-identity", "--workflow-id", stale_wid)),
             ("complete", ("complete", "--slug", "lead-identity", "--workflow-id", stale_wid)),
         ):
@@ -1355,7 +1370,7 @@ class PassLifecycleTests(unittest.TestCase):
         # replacement's slug with the stale id: that is the only input reaching
         # the instance comparison.
         for label, transition in (
-            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+            ("set-phase", ("set-phase", "--phase", "implementation", "--status", "passed",
                            "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
             ("complete", ("complete", "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
         ):
@@ -1368,11 +1383,10 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(state["gitnexus"], "pending",
                          "a stale lead command advanced the replacement workflow")
 
-        matching = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed",
-                            "--slug", "lead-identity-replacement",
-                            "--workflow-id", replacement["workflowId"])
+        # The recorder is instance-bound by the same check, so the matching
+        # instance is proved through the producer that now owns the step.
+        matching = self.record_gitnexus()
         self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
-        self.run_cli(("set-phase", "--phase", "gitnexus", "--status", "passed"))
 
     def test_production_code_records_once_and_survives_the_rest_of_the_pass(self) -> None:
         from hooks.lib.workflow_state import flush, invalidate_after_edit, ready_for_edit
@@ -1544,6 +1558,16 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
         completed = self.cli("complete")
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_gitnexus_is_recorder_owned_and_refuses_a_bare_claim(self) -> None:
+        """A phase whose evidence proves it must not be settable as a bare status."""
+        self.begin_slug("gitnexus-owner")
+        self.owner_phase("repo-context-forge", "passed")
+        bare = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed")
+        self.assertEqual(bare.returncode, 2, bare.stdout + bare.stderr)
+        self.assertIn("record-gitnexus.py", bare.stderr, "the refusal did not name the recorder")
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual(state["gitnexus"], "pending", "a refused set-phase still advanced the step")
 
 
 if __name__ == "__main__":

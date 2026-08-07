@@ -47,12 +47,18 @@ regressions, flaky failures, or performance problems before any fix.
 
 Run every packet-required context/impact check, including callers and callees.
 Broader graph results may widen verification but cannot silently shrink the
-packet. Then record the completed step:
+packet. Then record the completed step with the evidence it produced, writing
+the graph evidence you gathered to a JSON object first:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/pass-state.py" \
-  set-phase --repo "$PWD" --phase gitnexus --status passed
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/record-gitnexus.py" \
+  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input <graph-evidence.json>
 ```
+
+The recorder fills `repositoryRoot` and `headSha` from the checkout, so the
+envelope binds itself and only the evidence is hand-written. `set-phase` no
+longer accepts `gitnexus`: a step whose evidence proves it cannot be recorded
+as a bare status.
 
 ### 4. Advisor scope check
 

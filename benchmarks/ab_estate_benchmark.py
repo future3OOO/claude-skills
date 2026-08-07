@@ -48,7 +48,20 @@ REPLAY_INPUTS: dict[str, object] = {
         "chosenApproach", "rejectedAlternatives", "touchpoints", "verify", "update",
         "modularityPlan", "riskChecks")}, "openQuestions": "none"},
     "review.json": {"findings": [], "dispositions": []},
+    "gitnexus.json": {"context": "workflow-state replay stimulus"},
 }
+def _gitnexus(runs: list[subprocess.CompletedProcess[str]]) -> tuple[dict[str, object], list[str]]:
+    """The step's outcome read from the state, plus whether the arm bound evidence to it.
+
+    An arm that records gitnexus through its recorder prints only an evidence path, so the
+    transition is read from the status that follows it. The evidence reference is per-run,
+    so presence is projected rather than its value, and an arm without the recorder reports
+    False instead of hiding the capability delta.
+    """
+    state, keys = project(runs[-1].stdout, ("gitnexus", "gitnexusEvidence"))
+    return {"gitnexus": state["gitnexus"], "gitnexusEvidence": bool(state["gitnexusEvidence"])}, keys
+
+
 def _fields(names: tuple[str, ...]):
     """Project a step's last command, which is the one that reports the state it reached."""
     return lambda runs: project(runs[-1].stdout, names)
@@ -74,9 +87,14 @@ def _quality_gate(runs: list[subprocess.CompletedProcess[str]]) -> tuple[dict[st
 # observe, so a producer that exits zero without advancing the state it owns fails the run
 # instead of timing fast. A builder returning None means this arm does not ship the step.
 REPLAY = (
-    ("replay-gitnexus", lambda c: [[*c["cli"], "set-phase", *c["bound"], "--phase", "gitnexus",
-                                   "--status", "passed"]],
-     _fields(STATE_FIELDS), lambda p: p["exits"] == [0] and p["gitnexus"] == "passed"),
+    # An arm that has not moved gitnexus behind its recorder still sets it as a bare
+    # status, so each arm is driven through the producer it actually ships.
+    ("replay-gitnexus", lambda c: [[*c["script"]("repo-production-workflow", "record-gitnexus.py"),
+                                   *c["bound"], "--input", str(c["inputs"] / "gitnexus.json")]]
+     + [[*c["cli"], "status", "--repo", c["repo"]]]
+     if c["gitnexusRecorder"] else [[*c["cli"], "set-phase", *c["bound"], "--phase", "gitnexus",
+                                    "--status", "passed"]],
+     _gitnexus, lambda p: p["gitnexus"] == "passed"),
     ("replay-advisor-preflight", lambda c: [[*c["cli"], "advisor-result", *c["bound"], "--stage", "preflight",
                                             "--source", "codex-advisor", "--verdict", "completed"]],
      _fields(STATE_FIELDS), lambda p: p["advisorPreflight.status"] == "completed"),
@@ -368,11 +386,13 @@ def replay_seed(arm: dict[str, object]) -> tuple[dict[str, object], dict[str, ob
     helped = run([sys.executable, str(root / "home/skills/repo-production-workflow/scripts/verify-run.py"),
                   "--help"], env)
     quality_gate = "--kind" in helped.stdout
+    gitnexus_recorder = (root / "home/skills/repo-production-workflow/scripts/record-gitnexus.py").exists()
     return ({"state": home / "seed-state", "repo": repo, "inputs": inputs, "qualityGate": quality_gate,
+             "gitnexusRecorder": gitnexus_recorder,
              "key": repo_key(root, repo, env), "instance": str(loaded(begun.stdout).get("workflowId"))},
             {"beginExit": begun.returncode, "exit": forged.returncode, "gateExit": gate.returncode,
              "seconds": seconds, "repoContextForge": reached["repoContextForge"],
-             "qualityGate": quality_gate, "helpExit": helped.returncode,
+             "qualityGate": quality_gate, "gitnexusRecorder": gitnexus_recorder, "helpExit": helped.returncode,
              "blocker": forged.stderr.strip()[-300:]})
 
 
@@ -442,7 +462,7 @@ def repetition(arm: dict[str, object], index: int, seed: dict[str, object]) -> t
     replay_env = arm_env(root, replayed)
     context = {
         "cli": cli, "repo": str(seed["repo"]), "inputs": Path(str(seed["inputs"])),
-        "qualityGate": seed["qualityGate"],
+        "qualityGate": seed["qualityGate"], "gitnexusRecorder": seed["gitnexusRecorder"],
         "script": lambda skill, name: [sys.executable, str(root / "home/skills" / skill / "scripts" / name)],
         "bound": ["--repo", str(seed["repo"]), "--slug", "estate-benchmark",
                   "--workflow-id", str(seed["instance"])],

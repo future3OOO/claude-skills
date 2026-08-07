@@ -34,8 +34,9 @@ for which root holds it.
 
 ```text
 begin              # assigns the pass's random workflowId
-set-phase          # lead-owned step recording for gitnexus, implementation,
-                   # and code-review not-required only (ordered; instance-checked)
+set-phase          # lead-owned step recording for implementation and
+                   # code-review not-required only (ordered; instance-checked)
+record-gitnexus    # producer: demands graph evidence; binds root and HEAD itself
 record-preflight   # producer: demands the preflight skill's 13-section document
 record-production-code  # producer: demands the bundled gate's ok:true JSON verdict
 verify-run.py         # runner: executes the command it records; per-command-latest

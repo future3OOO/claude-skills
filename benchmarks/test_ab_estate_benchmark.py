@@ -386,7 +386,7 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         # diverge while the rest stay in parity.
         state = self.clone / "hooks" / "lib" / "workflow_state.py"
         original = state.read_text(encoding="utf-8")
-        perturbed_text = original.replace('("gitnexus", state.get("gitnexus")', '("gitnexus-graph", state.get("gitnexus")')
+        perturbed_text = original.replace('("gitnexus", _evidence_ready(', '("gitnexus-graph", _evidence_ready(')
         self.assertNotEqual(perturbed_text, original, "the perturbation point moved; the test is no longer valid")
         state.write_text(perturbed_text, encoding="utf-8")
         self.run_git("commit", "--quiet", "--all", "-m", "perturb the checkpoint requirement label")

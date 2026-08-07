@@ -19,6 +19,7 @@ from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
+RECORD_GITNEXUS = ROOT / "skills" / "repo-production-workflow" / "scripts" / "record-gitnexus.py"
 PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
 TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run.py"
 RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
@@ -51,7 +52,7 @@ class TddSummaryTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         identity = resolve_repo_identity(self.repo)
         set_phase(identity, "repo-context-forge", "passed")
-        set_phase(identity, "gitnexus", "passed")
+        self.record_gitnexus_evidence()
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         self.record_preflight_evidence()
@@ -76,6 +77,15 @@ class TddSummaryTests(unittest.TestCase):
             [sys.executable, str(script), *args], cwd=self.repo, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
+
+    def record_gitnexus_evidence(self) -> None:
+        identity = resolve_repo_identity(self.repo)
+        evidence_path = self.tmp / "setup-gitnexus.json"
+        evidence_path.write_text(json.dumps({"context": "suite setup"}), encoding="utf-8")
+        recorded = self.run_script(
+            RECORD_GITNEXUS, "--repo", str(self.repo), "--slug", "tdd-summary",
+            "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(evidence_path))
+        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
 
     def record_preflight_evidence(self) -> None:
         identity = resolve_repo_identity(self.repo)
@@ -250,7 +260,7 @@ class TddSummaryTests(unittest.TestCase):
         rebegun = self.run_script(PASS_STATE, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
         self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
         set_phase(identity, "repo-context-forge", "passed")
-        set_phase(identity, "gitnexus", "passed")
+        self.record_gitnexus_evidence()
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         self.record_preflight_evidence()
@@ -367,7 +377,7 @@ class TddSummaryTests(unittest.TestCase):
 
         identity = resolve_repo_identity(self.repo)
         set_phase(identity, "repo-context-forge", "passed")
-        set_phase(identity, "gitnexus", "passed")
+        self.record_gitnexus_evidence()
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         self.record_preflight_evidence()

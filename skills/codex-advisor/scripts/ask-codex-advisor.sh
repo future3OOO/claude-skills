@@ -65,48 +65,11 @@ if [[ -n "$base_ref" ]] && ! git -C "$repo_root" rev-parse --verify --quiet "$ba
 fi
 
 if [[ -n "$gitnexus_file" ]]; then
-  expected_head=$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || {
-    printf 'error: cannot resolve HEAD in %s to validate --gitnexus evidence\n' "$repo_root" >&2
-    exit 2
-  }
-  python3 - "$gitnexus_file" "$repo_root" "$expected_head" >&2 <<'PY' || exit 2
-import json, os, re, sys
-
-def refuse(message):
-    print(f"error: {message}")
-    raise SystemExit(2)
-
-def non_rfc_constant(token):
-    raise ValueError(f"non-RFC constant {token}")
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        envelope = json.load(handle, parse_constant=non_rfc_constant)
-except (OSError, ValueError) as exc:
-    refuse(f"--gitnexus evidence is not valid JSON: {exc}")
-if not isinstance(envelope, dict):
-    refuse("--gitnexus evidence must be a JSON object envelope")
-version = envelope.get("schemaVersion")
-if type(version) is not int or version != 1:
-    refuse(f"--gitnexus envelope requires schemaVersion 1, got: {json.dumps(version)}")
-root = envelope.get("repositoryRoot")
-if not isinstance(root, str) or not root:
-    refuse("--gitnexus envelope repositoryRoot must be the canonical repository root path")
-expected_root = sys.argv[2]
-if os.path.realpath(root) != expected_root:
-    refuse(f"--gitnexus evidence is for repository {root}, expected {expected_root}")
-head = envelope.get("headSha")
-if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
-    refuse("--gitnexus envelope headSha must be the full 40-hex commit sha")
-expected_head = sys.argv[3]
-if head != expected_head:
-    refuse(f"--gitnexus evidence head {head} does not match the current HEAD {expected_head}")
-evidence = envelope.get("graphEvidence")
-if not isinstance(evidence, dict):
-    refuse("--gitnexus envelope graphEvidence must be a JSON object")
-if not evidence:
-    refuse("--gitnexus envelope graphEvidence is empty")
-PY
+  # The envelope contract is owned by hooks/lib/gitnexus_envelope.py so the
+  # recorder that stores the evidence and this transport that spends money on
+  # it cannot drift apart.
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.gitnexus_envelope import main; raise SystemExit(main(sys.argv[2:]))' \
+    "$script_dir/../../.." "$gitnexus_file" "$repo_root" >&2 || exit 2
 fi
 
 pass_state="$script_dir/../../repo-production-workflow/scripts/pass-state.py"
@@ -178,18 +141,32 @@ if [[ -n "$phase" ]]; then
   branch_diff=""
   [[ -n "$base_ref" ]] && branch_diff=$(git -C "$repo_root" diff "$base_ref"...HEAD)
   packet_excerpt=""; [[ -n "$packet_file" ]] && packet_excerpt=$(head -c 20000 -- "$packet_file")
-  gitnexus_excerpt=""; [[ -n "$gitnexus_file" ]] && gitnexus_excerpt=$(head -c 12000 -- "$gitnexus_file")
-  tdd_excerpt=""; review_excerpt=""
-  if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
-    workflow_state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/$repo_key"
-    owned_excerpt() { python3 -c 'import json,sys
+  workflow_state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/$repo_key"
+  # A third argument selects one key out of the recorder's document, so the
+  # advisor receives the envelope the contract describes rather than the
+  # storage record that wraps it.
+  owned_excerpt() { python3 -c 'import json,sys
 from pathlib import Path
 try:
     data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 except (OSError, ValueError):
     raise SystemExit
-if data.get("workflowId") == sys.argv[2]:
-    print(json.dumps(data, sort_keys=True)[:4000])' "$1" "$active_wid"; }
+if data.get("workflowId") != sys.argv[2]:
+    raise SystemExit
+value = data.get(sys.argv[3]) if len(sys.argv) > 3 else data
+if value is not None:
+    print(json.dumps(value, sort_keys=True)[:4000])' "$1" "$active_wid" ${2:+"$2"}; }
+  gitnexus_excerpt=""
+  if [[ -n "$gitnexus_file" ]]; then
+    gitnexus_excerpt=$(head -c 12000 -- "$gitnexus_file")
+  elif [[ -n "$active_wid" ]]; then
+    # The pass already recorded its graph evidence through the recorder, which
+    # bound it to this checkout. Reusing it is why a governed pass never has to
+    # hand-assemble an envelope for the consult.
+    gitnexus_excerpt=$(owned_excerpt "$workflow_state_dir/gitnexus-$producer_slug.json" envelope)
+  fi
+  tdd_excerpt=""; review_excerpt=""
+  if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
     [[ "$active_tdd" != "pending" ]] && tdd_excerpt=$(owned_excerpt "$workflow_state_dir/tdd-$producer_slug.json")
     case "$active_review" in
       passed|not-required) review_excerpt=$(owned_excerpt "$workflow_state_dir/review-$producer_slug.json") ;;

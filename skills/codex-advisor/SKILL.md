@@ -101,7 +101,10 @@ binding the evidence to the consultation checkout:
 }
 ```
 
-The wrapper validates the envelope before the provider starts: `repositoryRoot`
+The envelope contract is owned by `hooks/lib/gitnexus_envelope.py`, which the
+wrapper and the gitnexus recorder both call, so what is validated here and what
+is stored as evidence cannot drift. The wrapper validates the envelope before
+the provider starts: `repositoryRoot`
 must resolve to the same canonical directory as the checkout's Git top level,
 `headSha` must equal the checkout's current full `HEAD`, and `graphEvidence`
 must be a non-empty JSON object. Malformed JSON, a missing field, a wrong
@@ -110,7 +113,9 @@ refuses with exit 2 before a paid consultation begins, naming the failed
 condition and the expected repository or head where useful. Validation proves
 checkout binding only — never the truth, completeness, or machine provenance
 of the hand-authored graph evidence. Accepted evidence is appended under the
-existing bounded-input policy.
+existing bounded-input policy. The same envelope recorded through
+`record-gitnexus.py` satisfies the gitnexus workflow step, so producing the
+graph evidence and recording the step are one act.
 
 The wrapper derives the repository root and session identity
 from `hooks/lib/repo_identity.py`, so one stable slug resumes the same session

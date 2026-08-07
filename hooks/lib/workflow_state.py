@@ -99,7 +99,7 @@ def _persist(identity: RepoIdentity, state: JsonObject) -> JsonObject:
     return state
 
 
-EVIDENCE_PHASES = ("preflight", "production-code", "verification")
+EVIDENCE_PHASES = ("gitnexus", "preflight", "production-code", "verification")
 
 
 def _evidence_ready(state: JsonObject, phase: str) -> bool:
@@ -545,8 +545,11 @@ def completion_missing(state: JsonObject) -> list[str]:
         if state.get(field) != "passed":
             missing.append(field)
     # A passed evidence phase without its producer's evidence reference is a
-    # bare claim - legacy or hand-set state reads pending, never success.
-    for field in ("preflight", "productionCode", "verification"):
+    # bare claim - legacy or hand-set state reads pending, never success. The
+    # phase list is EVIDENCE_PHASES itself so this can never drift from the
+    # readiness check that shares it.
+    for phase in EVIDENCE_PHASES:
+        field = STEP_FIELDS[phase]
         if state.get(field) == "passed" and not state.get(f"{field}Evidence"):
             missing.append(f"{field}Evidence")
     if state.get("tdd") not in {"passed", "not-required"}:
@@ -567,7 +570,7 @@ def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:
     """The intake steps that gate both a preflight consult and any tracked production edit."""
     return (
         ("repo-context-forge", state.get("repoContextForge") == "passed"),
-        ("gitnexus", state.get("gitnexus") == "passed"),
+        ("gitnexus", _evidence_ready(state, "gitnexus")),
     )
 
 
