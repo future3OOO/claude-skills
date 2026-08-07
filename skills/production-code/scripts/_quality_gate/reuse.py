@@ -19,7 +19,7 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding
     candidates = _new_symbols(snapshot) + _risky_added_blocks(snapshot)
     if not candidates:
         return [], []
-    existing = _existing_symbol_index(snapshot)
+    existing = _existing_symbol_index(snapshot, candidates)
     if not existing:
         return [], []
     # Every production entry's added lines are nearby-call evidence — a new
@@ -39,14 +39,27 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[list[ReuseFinding
     return findings[:30], sorted(set(queries))[:10]
 
 
-def _existing_symbol_index(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
-    """Symbols of the captured owners. Snapshot baseline capture already
-    applied eligibility and the file/byte caps; unread files carry no text."""
+def _existing_symbol_index(snapshot: EvaluationSnapshot, candidates: list[SymbolDef]) -> list[SymbolDef]:
+    """Symbols of the owners the candidates could reimplement.
+
+    Snapshot baseline capture bounds the reads; the CANDIDATES choose which
+    captured owners are in scoring range — owner language among the candidate
+    languages, and a shared top directory or packet/GitNexus naming — so an
+    unrelated no-candidate edit elsewhere never widens owner scope."""
     symbols: list[SymbolDef] = []
     packet_paths = snapshot.packet_paths
     gitnexus_boosts = snapshot.gitnexus_boosts
+    candidate_languages = {item.language for item in candidates}
+    candidate_roots = {top_dir(item.path) for item in candidates}
+    gitnexus_paths = {key.rsplit(":", 1)[0] for key in gitnexus_boosts}
     for baseline in snapshot.baseline:
         if baseline.role != "production" or baseline.text is None:
+            continue
+        if baseline.language not in candidate_languages or not (
+            top_dir(baseline.path) in candidate_roots
+            or baseline.path in packet_paths
+            or baseline.path in gitnexus_paths
+        ):
             continue
         for symbol in extract_symbols(baseline.path, baseline.text, "baseline", baseline.language, 12 if baseline.path in packet_paths else 0):
             boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{baseline.path}:{symbol.name}", 0))

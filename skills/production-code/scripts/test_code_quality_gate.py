@@ -381,6 +381,15 @@ _REUSE_ROWS = (
      {"src/ids.js": "export function normalizeUserId(value) {\n  return value.trim().toLowerCase();\n}\n"}, (),
      {"src/wrapper.js": "import * as ids from \"./ids.js\";\nexport function normalizeUserId(v) { return ids.normalizeUserId(v); }\n"},
      True, ("--base-ref", "HEAD", "--staged-only"), "no-match"),
+    # Owner scope is chosen by the candidates, not by every changed file: an
+    # unrelated no-candidate edit in another top-level area must not pull that
+    # area's owners into scoring range.
+    ("unrelated-edit-does-not-widen-owner-scope",
+     {"workers/util.py": "def resolve_order_key(value: str) -> str:\n    return value.strip()\n",
+      "workers/notes.py": "NOTES = 1\n"}, (),
+     {"api/new.py": "def resolve_order_key(value: str) -> str:\n    return value.strip()\n",
+      "workers/notes.py": "NOTES = 2\n"},
+     False, (), "no-match"),
 )
 
 
@@ -807,6 +816,28 @@ def test_rename_only_change_keeps_preexisting_content_clean(repo: Path) -> None:
     assert code == 2, (code, payload["errors"])
     escapes = check_named(payload, "no-quality-escapes")
     assert any("src/new_name.py" in sample for sample in escapes["sample"]), escapes
+
+
+@with_repo
+def test_rename_detection_ignores_repository_rename_limits(repo: Path) -> None:
+    # diff.renameLimit=1 makes Git skip exhaustive detection for two inexact
+    # renames. The gate pins its own rename budget, so repository config can
+    # never turn a rename into new content that resurrects old markers.
+    marker = "# TO" + "DO: predates the rename"
+    write(repo / "src" / "a.py", f"{marker} A\nA = 1\nAA = 2\n")
+    write(repo / "src" / "b.py", f"{marker} B\nB = 1\nBB = 2\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "baseline")
+    git(repo, "config", "diff.renameLimit", "1")
+    git(repo, "mv", "src/a.py", "src/a2.py")
+    git(repo, "mv", "src/b.py", "src/b2.py")
+    with (repo / "src" / "a2.py").open("a", encoding="utf-8") as handle:
+        handle.write("A = 9\n")
+    with (repo / "src" / "b2.py").open("a", encoding="utf-8") as handle:
+        handle.write("B = 9\n")
+    code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
+    assert payload["errors"] == [], payload["errors"]
+    assert code == 0, (code, stderr)
 
 
 @with_repo

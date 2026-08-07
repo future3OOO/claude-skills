@@ -176,10 +176,12 @@ def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], dict[str, s
     The diff belongs to the gate, not to repository configuration: an external
     driver or textconv filter can empty the textual patch while --name-status
     and --numstat still succeed. A non-zero exit becomes a recorded gap rather
-    than an empty string that reads as "no change". Rename detection is pinned
-    with -M so evaluation does not depend on repository diff configuration.
+    than an empty string that reads as "no change". Rename detection and its
+    search budget are pinned with -M -l1000 so evaluation does not depend on
+    repository diff configuration; past the budget Git degrades to
+    delete-plus-add deterministically.
     """
-    diff = ["diff", "-M", "--no-ext-diff", "--no-textconv", base, tree]
+    diff = ["diff", "-M", "-l1000", "--no-ext-diff", "--no-textconv", base, tree]
     errors: list[str] = []
 
     def read(args: list[str], transport: str) -> str:

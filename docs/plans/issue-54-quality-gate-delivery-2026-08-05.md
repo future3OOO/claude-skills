@@ -203,6 +203,9 @@ Out of scope:
   unchanged
 - active stack depth: one; do not start a child branch before its blocker
   merges
+- regroup rule for the A1/A2 rebuild slices: the 2026-08-07 operator takeover
+  directive set their budget at under 1,000 net each, superseding the 650-net
+  regroup trigger below for those two slices only (A1 measured +725).
 - regroup rule: keep runtime and its proof together. If a slice forecasts over
   650 net human-authored source lines, shrink it at preflight and return to
   parent #54 before inventing another child. No slice may approach the 1,000
@@ -214,7 +217,7 @@ Out of scope:
 |---|---|---|---|---|---:|---|---|
 | A1 | `feat/issue-75-captured-evaluation` (PR #90) | current `origin/main` at takeover | #75 captured evaluation: one scope collector with rename detection, frozen snapshot, stored classification, migrated detectors, bounded baseline capture, growth accounting and gap surfacing under preserved schema v1 | real-CLI RED proof; deep Module replacement plus deletion of superseded modules | under 1,000 net (measured +725; package 1693 of 1800) | operator takeover directive | capture/decoder/corpus proof green, operator-confirmed regressions fixed, package under the 1800 ceiling, required checks green |
 | A2 | slice-2 branch from A1 | A1 merge SHA on `origin/main` | #75 completion: typed findings, warning-only cumulative growth, exact-ID `fail_on_warnings`, schema v2, hook warning surfacing | detector-policy behavior and promotion proof | under 1,000 net | A1 merged | #75 acceptance complete, active warnings visible through the real hook with exit zero, package at or under 1800, required checks green |
-| B | `feat/issue-54-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
+| B | `feat/issue-54-exact-duplicates` | A2 merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
 | C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | every owner evidence class evaluated; no duplicate prerequisite; candidates calibrated and warning-only; required checks green |
 
 PR C may approach 600 net because its calibrated positive and negative proof
