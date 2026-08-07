@@ -59,7 +59,12 @@ def _gitnexus(runs: list[subprocess.CompletedProcess[str]]) -> tuple[dict[str, o
     False instead of hiding the capability delta.
     """
     state, keys = project(runs[-1].stdout, ("gitnexus", "gitnexusEvidence"))
-    return {"gitnexus": state["gitnexus"], "gitnexusEvidence": bool(state["gitnexusEvidence"])}, keys
+    evidence = bool(state["gitnexusEvidence"])
+    # `supported` is read from what the arm's own producer bound, not from which
+    # branch built the command: an arm that records the step without evidence is
+    # a capability gap, which compare() is allowed to accept in that direction
+    # only, while a candidate that drops the recorder stays a reported difference.
+    return {"supported": evidence, "gitnexus": state["gitnexus"], "gitnexusEvidence": evidence}, keys
 
 
 def _fields(names: tuple[str, ...]):

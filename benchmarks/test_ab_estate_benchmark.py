@@ -404,6 +404,42 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertIn("gitnexus-graph", differences[0]["candidate"]["missing"])
         self.assertTrue(artifact["isolation"]["ok"], "a behavioural mismatch is not an isolation failure")
 
+    def test_a_candidate_that_adds_the_gitnexus_recorder_reports_a_capability_delta(self) -> None:
+        """Extending the governed grammar is a delta, not a regression.
+
+        A baseline that records gitnexus as a bare status and a candidate that
+        records it through its recorder run different commands and reach
+        different state. That asymmetry must be classified as a capability gap
+        in that direction only, or every estate that adds a producer fails.
+        """
+        candidate = self.run_git("rev-parse", "HEAD")
+        recorder = self.clone / "skills" / "repo-production-workflow" / "scripts" / "record-gitnexus.py"
+        self.assertTrue(recorder.exists(), "the candidate under test no longer ships the recorder")
+        recorder.unlink()
+        state = self.clone / "hooks" / "lib" / "workflow_state.py"
+        original = state.read_text(encoding="utf-8")
+        reverted = original.replace(
+            'EVIDENCE_PHASES = ("gitnexus", "preflight", "production-code", "verification")',
+            'EVIDENCE_PHASES = ("preflight", "production-code", "verification")')
+        self.assertNotEqual(reverted, original, "the evidence-phase list moved; the test is no longer valid")
+        state.write_text(reverted, encoding="utf-8")
+        dispatch = self.clone / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
+        text = dispatch.read_text(encoding="utf-8")
+        dispatch.write_text(text.replace('LEAD_PHASES = {"implementation", "code-review"}',
+                                         'LEAD_PHASES = {"gitnexus", "implementation", "code-review"}')
+                            .replace('    "gitnexus": "gitnexus is recorder-owned; record it with record-gitnexus.py'
+                                     ' and the graph evidence the pass gathered",\n', ""), encoding="utf-8")
+        self.run_git("commit", "--quiet", "--all", "-m", "an estate before the gitnexus recorder")
+        baseline = self.run_git("rev-parse", "HEAD")
+
+        result, artifact = self.benchmark(baseline, candidate)
+
+        gitnexus = [item for item in artifact["scenarios"] if item["name"] == "replay-gitnexus"]
+        self.assertEqual(len(gitnexus), 1, "the gitnexus scenario did not run")
+        self.assertTrue(gitnexus[0]["capabilityDelta"], "adding the recorder was not read as a capability gap")
+        self.assertEqual(gitnexus[0]["differences"], [], "a capability gap was also reported as a difference")
+        self.assertEqual(result.returncode, 0, "extending the grammar failed the run")
+
     def test_a_candidate_that_never_converts_the_seeded_store_fails(self) -> None:
         """The false green the migration differential exists to catch.
 
