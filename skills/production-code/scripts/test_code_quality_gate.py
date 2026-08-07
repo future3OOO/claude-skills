@@ -80,12 +80,7 @@ def growth_totals(payload: dict[str, object]) -> dict[str, object]:
     return payload["evaluation"]["growth"]
 
 
-# The one rule ID permitted to emit regions without a content anchor over
-# canonical implementation bytes, because producing those bytes is the
-# normalized fingerprint the target architecture assigns to #76. Named exactly,
-# never "the legacy rules": a singleton fails loudly when a second rule joins,
-# where an exemption list would quietly accept one.
-ANCHOR_DEFERRED_RULE = "QG-LEGACY-REUSE-ADVISORY"
+REUSE_RULE = "QG-LEGACY-REUSE-ADVISORY"
 
 
 def growth_finding(payload: dict[str, object]) -> dict[str, object]:
@@ -1207,9 +1202,9 @@ def _promotion_row(repo: Path, baseline: dict, candidate: str, name: str, expect
     git(repo, "commit", "-q", "-m", "baseline")
     write(repo / "src" / "candidate.py", candidate)
     code, payload, _ = run_gate(repo, "--fail-on-warnings")
-    finding = next((item for item in payload["findings"] if item["ruleId"] == ANCHOR_DEFERRED_RULE), None)
+    finding = next((item for item in payload["findings"] if item["ruleId"] == REUSE_RULE), None)
     assert finding is not None, (name, payload["findings"])
-    promoted = [error for error in payload["errors"] if ANCHOR_DEFERRED_RULE in error]
+    promoted = [error for error in payload["errors"] if REUSE_RULE in error]
     assert bool(promoted) is expect_promoted, (name, payload["errors"], finding)
     assert code == expect_code, (name, code, payload["errors"])
     # Promotion never retypes the finding or its intrinsic check.
@@ -1259,41 +1254,64 @@ def test_promotion_follows_exact_rule_id_metadata_only() -> None:
 
 @with_repo
 def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -> None:
-    # Content-anchored identity: line numbers and paths are display
-    # provenance, so an unrelated insertion moves the reported region without
-    # moving the finding's ID, and a rename/move preserves the debt's ID
-    # while the region still reports the new path.
+    # Distinct implementations of the same-named symbol need distinct content
+    # anchors. Content edits move the finding ID; unrelated edits and path-only
+    # moves do not because paths and lines are display provenance.
     write(repo / "src" / "ids.py", _OWNER)
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "owner")
-    write(repo / "src" / "copycat.py", _OWNER)
+    write(repo / "src" / "copy_a.py", _OWNER.replace("lower()", "casefold()"))
+    write(repo / "src" / "copy_b.py", _OWNER.replace("value.strip()", "value.replace(' ', '')"))
     _, before, _ = run_gate(repo, "--base-ref", "HEAD")
 
-    write(repo / "src" / "copycat.py", "# an unrelated leading comment\n" + _OWNER)
-    _, after, _ = run_gate(repo, "--base-ref", "HEAD")
-
-    (repo / "src" / "copycat.py").unlink()
-    write(repo / "src" / "moved" / "copycat.py", "# an unrelated leading comment\n" + _OWNER)
-    _, moved_payload, _ = run_gate(repo, "--base-ref", "HEAD")
-
     first = reuse_finding(before)
-    second = reuse_finding(after)
-    third = reuse_finding(moved_payload)
-    assert first["evidence"]["matches"] and third["evidence"]["matches"], (first, third)
-    assert first["findingId"] == second["findingId"] == third["findingId"], (
-        first["findingId"], second["findingId"], third["findingId"])
-    # The move is still visible where it belongs - in the display region.
-    assert "src/moved/copycat.py" in {region["path"] for region in third["region"]["regions"]}, third["region"]
+    matches = {match["newFile"]: match for match in first["evidence"]["matches"]}
+    assert matches["src/copy_a.py"]["findingId"] != matches["src/copy_b.py"]["findingId"], matches
+    assert matches["src/copy_a.py"]["newContentAnchor"] != matches["src/copy_b.py"]["newContentAnchor"], matches
+    candidates = {
+        region["path"]: region for region in first["region"]["regions"]
+        if region["evidenceRole"] == "candidate"
+    }
+    assert set(candidates) == {"src/copy_a.py", "src/copy_b.py"}, candidates
+    assert candidates["src/copy_a.py"]["contentAnchor"] != candidates["src/copy_b.py"]["contentAnchor"], candidates
+
+    write(repo / "src" / "copy_a.py", _OWNER.replace("normalize_user_id", "normalizeUserId").replace("lower()", "casefold()"))
+    _, renamed, _ = run_gate(repo, "--base-ref", "HEAD")
+    renamed_finding = reuse_finding(renamed)
+    assert renamed_finding["findingId"] != first["findingId"]
+    renamed_matches = {match["newFile"]: match for match in renamed_finding["evidence"]["matches"]}
+    assert renamed_matches["src/copy_a.py"]["findingId"] != matches["src/copy_a.py"]["findingId"]
+    assert renamed_matches["src/copy_b.py"]["findingId"] == matches["src/copy_b.py"]["findingId"]
+
+    write(repo / "src" / "copy_a.py", _OWNER.replace("return value.strip().lower()", "return '-'.join(value.split()).lower()"))
+    _, edited, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert reuse_finding(edited)["findingId"] not in {first["findingId"], renamed_finding["findingId"]}
+    edited_matches = {match["newFile"]: match for match in reuse_finding(edited)["evidence"]["matches"]}
+    assert edited_matches["src/copy_a.py"]["findingId"] != renamed_matches["src/copy_a.py"]["findingId"]
+    assert edited_matches["src/copy_b.py"]["findingId"] == matches["src/copy_b.py"]["findingId"]
+    assert edited_matches["src/copy_a.py"]["newContentAnchor"] != matches["src/copy_a.py"]["newContentAnchor"]
+    assert edited_matches["src/copy_b.py"]["newContentAnchor"] == matches["src/copy_b.py"]["newContentAnchor"]
+
+    write(repo / "src" / "copy_b.py", "# unrelated leading comment\n" + _OWNER.replace("value.strip()", "value.replace(' ', '')"))
+    _, unrelated, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert reuse_finding(unrelated)["findingId"] == reuse_finding(edited)["findingId"]
+
+    (repo / "src" / "copy_a.py").unlink()
+    write(repo / "src" / "moved" / "copy_a.py", _OWNER.replace("return value.strip().lower()", "return '-'.join(value.split()).lower()"))
+    _, moved_payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    moved_finding = reuse_finding(moved_payload)
+    assert moved_finding["findingId"] == reuse_finding(unrelated)["findingId"]
+    assert "src/moved/copy_a.py" in {region["path"] for region in moved_finding["region"]["regions"]}
 
     # Regions carry the full contract and are canonically ordered, so the
     # serialized order is a property of the finding, not of match order.
     regions = first["region"]["regions"]
     assert regions, first["region"]
     for region in regions:
-        assert set(region) == {"path", "role", "language", "displayLine", "symbolAnchor", "evidenceRole"}, region
+        assert set(region) == {"path", "role", "language", "displayLine", "contentAnchor", "evidenceRole"}, region
         assert region["role"] == "production" and region["language"] == "python", region
     assert {region["evidenceRole"] for region in regions} == {"candidate", "existing-owner"}, regions
-    ordered = sorted(regions, key=lambda r: (r["symbolAnchor"], r["evidenceRole"], r["path"], r["displayLine"]))
+    ordered = sorted(regions, key=lambda r: (r["contentAnchor"], r["evidenceRole"], r["path"], r["displayLine"]))
     assert regions == ordered, regions
 
     # The pass condition is discriminated and names what a rerun needs, so a
@@ -1303,48 +1321,22 @@ def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -
     assert condition["requires"] and all(isinstance(item, str) for item in condition["requires"]), condition
     assert condition["statement"], condition
 
-    # The symbol anchor is stable across the insertion while the display line
-    # moves: that split is exactly what makes the ID survive.
-    moved = next(r for r in second["region"]["regions"] if r["evidenceRole"] == "candidate")
-    origin = next(r for r in regions if r["evidenceRole"] == "candidate")
-    assert moved["symbolAnchor"] == origin["symbolAnchor"], (origin, moved)
-    assert moved["displayLine"] != origin["displayLine"], (origin, moved)
 
 
 @with_repo
-def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
-    # Schema v2 requires emitted regions to carry a content anchor over
-    # canonical implementation bytes; producing those bytes is the fingerprint
-    # the target architecture assigns to #76, so exactly one rule defers it.
-    # The exemption expires mechanically: `deferred` is intersected with the
-    # rules actually emitted, so when #77 stops emitting the rule it
-    # evaporates unedited.
+def test_every_emitted_region_has_a_content_anchor(repo: Path) -> None:
+    # Schema v2 has no rule-specific escape from content-anchored regions.
     write(repo / "src" / "ids.py", _OWNER)
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "owner")
     write(repo / "src" / "copycat.py", _OWNER)
     _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
 
-    emitted = {finding["ruleId"] for finding in payload["findings"]}
     with_regions = {finding["ruleId"] for finding in payload["findings"] if finding["region"].get("regions")}
     assert with_regions, payload["findings"]
-
-    anchorless = {
-        finding["ruleId"]
-        for finding in payload["findings"]
-        for region in finding["region"].get("regions", [])
-        if "contentAnchor" not in region
-    }
-    deferred = {ANCHOR_DEFERRED_RULE} & emitted
-    assert anchorless <= deferred, (sorted(anchorless), sorted(deferred))
-
-    # Deferring the content anchor is not the same as being anchorless: the one
-    # exempt rule still anchors every region on symbol identity, which is what
-    # keeps its finding ID stable across inserted lines.
     for finding in payload["findings"]:
-        if finding["ruleId"] == ANCHOR_DEFERRED_RULE:
-            for region in finding["region"]["regions"]:
-                assert region["symbolAnchor"], region
+        for region in finding["region"].get("regions", []):
+            assert region["contentAnchor"], (finding["ruleId"], region)
 
 
 @with_repo

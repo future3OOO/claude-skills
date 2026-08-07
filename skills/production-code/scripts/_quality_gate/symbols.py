@@ -56,14 +56,25 @@ def split_name_tokens(name: str) -> tuple[str, ...]:
 
 def extract_symbols(path: str, text: str, source: str, language: str, context_boost: int = 0) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
-    for line_no, line in enumerate(text.splitlines(), 1):
+    lines = text.splitlines()
+    for line_no, line in enumerate(lines, 1):
         for kind, pattern in _SYMBOL_PATTERNS.get(language, []):
             match = pattern.search(line)
             if match:
                 name = match.group(1)
-                symbols.append(SymbolDef(name, path, line_no, kind, language, split_name_tokens(name), source, context_boost))
+                symbols.append(SymbolDef(
+                    name, path, line_no, kind, language, split_name_tokens(name), source, context_boost,
+                    _definition_content(lines, line_no),
+                ))
                 break
     return symbols
+
+
+def _definition_content(lines: list[str], line_no: int) -> str:
+    indent = len(lines[line_no - 1]) - len(lines[line_no - 1].lstrip())
+    end = next((index for index in range(line_no, len(lines)) if lines[index].strip()
+                and len(lines[index]) - len(lines[index].lstrip()) <= indent), len(lines))
+    return "\n".join(lines[line_no - 1 : end]).rstrip()
 
 
 def subtree_score(path_a: str, path_b: str) -> int:

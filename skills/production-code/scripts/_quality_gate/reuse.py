@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .findings import Finding, RULE_REUSE_ADVISORY, SymbolDef, anchor, pass_condition
+from .findings import Finding, RULE_REUSE_ADVISORY, SymbolDef, anchor, finding_id, pass_condition
 from .snapshot import EvaluationSnapshot, top_dir
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
@@ -55,13 +55,11 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[Finding, list[str
         # result unknown when it also found nothing: a rule that DID find
         # matches knows that much, whatever else discovery missed.
         passed=None if (gaps and not matches) else not errors,
-        # Identity is the anchor pair and nothing else. Paths and lines are
-        # provenance, so a rename or move preserves the debt's ID and the
-        # disposition attached to it, and an inserted line cannot shift it.
-        identity=tuple(
-            f"{_symbol_anchor(stored, m['newFile'], m['newSymbol'])}->{_symbol_anchor(stored, m['existingFile'], m['existingSymbol'])}"
-            for m in matches
-        ),
+        # Content-anchor pairs are canonical; paths and lines stay provenance,
+        # so a path rename or move cannot reorder or move the debt's ID.
+        identity=tuple(sorted(
+            f"{m['newContentAnchor']}->{m['existingContentAnchor']}" for m in matches
+        )),
         region={
             "scope": "evaluation",
             "changedScope": snapshot.changed_scope,
@@ -72,7 +70,7 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[Finding, list[str
         action="Call the existing owner instead of reimplementing it, or widen discovery until the baseline scan completes.",
         pass_condition=pass_condition(
             "duplicate-absent",
-            ("symbol anchors of both owners", "complete baseline discovery"),
+            ("content anchors of both implementations", "complete baseline discovery"),
             "no reimplementation of an existing owner, with baseline discovery complete",
         ),
         gaps=gaps,
@@ -87,20 +85,14 @@ def _stored_classification(snapshot: EvaluationSnapshot) -> dict[str, tuple[str,
     return stored
 
 
-def _symbol_anchor(stored: dict[str, tuple[str, str]], path: str, symbol: str) -> str:
-    """The symbol anchor identity and regions share, so the two cannot drift."""
-    role, language = stored.get(path, ("unknown", "other"))
-    return anchor("symbol", role, language, symbol)
-
-
 def _regions(stored: dict[str, tuple[str, str]], matches: list[dict[str, object]]) -> list[dict[str, object]]:
     """Ordered exact regions: the candidate anchor and the owner it matched,
     with role and language from the stored classification, never re-derived."""
     regions = []
     for match in matches:
-        for path, line, symbol, evidence_role in (
-            (match["newFile"], match["newLine"], match["newSymbol"], "candidate"),
-            (match["existingFile"], match["existingLine"], match["existingSymbol"], "existing-owner"),
+        for path, line, content_anchor, evidence_role in (
+            (match["newFile"], match["newLine"], match["newContentAnchor"], "candidate"),
+            (match["existingFile"], match["existingLine"], match["existingContentAnchor"], "existing-owner"),
         ):
             role, language = stored.get(path, ("unknown", "other"))
             regions.append({
@@ -108,12 +100,10 @@ def _regions(stored: dict[str, tuple[str, str]], matches: list[dict[str, object]
                 "role": role,
                 "language": language,
                 "displayLine": line,
-                # A symbol anchor, stable under the line moves and rebases
-                # that shift displayLine, which is what the finding ID relies on.
-                "symbolAnchor": _symbol_anchor(stored, path, symbol),
+                "contentAnchor": content_anchor,
                 "evidenceRole": evidence_role,
             })
-    return sorted(regions, key=lambda item: (item["symbolAnchor"], item["evidenceRole"], item["path"], item["displayLine"]))
+    return sorted(regions, key=lambda item: (item["contentAnchor"], item["evidenceRole"], item["path"], item["displayLine"]))
 
 
 def _existing_symbol_index(snapshot: EvaluationSnapshot, candidates: list[SymbolDef]) -> tuple[list[SymbolDef], bool]:
@@ -140,7 +130,7 @@ def _existing_symbol_index(snapshot: EvaluationSnapshot, candidates: list[Symbol
             continue
         for symbol in extract_symbols(baseline.path, baseline.text, "baseline", baseline.language, 12 if baseline.path in packet_paths else 0):
             boost = min(20, symbol.context_boost + gitnexus_boosts.get(f"{baseline.path}:{symbol.name}", 0))
-            symbols.append(SymbolDef(symbol.name, symbol.path, symbol.line, symbol.kind, symbol.language, symbol.tokens, symbol.source, boost))
+            symbols.append(SymbolDef(symbol.name, symbol.path, symbol.line, symbol.kind, symbol.language, symbol.tokens, symbol.source, boost, symbol.content))
             if len(symbols) >= MAX_INDEX_SYMBOLS:
                 # A capped scan has not seen the owners it never extracted;
                 # the rule must say so rather than report no reimplementation.
@@ -152,9 +142,10 @@ def _new_symbols(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
     symbols: list[SymbolDef] = []
     for entry in snapshot.role_entries("production"):
         source = "untracked" if entry.untracked else "added"
-        for line_no, text in entry.added_lines():
-            for symbol in extract_symbols(entry.path, text, source, entry.classification.language):
-                symbols.append(SymbolDef(symbol.name, entry.path, line_no, symbol.kind, symbol.language, symbol.tokens, symbol.source))
+        added = {line_no for line_no, _ in entry.added_lines()}
+        symbols.extend(symbol for symbol in extract_symbols(
+            entry.path, entry.current_text or "", source, entry.classification.language
+        ) if symbol.line in added)
     return symbols
 
 
@@ -175,7 +166,7 @@ def _risky_added_blocks(snapshot: EvaluationSnapshot) -> list[SymbolDef]:
             if dedupe_shape:
                 tokens.append("dedupe")
             if dedupe_shape or len(set(tokens)) >= 2:
-                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", entry.classification.language, tuple(tokens[:3]), "added"))
+                blocks.append(SymbolDef("+".join(tokens[:3]), rel_path, line_no, "block", entry.classification.language, tuple(tokens[:3]), "added", content=text))
     return blocks
 
 
@@ -206,11 +197,15 @@ def _score_reuse_candidates(
         if severity == "warning" and not _warning_is_actionable(new_item, existing_item):
             continue
         if severity:
+            new_anchor = anchor("symbol", "production", new_item.language, new_item.content)
+            existing_anchor = anchor("symbol", "production", existing_item.language, existing_item.content)
             matches.append({
                 "severity": severity, "score": score,
+                "findingId": finding_id(RULE_REUSE_ADVISORY, (new_anchor, existing_anchor)),
                 "newSymbol": new_item.name, "newFile": new_item.path, "newLine": new_item.line,
+                "newContentAnchor": new_anchor,
                 "existingSymbol": existing_item.name, "existingFile": existing_item.path,
-                "existingLine": existing_item.line, "reason": reason,
+                "existingLine": existing_item.line, "existingContentAnchor": existing_anchor, "reason": reason,
             })
     matches.sort(key=lambda item: (item["severity"] != "error", -int(item["score"]), item["newFile"], item["newLine"]))
     return matches

@@ -44,6 +44,11 @@ def anchor(kind: str, role: str, language: str, content: str) -> str:
     return hashlib.sha256(payload.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
 
 
+def finding_id(rule_id: str, identity: tuple[str, ...]) -> str:
+    joined = "\x1f".join((rule_id, *identity))
+    return hashlib.sha256(joined.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
+
+
 def pass_condition(kind: str, requires: tuple[str, ...], statement: str) -> dict[str, object]:
     """A discriminated, mechanically rerunnable pass condition: the kind a
     consumer switches on, the anchors and scopes a rerun needs, and the
@@ -113,6 +118,7 @@ class SymbolDef:
     tokens: tuple[str, ...]
     source: str
     context_boost: int = 0
+    content: str = ""
 
 
 @dataclass(frozen=True)
@@ -140,10 +146,7 @@ class Finding:
     gaps: tuple[str, ...]
 
     def finding_id(self) -> str:
-        joined = "\x1f".join((self.rule_id, *self.identity))
-        # Identity components come from repository bytes and can carry
-        # surrogates; surrogateescape keeps the hash defined for those names.
-        return hashlib.sha256(joined.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
+        return finding_id(self.rule_id, self.identity)
 
     def as_dict(self, base: str, candidate: str) -> dict[str, object]:
         serialized = {
