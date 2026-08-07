@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .models import Finding, RULE_GROWTH, SnapshotEntry, pass_condition
+from .findings import Finding, RULE_GROWTH, SnapshotEntry, pass_condition
 from .path_policy import is_binary_path, is_temp_artifact
 from .snapshot import EvaluationSnapshot
 

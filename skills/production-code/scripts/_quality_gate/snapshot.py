@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .git_scope import git_read, read_git_file
-from .models import BaselineFile, Hunk, Numstat, SnapshotEntry
+from .findings import BaselineFile, Hunk, Numstat, SnapshotEntry
 from .path_policy import classify_path, normalize_path
 
 

@@ -956,7 +956,7 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
     # detector reads run after the snapshot freezes, and the CLI captures and
     # evaluates in one process, so the public Interface offers no window in
     # which to observe such a read, and none was added solely for testing.
-    detectors = ("checks.py", "reuse.py", "symbols.py", "models.py")
+    detectors = ("checks.py", "reuse.py", "symbols.py", "findings.py")
     banned_calls = {"run_git", "git_text", "git_read", "read_git_file", "open", "read_text", "read_bytes"}
     for name in detectors:
         tree = ast.parse((SCRIPT_DIR / "_quality_gate" / name).read_text(encoding="utf-8"))

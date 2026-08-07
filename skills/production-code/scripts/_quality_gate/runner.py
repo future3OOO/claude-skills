@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .checks import changed_file_failures, duplicate_added_blocks, evaluate_growth, scan_quality_escapes
 from .git_scope import collect_scope
-from .models import Finding, RULE_GITNEXUS_CONTEXT, RULE_GROWTH, RULE_INCOMPLETE, gitnexus_context_finding, incompleteness_findings, promoted_errors
+from .findings import Finding, RULE_GITNEXUS_CONTEXT, RULE_GROWTH, RULE_INCOMPLETE, gitnexus_context_finding, incompleteness_findings, promoted_errors
 from .reuse import detect_reuse_issues
 from .snapshot import EvaluationSnapshot
 

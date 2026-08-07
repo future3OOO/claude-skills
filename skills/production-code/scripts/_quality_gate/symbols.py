@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .models import SymbolDef
+from .findings import SymbolDef
 
 
 GENERIC_SYMBOLS = {

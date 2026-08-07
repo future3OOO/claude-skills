@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .models import Finding, RULE_REUSE_ADVISORY, SymbolDef, anchor, pass_condition
+from .findings import Finding, RULE_REUSE_ADVISORY, SymbolDef, anchor, pass_condition
 from .snapshot import EvaluationSnapshot, top_dir
 from .symbols import RISKY_BLOCK_RULE, REUSE_ACTION_TOKENS, extract_symbols, same_behavior_name, split_name_tokens, subtree_score, token_overlap
 
