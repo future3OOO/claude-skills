@@ -57,7 +57,9 @@ MAX_INDEX_FILE_BYTES = 500_000
 
 
 def top_dir(path: str) -> str:
-    return path.split("/", 1)[0]
+    # Root-level files share the repository root: their directory is "", never
+    # the filename, or no two root files could ever be neighbors.
+    return path.split("/", 1)[0] if "/" in path else ""
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,7 @@ class EvaluationSnapshot:
             "baseline": self.baseline_gaps,
             "attribution": tuple(f"{path}: diff hunks matched no changed file" for path in self.unattributed),
             "measurement": tuple(sorted({gap for entry in self.entries if entry.classification.source for gap in entry.gaps})),
+            "measurement_production": tuple(sorted({gap for entry in self.role_entries("production") for gap in entry.gaps})),
             "measurement_all": tuple(sorted({gap for entry in self.entries for gap in entry.gaps})),
         }
 

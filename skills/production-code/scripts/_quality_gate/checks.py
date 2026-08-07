@@ -131,7 +131,9 @@ def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:
     """
     growth = snapshot.growth()
     streams = snapshot.gap_streams()
-    gaps = streams["measurement_all"] + streams["baseline"] + streams["capture"]
+    # Growth reads changed-entry counts, capture, and base binding — never the
+    # reuse-owner baseline, so owner-discovery gaps stay with the reuse rule.
+    gaps = streams["measurement_all"] + streams["capture"]
     if snapshot.base_source == "HEAD":
         gaps = gaps + ("no caller-supplied base: totals cover the working delta only, not branch-cumulative growth",)
     net = growth["humanAuthored"]["net"]

@@ -16,7 +16,7 @@ _SIMPLE_CHECKS = (
     ("no-merge-conflict-markers", "merge conflict markers found in {n} file(s)", 10, "capture"),
     ("no-temp-artifacts", "temporary artifact paths detected in {n} changed file(s)", 10, "capture"),
     ("no-quality-escapes", "quality escapes detected in {n} changed location(s)", 10, "attribution"),
-    ("no-duplicate-added-blocks", "duplicate added code blocks detected: {n}", 4, "attribution"),
+    ("no-duplicate-added-blocks", "duplicate added code blocks detected: {n}", 4, "attribution-production"),
 )
 
 
@@ -49,12 +49,14 @@ def check(
 
     streams = snapshot.gap_streams()
     # Hunk-reading rules cannot claim they saw the whole change when hunks are
-    # unattributed, capture failed, or a source file's counts were never
-    # measured (Git supplied no hunks to inspect); path-reading rules depend on
-    # capture only. Non-source measurement gaps stay out of the hunk stream.
+    # unattributed, capture failed, or a file's counts were never measured
+    # (Git supplied no hunks to inspect); path-reading rules depend on capture
+    # only, and each rule carries only the measurement gaps inside its own
+    # scope: all-source for the escape scan, production for the duplicate walk.
     gaps_for = {
         "capture": streams["capture"],
         "attribution": streams["attribution"] + streams["measurement"] + streams["capture"],
+        "attribution-production": streams["attribution"] + streams["measurement_production"] + streams["capture"],
     }
 
     # One walk builds checks, warnings, and errors from the typed outcomes; the

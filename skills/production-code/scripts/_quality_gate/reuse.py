@@ -31,7 +31,7 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[Finding, list[str
         # delegating wrapper legitimately calls its owner right beside its own
         # definition; what counts as a call is per-candidate in _symbol_is_called_nearby.
         added_by_file = {entry.path: entry.added_lines() for entry in snapshot.role_entries("production")}
-        matches = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))[:30]
+        matches = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))
     queries = sorted({
         f'gitnexus_context(name="{match["existingSymbol"]}") and gitnexus_impact(target="{match["existingSymbol"]}", direction="upstream")'
         for match in matches
@@ -39,9 +39,12 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[Finding, list[str
     })[:10]
 
     streams = snapshot.gap_streams()
-    production_gaps = tuple(sorted({gap for entry in snapshot.role_entries("production") for gap in entry.gaps}))
+    # Owner-discovery gaps matter only when there is a candidate to score
+    # against the owners; capture, attribution, and measurement gaps always
+    # matter because they can hide the candidates themselves.
     truncation = (f"reuse baseline discovery stopped at {MAX_INDEX_SYMBOLS} symbols",) if truncated else ()
-    gaps = tuple(dict.fromkeys(streams["baseline"] + truncation + production_gaps + streams["attribution"] + streams["capture"]))
+    owner_gaps = (streams["baseline"] + truncation) if candidates else ()
+    gaps = tuple(dict.fromkeys(owner_gaps + streams["measurement_production"] + streams["attribution"] + streams["capture"]))
     stored = _stored_classification(snapshot)
     errors = sum(1 for match in matches if match["severity"] == "error")
     return Finding(
@@ -249,27 +252,17 @@ def _best_existing_match(
 
 
 def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], candidate: SymbolDef) -> bool:
-    same_named = candidate.name == symbol
-    qualified = re.compile(rf"\.\s*{re.escape(symbol)}\s*\(")
-    bare = re.compile(rf"\b{re.escape(symbol)}\s*\(")
-
-    def is_call(line_no: int, text: str) -> bool:
-        if not same_named:
-            return bool(bare.search(text))
-        if candidate.language == "python":
-            # A same-name bare call binds to the candidate's own definition in
-            # module scope — new file or existing — so only a qualified call
-            # proves delegation, and a declaration never suppresses itself.
-            return bool(qualified.search(text))
-        # Other languages: the bare token on the declaration line is the
-        # definition itself, never delegation — but a qualified owner call
-        # sharing that line, the one-line-wrapper shape, still counts.
-        if line_no == candidate.line:
-            return bool(qualified.search(text))
-        return bool(bare.search(text))
-
+    # A same-name bare token is the candidate's own declaration or recursion
+    # into itself in any language — never delegation. Only a qualified owner
+    # call proves a same-named candidate delegates; the one-line-wrapper shape
+    # keeps counting because its qualified call shares the declaration line.
+    pattern = (
+        re.compile(rf"\.\s*{re.escape(symbol)}\s*\(")
+        if candidate.name == symbol
+        else re.compile(rf"\b{re.escape(symbol)}\s*\(")
+    )
     return any(
-        max(0, candidate.line - 8) <= line_no <= candidate.line + 20 and is_call(line_no, text)
+        max(0, candidate.line - 8) <= line_no <= candidate.line + 20 and pattern.search(text)
         for line_no, text in lines
     )
 

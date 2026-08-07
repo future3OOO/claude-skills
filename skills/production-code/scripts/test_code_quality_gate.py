@@ -428,6 +428,16 @@ _REUSE_ROWS = (
      {"src/ids.py": _OWNER, "src/users.py": "USERS: list[str] = []\n"}, (),
      {"src/users.py": "USERS: list[str] = []\n\n" + _OWNER},
      False, (), ("existingFile", "src/ids.py")),
+    # Root-level files share the repository root as their directory: an owner
+    # beside the candidate at the top level is inside the discovery scope.
+    ("root-level-owner-detected", {"helpers.py": _OWNER}, (),
+     {"main.py": _OWNER}, False, (), ("existingFile", "helpers.py")),
+    # A same-named bare call is recursion into the candidate itself in any
+    # language; only a qualified owner call proves delegation.
+    ("js-self-recursion-is-not-delegation",
+     {"src/ids.js": "export function normalizeUserId(value) {\n  return value.trim().toLowerCase();\n}\n"}, (),
+     {"src/walk.js": "export function normalizeUserId(node) {\n  if (node.child) {\n    return normalizeUserId(node.child);\n  }\n  return node.value.trim().toLowerCase();\n}\n"},
+     False, (), ("existingFile", "src/ids.js")),
 )
 
 
@@ -476,6 +486,55 @@ def test_same_file_related_helper_warns_but_function_edit_passes(repo: Path) -> 
     code, payload, _ = run_gate(repo)
     assert code == 0
     assert payload["ok"] is True
+
+
+@with_repo
+def test_completeness_scopes_are_rule_specific(repo: Path) -> None:
+    # An unread reuse owner is unknown scope for reuse scoring only: growth
+    # keeps its measured claim, and a candidate-free change stays complete
+    # even for reuse.
+    write(repo / "src" / "big.py", "# pad\n" * 130000)
+    write(repo / "src" / "ids.py", _OWNER)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owners")
+    write(repo / "src" / "new.py", "def fresh_candidate_helper(x):\n    return x.strip()\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert code == 0, (code, payload["errors"])
+    assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)["completeness"]
+    assert reuse_finding(payload)["status"] == "incomplete", reuse_finding(payload)
+
+    write(repo / "src" / "new.py", "NOTES = 2\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert code == 0, (code, payload["errors"])
+    assert reuse_finding(payload)["status"] == "passed", reuse_finding(payload)
+
+
+@with_repo
+def test_binary_test_gap_stays_out_of_the_production_duplicate_rule(repo: Path) -> None:
+    # An unmeasured test blob is outside the production duplicate rule's
+    # scope; the all-source escape scan keeps carrying it.
+    (repo / "tests").mkdir()
+    (repo / "tests" / "blob.py").write_bytes(b"A = 1\x00\n")
+    write(repo / "src" / "app.py", "VALUE = 1\n")
+    code, payload, _ = run_gate(repo)
+    dup = next(item for item in payload["checks"] if item["name"] == "no-duplicate-added-blocks")
+    escapes = next(item for item in payload["checks"] if item["name"] == "no-quality-escapes")
+    assert dup["status"] == "passed", dup
+    assert escapes["status"] == "incomplete", escapes
+
+
+@with_repo
+def test_reuse_evidence_is_never_silently_truncated(repo: Path) -> None:
+    # 35 confirmed reimplementations must serialize as 35: capped evidence
+    # under completeness=true would hide confirmed violations.
+    owners = "".join(f"def normalize_thing_{i}(value):\n    return value.strip().lower()\n\n" for i in range(35))
+    write(repo / "src" / "owners.py", owners)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owners")
+    write(repo / "src" / "copies.py", owners)
+    code, payload, _ = run_gate(repo)
+    assert code == 2, (code, payload["errors"])
+    assert len(reuse_matches(payload)) == 35, len(reuse_matches(payload))
 
 
 @with_repo
