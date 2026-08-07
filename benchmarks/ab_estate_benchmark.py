@@ -564,15 +564,18 @@ def timings(runs: list[dict[str, object]]) -> dict[str, object]:
             "maxSeconds": round(max(seconds), 6)}
 
 
-def capability_gap(one: dict[str, object], other: dict[str, object]) -> bool:
-    """One arm ships this operation and the other does not.
+def capability_gap(baseline: dict[str, object], candidate: dict[str, object]) -> bool:
+    """The candidate ships this operation and the baseline does not.
 
-    That is the difference under test, not a defect: a candidate is allowed to extend the
-    governed grammar, and comparing it strictly would make every such candidate
-    unacceptable. Only the exact pair qualifies, so a projection missing the key - which is
-    every other scenario - or carrying anything else is compared as usual.
+    Directional, because only one direction is the difference under test: a candidate is
+    allowed to extend the governed grammar, and comparing that strictly would make every
+    such candidate unacceptable. The reverse is a regression - a candidate that drops an
+    operation its baseline ships - and stays a reported difference. Reading it as a set
+    would collapse the two, which is exactly how a removed step went unreported. Only this
+    exact pair qualifies, so a projection missing the key, which is every other scenario,
+    is compared as usual.
     """
-    return {one.get("supported"), other.get("supported")} == {True, False}
+    return baseline.get("supported") is False and candidate.get("supported") is True
 
 
 def compare(baseline: list[dict[str, object]], candidate: list[dict[str, object]]) -> dict[str, object]:
@@ -599,8 +602,12 @@ def compare(baseline: list[dict[str, object]], candidate: list[dict[str, object]
                         for index, (one, other) in enumerate(zip(baseline, candidate, strict=True))
                         if one["projection"] != other["projection"]
                         and not capability_gap(one["projection"], other["projection"])],
-        "representationDeltas": {"candidateOnly": sorted(cand_keys - base_keys),
-                                 "baselineOnly": sorted(base_keys - cand_keys)},
+        # Not reported across a capability gap: representation deltas compare what two arms
+        # emitted for the SAME operation, and an arm that never ran it emits nothing, so
+        # every key would read as candidate-only. That is an artifact of the gap the row
+        # already declares, not a representation change worth an operator's attention.
+        "representationDeltas": {"candidateOnly": [] if gapped else sorted(cand_keys - base_keys),
+                                 "baselineOnly": [] if gapped else sorted(base_keys - cand_keys)},
         "baseline": base, "candidate": cand,
         "deltaMedianSeconds": round(cand["medianSeconds"] - base["medianSeconds"], 6),
         "deltaMaxSeconds": round(cand["maxSeconds"] - base["maxSeconds"], 6),
@@ -626,8 +633,14 @@ def render(artifact: dict[str, object], path: Path) -> str:
     replay = [item for item in scenarios if str(item["name"]).startswith("replay-")]
     # Collapsed to one line while they are clean, because twelve more rows would push a
     # passing summary past the length that makes it readable. Any replay step that
-    # diverged or failed its own invariant is printed in full underneath.
+    # diverged, failed its own invariant, or ran on only one arm is printed in full
+    # underneath: a capability delta passes both other tests, so without it the marker
+    # would describe a row the operator never sees and the summary would disagree with
+    # the artifact it points at.
     faulty = [item for item in replay if item["differences"] or not item["invariantsHeld"]]
+    # Printed, not counted: a capability delta is a passing operation, so it belongs in the
+    # rows without being subtracted from the tally above it.
+    shown = [item for item in replay if item in faulty or item["capabilityDelta"]]
     return "\n".join([
         f"A/B estate benchmark  schema={artifact['schemaVersion']}  "
         f"claude={artifact['claudeCodeVersion']}  repetitions={artifact['repetitions']}",
@@ -641,7 +654,7 @@ def render(artifact: dict[str, object], path: Path) -> str:
         f"{seeds['baseline']['seconds']:.2f}->{seeds['candidate']['seconds']:.2f}s; downstream median total "
         f"{sum(item['baseline']['medianSeconds'] for item in replay):.3f}->"
         f"{sum(item['candidate']['medianSeconds'] for item in replay):.3f}s",
-        *(row(item) for item in faulty),
+        *(row(item) for item in shown),
         f"isolation: {'ok' if isolation['ok'] else 'FAILED'}; estate digest "
         f"{'unchanged' if isolation['estateDigestBefore'] == isolation['estateDigestAfter'] else 'CHANGED'}; "
         f"{len(isolation['armKeys'])} arm keys, {len(isolation['leakedKeys'])} under the live root",
