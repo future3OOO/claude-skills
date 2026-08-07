@@ -1281,7 +1281,7 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "schema-v2 canonical evaluation for #75, within the approved 1800-line limit",
+        "TOTAL": "schema-v2 canonical evaluation for #75; exceeds the invariant 1800-line ceiling — tracked in #88, with no exception or compliance claimed",
     }
     production_files = [SCRIPT, *sorted((SCRIPT_DIR / "_quality_gate").glob("*.py"))]
     line_counts = {str(path.relative_to(SCRIPT_DIR)): len(path.read_text(encoding="utf-8").splitlines()) for path in production_files}
