@@ -76,15 +76,16 @@ def scan_quality_escapes(snapshot: EvaluationSnapshot) -> list[str]:
             # diff splits; scan its whole captured text instead.
             hits.extend(_multiline_hits(entry.path, entry.current_text))
         else:
-            # For an edited file the added lines are joined per file so an
-            # empty-catch shape split across adjacent added lines still hits.
-            joined = "\n".join(text for _, text in lines)
-            line_of = [line_no for line_no, _ in lines]
-            for rule in EMPTY_CATCH_RULES:
-                for match in rule.finditer(joined):
-                    index = joined[: match.start()].count("\n")
-                    if index < len(line_of):
-                        hits.append(f"{entry.path}:{line_of[index]}")
+            # An edited file's added lines are contiguous only within a hunk,
+            # so an empty-catch shape split across them still hits there —
+            # while lines from separate hunks are never joined.
+            for hunk in entry.hunks:
+                joined = "\n".join(text for _, text in hunk.added)
+                for rule in EMPTY_CATCH_RULES:
+                    for match in rule.finditer(joined):
+                        index = joined[: match.start()].count("\n")
+                        if index < len(hunk.added):
+                            hits.append(f"{entry.path}:{hunk.added[index][0]}")
     return sorted(set(hits))
 
 

@@ -31,8 +31,7 @@ def detect_reuse_issues(snapshot: EvaluationSnapshot) -> tuple[Finding, list[str
         # delegating wrapper legitimately calls its owner right beside its own
         # definition; what counts as a call is per-candidate in _symbol_is_called_nearby.
         added_by_file = {entry.path: entry.added_lines() for entry in snapshot.role_entries("production")}
-        baseline_absent = {entry.path for entry in snapshot.role_entries("production") if entry.base_text is None}
-        matches = _score_reuse_candidates(candidates, existing, added_by_file, baseline_absent, _deleted_definition_names(snapshot))[:30]
+        matches = _score_reuse_candidates(candidates, existing, added_by_file, _deleted_definition_names(snapshot))[:30]
     queries = sorted({
         f'gitnexus_context(name="{match["existingSymbol"]}") and gitnexus_impact(target="{match["existingSymbol"]}", direction="upstream")'
         for match in matches
@@ -190,14 +189,13 @@ def _score_reuse_candidates(
     candidates: list[SymbolDef],
     existing: list[SymbolDef],
     added_by_file: dict[str, list[tuple[int, str]]],
-    baseline_absent: set[str],
     moved_or_deleted: set[str],
 ) -> list[dict[str, object]]:
     matches: list[dict[str, object]] = []
     for new_item in candidates:
         if new_item.name in moved_or_deleted or new_item.name.lower() in moved_or_deleted:
             continue
-        best = _best_existing_match(new_item, existing, added_by_file, baseline_absent, moved_or_deleted)
+        best = _best_existing_match(new_item, existing, added_by_file, moved_or_deleted)
         if best is None:
             continue
         score, reason, existing_item = best
@@ -219,7 +217,6 @@ def _best_existing_match(
     new_item: SymbolDef,
     existing: list[SymbolDef],
     added_by_file: dict[str, list[tuple[int, str]]],
-    baseline_absent: set[str],
     moved_or_deleted: set[str],
 ) -> tuple[int, str, SymbolDef] | None:
     best: tuple[int, str, SymbolDef] | None = None
@@ -230,7 +227,7 @@ def _best_existing_match(
             continue
         if existing_item.language != new_item.language and new_item.kind != "block":
             continue
-        if _symbol_is_called_nearby(existing_item.name, added_by_file.get(new_item.path, []), new_item, new_item.path in baseline_absent):
+        if _symbol_is_called_nearby(existing_item.name, added_by_file.get(new_item.path, []), new_item):
             continue
         base_score, reason = same_behavior_name(new_item, existing_item)
         if new_item.kind == "block":
@@ -251,17 +248,18 @@ def _best_existing_match(
     return best
 
 
-def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], candidate: SymbolDef, baseline_absent: bool) -> bool:
-    same_named_new = baseline_absent and candidate.name == symbol
+def _symbol_is_called_nearby(symbol: str, lines: list[tuple[int, str]], candidate: SymbolDef) -> bool:
+    same_named = candidate.name == symbol
     qualified = re.compile(rf"\.\s*{re.escape(symbol)}\s*\(")
     bare = re.compile(rf"\b{re.escape(symbol)}\s*\(")
 
     def is_call(line_no: int, text: str) -> bool:
-        if not same_named_new:
+        if not same_named:
             return bool(bare.search(text))
         if candidate.language == "python":
-            # In a new Python file an unqualified same-name call binds to the
-            # local definition, so only a qualified call proves delegation.
+            # A same-name bare call binds to the candidate's own definition in
+            # module scope — new file or existing — so only a qualified call
+            # proves delegation, and a declaration never suppresses itself.
             return bool(qualified.search(text))
         # Other languages: the bare token on the declaration line is the
         # definition itself, never delegation — but a qualified owner call

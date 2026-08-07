@@ -256,6 +256,34 @@ def _escape_row(repo: Path, path: str, content: str, fails: bool, name: str) -> 
 
 
 @with_repo
+def test_distant_edits_do_not_fabricate_an_empty_catch(repo: Path) -> None:
+    # Added lines from separate hunks are not adjacent in the candidate: an
+    # except header edited in one place and a real `pass` added far below must
+    # not join into an empty-catch escape that exists nowhere in the file.
+    original = (
+        "def parse(text):\n"
+        "    try:\n"
+        "        return int(text)\n"
+        "    except ValueError:\n"
+        "        return 0\n"
+        "\n"
+        "\n"
+        "def audit(flag):\n"
+        "    if flag:\n"
+        "        log(flag)\n"
+        "    return flag\n"
+    )
+    write(repo / "src" / "loader.py", original)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "loader")
+    edited = original.replace("except ValueError:", "except Exception:").replace("        log(flag)", "        pass")
+    write(repo / "src" / "loader.py", edited)
+    code, payload, _ = run_gate(repo)
+    assert code == 0, (code, payload["errors"])
+    assert payload["ok"] is True
+
+
+@with_repo
 def test_large_growth_is_warning_only(repo: Path) -> None:
     # The per-file bloat blockers are deleted by the binding architecture:
     # cumulative human-authored growth over the review budget warns, never
@@ -393,6 +421,13 @@ _REUSE_ROWS = (
      {"api/new.py": "def resolve_order_key(value: str) -> str:\n    return value.strip()\n",
       "workers/notes.py": "NOTES = 2\n"},
      False, (), "no-match"),
+    # Appending a same-named definition to an already tracked file is a
+    # reimplementation, not delegation: the declaration's own bare token must
+    # never read as a nearby call that suppresses its reuse match.
+    ("same-name-appended-to-existing-file-detected",
+     {"src/ids.py": _OWNER, "src/users.py": "USERS: list[str] = []\n"}, (),
+     {"src/users.py": "USERS: list[str] = []\n\n" + _OWNER},
+     False, (), ("existingFile", "src/ids.py")),
 )
 
 
