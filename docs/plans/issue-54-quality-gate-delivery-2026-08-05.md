@@ -9,10 +9,12 @@
 
 ## Objective
 
-Deliver the remaining issue #54 quality-gate work as three sequential AFK PRs:
-one canonical evaluation Module, calibrated exact-duplicate findings, and
-calibrated responsibility-owner findings. Each PR must be independently
-verifiable and keep subjective rule promotion at the parent issue's human gate.
+Deliver the remaining issue #54 quality-gate work as four sequential AFK PRs:
+the canonical evaluation Module in two vertical slices (A1 captured
+evaluation, A2 typed findings and schema v2), calibrated exact-duplicate
+findings, and calibrated responsibility-owner findings. Each PR must be
+independently verifiable and keep subjective rule promotion at the parent
+issue's human gate.
 
 Success means the gate evaluates one base-to-candidate snapshot through its
 existing `runner.check` Interface, reports production, test, test-support, and
