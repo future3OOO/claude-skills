@@ -1379,7 +1379,10 @@ def test_gate_implementation_budget() -> None:
         "wrapper_lines": 150,
         "module_lines": 1200,
         "function_lines": 180,
-        "total_lines": 1800,
+        # Raised from 1800 by explicit operator approval on PR #90
+        # (2026-08-08): the complete #75 behavior measured 1,926 and the
+        # operator directed raising the ceiling over cutting scope.
+        "total_lines": 1950,
     }
     review_triggers = {
         "module_lines": 700,
@@ -1387,7 +1390,8 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "complete #75 canonical evaluation: captured base-to-candidate snapshot, typed schema-v2 findings, and warning-only cumulative growth",
+        "TOTAL": "complete #75 canonical evaluation: captured base-to-candidate snapshot, typed schema-v2 findings, and warning-only cumulative growth; 1950 ceiling operator-approved 2026-08-08",
+        "_quality_gate/runner.py:check": "the one evaluation walk the architecture mandates: every check, warning, error, and hard rule derives from a single typed outcome column",
     }
     production_files = [SCRIPT, *sorted((SCRIPT_DIR / "_quality_gate").glob("*.py"))]
     line_counts = {str(path.relative_to(SCRIPT_DIR)): len(path.read_text(encoding="utf-8").splitlines()) for path in production_files}
