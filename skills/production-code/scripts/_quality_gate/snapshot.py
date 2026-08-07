@@ -219,7 +219,7 @@ def _baseline_index(
         return (), ()
     listed, failure = git_read(repo, ["ls-tree", "-r", "-l", "-z", base])
     if failure:
-        return (), (f"baseline listing failed: {failure}",)
+        return (), (f"reuse baseline listing failed: {failure}",)
     production = [entry for entry in entries if entry.classification.role == "production"]
     languages = {entry.classification.language for entry in production}
     roots = {top_dir(entry.path) for entry in production}
