@@ -153,14 +153,18 @@ class EvaluationSnapshot:
         }
         return buckets
 
-    def gaps(self) -> tuple[str, ...]:
-        """Per-entry measurement gaps plus baseline and capture-level gaps."""
-        entry_gaps = {gap for entry in self.entries for gap in entry.gaps}
-        return tuple(sorted(entry_gaps)) + self.baseline_gaps + self.capture_gaps
-
-    def attribution_gaps(self) -> tuple[str, ...]:
-        """Diff paths whose hunks belong to no evaluated entry."""
-        return tuple(f"{path}: diff hunks matched no changed file" for path in self.unattributed)
+    def gap_streams(self) -> dict[str, tuple[str, ...]]:
+        """The one completeness source every rule draws from: capture-level
+        failures, baseline discovery gaps, unattributed diff hunks, and the
+        per-entry measurement gaps (all entries, and the source subset the
+        hunk-reading rules depend on)."""
+        return {
+            "capture": self.capture_gaps,
+            "baseline": self.baseline_gaps,
+            "attribution": tuple(f"{path}: diff hunks matched no changed file" for path in self.unattributed),
+            "measurement": tuple(sorted({gap for entry in self.entries if entry.classification.source for gap in entry.gaps})),
+            "measurement_all": tuple(sorted({gap for entry in self.entries for gap in entry.gaps})),
+        }
 
 
 def _entry(

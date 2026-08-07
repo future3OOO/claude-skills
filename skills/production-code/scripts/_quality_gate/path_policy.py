@@ -143,7 +143,3 @@ def is_temp_artifact(path: str) -> bool:
     return bool(re.search(r"(^|/)(?:\.tmp|tmp|temp)(/|$)", lowered)) or lowered.endswith(
         (".bak", ".orig", ".rej", ".tmp")
     )
-
-
-def physical_lines(text: str | None) -> int:
-    return len(text.splitlines()) if text else 0

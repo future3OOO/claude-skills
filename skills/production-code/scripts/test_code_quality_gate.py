@@ -80,8 +80,28 @@ def growth_totals(payload: dict[str, object]) -> dict[str, object]:
     return payload["evaluation"]["growth"]
 
 
+# The one rule ID permitted to emit regions without a content anchor over
+# canonical implementation bytes, because producing those bytes is the
+# normalized fingerprint the target architecture assigns to #76. Named exactly,
+# never "the legacy rules": a singleton fails loudly when a second rule joins,
+# where an exemption list would quietly accept one.
+ANCHOR_DEFERRED_RULE = "QG-LEGACY-REUSE-ADVISORY"
+
+
+def growth_finding(payload: dict[str, object]) -> dict[str, object]:
+    findings = [item for item in payload["findings"] if item["ruleId"] == "QG54-GROWTH-CUMULATIVE"]
+    assert len(findings) == 1, findings
+    return findings[0]
+
+
+def reuse_finding(payload: dict[str, object]) -> dict[str, object]:
+    findings = [item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY"]
+    assert len(findings) == 1, findings
+    return findings[0]
+
+
 def reuse_matches(payload: dict[str, object]) -> list[dict[str, object]]:
-    return payload["reuseFindings"]
+    return reuse_finding(payload)["evidence"]["matches"]
 
 
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
@@ -119,10 +139,9 @@ def test_clean_pass(repo: Path) -> None:
     code, payload, _ = run_gate(repo)
     assert code == 0
     assert payload["ok"] is True
+    assert payload["schemaVersion"] == 2, payload["schemaVersion"]
     assert set(payload["hardRules"]) == {
-        "codeVolume",
         "noDuplication",
-        "shortestPath",
         "cleanup",
         "noMergeConflictMarkers",
         "consequenceCoverage",
@@ -237,44 +256,28 @@ def _escape_row(repo: Path, path: str, content: str, fails: bool, name: str) -> 
 
 
 @with_repo
-def test_new_huge_source_file_fails(repo: Path) -> None:
+def test_large_growth_is_warning_only(repo: Path) -> None:
+    # The per-file bloat blockers are deleted by the binding architecture:
+    # cumulative human-authored growth over the review budget warns, never
+    # fails, and the active warning-only finding keeps its intrinsic pass.
     write(repo / "src" / "huge.py", "\n".join(f"VALUE_{i} = {i}" for i in range(801)) + "\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["codeVolume"]["passed"] is False
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert code == 0, (code, payload["errors"])
+    assert payload["ok"] is True
+    assert any("QG54-GROWTH-CUMULATIVE" in warning for warning in payload["warnings"]), payload["warnings"]
+    findings = [item for item in payload["findings"] if item["ruleId"] == "QG54-GROWTH-CUMULATIVE"]
+    assert len(findings) == 1, payload.get("findings")
+    assert findings[0]["status"] == "finding" and findings[0]["passed"] is True, findings[0]
 
 
 @with_repo
-def test_large_existing_file_must_not_grow(repo: Path) -> None:
-    write(repo / "src" / "large.py", "\n".join(f"VALUE_{i} = {i}" for i in range(1201)) + "\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "large baseline")
-    with (repo / "src" / "large.py").open("a", encoding="utf-8") as handle:
-        handle.write("EXTRA = 1\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["codeVolume"]["passed"] is False
-
-
-@with_repo
-def test_fixtures_excluded_from_bloat(repo: Path) -> None:
+def test_huge_fixture_growth_stays_warning_only(repo: Path) -> None:
+    # The per-file bloat blockers are gone: a large test-support addition
+    # contributes to the human-authored growth warning, never to a failure.
     write(repo / "tests" / "fixtures" / "huge.py", "\n".join(f"VALUE_{i} = {i}" for i in range(1200)) + "\n")
     code, payload, _ = run_gate(repo)
     assert code == 0
     assert payload["ok"] is True
-
-
-@with_repo
-def test_bloat_reports_one_error_per_file(repo: Path) -> None:
-    write(repo / "src" / "large.py", "\n".join(f"VALUE_{i} = {i}" for i in range(1201)) + "\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "large baseline")
-    with (repo / "src" / "large.py").open("a", encoding="utf-8") as handle:
-        handle.write("\n".join(f"EXTRA_{i} = {i}" for i in range(300)) + "\n")
-    code, payload, _ = run_gate(repo)
-    bloat_errors = [error for error in payload["errors"] if "large.py" in error]
-    assert code == 2
-    assert len(bloat_errors) == 1
 
 
 # Each row is one reuse-scoring behaviour: "no-match" rows prove the named
@@ -503,43 +506,104 @@ def test_separate_hunks_do_not_form_one_duplicate(repo: Path) -> None:
     assert code == 0, json.dumps(payload["errors"], indent=2)
 
 
-# Capture failures the evaluation depends on: each must fail the run with the
-# named error, never read as an empty clean pass.
-# name, git config, candidate files, staged, gate args, expected error text.
-_CAPTURE_ROWS = (
-    ("missing-base-ref", None, {"src/app.py": "VALUE = 1\n"}, False,
-     ("--base-ref", "deadbeef"), "base-ref not found"),
+# Every way scope can go missing: the affected rule reports incomplete and
+# names the gap, its projections drop to unknown, and error-class capture
+# failures fail the run outright. "*" sweeps all checks/hard rules except
+# gitnexus-context and consequenceCoverage, which evaluate caller input only
+# and are legitimately untouched by capture gaps.
+#
+# name, git config, baseline files, candidate files (bytes stay unmeasured
+# binary), staged, gate args, expectations.
+_BINARY = b"def ok() -> int:\n    return 1\n\x00\x00binary\n"
+_UNREADABLE_OWNER = "def normalize_user_identifier(value):\n    return value.strip().lower()\n"
+_OVERSIZED = _UNREADABLE_OWNER + "\n".join(f"# pad {i}" * 6 for i in range(9000))
+_SCOPE_ROWS = (
+    ("unknown-numstat", None, {}, {"src/base.py": _BINARY}, False, (),
+     {"code": 0, "growth": "src/base.py"}),
+    ("skipped-oversized-baseline", None, {"src/huge.py": _OVERSIZED},
+     {"src/dup.py": _UNREADABLE_OWNER}, False, (),
+     {"code": 0, "reuse": "huge.py",
+      "warning": "QG54-ANALYSIS-INCOMPLETE for QG-LEGACY-REUSE-ADVISORY",
+      "checks": ("reuse-existing-helpers",), "hardRules": ("noDuplication",)}),
+    ("unmeasured-production-file", None, {}, {"src/base.py": _BINARY}, False, ("--base-ref", "HEAD"),
+     {"code": 0, "growth": "src/base.py", "reuse": "src/base.py",
+      "checks": ("reuse-existing-helpers", "no-quality-escapes", "no-duplicate-added-blocks"),
+      "hardRules": ("noDuplication",)}),
+    ("unbased-run", None, {}, {"src/app.py": "VALUE = 1\n"}, False, (),
+     {"code": 0, "growth": "no caller-supplied base", "warning": "QG54-GROWTH-CUMULATIVE",
+      "evalGap": "no caller-supplied base"}),
+    ("missing-base-ref", None, {}, {"src/app.py": "VALUE = 1\n"}, False, ("--base-ref", "deadbeef"),
+     {"code": 2, "error": "base-ref not found", "growth": "", "reuse": "", "checks": "*", "hardRules": "*"}),
     # A clean filter that emits different bytes on every read stages different
     # content per capture pass: the gate must report drift, never evaluate a
     # state that never existed.
-    ("capture-drift", ("filter.drift.clean", "sh -c 'cat >/dev/null; date +%s%N'"),
+    ("capture-drift", ("filter.drift.clean", "sh -c 'cat >/dev/null; date +%s%N'"), {},
      {".gitattributes": "drifty.txt filter=drift\n", "drifty.txt": "content the filter rewrites every read\n"},
-     False, ("--base-ref", "HEAD"), "capture drift"),
+     False, ("--base-ref", "HEAD"),
+     {"code": 2, "error": "capture drift", "evalGap": "capture drift", "checksNotTrue": True}),
     # A rejected repo-level diff config fails every diff read with empty
     # output while base resolution and capture stay healthy; read that failure
     # as "" and every rule passes over a change nobody looked at.
-    ("failed-diff-read", ("diff.algorithm", "bogus"),
-     {"src/app.py": "def one():\n    return 1\n"}, True, ("--base-ref", "HEAD"), "read failed"),
+    ("failed-diff-read", ("diff.algorithm", "bogus"), {},
+     {"src/app.py": "def one():\n    return 1\n"}, True, ("--base-ref", "HEAD"),
+     {"code": 2, "error": "read failed", "evalGap": "", "checksNotTrue": True}),
 )
 
 
-def test_capture_failures_never_read_as_a_clean_pass() -> None:
-    for name, config, candidate, staged, args, error in _CAPTURE_ROWS:
-        in_repo(lambda repo, cf=config, c=candidate, s=staged, a=args, e=error, label=name:
-                _capture_row(repo, cf, c, s, a, e, label))
+def test_missing_scope_never_reads_as_a_clean_pass() -> None:
+    for name, config, baseline, candidate, staged, args, expect in _SCOPE_ROWS:
+        in_repo(lambda repo, cf=config, b=baseline, c=candidate, s=staged, a=args, e=expect, label=name:
+                _scope_row(repo, cf, b, c, s, a, e, label))
 
 
-def _capture_row(repo: Path, config, candidate, staged, args, error, name: str) -> None:
+def _scope_row(repo, config, baseline, candidate, staged, args, expect, name: str) -> None:
     if config:
         git(repo, "config", *config)
+    for path, text in baseline.items():
+        write(repo / path, text)
+    if baseline:
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "baseline")
     for path, content in candidate.items():
-        write(repo / path, content)
+        if isinstance(content, bytes):
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_bytes(content)
+        else:
+            write(repo / path, content)
     if staged:
         git(repo, "add", ".")
     code, payload, _ = run_gate(repo, *args)
-    assert code == 2, (name, code, payload["errors"])
-    assert payload["ok"] is False, (name, payload["errors"])
-    assert any(error in item for item in payload["errors"]), (name, payload["errors"])
+    assert code == expect["code"], (name, code, payload["errors"])
+    assert payload["ok"] is (code == 0), (name, payload["errors"])
+    if "error" in expect:
+        assert any(expect["error"] in item for item in payload["errors"]), (name, payload["errors"])
+    if "warning" in expect:
+        assert any(expect["warning"] in item for item in payload["warnings"]), (name, payload["warnings"])
+    for rule, finding_of in (("growth", growth_finding), ("reuse", reuse_finding)):
+        if rule in expect:
+            finding = finding_of(payload)
+            assert finding["status"] == "incomplete", (name, rule, finding)
+            assert finding["completeness"]["complete"] is False, (name, rule, finding)
+            assert any(expect[rule] in gap for gap in finding["completeness"]["gaps"]), (name, rule, finding)
+    checks = expect.get("checks", ())
+    if checks == "*":
+        checks = [item["name"] for item in payload["checks"] if item["name"] != "gitnexus-context"]
+    for check_name in checks:
+        item = check_named(payload, check_name)
+        assert item["passed"] is None and item["status"] == "incomplete", (name, item)
+    hard_rules = expect.get("hardRules", ())
+    if hard_rules == "*":
+        hard_rules = [key for key in payload["hardRules"] if key != "consequenceCoverage"]
+    for rule_name in hard_rules:
+        rule = payload["hardRules"][rule_name]
+        assert rule["status"] == "incomplete" and rule["passed"] is None, (name, rule_name, rule)
+    if expect.get("checksNotTrue"):
+        for item in payload["checks"]:
+            if item["name"] != "gitnexus-context":
+                assert item["passed"] is not True, (name, item)
+    if "evalGap" in expect:
+        assert payload["evaluation"]["complete"] is False, (name, payload["evaluation"])
+        assert any(expect["evalGap"] in gap for gap in payload["evaluation"]["gaps"]), (name, payload["evaluation"]["gaps"])
 
 
 # Each row is one decoder or transport branch Git can put in front of the
@@ -602,6 +666,8 @@ def _decoder_row(repo: Path, config, baseline: dict, candidate: dict, growth, er
         assert code == 0, (name, code, stderr)
     if growth is not None:
         assert growth_totals(payload)["production"] == growth, (name, growth_totals(payload))
+        # The odd name is unusual, not unmeasurable: it contributes no gap.
+        assert payload["evaluation"]["complete"] is True, (name, payload["evaluation"]["gaps"])
     if sample is not None:
         encoded = [item.encode("utf-8", "surrogateescape") for item in payload["changedFilesSample"]]
         assert sample in encoded, (name, payload["changedFilesSample"])
@@ -729,8 +795,15 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
         assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
         assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
         assert growth["humanAuthored"] == {"added": 1129, "deleted": 8, "net": 1121}, growth
+        assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
+        # The corpus adds new committed files; their absent baselines are not
+        # discovery failures, so every rule must still read complete.
+        assert reuse_finding(payload)["completeness"] == {"complete": True, "gaps": []}, reuse_finding(payload)
+        assert all(item["status"] != "incomplete" for item in payload["checks"]), payload["checks"]
     finally:
-        run(["git", "worktree", "remove", "--force", str(replay)], repo)
+        # Cleanup failures must surface, not silently leak a registered
+        # worktree into the shared source repository.
+        git(repo, "worktree", "remove", "--force", str(replay))
         shutil.rmtree(replay.parent, ignore_errors=True)
 
 
@@ -764,10 +837,6 @@ def test_explicit_base_is_evaluated_as_the_commit_the_caller_supplied(repo: Path
         assert "src/shared.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
         assert "src/sideonly.py" in payload["changedFilesSample"], (extra, payload["changedFilesSample"])
         assert growth_totals(payload)["production"] == {"added": 2, "deleted": 1, "net": 1}, (extra, growth_totals(payload))
-
-
-_UNREADABLE_OWNER = "def normalize_user_identifier(value):\n    return value.strip().lower()\n"
-_OVERSIZED = _UNREADABLE_OWNER + "\n".join(f"# pad {i}" * 6 for i in range(9000))
 
 
 @with_repo
@@ -887,7 +956,7 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
     # detector reads run after the snapshot freezes, and the CLI captures and
     # evaluates in one process, so the public Interface offers no window in
     # which to observe such a read, and none was added solely for testing.
-    detectors = ("checks.py", "reuse.py", "symbols.py")
+    detectors = ("checks.py", "reuse.py", "symbols.py", "models.py")
     banned_calls = {"run_git", "git_text", "git_read", "read_git_file", "open", "read_text", "read_bytes"}
     for name in detectors:
         tree = ast.parse((SCRIPT_DIR / "_quality_gate" / name).read_text(encoding="utf-8"))
@@ -908,9 +977,13 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
 
     snapshot_source = (SCRIPT_DIR / "_quality_gate" / "snapshot.py").read_text(encoding="utf-8")
     assert "def read_baseline" not in snapshot_source, "read_baseline is a detector-time Git read"
+    class_def = next(
+        node for node in ast.parse(snapshot_source).body
+        if isinstance(node, ast.ClassDef) and node.name == "EvaluationSnapshot"
+    )
     fields = {
         node.target.id
-        for node in ast.walk(ast.parse(snapshot_source))
+        for node in class_def.body
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
     }
     assert "repo" not in fields, "EvaluationSnapshot must hold no repository handle after the freeze"
@@ -980,6 +1053,292 @@ def test_gate_completes_on_an_unborn_repo_with_open_stdin() -> None:
         shutil.rmtree(repo, ignore_errors=True)
 
 
+@with_repo
+def test_growth_warning_survives_base_binding_incompleteness(repo: Path) -> None:
+    # Without --base-ref the cumulative claim is incomplete, and that must be
+    # reported - but it is not a reason to stop reporting the growth that WAS
+    # measured. Incompleteness qualifies the warning; it never suppresses it.
+    write(repo / "src" / "big.py", "".join(f"VALUE_{i} = {i}\n" for i in range(600)))
+    code, payload, _ = run_gate(repo)
+    assert payload["evaluation"]["growth"]["humanAuthored"]["net"] > 500, payload["evaluation"]["growth"]
+    incomplete = [w for w in payload["warnings"] if "QG54-ANALYSIS-INCOMPLETE" in w and "no caller-supplied base" in w]
+    growth = [w for w in payload["warnings"] if w.startswith("QG54-GROWTH-CUMULATIVE:")]
+    assert incomplete, payload["warnings"]
+    assert growth, payload["warnings"]
+    # Warning-only: the hook contract keeps exit zero.
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+
+
+@with_repo
+def test_growth_finding_carries_stable_identity_and_evidence(repo: Path) -> None:
+    write(repo / "src" / "app.py", "VALUE = 1\n")
+    first = growth_finding(run_gate(repo)[1])
+    repeated = growth_finding(run_gate(repo)[1])
+    assert first["ruleId"] == "QG54-GROWTH-CUMULATIVE"
+    assert first["findingId"] == repeated["findingId"]
+    assert first["severity"] == "warning"
+    assert first["state"] is None and "passed" in first
+    assert first["base"] and first["candidate"]
+    assert first["region"]["scope"] == "evaluation"
+    assert first["evidence"]["humanAuthored"] == {"added": 1, "deleted": 0, "net": 1}
+    assert first["action"] and first["passCondition"]["kind"] == "growth-below"
+    assert set(first["passCondition"]) == {"kind", "requires", "statement"}, first["passCondition"]
+    write(repo / "src" / "app.py", "VALUE = 1\nOTHER = 2\n")
+    assert growth_finding(run_gate(repo)[1])["findingId"] != first["findingId"]
+
+
+def test_promotion_requires_an_active_intrinsically_passed_warning() -> None:
+    # --fail-on-warnings promotes an eligible ACTIVE warning. Three states of
+    # the same eligible rule, each an independently falsifiable row:
+    #   found-nothing-and-blind  intrinsic result unknown; promoting would
+    #                            make missing scope itself the failure.
+    #   clean                    promoting would fail every clean run.
+    #   found-and-blind          both facts survive: the incompleteness is
+    #                            reported AND it promotes.
+    orders = "def resolve_order(value: str) -> str:\n    return value.strip()\n"
+    rows = (
+        ("found-nothing-and-blind", {"huge.py": _OVERSIZED}, "def unrelated_widget_label():\n    return 0\n", False, 0),
+        ("clean", {"ids.py": _OWNER}, "from src import ids\n\ndef call_it(v):\n    return ids.normalize_user_id(v)\n", False, 0),
+        ("found-and-blind", {"orders.py": orders, "huge.py": _OVERSIZED},
+         "def resolve_order_record(value: str) -> str:\n    return value.strip()\n", True, 2),
+    )
+    for name, baseline, candidate, expect_promoted, expect_code in rows:
+        in_repo(lambda scratch, b=baseline, c=candidate, n=name, p=expect_promoted, e=expect_code: _promotion_row(scratch, b, c, n, p, e))
+
+
+def _promotion_row(repo: Path, baseline: dict, candidate: str, name: str, expect_promoted: bool, expect_code: int) -> None:
+    for filename, text in baseline.items():
+        write(repo / "src" / filename, text)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "baseline")
+    write(repo / "src" / "candidate.py", candidate)
+    code, payload, _ = run_gate(repo, "--fail-on-warnings")
+    finding = next((item for item in payload["findings"] if item["ruleId"] == ANCHOR_DEFERRED_RULE), None)
+    assert finding is not None, (name, payload["findings"])
+    promoted = [error for error in payload["errors"] if ANCHOR_DEFERRED_RULE in error]
+    assert bool(promoted) is expect_promoted, (name, payload["errors"], finding)
+    assert code == expect_code, (name, code, payload["errors"])
+    # Promotion never retypes the finding or its intrinsic check.
+    assert finding["severity"] == "warning", (name, finding)
+    if expect_promoted:
+        assert finding["passed"] is True, (name, finding)
+    else:
+        assert finding["passed"] is not False, (name, finding)
+
+
+def test_promotion_follows_exact_rule_id_metadata_only() -> None:
+    # QG54 rules start promotion-ineligible: a growth warning cannot fail the
+    # gate even under --fail-on-warnings.
+    def growth_body(repo: Path) -> None:
+        write(repo / "src" / "huge.py", "\n".join(f"VALUE_{i} = {i}" for i in range(801)) + "\n")
+        code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--fail-on-warnings")
+        assert growth_finding(payload)["status"] == "finding", growth_finding(payload)
+        assert payload["errors"] == [], payload["errors"]
+        assert payload["ok"] is True
+        assert code == 0
+
+    in_repo(growth_body)
+
+    # The transitional QG-LEGACY-GITNEXUS-CONTEXT ID stays eligible: promotion
+    # adds an exact-ID error and flips ok while the finding stays a warning
+    # with its intrinsic check untouched.
+    def legacy_body(repo: Path) -> None:
+        context = repo / "broken-context.json"
+        context.write_text("not json", encoding="utf-8")
+        code, payload, _ = run_gate(
+            repo, "--base-ref", "HEAD", "--fail-on-warnings", "--gitnexus-context-json", str(context)
+        )
+        finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-GITNEXUS-CONTEXT")
+        assert finding["severity"] == "warning", finding
+        assert finding["status"] == "finding", finding
+        context_check = check_named(payload, "gitnexus-context")
+        assert context_check["status"] == "finding" and context_check["passed"] is True, context_check
+        assert context_check["warnings"], context_check
+        assert any("QG-LEGACY-GITNEXUS-CONTEXT" in error for error in payload["errors"]), payload["errors"]
+        assert payload["ok"] is False
+        assert code == 2
+        without_flag = run_gate(repo, "--base-ref", "HEAD", "--gitnexus-context-json", str(context))[1]
+        assert without_flag["ok"] is True, without_flag["errors"]
+
+    in_repo(legacy_body)
+
+
+@with_repo
+def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -> None:
+    # Content-anchored identity: line numbers and paths are display
+    # provenance, so an unrelated insertion moves the reported region without
+    # moving the finding's ID, and a rename/move preserves the debt's ID
+    # while the region still reports the new path.
+    write(repo / "src" / "ids.py", _OWNER)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(repo / "src" / "copycat.py", _OWNER)
+    _, before, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    write(repo / "src" / "copycat.py", "# an unrelated leading comment\n" + _OWNER)
+    _, after, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    (repo / "src" / "copycat.py").unlink()
+    write(repo / "src" / "moved" / "copycat.py", "# an unrelated leading comment\n" + _OWNER)
+    _, moved_payload, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    first = reuse_finding(before)
+    second = reuse_finding(after)
+    third = reuse_finding(moved_payload)
+    assert first["evidence"]["matches"] and third["evidence"]["matches"], (first, third)
+    assert first["findingId"] == second["findingId"] == third["findingId"], (
+        first["findingId"], second["findingId"], third["findingId"])
+    # The move is still visible where it belongs - in the display region.
+    assert "src/moved/copycat.py" in {region["path"] for region in third["region"]["regions"]}, third["region"]
+
+    # Regions carry the full contract and are canonically ordered, so the
+    # serialized order is a property of the finding, not of match order.
+    regions = first["region"]["regions"]
+    assert regions, first["region"]
+    for region in regions:
+        assert set(region) == {"path", "role", "language", "displayLine", "symbolAnchor", "evidenceRole"}, region
+        assert region["role"] == "production" and region["language"] == "python", region
+    assert {region["evidenceRole"] for region in regions} == {"candidate", "existing-owner"}, regions
+    ordered = sorted(regions, key=lambda r: (r["symbolAnchor"], r["evidenceRole"], r["path"], r["displayLine"]))
+    assert regions == ordered, regions
+
+    # The pass condition is discriminated and names what a rerun needs, so a
+    # consumer can switch on the kind instead of parsing prose.
+    condition = first["passCondition"]
+    assert condition["kind"] == "duplicate-absent", condition
+    assert condition["requires"] and all(isinstance(item, str) for item in condition["requires"]), condition
+    assert condition["statement"], condition
+
+    # The symbol anchor is stable across the insertion while the display line
+    # moves: that split is exactly what makes the ID survive.
+    moved = next(r for r in second["region"]["regions"] if r["evidenceRole"] == "candidate")
+    origin = next(r for r in regions if r["evidenceRole"] == "candidate")
+    assert moved["symbolAnchor"] == origin["symbolAnchor"], (origin, moved)
+    assert moved["displayLine"] != origin["displayLine"], (origin, moved)
+
+
+@with_repo
+def test_only_the_named_rule_may_defer_its_content_anchor(repo: Path) -> None:
+    # Schema v2 requires emitted regions to carry a content anchor over
+    # canonical implementation bytes; producing those bytes is the fingerprint
+    # the target architecture assigns to #76, so exactly one rule defers it.
+    # The exemption expires mechanically: `deferred` is intersected with the
+    # rules actually emitted, so when #77 stops emitting the rule it
+    # evaporates unedited.
+    write(repo / "src" / "ids.py", _OWNER)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(repo / "src" / "copycat.py", _OWNER)
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+
+    emitted = {finding["ruleId"] for finding in payload["findings"]}
+    with_regions = {finding["ruleId"] for finding in payload["findings"] if finding["region"].get("regions")}
+    assert with_regions, payload["findings"]
+
+    anchorless = {
+        finding["ruleId"]
+        for finding in payload["findings"]
+        for region in finding["region"].get("regions", [])
+        if "contentAnchor" not in region
+    }
+    deferred = {ANCHOR_DEFERRED_RULE} & emitted
+    assert anchorless <= deferred, (sorted(anchorless), sorted(deferred))
+
+    # Deferring the content anchor is not the same as being anchorless: the one
+    # exempt rule still anchors every region on symbol identity, which is what
+    # keeps its finding ID stable across inserted lines.
+    for finding in payload["findings"]:
+        if finding["ruleId"] == ANCHOR_DEFERRED_RULE:
+            for region in finding["region"]["regions"]:
+                assert region["symbolAnchor"], region
+
+
+@with_repo
+def test_incompleteness_finding_identity_survives_a_path_rename(repo: Path) -> None:
+    # Identity is the affected rule plus scope kind; the path-bearing gap text
+    # is evidence only, so renaming the unreadable owner cannot move the ID.
+    write(repo / "src" / "huge.py", _OVERSIZED)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "oversized baseline")
+    write(repo / "src" / "dup.py", _UNREADABLE_OWNER)
+
+    def incompleteness_id(payload: dict[str, object]) -> str:
+        found = [
+            item for item in payload["findings"]
+            if item["ruleId"] == "QG54-ANALYSIS-INCOMPLETE"
+            and item["evidence"]["affectedRuleId"] == "QG-LEGACY-REUSE-ADVISORY"
+            and item["evidence"]["scopeKind"] == "baseline-discovery"
+        ]
+        assert len(found) == 1, payload["findings"]
+        return found[0]["findingId"]
+
+    first = incompleteness_id(run_gate(repo, "--base-ref", "HEAD")[1])
+    git(repo, "mv", "src/huge.py", "src/huge_renamed.py")
+    git(repo, "commit", "-q", "-m", "rename oversized baseline")
+    second = incompleteness_id(run_gate(repo, "--base-ref", "HEAD")[1])
+    assert first == second, (first, second)
+
+
+@with_repo
+def test_a_witnessed_violation_outranks_missing_scope(repo: Path) -> None:
+    # Unseen scope cannot un-see a violation that was already found. The rule
+    # that caught it must say so, while a rule that found nothing and could not
+    # see everything still reports incomplete rather than a pass.
+    (repo / "src" / "unmeasured.py").write_bytes(_BINARY)
+    write(repo / "src" / "escape.py", "def f():\n    try:\n        return 2\n    except Exception:\n        pass\n")
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    escapes = check_named(payload, "no-quality-escapes")
+    assert escapes["passed"] is False and escapes["status"] == "finding", escapes
+    assert payload["hardRules"]["cleanup"]["passed"] is False, payload["hardRules"]["cleanup"]
+    # The other hunk-reading rule found nothing and still cannot see it all.
+    duplicates = check_named(payload, "no-duplicate-added-blocks")
+    assert duplicates["passed"] is None and duplicates["status"] == "incomplete", duplicates
+
+
+@with_repo
+def test_a_failed_hard_rule_child_outranks_an_unknown_sibling(repo: Path) -> None:
+    # Aggregation follows the same lattice as a single check: an established
+    # failure dominates an unknown sibling, and unknown still beats a pass.
+    (repo / "src" / "unmeasured.py").write_bytes(_BINARY)
+    block = (
+        "    total = compute_total(order_items, discount_rate, tax_rate)\n"
+        "    audit_log.append(record_entry(total, order_items, discount_rate))\n"
+        "    return finalize_invoice(total, order_items, discount_rate, tax_rate)\n"
+    )
+    write(repo / "src" / "dup.py", f"def a(order_items, discount_rate, tax_rate):\n{block}\ndef b(order_items, discount_rate, tax_rate):\n{block}")
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert check_named(payload, "no-duplicate-added-blocks")["passed"] is False, payload["checks"]
+    assert check_named(payload, "reuse-existing-helpers")["passed"] is None, payload["checks"]
+    assert payload["hardRules"]["noDuplication"] == {
+        "status": "evaluated",
+        "passed": False,
+        "checks": ["no-duplicate-added-blocks", "reuse-existing-helpers"],
+    }, payload["hardRules"]["noDuplication"]
+    # Nothing failed under cleanup, so its unreadable scope still wins.
+    assert payload["hardRules"]["cleanup"]["passed"] is None, payload["hardRules"]["cleanup"]
+
+
+@with_repo
+def test_a_non_utf8_path_reaches_a_stable_finding(repo: Path) -> None:
+    # A path whose bytes are not valid UTF-8 survives the whole pipeline: it
+    # is matched, its real bytes are serialized back out, and the finding
+    # hashes to the same ID on a repeat run instead of raising.
+    write(repo / "src" / "ids.py", _OWNER)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes(_OWNER.encode("utf-8"))
+    code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
+    assert code == 2, stderr
+    matches = reuse_matches(payload)
+    # There must actually be a match, or this proves nothing: a finding with no
+    # matches hashes to a stable id too.
+    assert len(matches) == 1, matches
+    assert matches[0]["newFile"].encode("utf-8", "surrogateescape") == b"src/caf\xe9.py", matches
+    finding = reuse_finding(payload)
+    assert len(finding["findingId"]) == 16, finding
+    assert reuse_finding(run_gate(repo, "--base-ref", "HEAD")[1])["findingId"] == finding["findingId"]
+
+
 def test_gate_implementation_budget() -> None:
     limits = {
         "wrapper_lines": 150,
@@ -993,7 +1352,7 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "canonical captured base-to-candidate evaluation for #75 slice 1 replaces live worktree reads",
+        "TOTAL": "complete #75 canonical evaluation: captured base-to-candidate snapshot, typed schema-v2 findings, and warning-only cumulative growth",
     }
     production_files = [SCRIPT, *sorted((SCRIPT_DIR / "_quality_gate").glob("*.py"))]
     line_counts = {str(path.relative_to(SCRIPT_DIR)): len(path.read_text(encoding="utf-8").splitlines()) for path in production_files}

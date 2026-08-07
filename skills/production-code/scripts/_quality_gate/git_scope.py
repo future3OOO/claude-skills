@@ -48,8 +48,8 @@ def git_ok(repo: Path, args: list[str]) -> bool:
 def read_git_file(repo: Path, ref: str, rel_path: str) -> str | None:
     if not ref:
         return None
-    res = run_git(repo, ["show", f"{ref}:{rel_path}"])
-    return res.stdout if res.returncode == 0 else None
+    text, failure = git_read(repo, ["show", f"{ref}:{rel_path}"])
+    return None if failure else text
 
 
 def parse_z_names(raw: str) -> set[str]:
