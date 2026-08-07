@@ -251,19 +251,15 @@ def _strict_document(path: Path) -> JsonObject:
 def _legacy_kind(name: str) -> str | None:
     for prefix, kind in (
         ("disposition-preflight-", "advisor-disposition-preflight"),
-        ("disposition-final-", "advisor-disposition-final"),
-        ("preflight-", "preflight"),
-        ("gate-", "production-code"),
-        ("verification-", "verification"),
-        ("tdd-", "tdd"),
+        ("disposition-final-", "advisor-disposition-final"), ("preflight-", "preflight"),
+        ("gate-", "production-code"), ("verification-", "verification"), ("tdd-", "tdd"),
         ("review-", "code-review"),
     ):
         if name.startswith(prefix) and name.endswith(".json") and len(name) > len(prefix) + 5:
             return kind
     return None
 def _legacy_evidence(
-    state: JsonObject,
-    slot: Path,
+    state: JsonObject, slot: Path,
 ) -> tuple[JsonObject, list[EvidenceWrite], list[ManifestWrite]]:
     converted = json.loads(_canonical(state))
     workflow_id = converted.get("workflowId")
@@ -301,8 +297,7 @@ def _legacy_evidence(
             latest[kind] = order
         return write
     fields = {
-        "preflightEvidence": "preflight",
-        "productionCodeEvidence": "production-code",
+        "preflightEvidence": "preflight", "productionCodeEvidence": "production-code",
         "verificationEvidence": "verification",
     }
     referenced: set[Path] = set()
@@ -343,10 +338,8 @@ def _legacy_evidence(
             raise LegacyImportError(f"legacy evidence has an unsupported schema: {path}")
         import_evidence(kind, path, document)
     latest_fields = {
-        "preflight": "preflightLatestEvidence",
-        "production-code": "productionCodeLatestEvidence",
-        "verification": "verificationLatestEvidence",
-        "tdd": "tddEvidence",
+        "preflight": "preflightLatestEvidence", "production-code": "productionCodeLatestEvidence",
+        "verification": "verificationLatestEvidence", "tdd": "tddEvidence",
     }
     for kind, field in latest_fields.items():
         if kind in latest:
@@ -525,11 +518,8 @@ def _ensure_authority(connection: sqlite3.Connection, identity: RepoIdentity) ->
         )
         connection.executemany(
             "INSERT INTO metadata(key, value) VALUES (?, ?)",
-            (
-                ("repo_key", identity.key),
-                ("repo_root", str(identity.root)),
-                ("authority", AUTHORITY),
-            ),
+            (("repo_key", identity.key), ("repo_root", str(identity.root)),
+                ("authority", AUTHORITY),),
         )
         connection.commit()
     except Exception:
