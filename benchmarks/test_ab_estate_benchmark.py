@@ -462,7 +462,8 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in replay], [
             "replay-gitnexus", "replay-advisor-preflight", "replay-advisor-disposition", "replay-preflight",
             "replay-tdd", "replay-production-code", "replay-implementation", "replay-verification",
-            "replay-code-review", "replay-advisor-final", "replay-final-disposition", "replay-complete"])
+            "replay-quality-gate", "replay-code-review", "replay-advisor-final", "replay-final-disposition",
+            "replay-complete"])
         for item in replay:
             self.assertTrue(item["invariantsHeld"], f"{item['name']} did not make its own transition")
             self.assertFalse(item["differences"], f"{item['name']}: {json.dumps(item['differences'])[:400]}")
@@ -506,6 +507,29 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertIn(asked.stdout.strip(), artifact["isolation"]["armKeys"],
                       "the candidate's own name for the migration fixture is never searched for")
         self.assertTrue(result.stdout, "the run produced no summary")
+
+    def test_an_arm_without_the_typed_gate_records_not_supported(self) -> None:
+        """Two refs that do not ship `verify --kind`, so the step must be declared absent.
+
+        Both arms here are this branch, which has no typed quality gate, so the honest
+        record is a step with no runs on either side. A synthesised pass would be exactly
+        the fake green the comparison exists to catch, and because both arms agree there
+        is no capability delta to report either.
+        """
+        head = self.run_git("rev-parse", "HEAD")
+        result, artifact = self.benchmark(head, head)
+
+        for name in ("baseline", "candidate"):
+            self.assertFalse(artifact["replaySeed"][name]["qualityGate"],
+                             "this branch's runner was detected as shipping --kind")
+            self.assertEqual(artifact["replaySeed"][name]["helpExit"], 0, "the capability probe itself failed")
+        typed = [item for item in artifact["scenarios"] if item["name"] == "replay-quality-gate"][0]
+        self.assertEqual(typed["observed"], {"exits": [], "supported": False},
+                         "an unshipped step was recorded as something other than absent")
+        self.assertFalse(typed["capabilityDelta"], "two identical arms cannot differ in capability")
+        self.assertTrue(typed["invariantsHeld"])
+        self.assertFalse(typed["differences"])
+        self.assertEqual(result.returncode, 0, result.stdout[-1500:] + result.stderr[-1500:])
 
     def test_a_baseline_that_cannot_seed_is_reported_rather_than_crashing(self) -> None:
         """A failed seed must reach the artifact, because a traceback reports nothing.

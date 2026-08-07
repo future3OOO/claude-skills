@@ -49,48 +49,80 @@ REPLAY_INPUTS: dict[str, object] = {
         "modularityPlan", "riskChecks")}, "openQuestions": "none"},
     "review.json": {"findings": [], "dispositions": []},
 }
+def _fields(names: tuple[str, ...]):
+    """Project a step's last command, which is the one that reports the state it reached."""
+    return lambda runs: project(runs[-1].stdout, names)
+
+
+def _quality_gate(runs: list[subprocess.CompletedProcess[str]]) -> tuple[dict[str, object], list[str]]:
+    """The typed run's outcome read from the status that follows it, not from its own stdout.
+
+    Two reasons, both measured. The typed verify prints the bundled gate's raw JSON before
+    its own envelope, so its combined stdout does not parse at all. And the two gate fields
+    are per-run identifiers, so comparing them by value would make two capable arms differ
+    on identity alone; presence is the contract, so presence is what is projected.
+    """
+    state, keys = project(runs[-1].stdout, ("verification", "qualityGateEvidence", "qualityGateManifestId"))
+    return {"supported": True, "verification": state["verification"],
+            "qualityGateEvidence": bool(state["qualityGateEvidence"]),
+            "qualityGateManifestId": bool(state["qualityGateManifestId"])}, keys
+
+
 # Every governed operation downstream of Repo Context Forge, in order, each driven through
 # the arm's own shipped producer rather than a reimplementation of its contract. Each entry
-# carries the fields to compare and the transition it must observe, so a producer that
-# exits zero without advancing the state it owns fails the run instead of timing fast.
+# builds the commands to run, projects what they reached, and names the transition it must
+# observe, so a producer that exits zero without advancing the state it owns fails the run
+# instead of timing fast. A builder returning None means this arm does not ship the step.
 REPLAY = (
-    ("replay-gitnexus", lambda c: [*c["cli"], "set-phase", *c["bound"], "--phase", "gitnexus",
-                                   "--status", "passed"],
-     STATE_FIELDS, lambda p: p["exits"] == [0] and p["gitnexus"] == "passed"),
-    ("replay-advisor-preflight", lambda c: [*c["cli"], "advisor-result", *c["bound"], "--stage", "preflight",
-                                            "--source", "codex-advisor", "--verdict", "completed"],
-     STATE_FIELDS, lambda p: p["advisorPreflight.status"] == "completed"),
-    ("replay-advisor-disposition", lambda c: [*c["cli"], "advisor-disposition", *c["bound"],
-                                              "--stage", "preflight", "--findings", "none"],
-     STATE_FIELDS, lambda p: p["advisorPreflight.findings"] == "none"),
-    ("replay-preflight", lambda c: [*c["script"]("production-preflight", "record-preflight.py"), *c["bound"],
-                                    "--input", str(c["inputs"] / "preflight.json")],
-     ("status",), lambda p: p["exits"] == [0] and p["status"] == "passed"),
-    ("replay-tdd", lambda c: [*c["script"]("tdd", "tdd-run.py"), "--repo", c["repo"], "--slug", "estate-benchmark",
-                              "--not-required", "workflow-state replay records no behaviour change"],
-     ("status",), lambda p: p["exits"] == [0] and p["status"] == "not-required"),
-    ("replay-production-code", lambda c: [*c["script"]("production-code", "record-production-code.py"),
-                                          *c["bound"], "--input", str(c["inputs"] / "gate.json")],
-     ("status",), lambda p: p["exits"] == [0] and p["status"] == "passed"),
-    ("replay-implementation", lambda c: [*c["cli"], "set-phase", *c["bound"], "--phase", "implementation",
-                                         "--status", "passed"],
-     STATE_FIELDS, lambda p: p["implementation"] == "passed"),
-    ("replay-verification", lambda c: [*c["script"]("repo-production-workflow", "verify-run.py"),
-                                       "--repo", c["repo"], "--slug", "estate-benchmark", "--", "true"],
-     ("verification", "exitCode"), lambda p: p["verification"] == "passed" and p["exitCode"] == 0),
-    ("replay-code-review", lambda c: [*c["script"]("code-review", "record-review.py"), *c["bound"],
+    ("replay-gitnexus", lambda c: [[*c["cli"], "set-phase", *c["bound"], "--phase", "gitnexus",
+                                   "--status", "passed"]],
+     _fields(STATE_FIELDS), lambda p: p["exits"] == [0] and p["gitnexus"] == "passed"),
+    ("replay-advisor-preflight", lambda c: [[*c["cli"], "advisor-result", *c["bound"], "--stage", "preflight",
+                                            "--source", "codex-advisor", "--verdict", "completed"]],
+     _fields(STATE_FIELDS), lambda p: p["advisorPreflight.status"] == "completed"),
+    ("replay-advisor-disposition", lambda c: [[*c["cli"], "advisor-disposition", *c["bound"],
+                                              "--stage", "preflight", "--findings", "none"]],
+     _fields(STATE_FIELDS), lambda p: p["advisorPreflight.findings"] == "none"),
+    ("replay-preflight", lambda c: [[*c["script"]("production-preflight", "record-preflight.py"), *c["bound"],
+                                    "--input", str(c["inputs"] / "preflight.json")]],
+     _fields(("status",)), lambda p: p["exits"] == [0] and p["status"] == "passed"),
+    ("replay-tdd", lambda c: [[*c["script"]("tdd", "tdd-run.py"), "--repo", c["repo"], "--slug", "estate-benchmark",
+                              "--not-required", "workflow-state replay records no behaviour change"]],
+     _fields(("status",)), lambda p: p["exits"] == [0] and p["status"] == "not-required"),
+    ("replay-production-code", lambda c: [[*c["script"]("production-code", "record-production-code.py"),
+                                          *c["bound"], "--input", str(c["inputs"] / "gate.json")]],
+     _fields(("status",)), lambda p: p["exits"] == [0] and p["status"] == "passed"),
+    ("replay-implementation", lambda c: [[*c["cli"], "set-phase", *c["bound"], "--phase", "implementation",
+                                         "--status", "passed"]],
+     _fields(STATE_FIELDS), lambda p: p["implementation"] == "passed"),
+    ("replay-verification", lambda c: [[*c["script"]("repo-production-workflow", "verify-run.py"),
+                                       "--repo", c["repo"], "--slug", "estate-benchmark", "--", "true"]],
+     _fields(("verification", "exitCode")), lambda p: p["verification"] == "passed" and p["exitCode"] == 0),
+    # Between verification and review because that is where the arm that ships it demands it.
+    # Absent from main's grammar, so an arm without it records not-supported rather than a
+    # transition it never made; compare() reports that asymmetry instead of calling it a
+    # difference. The status read follows the typed run because the binding it must prove
+    # lives in state, and status is the arm's own public CLI rather than its storage.
+    ("replay-quality-gate", lambda c: [
+        [*c["script"]("repo-production-workflow", "verify-run.py"), "--repo", c["repo"],
+         "--slug", "estate-benchmark", "--kind", "quality-gate", "--base-ref", "HEAD"],
+        [*c["cli"], "status", "--repo", c["repo"]]] if c["qualityGate"] else None,
+     _quality_gate, lambda p: p["supported"] is False or (
+         p["exits"] == [0, 0] and p["verification"] == "passed"
+         and p["qualityGateEvidence"] and p["qualityGateManifestId"])),
+    ("replay-code-review", lambda c: [[*c["script"]("code-review", "record-review.py"), *c["bound"],
                                       "--resolved-model", "workflow-state-replay",
                                       "--review-context-id", "workflow-state-replay",
-                                      "--input", str(c["inputs"] / "review.json")],
-     ("status",), lambda p: p["exits"] == [0] and p["status"] == "passed"),
-    ("replay-advisor-final", lambda c: [*c["cli"], "advisor-result", *c["bound"], "--stage", "final",
-                                        "--source", "codex-advisor", "--verdict", "commit-ready"],
-     STATE_FIELDS, lambda p: p["finalReview.source"] == "codex-advisor" and p["finalReview.status"] == "commit-ready"),
-    ("replay-final-disposition", lambda c: [*c["cli"], "advisor-disposition", *c["bound"], "--stage", "final",
-                                            "--findings", "none"],
-     STATE_FIELDS, lambda p: p["finalReview.findings"] == "none"),
-    ("replay-complete", lambda c: [*c["cli"], "complete", *c["bound"]],
-     STATE_FIELDS, lambda p: p["exits"] == [0] and p["phase"] == "complete"),
+                                      "--input", str(c["inputs"] / "review.json")]],
+     _fields(("status",)), lambda p: p["exits"] == [0] and p["status"] == "passed"),
+    ("replay-advisor-final", lambda c: [[*c["cli"], "advisor-result", *c["bound"], "--stage", "final",
+                                        "--source", "codex-advisor", "--verdict", "commit-ready"]],
+     _fields(STATE_FIELDS), lambda p: p["finalReview.source"] == "codex-advisor" and p["finalReview.status"] == "commit-ready"),
+    ("replay-final-disposition", lambda c: [[*c["cli"], "advisor-disposition", *c["bound"], "--stage", "final",
+                                            "--findings", "none"]],
+     _fields(STATE_FIELDS), lambda p: p["finalReview.findings"] == "none"),
+    ("replay-complete", lambda c: [[*c["cli"], "complete", *c["bound"]]],
+     _fields(STATE_FIELDS), lambda p: p["exits"] == [0] and p["phase"] == "complete"),
 )
 # Each scenario must be shown to have done the thing it is named for. Parity alone
 # would hold for two identically broken arms, so these decide the exit status too.
@@ -329,10 +361,18 @@ def replay_seed(arm: dict[str, object]) -> tuple[dict[str, object], dict[str, ob
                 "check", "--repo", str(repo), "--json"], env)
     (inputs / "gate.json").write_text(gate.stdout, encoding="utf-8")
     reached, _ = project(run([*cli_for(arm), "status", "--repo", str(repo)], env).stdout, STATE_FIELDS)
-    return ({"state": home / "seed-state", "repo": repo, "inputs": inputs,
+    # Asked of the arm's own runner, once, and answered from its help text rather than from
+    # the ref it was built at: which grammar a ref speaks is a property of what it ships.
+    # Once per arm and not per repetition, because a probe inside the loop would add a
+    # subprocess to every timed operation and distort the numbers it exists to report.
+    helped = run([sys.executable, str(root / "home/skills/repo-production-workflow/scripts/verify-run.py"),
+                  "--help"], env)
+    quality_gate = "--kind" in helped.stdout
+    return ({"state": home / "seed-state", "repo": repo, "inputs": inputs, "qualityGate": quality_gate,
              "key": repo_key(root, repo, env), "instance": str(loaded(begun.stdout).get("workflowId"))},
             {"beginExit": begun.returncode, "exit": forged.returncode, "gateExit": gate.returncode,
              "seconds": seconds, "repoContextForge": reached["repoContextForge"],
+             "qualityGate": quality_gate, "helpExit": helped.returncode,
              "blocker": forged.stderr.strip()[-300:]})
 
 
@@ -402,14 +442,20 @@ def repetition(arm: dict[str, object], index: int, seed: dict[str, object]) -> t
     replay_env = arm_env(root, replayed)
     context = {
         "cli": cli, "repo": str(seed["repo"]), "inputs": Path(str(seed["inputs"])),
+        "qualityGate": seed["qualityGate"],
         "script": lambda skill, name: [sys.executable, str(root / "home/skills" / skill / "scripts" / name)],
         "bound": ["--repo", str(seed["repo"]), "--slug", "estate-benchmark",
                   "--workflow-id", str(seed["instance"])],
     }
-    for name, argv, fields, _ in REPLAY:
+    for name, build, projected, _ in REPLAY:
         start = time.perf_counter()
-        stepped = run(argv(context), replay_env)
-        scenarios.append(scenario(name, start, [stepped], *project(stepped.stdout, fields)))
+        commands = build(context)
+        # No runs at all for a step this arm does not ship: an empty exits list is the
+        # honest record, where a synthesised success would be the fake green the
+        # comparison exists to catch.
+        stepped = [run(command, replay_env) for command in commands] if commands else []
+        scenarios.append(scenario(name, start, stepped,
+                                  *(projected(stepped) if stepped else ({"supported": False}, []))))
 
     return scenarios, key
 
@@ -518,22 +564,50 @@ def timings(runs: list[dict[str, object]]) -> dict[str, object]:
             "maxSeconds": round(max(seconds), 6)}
 
 
+def capability_gap(baseline: dict[str, object], candidate: dict[str, object]) -> bool:
+    """The candidate ships this operation and the baseline does not.
+
+    Directional, because only one direction is the difference under test: a candidate is
+    allowed to extend the governed grammar, and comparing that strictly would make every
+    such candidate unacceptable. The reverse is a regression - a candidate that drops an
+    operation its baseline ships - and stays a reported difference. Reading it as a set
+    would collapse the two, which is exactly how a removed step went unreported. Only this
+    exact pair qualifies, so a projection missing the key, which is every other scenario,
+    is compared as usual.
+    """
+    return baseline.get("supported") is False and candidate.get("supported") is True
+
+
 def compare(baseline: list[dict[str, object]], candidate: list[dict[str, object]]) -> dict[str, object]:
     base, cand = timings(baseline), timings(candidate)
     base_keys = {key for run in baseline for key in run["keys"]}
     cand_keys = {key for run in candidate for key in run["keys"]}
+    gapped = any(capability_gap(one["projection"], other["projection"])
+                 for one, other in zip(baseline, candidate, strict=True))
     return {
         "name": baseline[0]["name"],
+        # Reported for the operator's merge decision beside the representation deltas,
+        # and deliberately not a failure.
+        "capabilityDelta": gapped,
         # What the arms did, not only that they agreed: without it two identically
         # broken arms read as a clean pass. Every repetition replays fresh state,
         # so the first is representative.
         "observed": baseline[0]["projection"],
+        # When the arms ran different operations, one arm's projection is not the record.
+        # The capable arm's is the interesting half and would otherwise appear nowhere,
+        # since a declared delta contributes no difference to read it from.
+        **({"observedCandidate": candidate[0]["projection"]} if gapped else {}),
         "invariantsHeld": all(EXPECTED[str(run["name"])](run["projection"]) for run in (*baseline, *candidate)),
         "differences": [{"repetition": index, "baseline": one["projection"], "candidate": other["projection"]}
                         for index, (one, other) in enumerate(zip(baseline, candidate, strict=True))
-                        if one["projection"] != other["projection"]],
-        "representationDeltas": {"candidateOnly": sorted(cand_keys - base_keys),
-                                 "baselineOnly": sorted(base_keys - cand_keys)},
+                        if one["projection"] != other["projection"]
+                        and not capability_gap(one["projection"], other["projection"])],
+        # Not reported across a capability gap: representation deltas compare what two arms
+        # emitted for the SAME operation, and an arm that never ran it emits nothing, so
+        # every key would read as candidate-only. That is an artifact of the gap the row
+        # already declares, not a representation change worth an operator's attention.
+        "representationDeltas": {"candidateOnly": [] if gapped else sorted(cand_keys - base_keys),
+                                 "baselineOnly": [] if gapped else sorted(base_keys - cand_keys)},
         "baseline": base, "candidate": cand,
         "deltaMedianSeconds": round(cand["medianSeconds"] - base["medianSeconds"], 6),
         "deltaMaxSeconds": round(cand["maxSeconds"] - base["maxSeconds"], 6),
@@ -553,13 +627,20 @@ def render(artifact: dict[str, object], path: Path) -> str:
                 f"({item['deltaMedianSeconds']:+.3f})  max {item['baseline']['maxSeconds']:.3f}->"
                 f"{item['candidate']['maxSeconds']:.3f} ({item['deltaMaxSeconds']:+.3f})"
                 + (f"  +keys {','.join(item['representationDeltas']['candidateOnly'])}"
-                   if item["representationDeltas"]["candidateOnly"] else ""))
+                   if item["representationDeltas"]["candidateOnly"] else "")
+                + ("  +capability" if item["capabilityDelta"] else ""))
 
     replay = [item for item in scenarios if str(item["name"]).startswith("replay-")]
     # Collapsed to one line while they are clean, because twelve more rows would push a
     # passing summary past the length that makes it readable. Any replay step that
-    # diverged or failed its own invariant is printed in full underneath.
+    # diverged, failed its own invariant, or ran on only one arm is printed in full
+    # underneath: a capability delta passes both other tests, so without it the marker
+    # would describe a row the operator never sees and the summary would disagree with
+    # the artifact it points at.
     faulty = [item for item in replay if item["differences"] or not item["invariantsHeld"]]
+    # Printed, not counted: a capability delta is a passing operation, so it belongs in the
+    # rows without being subtracted from the tally above it.
+    shown = [item for item in replay if item in faulty or item["capabilityDelta"]]
     return "\n".join([
         f"A/B estate benchmark  schema={artifact['schemaVersion']}  "
         f"claude={artifact['claudeCodeVersion']}  repetitions={artifact['repetitions']}",
@@ -573,7 +654,7 @@ def render(artifact: dict[str, object], path: Path) -> str:
         f"{seeds['baseline']['seconds']:.2f}->{seeds['candidate']['seconds']:.2f}s; downstream median total "
         f"{sum(item['baseline']['medianSeconds'] for item in replay):.3f}->"
         f"{sum(item['candidate']['medianSeconds'] for item in replay):.3f}s",
-        *(row(item) for item in faulty),
+        *(row(item) for item in shown),
         f"isolation: {'ok' if isolation['ok'] else 'FAILED'}; estate digest "
         f"{'unchanged' if isolation['estateDigestBefore'] == isolation['estateDigestAfter'] else 'CHANGED'}; "
         f"{len(isolation['armKeys'])} arm keys, {len(isolation['leakedKeys'])} under the live root",
@@ -661,7 +742,12 @@ def main() -> int:
         },
     }
     artifact["ok"] = (artifact["isolation"]["ok"] and all(arm["configSmokeExit"] == 0 for arm in arms.values())
-                      and all(seed["exit"] == 0 and seed["beginExit"] == 0 for seed in seeds.values())
+                      # helpExit too: a probe that could not run leaves stdout empty, which
+                      # reads as "this arm does not ship the step" and would silently drop
+                      # the typed operation from a capable arm. Absent and unmeasured are
+                      # not the same answer, so only a probe that actually answered counts.
+                      and all(seed["exit"] == 0 and seed["beginExit"] == 0 and seed["helpExit"] == 0
+                              for seed in seeds.values())
                       and all(item["invariantsHeld"] and not item["differences"] for item in scenarios)
                       and migrated["ok"])
     path = out / "benchmark.json"
