@@ -392,6 +392,42 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 
+    def test_active_warnings_are_visible_while_the_hook_exits_zero(self) -> None:
+        # Warning-only means non-blocking feedback, not discarded output: the
+        # real PostToolUse hook surfaces active QG54 warnings on its supported
+        # feedback channel (additionalContext) and still returns zero.
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        feedback = json.loads(result.stdout)
+        context = feedback["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(feedback["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+        self.assertIn("QG54-GROWTH-CUMULATIVE", context)
+        self.assertIn("QG54-ANALYSIS-INCOMPLETE", context)
+
+    def test_failed_gate_feedback_renders_the_verdict_errors_concisely(self) -> None:
+        escape = "TO" + "DO"
+        (self.repo / "app.py").write_text(f"value = 3  # {escape}: escape for failure rendering\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("production-code gate FAILED", result.stderr)
+        # The relayed failure is the verdict's error list, not a raw JSON dump.
+        self.assertIn("- quality escapes detected", result.stderr)
+        self.assertNotIn('"schemaVersion"', result.stderr)
+
+    def test_gate_child_stderr_noise_cannot_block_a_passing_edit(self) -> None:
+        # The verdict travels on stdout alone; import-trace noise on the child's
+        # stderr (a real, driver-inducible stream) must not fail a clean edit.
+        (self.repo / "app.py").write_text("value = 4\n", encoding="utf-8")
+        payload: dict[str, object] = {"tool_input": {"file_path": str(self.repo / "app.py")}, "session_id": SESSION}
+        result = subprocess.run(
+            [str(POST_EDIT)], cwd=self.repo, env={**self.env, "PYTHONVERBOSE": "1"}, text=True,
+            input=json.dumps(payload), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        feedback = json.loads(result.stdout)
+        self.assertIn("QG54-GROWTH-CUMULATIVE", feedback["hookSpecificOutput"]["additionalContext"])
+
     def test_non_code_production_edit_invalidates_but_docs_do_not(self) -> None:
         self.complete_workflow(finish=False)
         (self.repo / "requirements.txt").write_text("package==1\n", encoding="utf-8")

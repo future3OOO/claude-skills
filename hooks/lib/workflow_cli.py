@@ -412,6 +412,11 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         try:
             gate = validate_gate_result(json.loads(raw.decode("utf-8")))
             valid = valid and gate.get("ok") is True
+            errors = gate.get("errors")
+            if binding_error is None and isinstance(errors, list) and any(
+                isinstance(error, str) and error.startswith("candidate capture drift:") for error in errors
+            ):
+                binding_error = "reviewable tree changed during the quality-gate run"
         except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
             valid = False
             binding_error = str(exc)

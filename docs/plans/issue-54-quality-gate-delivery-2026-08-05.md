@@ -5,14 +5,17 @@
 - current state: child issues published; governing plan merged in PR #78;
   target architecture under review in PR #79
 - governing artifact: this document
-- last updated: 2026-08-06
+- last updated: 2026-08-08
 
 ## Objective
 
 Deliver the remaining issue #54 quality-gate work as three sequential AFK PRs:
-one canonical evaluation Module, calibrated exact-duplicate findings, and
-calibrated responsibility-owner findings. Each PR must be independently
-verifiable and keep subjective rule promotion at the parent issue's human gate.
+the complete #75 canonical evaluation Module (captured evaluation plus typed
+findings and schema v2, folded into one PR by the 2026-08-08 operator
+directive), calibrated exact-duplicate findings, and calibrated
+responsibility-owner findings. Each PR must be
+independently verifiable and keep subjective rule promotion at the parent
+issue's human gate.
 
 Success means the gate evaluates one base-to-candidate snapshot through its
 existing `runner.check` Interface, reports production, test, test-support, and
@@ -196,24 +199,31 @@ Out of scope:
 ## Delivery map
 
 - plan type: sequential tracer-bullet PR program
-- PR count: three
+- PR count: three — the 2026-08-08 operator directive folded the A1/A2 rebuild
+  slices into one complete #75 delivery (PR #90) with PR #80 preserved as
+  reference; B and C are unchanged
 - active stack depth: one; do not start a child branch before its blocker
   merges
+- regroup rule for PR A: the complete #75 behavior measured +1,414 net
+  human-authored (+653 production) and package 1,926; the operator accepted
+  these measurements and approved the 1,950 package ceiling on 2026-08-08,
+  superseding the 650-net regroup trigger and the 1,800 ceiling for this PR
+  only.
 - regroup rule: keep runtime and its proof together. If a slice forecasts over
   650 net human-authored source lines, shrink it at preflight and return to
-  parent #54 before inventing a fourth child. No slice may approach the 1,000
+  parent #54 before inventing another child. No slice may approach the 1,000
   net split threshold without explicit operator approval.
 
 ## PR plan
 
 | PR | Branch | Base | Owner slice | Commit structure | Budget | Entry | Exit |
 |---|---|---|---|---|---:|---|---|
-| A | `feat/issue-54-canonical-evaluation` | exact `origin/main` SHA recorded in #75 at dispatch | #75 canonical evaluation and cumulative growth | Interface-level RED proof; deep Module replacement plus cleanup | about 500 net | #75 ready; no blocker | role consumers migrated, captured totals proven, active warnings visible through the real hook with exit zero, required checks green |
+| A | `feat/issue-75-captured-evaluation` (PR #90) | current `origin/main` at takeover | complete #75: one scope collector with rename detection, frozen snapshot, stored classification, migrated detectors, bounded baseline capture, typed findings, warning-only cumulative growth, exact-ID `fail_on_warnings`, schema v2, hook warning surfacing | real-CLI RED proof; deep Module replacement plus deletion of superseded modules; detector-policy behavior and promotion proof | measured +1,414 net, package 1,926 of the operator-approved 1,950 ceiling | 2026-08-08 operator fold directive and ceiling approval | #75 acceptance complete, capture/decoder/corpus proof green, active warnings visible through the real hook with exit zero, required checks green |
 | B | `feat/issue-54-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
 | C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | every owner evidence class evaluated; no duplicate prerequisite; candidates calibrated and warning-only; required checks green |
 
 PR C may approach 600 net because its calibrated positive and negative proof
-must ship with the behavior; splitting that proof into a fourth PR would create
+must ship with the behavior; splitting that proof into its own PR would create
 a horizontal administrative slice. It must still be reduced toward 500 during
 preflight and must stop well below 1,000.
 
@@ -248,14 +258,17 @@ Required proof includes:
 
 ## Execution checklist
 
-- [x] Three-slice structure approved by the operator.
+- [x] Three-slice structure approved by the operator (2026-08-05); PR A
+  re-sliced into A1/A2 by the 2026-08-07 takeover directive, then folded back
+  into one complete #75 PR by the 2026-08-08 operator directive.
 - [x] Governing artifact created from `origin/main` without touching PR #74.
 - [x] Child #75 published and linked to parent #54.
 - [x] Child #76 published, linked, and blocked by #75.
 - [x] Child #77 published, linked, and blocked by #76.
 - [x] Parent #54 seven-slice list replaced by the approved structure.
 - [x] Governing plan reviewed and merged in PR #78.
-- [ ] PR A merged with its checklist and reviewer loop complete.
+- [ ] PR A (#90) merged with its checklist and reviewer loop complete,
+  completing #75 and superseding PR #80 (kept open as reference until then).
 - [ ] PR B merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
   before PR C is dispatched.
@@ -281,3 +294,18 @@ Required proof includes:
   candidate-tree self-attestation.
 - 2026-08-06: recorded the operator-approved exact-rule schema-v2
   `fail_on_warnings` policy and PR #74 as #49's active, separate implementation.
+- 2026-08-07: PR #80 (PR A at `89d5ff2`, package 1956 vs the 1800 ceiling, net
+  +1372) preserved as reference under operator direction; PR A is rebuilt from
+  current `main` as two vertical slices through `runner.check`, each under
+  1,000 net with the package ceiling green at every head. Slice 1 delivers the
+  captured base-to-candidate evaluation, stored classification, migrated
+  detectors, and growth accounting under the preserved schema-v1 contract;
+  slice 2 completes #75 with typed findings, warning-only cumulative growth,
+  exact-ID promotion, and schema v2.
+- 2026-08-08: the operator's final directive folded the A2 behavior into the
+  #75 delivery on PR #90. The complete behavior measured package 1,926 against
+  the 1,800 ceiling with every behavior test green; the operator reviewed the
+  measured contradiction and approved raising the ceiling to 1,950, keeping
+  the measured net (+1,414 human-authored, +653 production). Fleet and cubic
+  reviewer rounds on the delivery heads were dispositioned with premise and
+  occurrence measurements.
