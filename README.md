@@ -84,6 +84,17 @@ The final hooks diff should report only deliberate externally managed files
 (currently `herdr-agent-state.sh`) and files retired under the procedure below.
 Any other difference needs reconciliation.
 
+Only one of those line types is ever actionable. `Only in ~/.claude/` is an
+orphan or a machine-owned file, classified below; the install never deletes, so
+these accumulate with every upstream rename. `Files … differ` is content drift,
+in either direction, and should never appear — check it alone rather than
+reading it out of a list that is mostly orphans:
+
+```bash
+{ diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
+  diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/; } | grep '^Files'
+```
+
 The `find` prints nothing when every installed hook is executable. It is a
 separate command because neither of the checks above covers modes: `diff -qr`
 compares content only, and both test scripts are launched through `bash`, which
