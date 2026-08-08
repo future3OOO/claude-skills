@@ -162,11 +162,11 @@ behavior, and real Seam. It records what the command observed; it is not an
 authorization credential or a substitute for inspecting the test:
 
 ```bash
-python3 "$HOME/.claude/skills/tdd/scripts/tdd-run.py" --phase red \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --phase red \
   --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
   --seam "<real public Interface/Seam>" --expected-failure "<expected product failure>" \
   -- <targeted-command>
-python3 "$HOME/.claude/skills/tdd/scripts/tdd-run.py" --phase green \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --phase green \
   --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
   --seam "<same real public Interface/Seam>" -- <targeted-command>
 ```
@@ -174,7 +174,7 @@ python3 "$HOME/.claude/skills/tdd/scripts/tdd-run.py" --phase green \
 For a genuinely non-behavioral change, record the decision explicitly:
 
 ```bash
-python3 "$HOME/.claude/skills/tdd/scripts/tdd-run.py" --repo "$PWD" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" \
   --slug "<task>" --not-required "<specific non-behavioral reason>"
 ```
 

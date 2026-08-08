@@ -1,20 +1,30 @@
-"""Repository-scoped production workflow state and transitions."""
+"""Repository-scoped production workflow policy and transactional commands."""
 from __future__ import annotations
 
+import json
 import re
 import uuid
-from pathlib import Path
+from typing import Sequence
 
+from ._workflow_db import (
+    EvidenceWrite,
+    LedgerError,
+    LedgerMutation,
+    ManifestWrite,
+    begin_workflow,
+    evidence_write,
+    manifest_write,
+    mutation,
+    read_active,
+    read_evidence,
+    read_manifest,
+)
 from .repo_identity import RepoIdentity
 from .state_store import (
-    atomic_write_json,
     is_governance_path,
     is_reviewable_path,
     is_test_path,
     manifest_diff,
-    read_json,
-    repo_state_dir,
-    state_lock,
     tree_manifest,
     utc_timestamp,
 )
@@ -52,9 +62,11 @@ PREFLIGHT_CLOSED = "governance revalidation permits only re-verification and rev
 TDD_CLOSED = "governance revalidation permits only re-verification and review; tdd is closed"
 MANIFEST_MISSING = "review-manifest-missing"
 MANIFEST_STALE = "review-manifest-stale"
+QUALITY_GATE_MISSING = "quality-gate-tree-missing"
+QUALITY_GATE_STALE = "quality-gate-tree-stale"
 
 
-class WorkflowError(RuntimeError):
+class WorkflowError(LedgerError):
     """Base error for invalid workflow operations."""
 
 
@@ -71,13 +83,8 @@ def safe_slug(value: str) -> str:
     return normalized[:80] or "unnamed-workflow"
 
 
-def _path(identity: RepoIdentity) -> Path:
-    return repo_state_dir(identity) / "workflow.json"
-
-
-def read_workflow(identity: RepoIdentity) -> JsonObject | None:
-    state = read_json(_path(identity))
-    if not state or state.get("schemaVersion") != 1 or state.get("repo") != identity.as_dict():
+def _normalise(state: JsonObject | None) -> JsonObject | None:
+    if state is None:
         return None
     advisor = state.get("advisorPreflight")
     if isinstance(advisor, dict):
@@ -86,17 +93,36 @@ def read_workflow(identity: RepoIdentity) -> JsonObject | None:
     return state
 
 
-def _require(identity: RepoIdentity) -> JsonObject:
-    state = read_workflow(identity)
+def read_workflow(identity: RepoIdentity) -> JsonObject | None:
+    try:
+        return _normalise(read_active(identity))
+    except LedgerError as exc:
+        raise WorkflowError(str(exc)) from exc
+
+
+def _require_state(state: JsonObject | None) -> JsonObject:
     if state is None:
         raise WorkflowMissing("no active workflow")
-    return state
+    return _normalise(state) or state
 
 
-def _persist(identity: RepoIdentity, state: JsonObject) -> JsonObject:
+def _require(identity: RepoIdentity) -> JsonObject:
+    return _require_state(read_workflow(identity))
+
+
+def _updated(state: JsonObject) -> JsonObject:
     state["updatedAt"] = utc_timestamp()
-    atomic_write_json(_path(identity), state)
     return state
+
+
+def _commit(
+    transaction: LedgerMutation,
+    state: JsonObject,
+    kind: str,
+    *, evidence: Sequence[EvidenceWrite] = (),
+    manifests: Sequence[ManifestWrite] = (),
+) -> JsonObject:
+    return transaction.append(_updated(state), kind, evidence=evidence, manifests=manifests)
 
 
 EVIDENCE_PHASES = ("preflight", "production-code", "verification")
@@ -114,6 +140,12 @@ def _allows_next(state: JsonObject, phase: str) -> bool:
     if phase in STEP_FIELDS:
         if phase == "tdd":
             return state.get("tdd") in {"in-progress", "passed", "not-required"}
+        if phase == "verification":
+            return (
+                _evidence_ready(state, phase)
+                and bool(state.get("qualityGateEvidence"))
+                and bool(state.get("qualityGateManifestId"))
+            )
         return _evidence_ready(state, phase)
     if phase == "advisor-preflight":
         advisor = state.get("advisorPreflight")
@@ -192,44 +224,89 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "createdAt": now,
         "updatedAt": now,
     }
-    with state_lock(identity):
-        return _persist(identity, state)
+    return begin_workflow(identity, state)
 
 
-def _bind_review_to_tree(identity: RepoIdentity, state: JsonObject) -> None:
-    """Bind the recorded review to the tree it reviewed, and reopen the final review.
-
-    Without the reset a completion refused for a post-final mutation could be
-    answered by re-review alone: the manifest would refresh while the verdict
-    from the old tree survived. A computation failure stores no manifest and
-    drops any earlier one, so the later gates read missing rather than a
-    manifest describing a tree nobody reviewed.
-    """
-    try:
-        state["reviewManifest"] = tree_manifest(identity)
-    except RuntimeError:
-        state.pop("reviewManifest", None)
+def _bind_review_to_tree(identity: RepoIdentity, state: JsonObject) -> ManifestWrite | None:
+    """Create the lead-review tree binding and reopen independent final review."""
     state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
+    state.pop("reviewManifestId", None)
+    try:
+        document = tree_manifest(identity)
+    except RuntimeError:
+        return None
+    write = manifest_write(str(state["workflowId"]), "lead-review-tree", document)
+    state["reviewManifestId"] = write.manifest_id
+    return write
 
 
-def _manifest_drift(identity: RepoIdentity, state: JsonObject) -> str | None:
-    """The freshness reason for the later gates, or None when the tree still matches."""
-    recorded = state.get("reviewManifest")
-    if not isinstance(recorded, dict):
-        return MANIFEST_MISSING
+def _stored_manifest(
+    identity: RepoIdentity,
+    state: JsonObject,
+    field: str,
+    transaction: LedgerMutation | None,
+) -> dict[str, str] | None:
+    value = state.get(field)
+    if not isinstance(value, str) or not value:
+        return None
+    return transaction.manifest(value) if transaction is not None else read_manifest(identity, value)
+
+
+def _tree_drift(
+    identity: RepoIdentity,
+    state: JsonObject,
+    *,
+    field: str,
+    missing: str,
+    stale: str,
+    transaction: LedgerMutation | None = None,
+) -> str | None:
+    recorded = _stored_manifest(identity, state, field, transaction)
+    if recorded is None:
+        return missing
     try:
         current = tree_manifest(identity)
     except RuntimeError as exc:
-        return f"{MANIFEST_MISSING} (uncomputable: {exc})"
+        return f"{missing} (uncomputable: {exc})"
     difference = manifest_diff(recorded, current)
     if not any(difference.values()):
         return None
     named = "; ".join(f"{kind}={', '.join(paths)}" for kind, paths in difference.items() if paths)
-    return f"{MANIFEST_STALE}: {named}"
+    return f"{stale}: {named}"
 
 
-def _apply_step(identity: RepoIdentity, state: JsonObject, phase: str, status: str, findings: str | None = None) -> None:
-    """Validated step mutation shared by every locked transition path."""
+def _binding_drift(
+    identity: RepoIdentity,
+    state: JsonObject,
+    binding: str,
+    transaction: LedgerMutation | None = None,
+) -> str | None:
+    field, missing, stale = {
+        "review": ("reviewManifestId", MANIFEST_MISSING, MANIFEST_STALE),
+        "quality-gate": ("qualityGateManifestId", QUALITY_GATE_MISSING, QUALITY_GATE_STALE),
+    }[binding]
+    return _tree_drift(
+        identity, state, field=field, missing=missing, stale=stale, transaction=transaction,
+    )
+
+
+def _clear_verification(state: JsonObject) -> None:
+    """Invalidate acceptance while retaining the prior evidence for audit and drift reporting."""
+    state["verification"] = "pending"
+    state.pop("verificationEvidence", None)
+    state.pop("verificationLatestEvidence", None)
+    state.pop("qualityGateEvidence", None)
+    state.pop("qualityGateManifestId", None)
+
+
+def _apply_step(
+    identity: RepoIdentity,
+    state: JsonObject,
+    phase: str,
+    status: str,
+    findings: str | None = None,
+) -> ManifestWrite | None:
+    """Validated policy mutation shared by every transactional command."""
     if status not in STEP_STATUSES:
         raise ValueError(f"unsupported workflow status: {status}")
     if phase not in STEP_FIELDS and phase != "code-review":
@@ -241,21 +318,25 @@ def _apply_step(identity: RepoIdentity, state: JsonObject, phase: str, status: s
     _require_predecessor(state, phase)
     if phase == "implementation" and status == "passed" and state.get("tdd") not in {"passed", "not-required"}:
         raise WorkflowIncomplete("implementation passed requires tdd passed or not-required")
+    manifest: ManifestWrite | None = None
     if phase == "code-review":
         if findings not in FINDING_STATUSES:
             raise ValueError("code-review requires --findings pending, none, or addressed")
         state["codeReview"] = {"status": status, "findings": findings}
-        _bind_review_to_tree(identity, state)
+        state.pop("codeReviewEvidence", None)
+        manifest = _bind_review_to_tree(identity, state)
     else:
         if findings is not None:
             raise ValueError(f"{phase} does not accept findings")
-        state[STEP_FIELDS[phase]] = status
-        # An evidence reference lives only while its phase stands producer-
-        # recorded: every transition drops it, and only the producer commit
-        # re-adds it, so a bare replay can never resurrect prior evidence.
-        state.pop(f"{STEP_FIELDS[phase]}Evidence", None)
+        field = STEP_FIELDS[phase]
+        if phase == "verification":
+            _clear_verification(state)
+        else:
+            state.pop(f"{field}Evidence", None)
+        state[field] = status
     state["phase"] = phase
     state["nextAction"] = _derive_next_action(state)
+    return manifest
 
 
 def set_phase(
@@ -267,19 +348,35 @@ def set_phase(
     slug: str | None = None,
     workflow_id: str | None = None,
 ) -> JsonObject:
-    with state_lock(identity):
-        state = _require(identity)
+    with mutation(identity) as transaction:
+        state = _require_state(transaction.state)
         _require_instance(state, slug, workflow_id)
-        _apply_step(identity, state, phase, status, findings)
-        return _persist(identity, state)
+        manifest = _apply_step(identity, state, phase, status, findings)
+        return _commit(
+            transaction,
+            state,
+            f"set-{phase}",
+            manifests=[manifest] if manifest else [],
+        )
 
 
-def producer_set_phase(identity: RepoIdentity, slug: str, workflow_id: str | None, phase: str, status: str) -> JsonObject:
-    """Instance-bound step transition for producers, under one lock hold."""
-    with state_lock(identity):
-        state = bound_instance(identity, slug, workflow_id)
-        _apply_step(identity, state, phase, status)
-        return _persist(identity, state)
+def producer_set_phase(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    phase: str,
+    status: str,
+) -> JsonObject:
+    """Instance-bound phase transition for a producer Adapter."""
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
+        manifest = _apply_step(identity, state, phase, status)
+        return _commit(
+            transaction,
+            state,
+            f"record-{phase}",
+            manifests=[manifest] if manifest else [],
+        )
 
 
 TDD_ACTIONS = {"reopen", "in-progress", "passed", "not-required"}
@@ -289,30 +386,30 @@ def commit_tdd(
     identity: RepoIdentity,
     slug: str,
     workflow_id: str | None,
-    path: Path,
     summary_doc: JsonObject | None,
     action: str,
     *,
-    expected_evidence: JsonObject | None = None,
-) -> JsonObject:
-    """Atomically persist TDD evidence and its workflow transition under one lock hold.
-
-    The caller's pre-run evidence read is revalidated under the lock: a summary
-    that changed since then aborts the commit instead of losing the interleaved run.
-    """
+    expected_evidence_id: str | None = None,
+) -> tuple[JsonObject, str | None]:
+    """Commit a TDD transition and its logical evidence under one transaction."""
     if action not in TDD_ACTIONS:
         raise ValueError(f"unsupported tdd action: {action}")
-    with state_lock(identity):
-        state = bound_instance(identity, slug, workflow_id)
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
         if state.get("revalidation"):
             raise WorkflowError(TDD_CLOSED)
         _require_predecessor(state, "tdd")
         if not state.get("preflightEvidence"):
             raise WorkflowError("tdd requires recorded preflight evidence")
-        if read_json(path) != expected_evidence:
+        if state.get("tddEvidence") != expected_evidence_id:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
+        writes: list[EvidenceWrite] = []
+        evidence_id: str | None = None
         if summary_doc is not None:
-            atomic_write_json(path, summary_doc)
+            write = evidence_write(str(state["workflowId"]), "tdd", summary_doc)
+            writes.append(write)
+            evidence_id = write.evidence_id
+            state["tddEvidence"] = evidence_id
         state.pop("paused", None)
         if action == "reopen":
             state["tdd"] = "in-progress"
@@ -323,28 +420,30 @@ def commit_tdd(
             state["tdd"] = action
             state["phase"] = "tdd"
             state["nextAction"] = _derive_next_action(state)
-        return _persist(identity, state)
+        return _commit(transaction, state, f"tdd-{action}", evidence=writes), evidence_id
 
 
 def commit_review(
     identity: RepoIdentity,
     slug: str,
     workflow_id: str | None,
-    path: Path,
     summary_doc: JsonObject,
     status: str,
     findings: str,
-) -> JsonObject:
-    """Atomically persist the review summary and its workflow transition under one lock hold.
-
-    The transition is validated before the summary is written, so a rejected
-    recorder call leaves the persisted evidence untouched.
-    """
-    with state_lock(identity):
-        state = bound_instance(identity, slug, workflow_id)
-        _apply_step(identity, state, "code-review", status, findings)
-        atomic_write_json(path, summary_doc)
-        return _persist(identity, state)
+) -> tuple[JsonObject, str]:
+    """Commit a code-review summary, its tree binding, and the transition."""
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
+        manifest = _apply_step(identity, state, "code-review", status, findings)
+        write = evidence_write(str(state["workflowId"]), "code-review", summary_doc)
+        state["codeReviewEvidence"] = write.evidence_id
+        return _commit(
+            transaction,
+            state,
+            "record-code-review",
+            evidence=[write],
+            manifests=[manifest] if manifest else [],
+        ), write.evidence_id
 
 
 _NO_CAS = object()
@@ -355,33 +454,92 @@ def commit_evidence_phase(
     slug: str,
     workflow_id: str | None,
     phase: str,
-    path: Path,
     evidence_doc: JsonObject,
     *,
     status: str = "passed",
-    expected_evidence: object = _NO_CAS,
-) -> JsonObject:
-    """Atomically persist a phase's validated evidence and its transition under one lock hold.
-
-    The adapter owns the evidence's structural validation; this owns ordering,
-    instance binding, and atomicity, so a rejected recording mutates nothing.
-    A runner passes its pre-run evidence read as `expected_evidence`, which is
-    revalidated under the lock so an interleaved run aborts the commit instead
-    of being silently overwritten, and may honestly regress `status` to
-    pending: a red run must never leave an earlier green standing.
-    """
-    with state_lock(identity):
-        state = bound_instance(identity, slug, workflow_id)
-        if expected_evidence is not _NO_CAS and read_json(path) != expected_evidence:
+    expected_evidence_id: object = _NO_CAS,
+) -> tuple[JsonObject, str]:
+    """Commit validated producer evidence and its workflow transition."""
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
+        field = STEP_FIELDS[phase]
+        latest_field = f"{field}LatestEvidence"
+        if expected_evidence_id is not _NO_CAS and state.get(latest_field) != expected_evidence_id:
             raise WorkflowError(f"{phase} evidence changed during the run; re-read and re-run the command")
         _apply_step(identity, state, phase, status)
+        write = evidence_write(str(state["workflowId"]), phase, evidence_doc)
+        state[latest_field] = write.evidence_id
         if status == "passed":
-            state[f"{STEP_FIELDS[phase]}Evidence"] = str(path)
-            # _apply_step derived nextAction before this reference existed, so the
-            # phase it just recorded still read incomplete and named itself next.
+            state[f"{field}Evidence"] = write.evidence_id
             state["nextAction"] = _derive_next_action(state)
-        atomic_write_json(path, evidence_doc)
-        return _persist(identity, state)
+        return _commit(
+            transaction,
+            state,
+            f"record-{phase}",
+            evidence=[write],
+        ), write.evidence_id
+
+
+def commit_verification(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    evidence_doc: JsonObject,
+    *,
+    status: str,
+    expected_evidence_id: str | None,
+    quality_gate_tree: dict[str, str] | None,
+    quality_gate_green: bool,
+) -> tuple[JsonObject, str]:
+    """Commit typed verification, preserving or replacing its final-tree binding."""
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
+        if state.get("verificationLatestEvidence") != expected_evidence_id:
+            raise WorkflowError("verification evidence changed during the run; re-read and re-run the command")
+        prior_manifest_id = state.get("qualityGateManifestId")
+        _apply_step(identity, state, "verification", status)
+        manifests: list[ManifestWrite] = []
+        if quality_gate_tree is not None and quality_gate_green:
+            manifest = manifest_write(str(state["workflowId"]), "quality-gate-tree", quality_gate_tree)
+            manifests.append(manifest)
+            quality_manifest_id: str | None = manifest.manifest_id
+        elif quality_gate_green and isinstance(prior_manifest_id, str):
+            quality_manifest_id = prior_manifest_id
+        else:
+            quality_manifest_id = None
+        if quality_manifest_id is not None:
+            evidence_doc = json.loads(json.dumps(evidence_doc))
+            evidence_doc["qualityGateManifestId"] = quality_manifest_id
+        write = evidence_write(str(state["workflowId"]), "verification", evidence_doc)
+        state["verificationLatestEvidence"] = write.evidence_id
+        if quality_gate_green and quality_manifest_id is not None:
+            state["qualityGateEvidence"] = write.evidence_id
+            state["qualityGateManifestId"] = quality_manifest_id
+        else:
+            state.pop("qualityGateEvidence", None)
+            state.pop("qualityGateManifestId", None)
+        if status == "passed":
+            state["verificationEvidence"] = write.evidence_id
+            state["nextAction"] = _derive_next_action(state)
+        return _commit(
+            transaction,
+            state,
+            "record-verification",
+            evidence=[write],
+            manifests=manifests,
+        ), write.evidence_id
+
+
+def evidence_document(identity: RepoIdentity, evidence_id: str | None) -> JsonObject | None:
+    if not evidence_id:
+        return None
+    envelope = read_evidence(identity, evidence_id)
+    document = envelope.get("document") if isinstance(envelope, dict) else None
+    return document if isinstance(document, dict) else None
+
+
+def evidence_record(identity: RepoIdentity, evidence_id: str) -> JsonObject | None:
+    return read_evidence(identity, evidence_id)
 
 
 def record_advisor_result(
@@ -399,8 +557,8 @@ def record_advisor_result(
         raise ValueError(f"unsupported reviewer source: {source}")
     if findings not in {None, "pending"}:
         raise ValueError("advisor-result records findings=pending; disposition findings with advisor-disposition")
-    with state_lock(identity):
-        state = bound_instance(identity, slug, workflow_id)
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
         state.pop("paused", None)
         if stage == "preflight":
             if state.get("revalidation"):
@@ -424,16 +582,16 @@ def record_advisor_result(
             _require_predecessor(state, "final-review")
             if verdict not in FINAL_VERDICTS:
                 raise ValueError(f"unsupported final-review verdict: {verdict}")
-            # Refused here, the tree changed between the lead review and this verdict.
-            drift = _manifest_drift(identity, state)
-            if drift:
+            if drift := _binding_drift(identity, state, "review", transaction):
                 raise WorkflowError(f"the reviewed tree changed after the lead review: {drift}")
+            if drift := _binding_drift(identity, state, "quality-gate", transaction):
+                raise WorkflowError(f"the quality gate did not cover the current tree: {drift}")
             state["finalReview"] = {"source": source, "status": verdict, "findings": "pending"}
             state["phase"] = "final-review"
         else:
             raise ValueError(f"unsupported advisor stage: {stage}")
         state["nextAction"] = _derive_next_action(state)
-        return _persist(identity, state)
+        return _commit(transaction, state, f"advisor-{stage}-result")
 
 
 def _require_open(state: JsonObject) -> None:
@@ -442,49 +600,44 @@ def _require_open(state: JsonObject) -> None:
 
 
 def _require_instance(state: JsonObject, slug: str | None, workflow_id: str | None) -> None:
-    """Validate supplied identity against the active instance; omitted values are not checked.
-
-    Lead commands may name the instance they mean. Callers hold the state lock and
-    pass the state they are about to mutate, so this cannot become check-then-mutate.
-    """
     if slug is not None and state.get("slug") != safe_slug(str(slug)):
         raise WorkflowError(SLUG_MISMATCH)
     if workflow_id is not None and instance_id(state) != workflow_id:
         raise WorkflowError(INSTANCE_MISMATCH)
 
 
+def _active_for_slug(state: JsonObject | None, slug: str) -> JsonObject:
+    value = _require_state(state)
+    _require_open(value)
+    _require_instance(value, slug or "", None)
+    return value
+
+
+def _bound_instance_state(state: JsonObject | None, slug: str, workflow_id: str | None) -> JsonObject:
+    value = _active_for_slug(state, slug)
+    if instance_id(value) is None:
+        raise WorkflowError(NO_INSTANCE_ID)
+    _require_instance(value, None, workflow_id or "")
+    return value
+
+
 def bound_state(identity: RepoIdentity, slug: str) -> JsonObject:
-    """Active state for a slug-bound mutation; a stale or concurrent slug is rejected."""
-    state = _require(identity)
-    _require_open(state)
-    _require_instance(state, slug or "", None)
-    return state
+    return _active_for_slug(read_workflow(identity), slug)
 
 
 def instance_id(state: JsonObject) -> str | None:
-    """The active workflow's instance id, or None when the state predates instance identity."""
     value = state.get("workflowId")
     return value if isinstance(value, str) and value else None
 
 
-def bound_instance(identity: RepoIdentity, slug: str, workflow_id: str | None) -> JsonObject:
-    """bound_state plus strict instance equality; producers call this under the state lock before writing."""
-    state = bound_state(identity, slug)
-    if instance_id(state) is None:
-        raise WorkflowError(NO_INSTANCE_ID)
-    _require_instance(state, None, workflow_id or "")
-    return state
-
-
 def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: str) -> JsonObject:
-    """Record an honest wait (an external blocker the Stop payload cannot see) that releases the latch."""
     cleaned = reason.strip()
     if not cleaned:
         raise ValueError("pause requires a non-empty --reason")
-    with state_lock(identity):
-        state = bound_instance(identity, slug, workflow_id)
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
         state["paused"] = {"reason": cleaned, "at": utc_timestamp()}
-        return _persist(identity, state)
+        return _commit(transaction, state, "pause")
 
 
 def advisor_disposition(
@@ -496,15 +649,6 @@ def advisor_disposition(
     *,
     document: JsonObject | None = None,
 ) -> JsonObject:
-    """Lead-owned findings disposition over an existing producer-recorded result.
-
-    `addressed` carries the lead's disposition document, written atomically with
-    the transition under the one lock hold, so a refusal leaves both the state and
-    any earlier document untouched. `none` claims no findings and therefore clears
-    the stage's document: a same-slug `begin` starts a new instance without
-    removing artifacts, so a surviving file would keep publishing a dead
-    instance's dispositions at the audit path this pass now answers for.
-    """
     if findings not in {"none", "addressed"}:
         raise ValueError("advisor disposition requires --findings none or addressed")
     if stage not in {"preflight", "final"}:
@@ -513,9 +657,8 @@ def advisor_disposition(
         raise ValueError("an addressed disposition requires the lead's disposition document")
     if findings == "none" and document is not None:
         raise ValueError("a findings-none disposition carries no document")
-    path = repo_state_dir(identity) / f"disposition-{stage}-{safe_slug(slug)}.json"
-    with state_lock(identity):
-        state = bound_instance(identity, slug, workflow_id)
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
         if stage == "preflight" and state.get("revalidation"):
             raise WorkflowError(PREFLIGHT_CLOSED)
         state.pop("paused", None)
@@ -528,27 +671,32 @@ def advisor_disposition(
         )
         if not recorded:
             raise WorkflowError("advisor disposition cannot create a result; record the consult first")
+        writes: list[EvidenceWrite] = []
         record["findings"] = findings
-        if document is None:
-            path.unlink(missing_ok=True)
-        else:
-            atomic_write_json(path, document)
+        record.pop("dispositionEvidence", None)
+        if document is not None:
+            write = evidence_write(str(state["workflowId"]), f"advisor-disposition-{stage}", document)
+            writes.append(write)
+            record["dispositionEvidence"] = write.evidence_id
         state["phase"] = "advisor-preflight" if stage == "preflight" else "final-review"
         state["nextAction"] = _derive_next_action(state)
-        return _persist(identity, state)
+        return _commit(transaction, state, f"advisor-{stage}-disposition", evidence=writes)
 
 
 def completion_missing(state: JsonObject) -> list[str]:
-    """The canonical completion-readiness check shared by complete() and the Stop latch."""
+    """Canonical completion readiness shared by complete and the Stop latch."""
     missing: list[str] = [] if instance_id(state) else ["workflowId"]
     for field in ("repoContextForge", "gitnexus", "preflight", "productionCode", "implementation", "verification"):
         if state.get(field) != "passed":
             missing.append(field)
-    # A passed evidence phase without its producer's evidence reference is a
-    # bare claim - legacy or hand-set state reads pending, never success.
     for field in ("preflight", "productionCode", "verification"):
         if state.get(field) == "passed" and not state.get(f"{field}Evidence"):
             missing.append(f"{field}Evidence")
+    if state.get("verification") == "passed":
+        if not state.get("qualityGateEvidence"):
+            missing.append("qualityGateEvidence")
+        if not state.get("qualityGateManifestId"):
+            missing.append("qualityGateManifest")
     if state.get("tdd") not in {"passed", "not-required"}:
         missing.append("tdd")
     if not _allows_next(state, "advisor-preflight"):
@@ -564,7 +712,6 @@ CHECKPOINT_PHASES = {"preflight-advice", "final-review"}
 
 
 def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:
-    """The intake steps that gate both a preflight consult and any tracked production edit."""
     return (
         ("repo-context-forge", state.get("repoContextForge") == "passed"),
         ("gitnexus", state.get("gitnexus") == "passed"),
@@ -572,12 +719,10 @@ def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:
 
 
 def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
-    """Read-only consult-readiness query used before an expensive advisor call."""
     if phase not in CHECKPOINT_PHASES:
         raise ValueError(f"unsupported checkpoint phase: {phase}")
     state = _require(identity)
     revalidation = bool(state.get("revalidation"))
-    # A terminal workflow rejects every consult; revalidation reopens only final review.
     terminal = state.get("phase") == "complete" and not revalidation
     open_for_phase = not terminal and not (phase == "preflight-advice" and revalidation)
     requirements = (
@@ -588,13 +733,17 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
             if phase == "preflight-advice"
             else (
                 ("verification evidence", _evidence_ready(state, "verification")),
+                ("quality-gate verification", bool(state.get("qualityGateEvidence"))),
                 ("code-review", _allows_next(state, "code-review")),
             )
         ),
     )
     missing = [name for name, ready in requirements if not ready]
-    if phase == "final-review" and (drift := _manifest_drift(identity, state)):
-        missing.append(drift)
+    if phase == "final-review":
+        if drift := _binding_drift(identity, state, "review"):
+            missing.append(drift)
+        if drift := _binding_drift(identity, state, "quality-gate"):
+            missing.append(drift)
     review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
     return {
         "phase": phase,
@@ -608,26 +757,25 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
 
 
 def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: str | None = None) -> JsonObject:
-    with state_lock(identity):
-        state = _require(identity)
+    with mutation(identity) as transaction:
+        state = _require_state(transaction.state)
         _require_instance(state, slug, workflow_id)
         state.pop("paused", None)
         state.pop("revalidation", None)
         missing = completion_missing(state)
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
-        # Refused here, the tree changed after the final review rather than before it.
-        drift = _manifest_drift(identity, state)
-        if drift:
+        if drift := _binding_drift(identity, state, "review", transaction):
             raise WorkflowIncomplete(f"the reviewed tree changed after the final review: {drift}")
+        if drift := _binding_drift(identity, state, "quality-gate", transaction):
+            raise WorkflowIncomplete(f"the quality gate did not cover the current tree: {drift}")
         state["phase"] = "complete"
         state["nextAction"] = "delivery-and-reviewer-completion"
-        return _persist(identity, state)
+        return _commit(transaction, state, "complete")
 
 
 def _reset_downstream(state: JsonObject) -> None:
-    state["verification"] = "pending"
-    state.pop("verificationEvidence", None)
+    _clear_verification(state)
     state["codeReview"] = {"status": "pending", "findings": "pending"}
     state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
     state["nextAction"] = _derive_next_action(state)
@@ -637,24 +785,23 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
     reviewable = is_reviewable_path(path)
     if not reviewable and not is_governance_path(path):
         return read_workflow(identity)
-    with state_lock(identity):
-        state = read_workflow(identity)
+    with mutation(identity) as transaction:
+        state = transaction.state
         if state is None:
             return None
         if reviewable and state.get("phase") == "complete" and not state.get("revalidation"):
-            # A completed pass stays terminal: a stray production edit is reported
-            # through the Stop changed-code context, never absorbed into the pass.
-            # Further production work requires begin; only a governance edit opens
-            # the revalidation window.
             return state
         state.pop("paused", None)
         if reviewable:
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
-        elif state.get("phase") == "complete":
-            state["revalidation"] = True
+            kind = "production-edit-invalidated"
+        else:
+            kind = "governance-edit-invalidated"
+            if state.get("phase") == "complete":
+                state["revalidation"] = True
         _reset_downstream(state)
-        return _persist(identity, state)
+        return _commit(transaction, state, kind)
 
 
 def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
@@ -678,12 +825,6 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
     return not missing, missing
 
 
-def flush(identity: RepoIdentity) -> JsonObject | None:
-    with state_lock(identity):
-        state = read_workflow(identity)
-        return _persist(identity, state) if state is not None else None
-
-
 def summary(identity: RepoIdentity, limit: int = 1200) -> str:
     state = read_workflow(identity)
     if state is None:
@@ -697,6 +838,7 @@ def summary(identity: RepoIdentity, limit: int = 1200) -> str:
         f"advisor-preflight={advisor.get('status')}/{advisor.get('findings')}, preflight={state.get('preflight')}, tdd={state.get('tdd')}, "
         f"production-code={state.get('productionCode') or 'pending'}, "
         f"implementation={state.get('implementation')}, verification={state.get('verification')}, "
+        f"quality-gate={'passed' if state.get('qualityGateEvidence') else 'pending'}, "
         f"code-review={code_review.get('status')}/{code_review.get('findings')}, "
         f"final-review={final_review.get('source')}/{final_review.get('status')}/{final_review.get('findings')}. "
         + (f" Advisor outage: {advisor.get('reason')}." if advisor.get("status") == "unavailable" else "")

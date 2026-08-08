@@ -25,19 +25,13 @@ def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return seen
 
 
-def validated_document(path: str) -> dict[str, str]:
+def validate_document(value: object) -> dict[str, str]:
     """The validated preflight document, or a refusal naming what is wrong.
 
     Unlike the review recorder's array-of-findings input, this contract is a
-    fixed set of prose sections where a silently deduplicated or empty section
-    would record a preflight that never happened — so duplicate keys refuse at
-    parse time and every section must carry text.
+    fixed set of prose sections where an empty section would record a preflight
+    that never happened, so every section must carry text.
     """
-    try:
-        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
-        value = json.loads(raw, object_pairs_hook=_reject_duplicates)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read preflight JSON: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError("preflight document must be a JSON object")
     missing = [name for name in SECTIONS if name not in value]
@@ -53,3 +47,17 @@ def validated_document(path: str) -> dict[str, str]:
     if document["openQuestions"] != "none":
         raise ValueError("openQuestions must be exactly 'none'; an unresolved question blocks the recording")
     return document
+
+
+def validated_document(path: str) -> dict[str, str]:
+    """The validated preflight document read from a file or stdin.
+
+    Duplicate section keys refuse at parse time, where a later section would
+    otherwise silently overwrite an earlier one.
+    """
+    try:
+        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+        value = json.loads(raw, object_pairs_hook=_reject_duplicates)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read preflight JSON: {exc}") from exc
+    return validate_document(value)

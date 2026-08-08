@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
+WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
 CANONICAL_BOOTSTRAP = Path("/home/prop_/projects/repo-context-forge/scripts/codex_context_bootstrap.py")
 
@@ -53,7 +54,7 @@ class RepoForgeWorkflowTests(unittest.TestCase):
 
     def pass_state(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(PASS_STATE), *args, "--repo", str(self.repo)],
+            [sys.executable, str(WORKFLOW), *args, "--repo", str(self.repo)],
             cwd=self.repo, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
@@ -77,18 +78,31 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
-    def test_legacy_state_without_an_instance_id_refuses_before_the_bootstrap_runs(self) -> None:
-        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / self.status()["repo"]["key"] / "workflow.json"
-        legacy = json.loads(state_path.read_text(encoding="utf-8"))
-        legacy.pop("workflowId")
-        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
-        before = state_path.read_text(encoding="utf-8")
+    def test_corrupt_authoritative_ledger_refuses_before_the_bootstrap_runs(self) -> None:
+        state = self.status()
+        database = (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
+                    / str(state["repo"]["key"]) / "workflow.sqlite3")
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE metadata SET value = ? WHERE key = 'repo_key'",
+                ("different-repository",),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        before = database.read_bytes()
 
         refused = self.bootstrap()
+
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-        self.assertIn("begin a new workflow", refused.stderr)
-        self.assertEqual(refused.stdout, "", "the external bootstrap ran for a workflow with no instance id")
-        self.assertEqual(state_path.read_text(encoding="utf-8"), before)
+        self.assertEqual(refused.stdout, "", "the external bootstrap ran for corrupt state")
+        self.assertEqual(
+            refused.stderr,
+            "<blocker>cannot bind Repo Context Forge to the active workflow: "
+            "workflow database repository identity does not match this checkout</blocker>\n",
+        )
+        self.assertEqual(database.read_bytes(), before)
 
     def test_real_bootstrap_advances_workflow_without_extra_persisted_records(self) -> None:
         direct = self.bootstrap()

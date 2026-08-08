@@ -16,7 +16,9 @@ second source of truth that drifts on its own.
 | GitNexus context/impact doctrine | `CLAUDE.md` §9 | The workflow supplies packet-specific facts |
 | Execution sequence and phase order | `repo-production-workflow/SKILL.md` | `CLAUDE.md` §7 owns only when skills fire |
 | Review ownership | `repo-production-workflow/SKILL.md` | Lead `code-review` is the structured self-check; the final Codex Advisor review is the sole independent reviewer |
-| Terminal state and the governance-revalidation exception | `WORKFLOW-MAP.md` | `pass-state.py` exposes the operator-facing Interface; `hooks/lib/workflow_state.py` implements shared transitions consumed by the CLI, hooks, and recorders |
+| Terminal state and the governance-revalidation exception | `WORKFLOW-MAP.md` | `workflow.py` exposes the operator-facing Interface; `hooks/lib/workflow_state.py` implements shared transitions consumed by the CLI and hooks; legacy scripts are compatibility shims |
+| Public workflow status JSON | `WORKFLOW-MAP.md` | `workflow.py status` emits the canonical `schemaVersion: 1` projection; hooks and advisor automation consume semantic fields only |
+| SQLite ledger schema and transaction mechanics | `hooks/lib/_workflow_db.py` | `workflow_state.py` supplies policy mutations; `state_prune.py` supplies estate retention decisions through the ledger's private inventory/apply Interface |
 | Hook operational documentation | `WORKFLOW-MAP.md` | `settings.json` and the hook scripts remain the executable Interface; `CLAUDE.md` §9 keeps only what changes lead action |
 | Repo Context Forge downstream contract | `repo-context-forge/SKILL.md` | `CLAUDE.md` §8 owns the intake gate |
 | Review-budget measurement | `delivery-governance/SKILL.md` | `CLAUDE.md` §7 states the ~500 net-line target |

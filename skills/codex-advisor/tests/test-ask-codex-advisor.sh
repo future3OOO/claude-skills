@@ -147,7 +147,7 @@ out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_R
   "$WRAPPER" --slug orphan --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "governed consult without an active workflow refused" 2 "$status"
 check "no-workflow refusal names the cause" "requires an active workflow" "$out"
-CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/pass-state.py" \
+CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
   begin --repo "$gatetmp/repo" --slug real-pass >/dev/null 2>&1
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
   "$WRAPPER" --slug wrong-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
@@ -176,8 +176,9 @@ w.record_advisor_result(identity, slug, wid, "preflight", "codex-advisor", "comp
 w.advisor_disposition(identity, slug, wid, "preflight", "none")
 import json as j, subprocess as sp, tempfile as tf, os as o
 root = sys.argv[1]
-def producer(script, *extra):
-    r = sp.run([sys.executable, script, "--repo", sys.argv[2], "--slug", slug, "--workflow-id", wid, *extra],
+workflow = root + "/skills/repo-production-workflow/scripts/workflow.py"
+def producer(command, *extra):
+    r = sp.run([sys.executable, workflow, command, "--repo", sys.argv[2], "--slug", slug, "--workflow-id", wid, *extra],
                capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
 sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan", "reusePath",
@@ -185,18 +186,22 @@ sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan
             "modularityPlan", "riskChecks", "openQuestions")
 doc = {n: "none" if n == "openQuestions" else "content" for n in sections}
 fd, doc_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, j.dumps(doc).encode()); o.close(fd)
-producer(root + "/skills/production-preflight/scripts/record-preflight.py", "--input", doc_path)
+producer("record-preflight", "--input", doc_path)
 w.set_phase(identity, "tdd", "not-required")
 gate = sp.run([sys.executable, root + "/skills/production-code/scripts/code_quality_gate.py",
                "check", "--repo", sys.argv[2], "--json"], capture_output=True, text=True)
 assert gate.returncode == 0, gate.stdout + gate.stderr
 fd, gate_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, gate.stdout.encode()); o.close(fd)
-producer(root + "/skills/production-code/scripts/record-production-code.py", "--input", gate_path)
+producer("record-production-code", "--input", gate_path)
 w.set_phase(identity, "implementation", "passed")
-vr = sp.run([sys.executable, root + "/skills/repo-production-workflow/scripts/verify-run.py",
+vr = sp.run([sys.executable, workflow, "verify",
              "--repo", sys.argv[2], "--slug", slug, "--", sys.executable, "-c", "pass"],
             capture_output=True, text=True)
 assert vr.returncode == 0, vr.stdout + vr.stderr
+qg = sp.run([sys.executable, workflow, "verify",
+             "--repo", sys.argv[2], "--slug", slug, "--kind", "quality-gate", "--base-ref", "HEAD"],
+            capture_output=True, text=True)
+assert qg.returncode == 0, qg.stdout + qg.stderr
 w.set_phase(identity, "code-review", "passed", findings="none")
 w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-ready")
 w.advisor_disposition(identity, slug, wid, "final", "none")
@@ -206,18 +211,22 @@ out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_R
 check_status "completed workflow refused before the final-review consult" 2 "$status"
 check "terminal refusal names the closed workflow" "open-workflow" "$out"
 
-workflow_py 'import json, sys
+workflow_py 'import json, sqlite3, sys
 sys.path.insert(0, sys.argv[1])
+from hooks.lib._workflow_db import database_path
 from hooks.lib.repo_identity import resolve_repo_identity
 from hooks.lib import workflow_state as w
 identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
 w.begin(identity, slug)
 for phase in ("repo-context-forge", "gitnexus"):
     w.set_phase(identity, phase, "passed")
-path = w._path(identity)
-legacy = json.loads(path.read_text(encoding="utf-8"))
-legacy.pop("workflowId")
-path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")' legacy-pass
+connection = sqlite3.connect(database_path(identity))
+event_id = connection.execute("SELECT event_id FROM active_projection WHERE slot = 1").fetchone()[0]
+state = json.loads(connection.execute("SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)).fetchone()[0])
+state.pop("workflowId")
+connection.execute("UPDATE workflow_events SET state_json = ? WHERE event_id = ?",
+                   (json.dumps(state, sort_keys=True, separators=(",", ":")), event_id))
+connection.commit(); connection.close()' legacy-pass
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
   "$WRAPPER" --slug legacy-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "workflow without an instance id refused before the consult" 2 "$status"

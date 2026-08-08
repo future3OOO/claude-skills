@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility shim for ``workflow record-preflight``."""
+"""Public workflow command."""
 from __future__ import annotations
 
 import sys
@@ -12,4 +12,4 @@ if str(ROOT) not in sys.path:
 from hooks.lib.workflow_cli import main  # noqa: E402
 
 if __name__ == "__main__":
-    raise SystemExit(main(["record-preflight", *sys.argv[1:]]))
+    raise SystemExit(main())

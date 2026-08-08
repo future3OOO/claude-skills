@@ -10,6 +10,8 @@ export CLAUDE_HOME="${CLAUDE_HOME:-$scratch}"
 
 python3 -u "$ROOT/hooks/tests/test_state_foundation.py"
 python3 -u "$ROOT/hooks/tests/test_state_prune.py"
+python3 -u "$ROOT/hooks/tests/test_workflow_ledger.py"
+python3 -u "$ROOT/hooks/tests/test_workflow_shims.py"
 python3 -u "$ROOT/hooks/tests/test_pass_lifecycle.py"
 python3 -u "$ROOT/hooks/tests/test_workflow_hooks.py"
 python3 -u "$ROOT/hooks/tests/test_review_summary.py"

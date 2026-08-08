@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -19,16 +20,11 @@ from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.tests.support import build_document  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
-PASS_STATE = ROOT / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
-TDD_RUN = ROOT / "skills" / "tdd" / "scripts" / "tdd-run.py"
-RECORD_PRODUCTION_CODE = ROOT / "skills" / "production-code" / "scripts" / "record-production-code.py"
-RECORD_PREFLIGHT = ROOT / "skills" / "production-preflight" / "scripts" / "record-preflight.py"
+WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
-VERIFY_RUN = ROOT / "skills" / "repo-production-workflow" / "scripts" / "verify-run.py"
 FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
-PRE_COMPACT = ROOT / "hooks" / "pre-compact-flush.py"
 STOP = ROOT / "hooks" / "post-edit-blast-radius.py"
 SESSION = "real-hook-session"
 
@@ -82,7 +78,7 @@ class WorkflowHookTests(unittest.TestCase):
 
     def state(self, *args: str, repo: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(PASS_STATE), *args, "--repo", str(repo or self.repo)],
+            [sys.executable, str(WORKFLOW), *args, "--repo", str(repo or self.repo)],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
@@ -128,12 +124,32 @@ class WorkflowHookTests(unittest.TestCase):
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
 
+    def rewrite_latest_state(self, update) -> None:
+        identity = resolve_repo_identity(self.repo)
+        database = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / identity.key / "workflow.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            event_id = connection.execute(
+                "SELECT event_id FROM active_projection WHERE slot = 1"
+            ).fetchone()[0]
+            state = json.loads(connection.execute(
+                "SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)
+            ).fetchone()[0])
+            update(state)
+            connection.execute(
+                "UPDATE workflow_events SET state_json = ? WHERE event_id = ?",
+                (json.dumps(state, sort_keys=True, separators=(",", ":")), event_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def record_preflight_evidence(self, slug: str, wid: str) -> None:
         document = build_document("hook-suite setup")
         doc_path = self.tmp / "preflight-doc.json"
         doc_path.write_text(json.dumps(document), encoding="utf-8")
         recorded = subprocess.run(
-            [sys.executable, str(RECORD_PREFLIGHT), "--repo", str(self.repo),
+            [sys.executable, str(WORKFLOW), "record-preflight", "--repo", str(self.repo),
              "--slug", slug, "--workflow-id", wid, "--input", str(doc_path)],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -150,7 +166,7 @@ class WorkflowHookTests(unittest.TestCase):
         gate_path = self.tmp / "gate-verdict.json"
         gate_path.write_text(gate.stdout, encoding="utf-8")
         recorded = subprocess.run(
-            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo),
+            [sys.executable, str(WORKFLOW), "record-production-code", "--repo", str(self.repo),
              "--slug", slug, "--workflow-id", wid, "--input", str(gate_path)],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -159,12 +175,19 @@ class WorkflowHookTests(unittest.TestCase):
 
     def run_verification(self, slug: str) -> None:
         verified = subprocess.run(
-            [sys.executable, str(VERIFY_RUN), "--repo", str(self.repo), "--slug", slug,
+            [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo), "--slug", slug,
              "--", sys.executable, "-c", "pass"],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        quality = subprocess.run(
+            [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo), "--slug", slug,
+             "--kind", "quality-gate", "--base-ref", "HEAD"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(quality.returncode, 0, quality.stdout + quality.stderr)
 
     def complete_workflow(self, slug: str = "hook-sequence", *, resume: bool = False, finish: bool = True) -> None:
         if resume:
@@ -276,9 +299,9 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("production-code", cleared, "the next missing step after RED is production-code")
 
     def red(self, slug: str) -> subprocess.CompletedProcess[str]:
-        """Drive one real valid RED through the tdd-run.py recorder for this workflow."""
+        """Drive one real valid RED through the workflow.py tdd command for this workflow."""
         return subprocess.run(
-            [sys.executable, str(TDD_RUN), "--cwd", str(self.repo), "--slug", slug,
+            [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(self.repo), "--slug", slug,
              "--phase", "red", "--behavior", "app value must be 2",
              "--seam", "app module import", "--expected-failure", "AssertionError",
              "--", sys.executable, "-c",
@@ -306,7 +329,7 @@ class WorkflowHookTests(unittest.TestCase):
         gate_json = self.tmp / "gate.json"
         gate_json.write_text(json.dumps({"ok": True, "gateVersion": "hook-test", "checks": []}), encoding="utf-8")
         early_step = subprocess.run(
-            [sys.executable, str(RECORD_PRODUCTION_CODE), "--repo", str(self.repo),
+            [sys.executable, str(WORKFLOW), "record-production-code", "--repo", str(self.repo),
              "--slug", "production-code-gate", "--workflow-id", wid, "--input", str(gate_json)],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -476,24 +499,24 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertFalse((ROOT / "hooks" / "repoforge-commit-gate.sh").exists())
         self.assertFalse((ROOT / "hooks" / "codex-challenge-commit-gate.sh").exists())
 
-    def test_precompact_flushes_only_an_existing_workflow(self) -> None:
-        self.assertTrue(PRE_COMPACT.is_file(), "PreCompact workflow flush hook is missing")
+    def test_sqlite_state_is_durable_without_a_precompact_flush_hook(self) -> None:
+        self.assertFalse((ROOT / "hooks" / "pre-compact-flush.py").exists())
         begun = self.state("begin", "--slug", "compact-state")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         before = json.loads(begun.stdout)
 
-        flushed = subprocess.run(
-            [str(PRE_COMPACT)], cwd=self.repo, env=self.env, text=True,
-            input=json.dumps({"cwd": str(self.repo), "trigger": "manual"}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(flushed.returncode, 0, flushed.stdout + flushed.stderr)
+        # A fresh process reads the committed event directly. Durability is the
+        # public contract; rewriting a JSON snapshot before compaction was only
+        # machinery for the superseded store.
         after = json.loads(self.state("status").stdout)
-        for field in ("slug", "phase", "nextAction", "finalReview"):
+        for field in ("slug", "workflowId", "phase", "nextAction", "finalReview"):
             self.assertEqual(after[field], before[field])
+        database = (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
+                    / resolve_repo_identity(self.repo).key / "workflow.sqlite3")
+        self.assertTrue(database.is_file())
 
         settings = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
-        self.assertEqual(settings["hooks"]["PreCompact"][0]["matcher"], "manual|auto")
+        self.assertNotIn("PreCompact", settings["hooks"])
 
     def test_stop_contract_follows_the_real_captured_payload(self) -> None:
         begun = self.state("begin", "--slug", "stop-real")
@@ -681,16 +704,12 @@ class WorkflowHookTests(unittest.TestCase):
         # readiness failures the latch exists to enforce.
         begun = self.state("begin", "--slug", "running-work-release")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        state_path = (
-            Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
-            / resolve_repo_identity(self.repo).key / "workflow.json"
+        # JSON-valid but unhashable, which the canonical state parser accepts
+        # and readiness cannot test for membership. A privileged writer can
+        # still replace ledger bytes; the ledger does not claim otherwise.
+        self.rewrite_latest_state(
+            lambda state: state.__setitem__("codeReview", {"status": "passed", "findings": []})
         )
-        stored = json.loads(state_path.read_text(encoding="utf-8"))
-        # JSON-valid but unhashable, which the read path accepts and the readiness
-        # check cannot test for membership; the recorder refuses to write it, an
-        # older or hand-edited file can still hold it.
-        stored["codeReview"] = {"status": "passed", "findings": []}
-        state_path.write_text(json.dumps(stored, sort_keys=True), encoding="utf-8")
 
         released = self.stop(shape="natural-with-background-task")
         self.assertEqual(
@@ -801,22 +820,41 @@ class WorkflowHookTests(unittest.TestCase):
             "an unusable association store cost the session its cwd fallback",
         )
 
-    def test_legacy_state_without_an_instance_id_is_latched_with_a_begin_instruction(self) -> None:
+    def test_corrupt_authoritative_state_is_latched_with_a_repair_instruction(self) -> None:
         begun = self.state("begin", "--slug", "stop-legacy")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        state_path = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / resolve_repo_identity(self.repo).key / "workflow.json"
-        legacy = json.loads(state_path.read_text(encoding="utf-8"))
-        legacy.pop("workflowId")
-        state_path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
+        self.rewrite_latest_state(lambda state: state.pop("workflowId"))
 
         blocked = self.stop()
         self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
         reason = json.loads(blocked.stdout)["reason"]
-        self.assertIn("begin a new workflow", reason)
-        self.assertNotIn(
-            "--workflow-id 'None'", reason,
-            "the latch offered a pause the legacy state cannot record",
-        )
+        self.assertIn("repair or explicitly retire", reason)
+        self.assertIn("nextAction: repair-workflow-state", reason)
+        self.assertNotIn("workflow.py pause", reason)
+
+        repeated = self.stop(shape="active")
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        self.assertEqual(repeated.stdout, "", "a no-progress corrupt-state repeat re-prompted")
+        self.assertNotIn("Traceback", repeated.stderr)
+
+    def test_unreadable_authoritative_database_is_latched_instead_of_crashing(self) -> None:
+        if not hasattr(os, "geteuid") or os.geteuid() == 0:
+            self.skipTest("permission-denied behavior requires an unprivileged user")
+        begun = self.state("begin", "--slug", "stop-unreadable")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        identity = resolve_repo_identity(self.repo)
+        database = (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
+                    / identity.key / "workflow.sqlite3")
+        database.chmod(0o400)
+
+        blocked = self.stop()
+
+        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        decision = json.loads(blocked.stdout)
+        self.assertEqual(decision.get("decision"), "block")
+        self.assertIn("repair or explicitly retire", decision.get("reason", ""))
+        self.assertIn("nextAction: repair-workflow-state", decision.get("reason", ""))
+        self.assertNotIn("Traceback", blocked.stderr)
 
     def test_a_replacement_instance_does_not_inherit_the_previous_latch_release(self) -> None:
         first = self.state("begin", "--slug", "stop-instance")
@@ -901,11 +939,11 @@ class WorkflowHookTests(unittest.TestCase):
         # without producer references. PRD #30 scopes the pending-reading to
         # legacy IN-FLIGHT passes; a completed pass is terminal everywhere.
         self.complete_workflow("legacy-terminal")
-        workflow_file = next((self.tmp / "state").glob("*/workflow.json"))
-        state = json.loads(workflow_file.read_text(encoding="utf-8"))
-        for field in ("preflightEvidence", "productionCodeEvidence", "verificationEvidence"):
-            state.pop(field)
-        workflow_file.write_text(json.dumps(state), encoding="utf-8")
+        def strip_evidence(state: dict[str, object]) -> None:
+            for field in ("preflightEvidence", "productionCodeEvidence", "verificationEvidence"):
+                state.pop(field, None)
+
+        self.rewrite_latest_state(strip_evidence)
 
         stopped = self.stop()
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)

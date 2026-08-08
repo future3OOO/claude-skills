@@ -79,18 +79,6 @@
         ]
       }
     ],
-    "PreCompact": [
-      {
-        "matcher": "manual|auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/prop_/.claude/hooks/pre-compact-flush.py",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [
