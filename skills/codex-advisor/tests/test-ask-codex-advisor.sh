@@ -290,7 +290,6 @@ envtmp=$(mktemp -d)
 mkdir -p "$envtmp/home" "$envtmp/repo"
 git -C "$envtmp/repo" init -q
 git -C "$envtmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-env_root=$(python3 "$ROOT/hooks/lib/repo_identity.py" --path "$envtmp/repo" --field root)
 
 # The hand-authored envelope is gone, not merely ignored: a caller cannot supply
 # graph transport at all.
