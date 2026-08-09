@@ -425,10 +425,23 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
             gate = validate_gate_result(json.loads(raw.decode("utf-8")))
             valid = valid and gate.get("ok") is True
             errors = gate.get("errors")
-            if binding_error is None and isinstance(errors, list) and any(
-                isinstance(error, str) and error.startswith("candidate capture drift:") for error in errors
-            ):
-                binding_error = "reviewable tree changed during the quality-gate run"
+            capture = next(
+                (
+                    error for error in (errors if isinstance(errors, list) else ())
+                    if isinstance(error, str) and error.startswith("candidate capture ")
+                ),
+                None,
+            )
+            if binding_error is None and capture is not None:
+                # Drift and outright capture failure are one condition here: the gate
+                # never held a tree still, so nothing it reports binds to one. Only the
+                # drift shape has a settled name; the rest carry the gate's own words
+                # rather than being attributed to a cause the runner cannot know.
+                binding_error = (
+                    "reviewable tree changed during the quality-gate run"
+                    if capture.startswith("candidate capture drift:")
+                    else f"the quality gate could not capture the reviewable tree: {capture}"
+                )
         except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
             valid = False
             binding_error = str(exc)

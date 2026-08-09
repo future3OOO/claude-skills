@@ -8,8 +8,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import unittest
 from pathlib import Path
 
@@ -26,6 +24,70 @@ from hooks.tests.support import build_document, record_context_forge  # noqa: E4
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
+
+
+# Driven as a child process by the mid-gate mutation test. It runs outside this
+# interpreter deliberately: a thread here competes for one GIL with the runner and
+# can be starved for a whole gate on a two-core machine, which is how the same
+# assertion failed two different ways on CI while passing locally every time.
+MID_GATE_MUTATOR = '''
+import os, sys, time
+from pathlib import Path
+
+target, marker = Path(sys.argv[1]), Path(sys.argv[2])
+# Split so this script's own text never carries the token: `python -c` puts the
+# whole program in its /proc cmdline, and a mutator that matches itself would
+# start writing before the gate exists and never stop.
+GATE = "code_quality" + "_gate.py"
+
+
+def identity(pid):
+    """The process start time, which pins a pid to one incarnation of it."""
+    try:
+        return (Path("/proc") / pid / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def gate_child():
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if GATE in (entry / "cmdline").read_bytes().decode("utf-8", "replace"):
+                return entry.name, identity(entry.name)
+        except OSError:
+            continue
+    return None, None
+
+
+def record(count):
+    """Atomically, so the reader cannot catch a half-written marker."""
+    temporary = marker.with_name(marker.name + ".partial")
+    temporary.write_text(str(count), encoding="utf-8")
+    os.replace(temporary, marker)
+
+
+confirmed, counter, deadline = 0, 0, time.monotonic() + 300
+pid, started = None, None
+while pid is None and time.monotonic() < deadline:
+    pid, started = gate_child()
+    if pid is None:
+        time.sleep(0.001)
+while pid is not None and started is not None:
+    counter += 1
+    target.write_text("value = %d\\n" % counter, encoding="utf-8")
+    # Confirmed only once the same incarnation is still running after the write:
+    # a check taken beforehand races the child's exit and would count an overlap
+    # that never happened.
+    if identity(pid) != started:
+        break
+    confirmed += 1
+    record(confirmed)
+    # The gate needs the machine more than this loop does; the handshake above,
+    # not write volume, is what makes the overlap real.
+    time.sleep(0.001)
+'''
 
 
 class PassLifecycleTests(unittest.TestCase):
@@ -712,20 +774,18 @@ class PassLifecycleTests(unittest.TestCase):
         generic = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(generic.returncode, 0, generic.stdout + generic.stderr)
 
-        mutated = self.repo / "app.py"
-        stop = threading.Event()
-        writes = []
-
-        def mutate() -> None:
-            counter = 0
-            while not stop.is_set():
-                counter += 1
-                mutated.write_text(f"value = {counter}\n", encoding="utf-8")
-                writes.append(counter)
-                time.sleep(0.001)
-
-        thread = threading.Thread(target=mutate)
-        thread.start()
+        # The mutation has to land between the two manifests the runner samples
+        # around the gate child. A thread spraying writes only makes that likely:
+        # on a loaded two-core runner it can be starved for the whole gate, and
+        # the run then passes for the wrong reason. So the mutator is a separate
+        # process, and it counts a write only once it has re-confirmed that the
+        # same gate child — identified by pid and start time, so a recycled pid
+        # cannot stand in for it — was still alive after the write landed.
+        marker = self.tmp / "confirmed-writes"
+        mutator = subprocess.Popen(
+            [sys.executable, "-c", MID_GATE_MUTATOR, str(self.repo / "app.py"), str(marker)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
         try:
             result = subprocess.run(
                 [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo),
@@ -734,17 +794,70 @@ class PassLifecycleTests(unittest.TestCase):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
             )
         finally:
-            stop.set()
-            thread.join()
+            mutator.terminate()
+            mutator.communicate(timeout=30)
+        confirmed = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
         # The refusal is meaningless unless the tree really changed mid-run.
-        self.assertGreater(len(writes), 1, "mutator never ran during the gate")
+        self.assertGreater(
+            confirmed, 0,
+            "the mutation never overlapped the gate child, so the drift window was never exercised",
+        )
 
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         emitted = json.loads(result.stdout.splitlines()[-1])
         run = self.evidence(emitted["evidenceId"])["runs"][-1]
         self.assertFalse(run["valid"])
-        self.assertEqual(run["bindingError"], "reviewable tree changed during the quality-gate run")
+        # Either attribution proves the same thing: the gate never saw a tree that
+        # held still. Which one surfaces depends on whether the write landed in the
+        # runner's own sampling window or inside the gate's `git add` capture, and
+        # the second is what made this test intermittent before it was named.
+        reason = run["bindingError"] or ""
+        self.assertTrue(
+            reason == "reviewable tree changed during the quality-gate run"
+            or reason.startswith("the quality gate could not capture the reviewable tree:"),
+            f"the mid-run mutation went unattributed: {reason!r}",
+        )
+        self.assertEqual(state["verification"], "pending")
+        self.assertNotIn("qualityGateManifestId", state)
+
+    def test_a_gate_that_cannot_capture_the_tree_says_why(self) -> None:
+        """A capture that fails is as unusable as one that drifts, and must be named.
+
+        A required clean filter that exits non-zero makes the gate's own `git add`
+        capture fail deterministically, which is the same condition a mid-run
+        mutation produces intermittently. `tree_manifest` hashes with
+        `--no-filters`, so the runner's own sampling is untouched: the only thing
+        broken is the gate's view of the tree.
+        """
+        slug = "capture-failure"
+        wid = self.begin_slug(slug)
+        self.advance_to_preflight(slug, wid)
+        self.owner_phase("tdd", "not-required")
+        self.record_real_gate(wid)
+        self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
+        self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0)
+
+        self.git("config", "filter.boom.clean", "exit 1")
+        self.git("config", "filter.boom.required", "true")
+        (self.repo / ".gitattributes").write_text("app.py filter=boom\n", encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo),
+             "--slug", slug, "--kind", "quality-gate", "--base-ref", "HEAD"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        run = self.evidence(json.loads(result.stdout.splitlines()[-1])["evidenceId"])["runs"][-1]
+        self.assertFalse(run["valid"])
+        self.assertIsNotNone(
+            run["bindingError"], "a gate that could not capture the tree reported no reason",
+        )
+        self.assertIn("could not capture the reviewable tree", run["bindingError"])
+        self.assertIn("candidate capture failed at git add", run["bindingError"])
+        state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["verification"], "pending")
         self.assertNotIn("qualityGateManifestId", state)
 
