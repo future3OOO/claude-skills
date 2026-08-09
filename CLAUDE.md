@@ -116,7 +116,7 @@ Use the `repo-production-workflow` skill as the default first skill for producti
 
 The full chain, in order — every named skill is INVOKED with the Skill tool by exact name (reading its `SKILL.md` does not satisfy the step):
 
-`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`) → `diagnose` (bugs/regressions/perf only) → packet-scoped GitNexus MCP checks → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `workflow.py record-production-code` and the gate's JSON verdict) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
+`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`, which executes the packet-scoped GitNexus checks and records that graph result as workflow evidence — there is no separate transition to record) → `diagnose` (bugs/regressions/perf only) → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `workflow.py record-production-code` and the gate's JSON verdict) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
 
 Invocation policy:
 
@@ -200,10 +200,15 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
   - `mcp__gitnexus__query` for architecture and execution flows
   - `mcp__gitnexus__context` for callers/callees and process participation
   - `mcp__gitnexus__impact` (direction `upstream`) before editing
-- Before editing a symbol in an indexed repo, run BOTH `mcp__gitnexus__context`
-  on it (callers AND callees) and `mcp__gitnexus__impact` with
-  `direction: upstream` and `includeTests: true`. One call is never the full
-  seam. `impact` walks callers only, so an impact-only pass is structurally
+- Before editing a symbol in an indexed repo, that symbol needs BOTH
+  `mcp__gitnexus__context` on it (callers AND callees) and `mcp__gitnexus__impact`
+  with `direction: upstream` and `includeTests: true`. A packet check that covered
+  that symbol already answers the caller and upstream-impact halves — its entries
+  carry `callers` and `impacted_files` — so read those from `<gitnexus_analysis>`
+  rather than reissuing them. It carries no callee facts, so callee context is
+  always your own call, as is every symbol the plan did not cover, which is the
+  usual case because the plan ranks packet targets rather than your edit list. One
+  call is never the full seam. `impact` walks callers only, so an impact-only pass is structurally
   blind to callees — and the thing a change actually breaks is usually a
   callee: the shared writer, lock, or transition helper the edited symbol
   calls. `includeTests` defaults to `false`, which hides the regression surface
@@ -218,7 +223,7 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
   higher-risk one.
 - Consuming an internal seam from a NEW file (tests, smokes, harnesses, scripts) requires `mcp__gitnexus__context` on that seam BEFORE writing the consumer — a new file has no indexed symbols, so the edit-time impact rule alone never fires for it. Import the existing tested owner of the behavior instead of writing a second parsing/lifecycle client.
 - Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
-- Reindex after structural changes or Git mutations when staleness is detected. Run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status`; workflow state records that the check ran but does not certify a HEAD or tree.
+- Reindex after structural changes or Git mutations when staleness is detected. Run `gitnexus analyze --skip-agents-md .` and verify with `gitnexus status`. Rerunning the Repo Context Forge bootstrap re-records the packet-scoped graph result; neither it nor `gitnexus status` certifies a HEAD or tree.
 
 ### Hooks
 

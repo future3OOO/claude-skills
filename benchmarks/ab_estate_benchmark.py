@@ -74,9 +74,18 @@ def _quality_gate(runs: list[subprocess.CompletedProcess[str]]) -> tuple[dict[st
 # observe, so a producer that exits zero without advancing the state it owns fails the run
 # instead of timing fast. A builder returning None means this arm does not ship the step.
 REPLAY = (
+    # An arm that records graph evidence with the packet has retired this transition and
+    # must refuse it; an arm that still ships it must perform it. The state read that
+    # follows decides either way: both arms have to arrive at the same next step with the
+    # same compatibility reading, and the refusing arm must not have moved anything. The
+    # exit codes and phase legitimately differ, and compare() reports that difference for
+    # the operator rather than this predicate hiding it.
     ("replay-gitnexus", lambda c: [[*c["cli"], "set-phase", *c["bound"], "--phase", "gitnexus",
-                                   "--status", "passed"]],
-     _fields(STATE_FIELDS), lambda p: p["exits"] == [0] and p["gitnexus"] == "passed"),
+                                   "--status", "passed"],
+                                   [*c["cli"], "status", "--repo", c["repo"]]],
+     _fields(STATE_FIELDS),
+     lambda p: p["exits"] in ([0, 0], [2, 0]) and p["gitnexus"] == "passed"
+     and p["nextAction"] == "advisor-preflight"),
     ("replay-advisor-preflight", lambda c: [[*c["cli"], "advisor-result", *c["bound"], "--stage", "preflight",
                                             "--source", "codex-advisor", "--verdict", "completed"]],
      _fields(STATE_FIELDS), lambda p: p["advisorPreflight.status"] == "completed"),
@@ -136,7 +145,7 @@ EXPECTED = {
 }
 # Shared keys only: the candidate's extra `quality-gate=` is a representation change,
 # reported as a delta rather than compared.
-SUMMARY_KEYS = ("slug", "phase", "next", "repo-context-forge", "gitnexus", "advisor-preflight",
+SUMMARY_KEYS = ("slug", "phase", "next", "repo-context-forge", "advisor-preflight",
                 "preflight", "tdd", "production-code", "implementation", "verification",
                 "code-review", "final-review")
 

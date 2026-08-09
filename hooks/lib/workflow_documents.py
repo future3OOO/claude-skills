@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Callable
@@ -50,6 +51,62 @@ def validate_gate_result(value: object) -> JsonObject:
 
 def _text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _resolved_graph(value: object) -> JsonObject:
+    """The producer's graph result, accepted only when it resolved every check.
+
+    Contract validation, not re-analysis: Repo Context Forge already owns checkout
+    identity, index freshness, plan selection, GitNexus invocation and normalisation,
+    and blocks rather than returning an unresolved answer. What is checked here is
+    only that the answer this consumer is about to persist really is that resolved
+    answer, so a blocked, partial or placeholder result can never become evidence.
+    """
+    if not isinstance(value, dict) or value.get("status") != "resolved":
+        raise ValueError("the producer returned no resolved graph result; rerun Repo Context Forge")
+    if value.get("unresolved_checks") != []:
+        raise ValueError("the producer left graph checks unresolved; rerun Repo Context Forge")
+    entries = value.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("the resolved graph result has no entries list")
+    # How many checks a packet plans is the producer's decision, and a packet that
+    # planned none still resolved. Demanding facts here would invent a refusal for
+    # every surface Repo Context Forge legitimately had nothing to ask about.
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("status") != "resolved" or not all(
+            _text(entry.get(field)) for field in ("kind", "file", "target", "resolved_identity")
+        ):
+            raise ValueError("a graph entry is unresolved or missing its identity")
+    if any(type(value.get(metric)) is not int for metric in
+           ("elapsed_ms", "process_count", "graph_call_count", "output_bytes")):
+        raise ValueError("the resolved graph result is missing its execution metrics")
+    revision = value.get("producer_revision")
+    if not isinstance(revision, dict) or not _text(revision.get("commit")):
+        raise ValueError("the resolved graph result names no producer revision")
+    return value
+
+
+def graph_evidence_document(
+    path: str,
+    *,
+    slug: str,
+    workflow_id: str,
+    source_root: str,
+) -> JsonObject:
+    """The repo-context-forge evidence document built from the producer's machine packet."""
+    packet = load_json(path, label="packet")
+    target = packet.get("target_state")
+    reported = target.get("source_repo") if isinstance(target, dict) else None
+    if not _text(reported) or os.path.realpath(str(reported)) != os.path.realpath(source_root):
+        raise ValueError(f"the packet was produced for {reported!r}, not {source_root}")
+    gitnexus = packet.get("gitnexus")
+    return {
+        "schemaVersion": 1,
+        "slug": slug,
+        "workflowId": workflow_id,
+        "graph": _resolved_graph(gitnexus.get("analysis") if isinstance(gitnexus, dict) else None),
+        "recordedAt": utc_timestamp(),
+    }
 
 
 def _arrays(value: JsonObject, label: str) -> tuple[list[object], list[object]]:

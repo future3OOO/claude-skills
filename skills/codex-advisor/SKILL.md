@@ -15,10 +15,11 @@ phase belongs in `--phase`, not in the slug.
 
 ### `preflight-advice`
 
-Run after Repo Context Forge and packet-scoped GitNexus, before production
-preflight and before edits. Supply the task contract, packet/coverage summary,
-caller/callee impact, intended Module/Interface/Seam, first real-seam RED, and
-no-change surfaces. The advisor challenges scope and design; it does not create
+Run after Repo Context Forge, before production preflight and before edits.
+Supply the task contract, packet/coverage summary, intended Module/Interface/Seam,
+first real-seam RED, and no-change surfaces. The recorded graph result is attached
+for you, carrying the caller and upstream-impact halves; it holds no callee facts,
+so callee context stays yours to supply. The advisor challenges scope and design; it does not create
 the preflight artifact or approve implementation.
 
 ### `final-review`
@@ -61,56 +62,38 @@ wait for the process rather than polling with repeated sleeps.
 ```bash
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase preflight-advice \
-  --cwd "$PWD" --packet "<packet-file>" --gitnexus "<gitnexus-json>" \
+  --cwd "$PWD" --packet "<packet-file>" \
   --budget 350 -- "<focused scope question>"
 
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase final-review \
-  --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" --gitnexus "<gitnexus-json>" \
+  --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" \
   --budget 350 -- "<focused completion question>"
 ```
 
-Carry `--packet` and `--gitnexus` on **both** checkpoints. The delegate is
-isolated: it sees the diff and the repository, but not the packet you read or
-the graph calls you already made, so evidence you gathered and did not attach
-does not exist for it. A final review that cannot check consumer completeness
-independently answers `context-mismatch`, and the paid consult buys a re-run
-rather than a review. The envelope's `graphEvidence` should carry `context`
-for each edited symbol plus `impact` in both directions with `includeTests`.
+Carry `--packet` on **both** checkpoints. The delegate is isolated: it sees the
+diff and the repository, but not the packet you read, so evidence you gathered
+and did not attach does not exist for it. A final review that cannot check
+consumer completeness independently answers `context-mismatch`, and the paid
+consult buys a re-run rather than a review.
+
+Graph evidence is not one of those attachments. The wrapper reads the active
+pass's `repo-context-forge` evidence — the resolved context/impact result Repo
+Context Forge recorded with the packet — through the workflow evidence
+Interface, and appends a bounded excerpt itself. There is no option to supply
+graph evidence by hand, and nothing to copy between panes.
 
 Before the expensive consult the wrapper runs the read-only
 `workflow.py checkpoint --phase <phase>` query and refuses when the
-checkpoint is not ready: `preflight-advice` requires Repo Context Forge and
-GitNexus recorded; `final-review` requires verification passed and a terminal
-code-review state. The delayed result still revalidates slug and workflowId at
-recording time.
+checkpoint is not ready: `preflight-advice` requires Repo Context Forge
+evidence recorded; `final-review` requires verification passed and a terminal
+code-review state. It then resolves the graph evidence and refuses, still
+before the provider runs, when this workflow instance has none or does not own
+the recorded record — rerun the Repo Context Forge bootstrap and consult again.
+The delayed result still revalidates slug and workflowId at recording time.
 
 `--base-ref` is required for `final-review` and must resolve in the repository.
-`--packet` and `--gitnexus` are optional bounded read-only files appended to
-the evidence. A supplied `--gitnexus` file must be a schema-version-1 envelope
-binding the evidence to the consultation checkout:
-
-```json
-{
-  "schemaVersion": 1,
-  "repositoryRoot": "/canonical/absolute/git/toplevel",
-  "headSha": "full-40-hex-commit-sha",
-  "graphEvidence": {
-    "context": "lead-authored bounded graph evidence"
-  }
-}
-```
-
-The wrapper validates the envelope before the provider starts: `repositoryRoot`
-must resolve to the same canonical directory as the checkout's Git top level,
-`headSha` must equal the checkout's current full `HEAD`, and `graphEvidence`
-must be a non-empty JSON object. Malformed JSON, a missing field, a wrong
-type, an unknown schema version, empty evidence, or a repository/head mismatch
-refuses with exit 2 before a paid consultation begins, naming the failed
-condition and the expected repository or head where useful. Validation proves
-checkout binding only — never the truth, completeness, or machine provenance
-of the hand-authored graph evidence. Accepted evidence is appended under the
-existing bounded-input policy.
+`--packet` is an optional bounded read-only file appended to the evidence.
 
 The wrapper derives the repository root and session identity
 from `hooks/lib/repo_identity.py`, so one stable slug resumes the same session

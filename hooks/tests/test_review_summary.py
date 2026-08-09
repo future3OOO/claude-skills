@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.tests.support import build_document  # noqa: E402
+from hooks.tests.support import build_document, record_context_forge  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
@@ -45,10 +45,8 @@ class ReviewSummaryTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=self.repo, env=self.env, check=True)
         begun = self.run_script(WORKFLOW, "begin", "--slug", "review-summary")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        identity = resolve_repo_identity(self.repo)
+        identity = record_context_forge(self.repo, self.tmp)
         self.wid = read_workflow(identity)["workflowId"]
-        set_phase(identity, "repo-context-forge", "passed")
-        set_phase(identity, "gitnexus", "passed")
         record_advisor_result(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         doc_path = self.tmp / "setup-preflight.json"

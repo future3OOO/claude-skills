@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 usage() {
-  printf 'Usage: %s --slug <name> [--phase preflight-advice|final-review] [--cwd path] [--base-ref ref] [--packet file] [--gitnexus file] [--budget words] [--fresh] -- "question"\n' "$0" >&2
+  printf 'Usage: %s --slug <name> [--phase preflight-advice|final-review] [--cwd path] [--base-ref ref] [--packet file] [--budget words] [--fresh] -- "question"\n' "$0" >&2
   exit 2
 }
 
@@ -13,7 +13,7 @@ if [[ -n "${CODEX_ADVISOR_ACTIVE:-}${ADVISOR_ACTIVE:-}" ]]; then
   exit 3
 fi
 
-slug=""; phase=""; cwd="$PWD"; base_ref=""; packet_file=""; gitnexus_file=""; budget=300; fresh=0; question=""
+slug=""; phase=""; cwd="$PWD"; base_ref=""; packet_file=""; budget=300; fresh=0; question=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slug) slug="${2:?missing --slug value}"; shift 2 ;;
@@ -21,7 +21,6 @@ while [[ $# -gt 0 ]]; do
     --cwd) cwd="${2:?missing --cwd value}"; shift 2 ;;
     --base-ref) base_ref="${2:?missing --base-ref value}"; shift 2 ;;
     --packet) packet_file="${2:?missing --packet value}"; shift 2 ;;
-    --gitnexus) gitnexus_file="${2:?missing --gitnexus value}"; shift 2 ;;
     --budget) budget="${2:?missing --budget value}"; shift 2 ;;
     --fresh) fresh=1; shift ;;
     --) shift; question="$*"; break ;;
@@ -37,12 +36,10 @@ if [[ "$phase" == "final-review" && -z "$base_ref" ]]; then
   printf 'error: --base-ref is required for final-review\n' >&2
   exit 2
 fi
-for bounded_input in "$packet_file" "$gitnexus_file"; do
-  if [[ -n "$bounded_input" && ! -r "$bounded_input" ]]; then
-    printf 'error: bounded input is not readable: %s\n' "$bounded_input" >&2
-    exit 2
-  fi
-done
+if [[ -n "$packet_file" && ! -r "$packet_file" ]]; then
+  printf 'error: bounded input is not readable: %s\n' "$packet_file" >&2
+  exit 2
+fi
 [[ -n "$question" ]] || question="$(cat)"
 [[ -n "${question//[[:space:]]/}" ]] || { printf 'error: empty question\n' >&2; exit 2; }
 
@@ -64,54 +61,64 @@ if [[ -n "$base_ref" ]] && ! git -C "$repo_root" rev-parse --verify --quiet "$ba
   exit 2
 fi
 
-if [[ -n "$gitnexus_file" ]]; then
-  expected_head=$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || {
-    printf 'error: cannot resolve HEAD in %s to validate --gitnexus evidence\n' "$repo_root" >&2
-    exit 2
-  }
-  python3 - "$gitnexus_file" "$repo_root" "$expected_head" >&2 <<'PY' || exit 2
-import json, os, re, sys
-
-def refuse(message):
-    print(f"error: {message}")
-    raise SystemExit(2)
-
-def non_rfc_constant(token):
-    raise ValueError(f"non-RFC constant {token}")
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        envelope = json.load(handle, parse_constant=non_rfc_constant)
-except (OSError, ValueError) as exc:
-    refuse(f"--gitnexus evidence is not valid JSON: {exc}")
-if not isinstance(envelope, dict):
-    refuse("--gitnexus evidence must be a JSON object envelope")
-version = envelope.get("schemaVersion")
-if type(version) is not int or version != 1:
-    refuse(f"--gitnexus envelope requires schemaVersion 1, got: {json.dumps(version)}")
-root = envelope.get("repositoryRoot")
-if not isinstance(root, str) or not root:
-    refuse("--gitnexus envelope repositoryRoot must be the canonical repository root path")
-expected_root = sys.argv[2]
-if os.path.realpath(root) != expected_root:
-    refuse(f"--gitnexus evidence is for repository {root}, expected {expected_root}")
-head = envelope.get("headSha")
-if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
-    refuse("--gitnexus envelope headSha must be the full 40-hex commit sha")
-expected_head = sys.argv[3]
-if head != expected_head:
-    refuse(f"--gitnexus evidence head {head} does not match the current HEAD {expected_head}")
-evidence = envelope.get("graphEvidence")
-if not isinstance(evidence, dict):
-    refuse("--gitnexus envelope graphEvidence must be a JSON object")
-if not evidence:
-    refuse("--gitnexus envelope graphEvidence is empty")
-PY
-fi
-
 workflow_cli="$script_dir/../../repo-production-workflow/scripts/workflow.py"
 producer_slug=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.workflow_state import safe_slug; print(safe_slug(sys.argv[2]))' "$script_dir/../../.." "$slug")
+
+# One logical evidence document, and only when the active workflow instance owns
+# it: an id alone would happily read another pass's record. Answers exactly one
+# question, so "no such record" and "not owned by this pass" are both the empty
+# answer its callers then report; the lookup's own exit status must not abort the
+# script before that report is made.
+owned_record() {
+  local record
+  record=$(python3 "$workflow_cli" evidence --repo "$repo_root" --evidence-id "$1" 2>/dev/null) || return 0
+  printf '%s' "$record" | python3 -c 'import json,sys
+try:
+    record = json.load(sys.stdin)
+except (ValueError, OSError):
+    raise SystemExit
+if record.get("workflowId") == sys.argv[1]:
+    print(json.dumps(record.get("document"), sort_keys=True))' "$2"
+}
+
+owned_excerpt() {
+  local document
+  document=$(owned_record "$1" "$2")
+  printf '%s' "${document:0:4000}"
+}
+
+# The graph result is bounded by whole checks and says what it left out. A byte
+# prefix of the same document ends mid-entry and silently drops later checks,
+# which reads to the delegate as complete graph evidence that it is not.
+graph_excerpt_of() {
+  owned_record "$1" "$2" | python3 -c 'import json,sys
+raw = sys.stdin.read()
+if not raw.strip():
+    raise SystemExit
+graph = json.loads(raw).get("graph") or {}
+entries, shown = graph.get("entries") or [], []
+for entry in entries:
+    shown.append({
+        **{key: entry.get(key) for key in ("kind", "file", "target", "direction", "resolved_identity")},
+        "callers": [caller.get("identity") for caller in entry.get("callers") or []],
+        "impacted_files": entry.get("impacted_files") or [],
+    })
+    if len(json.dumps(shown)) > 9000:
+        break
+print(json.dumps({
+    "status": graph.get("status"),
+    "authority": graph.get("authority"),
+    "producer_revision": graph.get("producer_revision"),
+    "graph_call_count": graph.get("graph_call_count"),
+    "checks_total": len(entries),
+    "checks_shown": len(shown),
+    "checks_omitted_for_size": len(entries) - len(shown),
+    "checks": shown,
+}, indent=1))'
+}
+
 active_wid=""; active_tdd=""; active_review=""; active_tdd_evidence=""; active_review_evidence=""
+graph_excerpt=""
 if [[ -n "$phase" ]]; then
   if ! checkpoint_json=$(python3 "$workflow_cli" checkpoint --repo "$repo_root" --phase "$phase" 2>&1); then
     if [[ "$checkpoint_json" == *"no active workflow"* ]]; then
@@ -138,9 +145,17 @@ print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") o
     printf 'error: cannot read the active workflow after its checkpoint\n' >&2
     exit 2
   }
-  IFS='|' read -r active_tdd_evidence active_review_evidence < <(printf '%s' "$status_json" | python3 -c 'import json,sys
+  IFS='|' read -r active_tdd_evidence active_review_evidence active_graph_evidence < <(printf '%s' "$status_json" | python3 -c 'import json,sys
 state = json.load(sys.stdin)
-print(state.get("tddEvidence") or "", state.get("codeReviewEvidence") or "", sep="|")')
+print(state.get("tddEvidence") or "", state.get("codeReviewEvidence") or "",
+      state.get("repoContextForgeEvidence") or "", sep="|")')
+  # The graph evidence is read from the pass, never supplied by the caller, and it is
+  # resolved before the provider so a stale or foreign result costs no consultation.
+  graph_excerpt=$(graph_excerpt_of "$active_graph_evidence" "$active_wid")
+  if [[ -z "$graph_excerpt" ]]; then
+    printf 'error: this workflow instance has no Repo Context Forge graph evidence; rerun the Repo Context Forge bootstrap before consulting\n' >&2
+    exit 2
+  fi
 fi
 
 state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/_advisor-sessions"
@@ -187,24 +202,13 @@ if [[ -n "$phase" ]]; then
   branch_diff=""
   [[ -n "$base_ref" ]] && branch_diff=$(git -C "$repo_root" diff "$base_ref"...HEAD)
   packet_excerpt=""; [[ -n "$packet_file" ]] && packet_excerpt=$(head -c 20000 -- "$packet_file")
-  gitnexus_excerpt=""; [[ -n "$gitnexus_file" ]] && gitnexus_excerpt=$(head -c 12000 -- "$gitnexus_file")
   tdd_excerpt=""; review_excerpt=""
   if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
-    owned_excerpt() {
-      python3 "$workflow_cli" evidence --repo "$repo_root" --evidence-id "$1" 2>/dev/null |
-        python3 -c 'import json,sys
-try:
-    record = json.load(sys.stdin)
-except (ValueError, OSError):
-    raise SystemExit
-if record.get("workflowId") == sys.argv[1]:
-    print(json.dumps(record.get("document"), sort_keys=True)[:4000])' "$active_wid"
-    }
     [[ "$active_tdd" != "pending" && -n "$active_tdd_evidence" ]] &&
-      tdd_excerpt=$(owned_excerpt "$active_tdd_evidence")
+      tdd_excerpt=$(owned_excerpt "$active_tdd_evidence" "$active_wid")
     case "$active_review" in
       passed|not-required)
-        [[ -n "$active_review_evidence" ]] && review_excerpt=$(owned_excerpt "$active_review_evidence") ;;
+        [[ -n "$active_review_evidence" ]] && review_excerpt=$(owned_excerpt "$active_review_evidence" "$active_wid") ;;
     esac
   fi
   evidence="
@@ -220,8 +224,8 @@ ${untracked:-<empty>}
 ${branch_diff:-<empty>}
 --- repo context packet (bounded) ---
 ${packet_excerpt:-<none>}
---- gitnexus context (bounded) ---
-${gitnexus_excerpt:-<none>}
+--- Repo Context Forge graph evidence, this workflow instance (bounded) ---
+${graph_excerpt}
 --- recorded TDD summary (bounded) ---
 ${tdd_excerpt:-<none>}
 --- recorded code-review summary (bounded) ---

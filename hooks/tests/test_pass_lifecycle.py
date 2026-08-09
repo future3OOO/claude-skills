@@ -22,7 +22,7 @@ REARM = ROOT / "hooks" / "skill-discipline-rearm.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
-from hooks.tests.support import build_document  # noqa: E402
+from hooks.tests.support import build_document, record_context_forge  # noqa: E402
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
@@ -151,12 +151,11 @@ class PassLifecycleTests(unittest.TestCase):
             result = self.cli(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def advance_to_gitnexus(self) -> None:
-        self.owner_phase("repo-context-forge", "passed")
-        self.run_cli(("set-phase", "--phase", "gitnexus", "--status", "passed"))
+    def advance_to_context_forge(self) -> None:
+        record_context_forge(self.repo, self.tmp)
 
     def advance_to_preflight(self, slug: str, wid: str) -> None:
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -557,7 +556,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_preflight_records_only_with_its_document(self) -> None:
         wid = self.begin_slug("evidence-preflight")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "evidence-preflight", "--workflow-id", wid,
              "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
@@ -930,7 +929,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_a_fix_round_demands_fresh_evidence_and_tdd_waits_for_preflight_evidence(self) -> None:
         wid = self.begin_slug("fresh-evidence")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "fresh-evidence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "fresh-evidence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -958,7 +957,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertNotEqual(new_wid, wid)
         self.assertEqual(json.loads(self.cli("status").stdout)["preflight"], "pending",
                          "the replacement instance inherited a recorded preflight")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "fresh-evidence", "--workflow-id", new_wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "fresh-evidence", "--workflow-id", new_wid, "--stage", "preflight", "--findings", "none"),
@@ -1000,7 +999,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_tdd_demands_preflight_evidence_not_just_status(self) -> None:
         wid = self.begin_slug("bare-preflight-tdd")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "bare-preflight-tdd", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "bare-preflight-tdd", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -1021,7 +1020,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_exit_codes_reflect_the_recording_not_the_reporting(self) -> None:
         wid = self.begin_slug("exit-honesty")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "exit-honesty", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "exit-honesty", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -1130,19 +1129,58 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(out_of_order.returncode, 2, out_of_order.stdout + out_of_order.stderr)
         self.assertIn("implementation", out_of_order.stderr)
 
-        for phase in ("repo-context-forge", "tdd", "code-review"):
+        for phase, refusal in (
+            ("repo-context-forge", "run the Repo Context Forge bootstrap"),
+            ("tdd", "lead-owned"),
+            ("code-review", "lead-owned"),
+        ):
             shortcut = self.cli("set-phase", "--phase", phase, "--status", "passed")
             self.assertEqual(shortcut.returncode, 2, shortcut.stdout + shortcut.stderr)
-            self.assertIn("lead-owned", shortcut.stderr)
+            self.assertIn(refusal, shortcut.stderr)
+
+    def test_a_bare_context_forge_claim_publishes_as_pending_everywhere(self) -> None:
+        """Producer evidence is what a passed graph step means; a claim alone is not it."""
+        self.begin_slug("bare-context-claim")
+        self.owner_phase("repo-context-forge", "passed")
+
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual(state["repoContextForge"], "pending", "a bare claim published as passed")
+        self.assertEqual(state["gitnexus"], "pending")
+        self.assertEqual(state["nextAction"], "repo-context-forge")
+        self.assertIn("repo-context-forge=pending", self.cli("summary").stdout)
+        self.assertFalse(self.checkpoint("preflight-advice")["ready"])
+        self.assertIn("repoContextForgeEvidence", self.cli("complete").stderr)
+
+        # The same claim carrying real producer evidence reads passed on every surface.
+        record_context_forge(self.repo, self.tmp)
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual((state["repoContextForge"], state["gitnexus"]), ("passed", "passed"))
+        self.assertTrue(self.checkpoint("preflight-advice")["ready"])
+
+    def test_the_retired_gitnexus_transition_refuses_as_an_obsolete_step(self) -> None:
+        """No manual bookkeeping survives: the graph step is producer-recorded or absent."""
+        self.begin_slug("obsolete-gitnexus")
+        before = json.loads(self.cli("status").stdout)
+        self.assertEqual(before["gitnexus"], "pending")
+
+        for identity in ((), ("--slug", "obsolete-gitnexus", "--workflow-id", before["workflowId"])):
+            refused = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed", *identity)
+            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+            self.assertIn("no longer a workflow step", refused.stderr)
+        self.assertEqual(json.loads(self.cli("status").stdout), before)
+
+        # Derived, not written: the same field reads passed once the producer's own
+        # evidence exists, and nothing else can move it.
+        record_context_forge(self.repo, self.tmp)
+        self.assertEqual(json.loads(self.cli("status").stdout)["gitnexus"], "passed")
 
     def test_next_action_derives_from_the_complete_state(self) -> None:
         wid = self.begin_slug("derived-next")
         self.advance_to_preflight("derived-next", wid)
 
-        rerecorded = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed")
-        self.assertEqual(rerecorded.returncode, 0, rerecorded.stdout + rerecorded.stderr)
+        record_context_forge(self.repo, self.tmp)
         self.assertEqual(
-            json.loads(rerecorded.stdout)["nextAction"], "tdd",
+            json.loads(self.cli("status").stdout)["nextAction"], "tdd",
             "re-recording an earlier phase rewound nextAction instead of deriving it",
         )
 
@@ -1181,7 +1219,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_preflight_advice_requires_a_measured_outage_or_disposed_findings(self) -> None:
         wid = self.begin_slug("advisor-preflight-contract")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         unavailable = self.cli(
             "advisor-result", "--slug", "advisor-preflight-contract", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor",
@@ -1207,7 +1245,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_legacy_preflight_state_requires_an_explicit_findings_disposition(self) -> None:
         wid = self.begin_slug("legacy-advisor-state")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         self.rewrite_latest_state(
             lambda state: state.__setitem__("advisorPreflight", {"source": "codex-advisor", "status": "completed"})
@@ -1230,7 +1268,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_advisor_disposition_cannot_create_or_alter_raw_results(self) -> None:
         wid = self.begin_slug("producer-owned-advice")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         orphan = self.dispose("producer-owned-advice", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(orphan.returncode, 2, orphan.stdout + orphan.stderr)
@@ -1272,7 +1310,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_addressed_disposition_demands_a_structured_document(self) -> None:
         wid = self.begin_slug("disposition-document")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli((
             "advisor-result", "--slug", "disposition-document", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
@@ -1366,7 +1404,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_a_disposition_document_answers_only_for_its_own_stage_and_instance(self) -> None:
         wid = self.begin_slug("disposition-lifetime")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli((
             "advisor-result", "--slug", "disposition-lifetime", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
@@ -1407,7 +1445,7 @@ class PassLifecycleTests(unittest.TestCase):
         # A same-slug begin starts a new instance without clearing artifacts, so a
         # findings-none pass must stop publishing the dead instance's dispositions.
         reused = self.begin_slug("disposition-lifetime")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "disposition-lifetime", "--workflow-id", reused,
              "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
@@ -1426,7 +1464,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         first = json.loads(begun.stdout)
         self.assertTrue(first.get("workflowId"), "begin did not assign a workflowId")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         bound = self.cli(
             "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
@@ -1438,7 +1476,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
         second = json.loads(rebegun.stdout)
         self.assertNotEqual(second["workflowId"], first["workflowId"])
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         delayed = self.cli(
             "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
@@ -1556,7 +1594,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("repo-context-forge", "passed")
 
         for label, transition in (
-            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+            ("set-phase", ("set-phase", "--phase", "implementation", "--status", "passed",
                            "--slug", "lead-identity", "--workflow-id", stale_wid)),
             ("complete", ("complete", "--slug", "lead-identity", "--workflow-id", stale_wid)),
         ):
@@ -1568,7 +1606,7 @@ class PassLifecycleTests(unittest.TestCase):
         # replacement's slug with the stale id: that is the only input reaching
         # the instance comparison.
         for label, transition in (
-            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+            ("set-phase", ("set-phase", "--phase", "implementation", "--status", "passed",
                            "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
             ("complete", ("complete", "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
         ):
@@ -1578,14 +1616,20 @@ class PassLifecycleTests(unittest.TestCase):
 
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["workflowId"], replacement["workflowId"])
-        self.assertEqual(state["gitnexus"], "pending",
+        self.assertEqual(state["implementation"], "pending",
                          "a stale lead command advanced the replacement workflow")
 
-        matching = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed",
-                            "--slug", "lead-identity-replacement",
-                            "--workflow-id", replacement["workflowId"])
-        self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
-        self.run_cli(("set-phase", "--phase", "gitnexus", "--status", "passed"))
+        # A matching identity, and an omitted one, both reach the transition itself:
+        # they fail on this pass's readiness rather than on identity.
+        for label, identity in (
+            ("matching", ("--slug", "lead-identity-replacement",
+                          "--workflow-id", str(replacement["workflowId"]))),
+            ("omitted", ()),
+        ):
+            accepted = self.cli("complete", *identity)
+            self.assertEqual(accepted.returncode, 2, f"{label}: {accepted.stdout}{accepted.stderr}")
+            self.assertNotIn("does not match", accepted.stderr, label)
+            self.assertIn("workflow incomplete", accepted.stderr, label)
 
     def test_production_code_records_once_and_survives_the_rest_of_the_pass(self) -> None:
         from hooks.lib.workflow_state import invalidate_after_edit, ready_for_edit
@@ -1713,8 +1757,13 @@ class PassLifecycleTests(unittest.TestCase):
     def test_rearm_adapter_restores_only_recorded_pass_state(self) -> None:
         begun = self.cli("begin", "--slug", "compact recovery")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        self.owner_phase("repo-context-forge", "passed")
 
+        # A bare claim with no producer evidence must not re-arm a compacted session
+        # with graph readiness it never earned.
+        self.owner_phase("repo-context-forge", "passed")
+        self.assertIn("repo-context-forge=pending", self.cli("summary").stdout)
+
+        record_context_forge(self.repo, self.tmp)
         rearmed = subprocess.run(
             [str(REARM)], cwd=ROOT, env=self.env, text=True,
             input=json.dumps({"cwd": str(self.repo), "source": "compact"}),

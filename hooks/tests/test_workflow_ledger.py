@@ -20,8 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.lib.workflow_state import set_phase
-from hooks.tests.support import build_document
+from hooks.tests.support import build_document, record_context_forge
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 
@@ -86,11 +85,7 @@ class WorkflowLedgerTests(unittest.TestCase):
 
     def prepare_preflight_ready(self, slug: str = "atomic") -> tuple[dict[str, object], Path]:
         state = self.begin(slug)
-        set_phase(self.identity, "repo-context-forge", "passed")
-        gitnexus = self.cli(
-            "set-phase", "--repo", str(self.repo), "--phase", "gitnexus", "--status", "passed"
-        )
-        self.assertEqual(gitnexus.returncode, 0, gitnexus.stderr)
+        record_context_forge(self.repo, self.tmp)
         workflow_id = str(state["workflowId"])
         for command in (
             ("advisor-result", "--slug", slug, "--workflow-id", workflow_id, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
@@ -409,6 +404,12 @@ class WorkflowLedgerTests(unittest.TestCase):
         expected["preflightEvidence"] = state["preflightEvidence"]
         expected["preflightLatestEvidence"] = state["preflightLatestEvidence"]
         expected["tddEvidence"] = state["tddEvidence"]
+        # The legacy snapshot stores both steps passed, but neither is a readiness
+        # source without producer evidence this bare pass never recorded: the retired
+        # gitnexus field is derived from Repo Context Forge's evidence, and the Repo
+        # Context Forge claim itself publishes as pending until the bootstrap reruns.
+        self.assertEqual((legacy["gitnexus"], legacy["repoContextForge"]), ("passed", "passed"))
+        expected["gitnexus"] = expected["repoContextForge"] = "pending"
         self.assertEqual(state, expected)
         self.assertEqual((self.slot / "workflow.json").read_bytes(), legacy_bytes)
         self.assertEqual(evidence_path.read_bytes(), evidence_bytes)

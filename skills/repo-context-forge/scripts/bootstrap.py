@@ -6,17 +6,19 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     NO_INSTANCE_ID,
     WorkflowError,
+    commit_evidence_phase,
     instance_id,
-    producer_set_phase,
     read_workflow,
     safe_slug,
 )
@@ -55,6 +57,18 @@ def _remove_option(argv: list[str], name: str) -> tuple[list[str], str | None]:
     return output, value
 
 
+def _run_producer(args: list[str]) -> int:
+    result = subprocess.run(
+        [sys.executable, str(BOOTSTRAP), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    sys.stdout.buffer.write(result.stdout)
+    sys.stderr.buffer.write(result.stderr)
+    return result.returncode
+
+
 def main(argv: list[str]) -> int:
     if not BOOTSTRAP.exists():
         sys.stderr.write(
@@ -68,35 +82,47 @@ def main(argv: list[str]) -> int:
         return 2
     if "--enforce-intake" not in args:
         args.append("--enforce-intake")
-    captured_workflow_id = None
-    if workflow_slug:
-        try:
-            identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
-            state = read_workflow(identity)
-            if state is None or state.get("slug") != safe_slug(workflow_slug):
-                raise WorkflowError("Repo Context Forge slug does not match the active workflow")
-            captured_workflow_id = instance_id(state)
-            if captured_workflow_id is None:
-                raise WorkflowError(NO_INSTANCE_ID)
-        except (WorkflowError, RepoIdentityError, ValueError) as exc:
-            sys.stderr.write(f"<blocker>cannot bind Repo Context Forge to the active workflow: {exc}</blocker>\n")
-            return 2
-    result = subprocess.run(
-        [sys.executable, str(BOOTSTRAP), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    sys.stdout.buffer.write(result.stdout)
-    sys.stderr.buffer.write(result.stderr)
-    if result.returncode != 0:
-        return result.returncode
+    if not workflow_slug:
+        return _run_producer(args)
     try:
-        if workflow_slug:
-            producer_set_phase(identity, safe_slug(workflow_slug), captured_workflow_id, "repo-context-forge", "passed")
+        slug = safe_slug(workflow_slug)
+        identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
+        state = read_workflow(identity)
+        if state is None or state.get("slug") != slug:
+            raise WorkflowError("Repo Context Forge slug does not match the active workflow")
+        captured_workflow_id = instance_id(state)
+        if captured_workflow_id is None:
+            raise WorkflowError(NO_INSTANCE_ID)
     except (WorkflowError, RepoIdentityError, ValueError) as exc:
-        sys.stderr.write(f"<blocker>cannot advance workflow after Repo Context Forge: {exc}</blocker>\n")
+        sys.stderr.write(f"<blocker>cannot bind Repo Context Forge to the active workflow: {exc}</blocker>\n")
         return 2
+    # The machine packet is asked of the same packet-generation pass that renders the
+    # prompt, into a private directory this process owns: one graph execution, and
+    # nothing written to the user's checkout or the state root.
+    with tempfile.TemporaryDirectory(prefix="repo-context-forge-packet-") as scratch:
+        packet = Path(scratch) / "packet.json"
+        code = _run_producer([*args, "--packet-json-out", str(packet)])
+        if code != 0:
+            return code
+        try:
+            commit_evidence_phase(
+                identity,
+                slug,
+                captured_workflow_id,
+                "repo-context-forge",
+                graph_evidence_document(
+                    str(packet),
+                    slug=slug,
+                    workflow_id=captured_workflow_id,
+                    source_root=str(identity.root),
+                ),
+            )
+        except (WorkflowError, RepoIdentityError, ValueError) as exc:
+            sys.stderr.write(
+                f"<blocker>cannot record Repo Context Forge graph evidence: {exc}; "
+                "rerun the bootstrap</blocker>\n"
+            )
+            return 2
     return 0
 
 

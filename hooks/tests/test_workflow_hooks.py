@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.tests.support import build_document  # noqa: E402
+from hooks.tests.support import build_document, record_context_forge  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
@@ -196,18 +196,18 @@ class WorkflowHookTests(unittest.TestCase):
             begun = self.state("begin", "--slug", slug)
             self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
             wid = json.loads(begun.stdout)["workflowId"]
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
         transitions = (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
             ("set-phase", "--phase", "implementation", "--status", "passed"),
         )
-        for index, transition in enumerate(transitions):
-            if index == 3:
+        for transition in transitions:
+            if transition[0] == "set-phase":
                 # These tests exercise the hooks; the evidence phases advance
                 # through the real producers, whose contracts are proven in
-                # test_pass_lifecycle.
+                # test_pass_lifecycle. Keyed on the step rather than its position,
+                # so the sequence can change without silently reordering this.
                 self.record_preflight_evidence(slug, wid)
                 self.owner_phase("tdd", "not-required")
                 self.record_gate_evidence(slug, wid)
@@ -247,9 +247,8 @@ class WorkflowHookTests(unittest.TestCase):
         begun = self.state("begin", "--slug", "hook-sequence")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
         transitions = (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         )
@@ -269,9 +268,8 @@ class WorkflowHookTests(unittest.TestCase):
         begun = self.state("begin", "--slug", "tdd-ordering")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
         for transition in (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "tdd-ordering", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         ):
@@ -313,9 +311,8 @@ class WorkflowHookTests(unittest.TestCase):
         begun = self.state("begin", "--slug", "production-code-gate")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
         for transition in (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         ):
@@ -473,9 +470,8 @@ class WorkflowHookTests(unittest.TestCase):
         begun = self.state("begin", "--slug", "governance-sequence")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
         for transition in (
-            ("set-phase", "--phase", "gitnexus", "--status", "passed"),
             ("advisor-result", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "governance-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
         ):
@@ -521,7 +517,7 @@ class WorkflowHookTests(unittest.TestCase):
     def test_stop_contract_follows_the_real_captured_payload(self) -> None:
         begun = self.state("begin", "--slug", "stop-real")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
 
         for label, kwargs in (
             ("background task", {"shape": "natural-with-background-task"}),
@@ -548,7 +544,11 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(stalled.returncode, 0, stalled.stdout + stalled.stderr)
         self.assertEqual(stalled.stdout, "", "no-progress re-stop must be silent, not re-prompt")
 
-        progressed = self.state("set-phase", "--phase", "gitnexus", "--status", "passed")
+        wid = json.loads(self.state("status").stdout)["workflowId"]
+        progressed = self.state(
+            "advisor-result", "--slug", "stop-real", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+        )
         self.assertEqual(progressed.returncode, 0, progressed.stdout + progressed.stderr)
         relatched = self.stop(shape="active")
         self.assertEqual(
@@ -602,7 +602,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertNotIn("decision", payload)
         self.assertIn("slug=stop-latch", payload["hookSpecificOutput"]["additionalContext"])
 
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
         relatched = self.stop()
         self.assertEqual(json.loads(relatched.stdout).get("decision"), "block", "advancing update did not clear the pause")
 
@@ -898,7 +898,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(events[-1]["how"], "paused")
         self.assertTrue(all(e["slug"] == "latch-log" and e["at"] for e in events), events)
 
-        self.owner_phase("repo-context-forge", "passed")
+        record_context_forge(self.repo, self.tmp)
         relatched = self.stop()
         self.assertEqual(json.loads(relatched.stdout).get("decision"), "block",
                          "a resolved fingerprint must not suppress the next fresh latch")
@@ -998,8 +998,8 @@ class WorkflowHookTests(unittest.TestCase):
         context = payload["additionalContext"]
         self.assertIn("app.py (tracked/modified)", context)
         self.assertIn("extra.py (untracked)", context)
-        self.assertIn("callers=unknown", context)
-        self.assertIn("callees=unknown", context)
+        self.assertIn("blast radius after this edit: unknown", context)
+        self.assertIn("reanalysed and change-detected", context)
 
         duplicate = self.stop()
         self.assertEqual(duplicate.returncode, 0, duplicate.stdout + duplicate.stderr)

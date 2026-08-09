@@ -49,20 +49,17 @@ regressions, flaky failures, or performance problems before any fix.
 
 ### 3. Packet-scoped GitNexus
 
-Run every packet-required context/impact check, including callers and callees.
-Broader graph results may widen verification but cannot silently shrink the
-packet. Then record the completed step:
-
-```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  set-phase --repo "$PWD" --phase gitnexus --status passed
-```
+Repo Context Forge executes the packet's required context/impact checks and its
+adapter records that resolved graph result as `repo-context-forge` evidence, in
+the same transaction as the step. There is no separate transition to record, and
+`set-phase --phase gitnexus` refuses as an obsolete step. Read the packet's graph
+result; run further MCP checks when they widen the surface the packet fixed.
 
 ### 4. Advisor scope check
 
 Invoke `codex-advisor` with phase `preflight-advice` through its sole wrapper,
-preferably in a dedicated chat pane. Supply the contract, packet, GitNexus
-summary, intended proof, and no-change surfaces. Invoke `codebase-design` first
+preferably in a dedicated chat pane. It attaches the recorded graph evidence
+itself. Supply the contract, packet, intended proof, and no-change surfaces. Invoke `codebase-design` first
 when adding/changing a Module, public Interface, or Seam.
 
 The wrapper records the raw completed result with findings pending. After
