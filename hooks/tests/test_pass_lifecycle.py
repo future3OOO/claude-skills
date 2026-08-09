@@ -795,12 +795,16 @@ class PassLifecycleTests(unittest.TestCase):
             )
         finally:
             mutator.terminate()
-            mutator.communicate(timeout=30)
+            _, mutator_stderr = mutator.communicate(timeout=30)
         confirmed = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
-        # The refusal is meaningless unless the tree really changed mid-run.
+        # The refusal is meaningless unless the tree really changed mid-run. A child
+        # that died instead of overlapping reports the same zero, so its own output
+        # travels with the failure rather than being thrown away; it is not asserted
+        # empty, because the child is terminated on every run and says so.
         self.assertGreater(
             confirmed, 0,
-            "the mutation never overlapped the gate child, so the drift window was never exercised",
+            "the mutation never overlapped the gate child, so the drift window was never "
+            f"exercised; mutator stderr: {mutator_stderr!r}",
         )
 
         state = json.loads(self.cli("status").stdout)
