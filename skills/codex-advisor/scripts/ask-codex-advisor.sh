@@ -90,31 +90,45 @@ owned_excerpt() {
 # The graph result is bounded by whole checks and says what it left out. A byte
 # prefix of the same document ends mid-entry and silently drops later checks,
 # which reads to the delegate as complete graph evidence that it is not.
+GRAPH_EXCERPT_LIMIT=9000
 graph_excerpt_of() {
   owned_record "$1" "$2" | python3 -c 'import json,sys
 raw = sys.stdin.read()
 if not raw.strip():
     raise SystemExit
+limit = int(sys.argv[1])
 graph = json.loads(raw).get("graph") or {}
 entries, shown = graph.get("entries") or [], []
+
+
+def envelope(checks):
+    return json.dumps({
+        "status": graph.get("status"),
+        "authority": graph.get("authority"),
+        "producer_revision": graph.get("producer_revision"),
+        "graph_call_count": graph.get("graph_call_count"),
+        "checks_total": len(entries),
+        "checks_shown": len(checks),
+        "checks_omitted_for_size": len(entries) - len(checks),
+        "checks": checks,
+    }, indent=1)
+
+
+# Each candidate is measured against the rendered envelope before it is kept, so
+# the excerpt cannot exceed the bound it reports by a whole check.
 for entry in entries:
-    shown.append({
+    candidate = [*shown, {
         **{key: entry.get(key) for key in ("kind", "file", "target", "direction", "resolved_identity")},
         "callers": [caller.get("identity") for caller in entry.get("callers") or []],
         "impacted_files": entry.get("impacted_files") or [],
-    })
-    if len(json.dumps(shown)) > 9000:
+    }]
+    if len(envelope(candidate)) > limit:
         break
-print(json.dumps({
-    "status": graph.get("status"),
-    "authority": graph.get("authority"),
-    "producer_revision": graph.get("producer_revision"),
-    "graph_call_count": graph.get("graph_call_count"),
-    "checks_total": len(entries),
-    "checks_shown": len(shown),
-    "checks_omitted_for_size": len(entries) - len(shown),
-    "checks": shown,
-}, indent=1))'
+    shown = candidate
+rendered = envelope(shown)
+print(f"codex_advisor_graph_evidence checks_total={len(entries)} checks_shown={len(shown)} "
+      f"checks_omitted={len(entries) - len(shown)} bytes={len(rendered)} limit={limit}", file=sys.stderr)
+print(rendered)' "$GRAPH_EXCERPT_LIMIT"
 }
 
 active_wid=""; active_tdd=""; active_review=""; active_tdd_evidence=""; active_review_evidence=""

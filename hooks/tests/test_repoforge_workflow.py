@@ -294,11 +294,18 @@ class GraphEvidenceContractTests(unittest.TestCase):
         )
 
     def test_a_packet_for_another_checkout_is_refused(self) -> None:
+        foreign = self.tmp / "elsewhere"
         packet = graph_packet(str(self.root))
-        packet["target_state"] = {"source_repo": str(self.tmp / "elsewhere")}
+        packet["target_state"] = {"source_repo": str(foreign)}
         with self.assertRaises(ValueError) as refusal:
             self.document_for(packet)
-        self.assertIn("not " + str(self.root), str(refusal.exception))
+        # Both halves, so the refusal has to name the checkout it rejected as well
+        # as the one it wanted; matching the expected root alone would survive a
+        # message that never says what it actually read.
+        self.assertEqual(
+            str(refusal.exception),
+            f"the packet was produced for {str(foreign)!r}, not {self.root}",
+        )
 
     def test_a_resolved_packet_for_this_checkout_is_accepted(self) -> None:
         document = self.document_for(graph_packet(str(self.root)))

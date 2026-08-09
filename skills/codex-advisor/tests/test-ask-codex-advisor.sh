@@ -335,6 +335,52 @@ out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROO
 check_status "unowned graph evidence refused before the consult" 2 "$status"
 check "unowned refusal instructs a bootstrap rerun" "rerun the Repo Context Forge bootstrap" "$out"
 
+# A graph result far larger than the bound must still be reported within it, and
+# must say how many checks it dropped: an excerpt that quietly exceeds its own
+# limit reads to the delegate as complete evidence while costing unbounded input.
+graph_py 'import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.lib.workflow_documents import graph_evidence_document
+from hooks.lib import workflow_state as w
+identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
+w.begin(identity, slug)
+state, root = w.read_workflow(identity), str(resolve_repo_identity(sys.argv[2]).root)
+entry = lambda n: {"kind": "symbol_context", "file": f"module_{n}.py", "target": f"symbol_{n}",
+                   "direction": "", "status": "resolved",
+                   "resolved_identity": f"Function:module_{n}.py:symbol_{n}",
+                   "callers": [{"identity": f"Function:caller_{n}_{i}.py:run_{i}", "name": f"run_{i}",
+                                "file": f"caller_{n}_{i}.py"} for i in range(40)]}
+packet = {"target_state": {"source_repo": root},
+          "gitnexus": {"analysis": {"status": "resolved", "entries": [entry(n) for n in range(40)],
+                                    "unresolved_checks": [], "elapsed_ms": 1, "process_count": 1,
+                                    "graph_call_count": 40, "output_bytes": 1,
+                                    "authority": {"source_repository": root},
+                                    "producer_revision": {"commit": "0" * 40, "dirty": False}}}}
+packet_path = Path(sys.argv[2]).parent / "oversized-packet.json"
+packet_path.write_text(json.dumps(packet), encoding="utf-8")
+w.commit_evidence_phase(identity, slug, w.instance_id(state), "repo-context-forge",
+                        graph_evidence_document(str(packet_path), slug=slug,
+                                                workflow_id=str(w.instance_id(state)), source_root=root))' oversized-graph
+out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
+  "$WRAPPER" --slug oversized-graph --phase preflight-advice --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+check_status "an oversized graph result still reaches the consult gate" 2 "$status"
+measured=$(printf '%s' "$out" | sed -n 's/.*codex_advisor_graph_evidence //p')
+bytes=$(printf '%s' "$measured" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
+omitted=$(printf '%s' "$measured" | sed -n 's/.*checks_omitted=\([0-9]*\).*/\1/p')
+check "the wrapper reports what the excerpt actually cost" "checks_total=40" "$measured"
+if [[ -n "$bytes" && "$bytes" -le 9000 ]]; then
+  printf 'PASS  the emitted excerpt honours its own bound (%s bytes)\n' "$bytes"; pass=$((pass + 1))
+else
+  printf 'FAIL  the emitted excerpt honours its own bound\n      expected <=9000 bytes, got: %s\n' "${bytes:-<unreported>}"; fail=$((fail + 1))
+fi
+if [[ -n "$omitted" && "$omitted" -gt 0 ]]; then
+  printf 'PASS  the trimmed excerpt names its omitted checks (%s)\n' "$omitted"; pass=$((pass + 1))
+else
+  printf 'FAIL  the trimmed excerpt names its omitted checks\n      expected >0, got: %s\n' "${omitted:-<unreported>}"; fail=$((fail + 1))
+fi
+
 # Ungoverned consults never had graph evidence to read and must keep working.
 out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
 check_status "ungoverned consult keeps its optional-input behavior" 2 "$status"
