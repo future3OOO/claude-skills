@@ -121,7 +121,9 @@ def canonical_lines(text: str, language: str) -> dict[int, str] | None:
     for token in tokens:
         if token.type == tokenize.COMMENT and not token.line[: token.start[1]].strip():
             dropped.add(token.start[0])
-        elif token.type == tokenize.STRING and token.end[0] > token.start[0]:
+        # Only string content spans physical lines, and 3.12 tokenizes an
+        # f-string as FSTRING_* rather than STRING; the span covers both.
+        elif token.end[0] > token.start[0]:
             protected.update(range(token.start[0], token.end[0] + 1))
     return {
         number: line

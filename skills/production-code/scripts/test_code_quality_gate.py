@@ -228,6 +228,56 @@ def test_gate_creates_no_repo_artifacts(repo: Path) -> None:
 
 
 @with_repo
+def test_unparseable_python_is_incomplete_not_duplicate(repo: Path) -> None:
+    # This file tokenizes but does not parse, so no parser can say where a
+    # definition begins or ends. Guessing those edges reports two differently
+    # decorated methods as one implementation; the honest answer is that the
+    # file was not read.
+    body = "\n".join((
+        "        ceiling = int(config.get('max_attempts', 3))",
+        "        remaining = max(0, ceiling - attempt)",
+        "        if not remaining:",
+        "            return 0.0",
+        "        scaled = round(0.5 * (2 ** attempt), 3)",
+        "        return scaled",
+    ))
+    write(
+        repo / "src" / "broken.py",
+        "x = = 2\n"
+        f"class L:\n    @property\n    def budget(self, config, attempt):\n{body}\n"
+        f"class R:\n    @staticmethod\n    def budget(self, config, attempt):\n{body}\n",
+    )
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    rule = check_named(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
+    assert rule["passed"] is None and rule["status"] == "incomplete", rule
+    assert any("src/broken.py" in gap and "parse" in gap for gap in rule["gaps"]), rule
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_blank_line_inside_an_f_string_is_content_not_spacing(repo: Path) -> None:
+    # A blank line inside a multi-line f-string is part of the literal. Python
+    # 3.12 tokenizes f-strings as FSTRING_* rather than STRING, so protection
+    # keyed on token type alone would drop it and merge two different strings.
+    def helper(gap: str) -> str:
+        return (
+            "def render_banner(name, count):\n"
+            '    text = f"""welcome {name}\n'
+            f"{gap}"
+            '    you have {count} items"""\n'
+            "    trimmed = text.strip()\n"
+            "    upper = trimmed.upper()\n"
+            "    return upper\n"
+        )
+    write(repo / "src" / "left.py", helper("\n"))
+    write(repo / "src" / "right.py", helper("\n\n"))
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
 def test_untokenizable_language_reports_incomplete_not_clean(repo: Path) -> None:
     # A duplicate the gate cannot read exactly is not an absence of duplicates.
     # No tokenizer proves what a comment or a string interior is in JavaScript,
@@ -1066,13 +1116,16 @@ SPLIT_LINES = (
 def test_separate_hunks_do_not_form_one_duplicate(repo: Path) -> None:
     # The six lines exist intact in one file and split across two distant
     # hunks in another. Only joining those hunks makes them look duplicated.
-    filler = "\n".join(f"KEEP_{i} = {i}" for i in range(8))
-    write(repo / "src" / "split.py", f"X = 1\n{filler}\nY = 2\n")
+    # Both files stay parseable, or the rules would report unread scope instead.
+    filler = "\n".join(f"    keep_{i} = {i}" for i in range(8))
+    write(repo / "src" / "split.py", f"def spread(candidate_value, fallback_value):\n    x = 1\n{filler}\n    return x\n")
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "split baseline")
     write(
         repo / "src" / "split.py",
-        "X = 1\n" + "\n".join(SPLIT_LINES[:3]) + f"\n{filler}\nY = 2\n" + "\n".join(SPLIT_LINES[3:]) + "\n",
+        "def spread(candidate_value, fallback_value):\n    x = 1\n"
+        + "\n".join(SPLIT_LINES[:3]) + f"\n{filler}\n"
+        + "\n".join(SPLIT_LINES[3:]) + "\n    return x\n",
     )
     write(repo / "src" / "intact.py", "def build_identifier(candidate_value, fallback_value):\n" + "\n".join(SPLIT_LINES) + "\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
@@ -1388,12 +1441,19 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
 
 
 def test_captured_corpus_duplicate_calibration_is_reproducible() -> None:
-    # The checked-in calibration is evidence only if it is re-derived. Every
-    # number in references/duplicate-calibration.md is asserted here against
-    # the real CLI over the pinned corpus, so drift fails rather than rots.
+    # The checked-in calibration is evidence only if it is re-derived. The
+    # fires, their regions, the unreadable scopes and the warning projection
+    # come from replaying the pinned corpus through the real CLI; the pinned
+    # identities and the threshold are bound by assertion below. The bound-two
+    # adjudication is a recorded measurement and is deliberately not replayed.
     published = (SCRIPT_DIR.parent / "references" / "duplicate-calibration.md").read_text(encoding="utf-8")
     for pinned in (CORPUS_BASE, CORPUS_CANDIDATE, CORPUS_DIFF_SHA256, "unexaminedCount = 0"):
         assert pinned in published, pinned
+    # The published threshold and the shipped constant cannot drift apart.
+    shipped = (SCRIPT_DIR / "_quality_gate" / "redundancy.py").read_text(encoding="utf-8")
+    threshold = next(line for line in shipped.splitlines() if line.startswith("MIN_REGION_LINES"))
+    assert threshold.replace(" ", "") == "MIN_REGION_LINES=6", threshold
+    assert "`MIN_REGION_LINES = 6`" in published, "the document must name the shipped threshold"
 
     repo = source_repo()
     replay = Path(tempfile.mkdtemp(prefix="round-six-calibration-")) / "candidate"

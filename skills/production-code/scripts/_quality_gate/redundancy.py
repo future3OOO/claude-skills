@@ -29,11 +29,11 @@ DUPLICATE_PASS_CONDITION = pass_condition(
 def find_exact_duplicates(snapshot: EvaluationSnapshot) -> tuple[list[Finding], list[Finding]]:
     """The exact-duplication rules, as (one state per rule, one per duplicate).
 
-    Exactness compares canonical implementation bytes, so identifiers,
-    literals, operators, and control flow all discriminate. Regions never
-    cross a hunk or symbol boundary, and a scope no tokenizer could read is
-    reported incomplete rather than passed. Each duplicate is its own finding;
-    the per-rule state findings carry the projection they were evaluated under.
+    Exactness compares canonical implementation bytes, so identifiers, literals,
+    operators and control flow all discriminate. Regions never cross a hunk or
+    symbol boundary, a scope the gate could not read is reported incomplete
+    rather than passed, and each duplicate is its own finding while the per-rule
+    state findings carry the projection they were evaluated under.
     """
     scans, gaps = _scan(snapshot)
     streams = snapshot.gap_streams()
@@ -150,59 +150,58 @@ def _scan(snapshot: EvaluationSnapshot) -> tuple[list[dict[str, object]], list[s
         language = entry.classification.language
         text = entry.current_text or ""
         canonical = canonical_lines(text, language)
-        if canonical is None:
-            # Guessing what is a comment or a string interior in a language
-            # with no real tokenizer would let two different regions
-            # canonicalize alike, so the rule says it did not read this file.
-            gaps.append(f"{entry.path}: exact duplicate analysis has no {language} tokenizer")
+        extents = _extents(text) if canonical is not None else None
+        reason = "has no tokenizer for" if canonical is None else "could not parse" if extents is None else ""
+        if reason:
+            # Guessing a comment, a string interior, or a symbol edge would let
+            # two different regions canonicalize alike, so the rule says instead
+            # that it did not read this file.
+            gaps.append(f"{entry.path}: exact duplicate analysis {reason} this {language}")
             continue
         symbols = extract_symbols(entry.path, text, "added", language)
-        # Every symbol edge, opening and closing: a block running from a
-        # function's tail into the module body after it, or out of a nested
-        # helper into its enclosing one, would span a symbol boundary the
-        # exact contract forbids.
+        # Every symbol edge, opening and closing: a block running out of one
+        # symbol into the next would span a boundary the contract forbids.
         edges = {symbol.line for symbol in symbols} | {
-            symbol.line + len(symbol.content.splitlines()) for symbol in symbols
-        }
+            symbol.line + len(symbol.content.splitlines()) for symbol in symbols}
         role = entry.classification.role
         for hunk in entry.hunks:
             added = sorted({number for number, _ in hunk.added})
             scans.append({
                 "path": entry.path, "role": role, "language": language, "added": added,
                 "canonical": canonical, "starts": edges,
-                **_symbol_regions(entry.path, role, language, symbols, set(added), canonical, _extents(text)),
+                **_symbol_regions(entry.path, role, language, symbols, set(added), canonical, extents),
             })
     return scans, gaps
 
 
-def _extents(text: str) -> dict[int, tuple[int, int]]:
-    """Each definition's real first line and the first line of its suite.
+def _extents(text: str) -> dict[int, tuple[int, int]] | None:
+    """Each definition's real first line and the first line of its suite, or
+    `None` when the file does not parse.
 
-    A decorator belongs to the implementation it decorates, and a signature can
-    span lines, so the body neither starts at the `def` nor one line under it —
-    and a suite opening with a decorated definition starts at that decorator.
-    Only the parser knows any of those boundaries.
+    A decorator belongs to the implementation it decorates, a signature can
+    span lines, and a suite opening with a decorated definition starts at that
+    decorator. Only the parser knows any of those boundaries.
     """
     try:
         tree = ast.parse(text)
+    # None, not {}: a definition-free file is read and empty, an unparseable
+    # one has no trustworthy boundary at all.
     except (SyntaxError, UnicodeError, ValueError):
-        return {}
+        return None
     defined = [node for node in ast.walk(tree)
                if isinstance(node, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef)) and node.body]
     starts = {node.lineno: min([item.lineno for item in node.decorator_list] + [node.lineno]) for node in defined}
-    return {
-        node.lineno: (starts[node.lineno], starts.get(node.body[0].lineno, node.body[0].lineno))
-        for node in defined
-    }
+    return {node.lineno: (starts[node.lineno], starts.get(node.body[0].lineno, node.body[0].lineno))
+            for node in defined}
 
 
 def _symbol_regions(path: str, role: str, language: str, symbols: list, added: set[int], canonical: dict[int, str], extents: dict[int, tuple[int, int]]) -> dict[str, list[dict[str, object]]]:
     """Complete symbol bodies this one hunk added in full, and each body alone.
 
-    A hunk that edited part of an existing helper did not add it, and
-    completing a symbol by joining hunks is forbidden, so partial extents are
-    simply not candidates. The body-only region is a baseline candidate only:
-    the same implementation under a different name is still a copy of it.
+    A hunk that edited part of an existing helper did not add it, and joining
+    hunks to complete a symbol is forbidden, so partial extents are not
+    candidates. The body-only region is a baseline candidate only: the same
+    implementation under a different name is still a copy of it.
     """
     regions: list[dict[str, object]] = []
     bodies: list[dict[str, object]] = []
