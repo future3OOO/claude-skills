@@ -913,6 +913,90 @@ def test_a_renamed_copy_of_a_retained_owner_is_still_a_copy(repo: Path) -> None:
 
 
 @with_repo
+def test_a_reformatted_signature_does_not_hide_a_copied_body(repo: Path) -> None:
+    # The copy renames the helper AND splits its signature across lines. Only
+    # the implementation under the signature is the owner's, so the body-only
+    # candidate must start at the suite, not one line below the `def`.
+    write(repo / "tests" / "owner_helpers.py", f"def resolve_retry_budget(config, attempt):\n{RETRY_BLOCK}\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(
+        repo / "tests" / "copy_helpers.py",
+        f"def compute_retry_budget(\n    config,\n    attempt,\n):\n{RETRY_BLOCK}\n",
+    )
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(findings) == 1, json.dumps(duplicate_findings(payload), indent=2)
+    # The copy's region points at the first line of its suite, not into the
+    # signature that spans lines 1 to 4.
+    assert [
+        (region["path"], region["displayLine"]) for region in findings[0]["region"]["regions"]
+    ] == [("tests/copy_helpers.py", 5), ("tests/owner_helpers.py", 2)], findings[0]["region"]["regions"]
+    assert code == 0, (code, payload["errors"])
+
+
+def _nested_decorator_helper(decorator: str) -> str:
+    return (
+        "def build_pipeline(config, attempt):\n"
+        f"    @{decorator}\n"
+        "    def inner(value):\n"
+        "        return value.strip().lower()\n"
+        "    resolved = inner(config['name'])\n"
+        "    scaled = round(0.5 * (2 ** attempt), 3)\n"
+        "    combined = resolved + str(scaled)\n"
+        "    return combined\n"
+    )
+
+
+@with_repo
+def test_a_nested_decorator_belongs_to_the_body_that_contains_it(repo: Path) -> None:
+    # The suite of an outer definition begins at its first statement INCLUDING
+    # that statement's own decorators. Two bodies differing only in a nested
+    # decorator are not the same implementation.
+    write(repo / "tests" / "owner_helpers.py", _nested_decorator_helper("staticmethod"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(
+        repo / "tests" / "copy_helpers.py",
+        _nested_decorator_helper("functools.cache").replace("build_pipeline", "assemble_pipeline"),
+    )
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+
+    # The same nested decorator is the same implementation, and is reported.
+    write(
+        repo / "tests" / "copy_helpers.py",
+        _nested_decorator_helper("staticmethod").replace("build_pipeline", "assemble_pipeline"),
+    )
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(findings) == 1, json.dumps(duplicate_findings(payload), indent=2)
+    assert [region["displayLine"] for region in findings[0]["region"]["regions"]] == [2, 2], findings[0]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_test_baseline_files_cannot_spend_the_production_read_budget(repo: Path) -> None:
+    # Owner capture covers three roles, so one shared read budget would let
+    # whichever role sorts first exhaust it. Here 4,000 eligible test files sort
+    # before src/, and the production owner must still be read and scored.
+    owner = f"def normalize_user_identifier(config, attempt):\n{RETRY_BLOCK}\n"
+    bulk = repo / "apitests"
+    bulk.mkdir(parents=True, exist_ok=True)
+    for index in range(4000):
+        (bulk / f"test_{index:05d}.py").write_text(f"VALUE_{index} = {index}\n", encoding="utf-8")
+    write(repo / "src" / "owner.py", owner)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "baseline")
+    write(repo / "src" / "copy.py", owner)
+    write(repo / "apitests" / "test_new.py", "def helper():\n    return 1\n")
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    matches = reuse_matches(payload)
+    assert len(matches) == 1, json.dumps(reuse_finding(payload), indent=2)
+    assert matches[0]["existingFile"] == "src/owner.py", matches
+
+
+@with_repo
 def test_a_test_owner_gap_does_not_dirty_the_production_reuse_advisory(repo: Path) -> None:
     # Owner capture now covers test roles for the exact rules. The reuse
     # advisory still scores production owners only, so a test owner it never

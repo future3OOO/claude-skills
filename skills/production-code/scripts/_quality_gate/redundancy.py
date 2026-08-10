@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
 
 from .findings import (
     Finding, RULE_DUPLICATE_BASELINE, RULE_DUPLICATE_BLOCK, RULE_DUPLICATE_SYMBOL,
@@ -36,19 +37,17 @@ def find_exact_duplicates(snapshot: EvaluationSnapshot) -> tuple[list[Finding], 
     """
     scans, gaps = _scan(snapshot)
     streams = snapshot.gap_streams()
-    # Unattributed hunks, unmeasured source paths, and capture failures each
-    # hide regions these hunk-reading rules would have matched.
+    # Unattributed hunks, unmeasured paths, and capture failures each hide
+    # regions these hunk-reading rules would have matched.
     gaps += list(streams["attribution"] + streams["measurement"] + streams["capture"])
     symbols = [region for scan in scans for region in scan["symbols"]]
-    counts: dict[str, int] = {}
-    for region in symbols:
-        counts[str(region["fingerprint"])] = counts.get(str(region["fingerprint"]), 0) + 1
+    counts = Counter(region["fingerprint"] for region in symbols)
     # One occurrence, one defect: a symbol repeated among the additions leaves
     # block scope, so no copy is reported under two rule IDs.
     blocks = _blocks(scans, {
         (region["path"], number)
         for region in symbols for number in region["lines"]
-        if counts[str(region["fingerprint"])] > 1
+        if counts[region["fingerprint"]] > 1
     })
     # Only the baseline rule reads owners, and an unread owner can hide one
     # only while there is a candidate to match against it.
@@ -61,11 +60,8 @@ def find_exact_duplicates(snapshot: EvaluationSnapshot) -> tuple[list[Finding], 
     retained = _retained_baseline(snapshot, symbols + blocks + bodies, owner_gaps)
     # A copy whose owner is still retained belongs to the baseline rule, and a
     # block inside a retained symbol is that same copy seen twice.
-    owned = {
-        (region["path"], number)
-        for region in symbols if region["fingerprint"] in retained
-        for number in region["lines"]
-    }
+    owned = {(region["path"], number) for region in symbols
+             if region["fingerprint"] in retained for number in region["lines"]}
     blocks = [region for region in blocks if (region["path"], region["displayLine"]) not in owned]
     states: list[Finding] = []
     duplicates: list[Finding] = []
@@ -100,9 +96,9 @@ def _retained_baseline(
     keyed by the fingerprint the added copy shares.
 
     Retention follows the implementation, not the path: a rename is tracked to
-    where it landed, a deleted or edited-past-the-anchor owner holds nothing,
-    so copying and then deleting, moving, or extracting to one owner all clear
-    this rule and only a surviving second copy keeps it.
+    where it landed and a deleted or edited-past-the-anchor owner holds nothing,
+    so copy-then-delete, move, and extraction all clear this rule while a
+    surviving second copy keeps it.
     """
     wanted = {
         str(region["fingerprint"]): (str(region["role"]), str(region["language"]), str(region["body"]))
@@ -174,30 +170,33 @@ def _scan(snapshot: EvaluationSnapshot) -> tuple[list[dict[str, object]], list[s
             scans.append({
                 "path": entry.path, "role": role, "language": language, "added": added,
                 "canonical": canonical, "starts": edges,
-                **_symbol_regions(entry.path, role, language, symbols, set(added), canonical, _decorated(text)),
+                **_symbol_regions(entry.path, role, language, symbols, set(added), canonical, _extents(text)),
             })
     return scans, gaps
 
 
-def _decorated(text: str) -> dict[int, int]:
-    """Where each decorated definition really begins, from the real parser.
+def _extents(text: str) -> dict[int, tuple[int, int]]:
+    """Each definition's real first line and the first line of its suite.
 
-    A decorator changes how the definition behaves, so it belongs to the
-    implementation, and only the parser knows where a multi-line or commented
-    decorator list starts.
+    A decorator belongs to the implementation it decorates, and a signature can
+    span lines, so the body neither starts at the `def` nor one line under it —
+    and a suite opening with a decorated definition starts at that decorator.
+    Only the parser knows any of those boundaries.
     """
     try:
         tree = ast.parse(text)
     except (SyntaxError, UnicodeError, ValueError):
         return {}
+    defined = [node for node in ast.walk(tree)
+               if isinstance(node, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef)) and node.body]
+    starts = {node.lineno: min([item.lineno for item in node.decorator_list] + [node.lineno]) for node in defined}
     return {
-        node.lineno: min(item.lineno for item in node.decorator_list)
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef)) and node.decorator_list
+        node.lineno: (starts[node.lineno], starts.get(node.body[0].lineno, node.body[0].lineno))
+        for node in defined
     }
 
 
-def _symbol_regions(path: str, role: str, language: str, symbols: list, added: set[int], canonical: dict[int, str], decorated: dict[int, int]) -> dict[str, list[dict[str, object]]]:
+def _symbol_regions(path: str, role: str, language: str, symbols: list, added: set[int], canonical: dict[int, str], extents: dict[int, tuple[int, int]]) -> dict[str, list[dict[str, object]]]:
     """Complete symbol bodies this one hunk added in full, and each body alone.
 
     A hunk that edited part of an existing helper did not add it, and
@@ -208,7 +207,7 @@ def _symbol_regions(path: str, role: str, language: str, symbols: list, added: s
     regions: list[dict[str, object]] = []
     bodies: list[dict[str, object]] = []
     for symbol in symbols:
-        start = decorated.get(symbol.line, symbol.line)
+        start, suite = extents.get(symbol.line, (symbol.line, symbol.line + 1))
         extent = range(start, symbol.line + len(symbol.content.splitlines()))
         if not all(number in added for number in extent):
             continue
@@ -220,11 +219,13 @@ def _symbol_regions(path: str, role: str, language: str, symbols: list, added: s
             "fingerprint": fingerprint, "path": path, "role": role, "language": language,
             "displayLine": start, "lines": tuple(extent), "evidenceRole": "duplicate", "body": body,
         })
-        inner = "\n".join(canonical[number] for number in extent if number in canonical and number > symbol.line)
+        # From the suite: hashing a wrapped signature into the body would hide
+        # a copy whose only difference is how its parameters are wrapped.
+        inner = "\n".join(canonical[number] for number in extent if number in canonical and number >= suite)
         if len(inner.splitlines()) >= MIN_REGION_LINES:
             bodies.append({
                 "fingerprint": anchor("block", role, language, inner), "path": path, "role": role,
-                "language": language, "displayLine": symbol.line + 1, "lines": (),
+                "language": language, "displayLine": suite, "lines": (),
                 "evidenceRole": "duplicate", "body": inner, "owner": fingerprint,
             })
     return {"symbols": regions, "bodies": bodies}
@@ -234,8 +235,7 @@ def _blocks(scans: list[dict[str, object]], consumed: set[tuple[str, int]]) -> l
     """Contiguous added blocks repeated at least twice, collapsed to their
     longest common extent. A scope is one uninterrupted added run inside one
     hunk, cut at every symbol boundary and at every line a symbol duplicate
-    already owns, so no reported block spans two hunks, two symbols, or an
-    already-named copy.
+    already owns, so no block spans two hunks, two symbols, or a named copy.
     """
     scopes = _scopes(scans, consumed)
     windows: dict[str, list[tuple[int, int]]] = {}
@@ -278,8 +278,7 @@ def _scopes(scans: list[dict[str, object]], consumed: set[tuple[str, int]]) -> l
             if (cut or owned) and run:
                 scopes.append((scan, run))
                 run = []
-            # A blank or comment line breaks no run: it carries no code, so
-            # the added lines around it are still one contiguous block.
+            # A blank or comment line carries no code, so it breaks no run.
             if not owned and number in canonical:
                 run.append((number, canonical[number]))
         if run:
@@ -328,8 +327,8 @@ def _extends(
 
 def _groups(regions: list[dict[str, object]]) -> list[dict[str, object]]:
     """Regions sharing canonical bytes, one entry per duplicated implementation."""
-    # Keyed by where the implementation physically sits: a symbol's body and
-    # the block over it are one occurrence, named once.
+    # Keyed by where it physically sits: a symbol's body and the block over it
+    # are one occurrence, named once.
     collected: dict[str, dict[tuple[str, int], dict[str, object]]] = {}
     for region in regions:
         key = (str(region["path"]), int(region["displayLine"]))
@@ -361,9 +360,8 @@ def _finding(
 ) -> Finding:
     """One warning-only exact finding: a single duplicate, or a rule's verdict.
 
-    A duplicate is identified by its fingerprint alone, so an unrelated
-    insertion above a region, a rename, a rebase, or another duplicate
-    elsewhere moves nothing.
+    A duplicate is identified by its fingerprint alone, so an insertion above a
+    region, a rename, a rebase, or another duplicate elsewhere moves nothing.
     """
     return Finding(
         rule_id=rule_id,

@@ -50,8 +50,9 @@ _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 _QUOTED_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "\\": "\\"}
 
-# Baseline capture bounds: how many owner files may be read and how large one
-# may be. They live with the capture because the cap must prevent the read.
+# Baseline capture bounds: how many owner files may be read PER ROLE, so one
+# role cannot spend another's budget, and how large one may be. They live with
+# the capture because the cap must prevent the read.
 MAX_INDEX_FILES = 4000
 MAX_INDEX_FILE_BYTES = 500_000
 
@@ -252,7 +253,8 @@ def _baseline_index(
             roots.add(top_dir(entry.path))
     files: list[BaselineFile] = []
     gaps: list[tuple[str, str]] = []
-    read_count = skipped = 0
+    reads: dict[str, int] = {}
+    skipped = 0
     for record in listed.split("\0"):
         # ls-tree -l: "<mode> <type> <oid> <size>\t<path>".
         meta, sep, rel_path = record.partition("\t")
@@ -273,19 +275,19 @@ def _baseline_index(
         skipped += classification.language in languages and not eligible
         if eligible and int(fields[3]) > MAX_INDEX_FILE_BYTES:
             gaps.append((classification.role, f"{rel_path}: reuse baseline exceeds {MAX_INDEX_FILE_BYTES} bytes"))
-        elif eligible and read_count >= MAX_INDEX_FILES:
+        elif eligible and reads.get(classification.role, 0) >= MAX_INDEX_FILES:
             gaps.append((classification.role, f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files"))
         elif eligible:
             # Attempts consume the cap, not successes: confirmed read failures
             # must not buy unbounded extra Git reads.
-            read_count += 1
+            reads[classification.role] = reads.get(classification.role, 0) + 1
             text, read_failure = git_read(repo, ["show", f"{base}:{rel_path}"])
             if read_failure:
                 text = None
                 gaps.append((classification.role, f"{rel_path}: reuse baseline could not be read"))
         files.append(BaselineFile(rel_path, classification.role, classification.language, text))
-    scope_gap = (f"reuse baseline scope read only the changed top directories: "
-                 f"{skipped} same-role source file(s) elsewhere were never read",) if skipped else ()
+    scope_gap = (f"reuse baseline scope read only the changed top directories: {skipped} "
+                 f"same-role source file(s) elsewhere were never read",) if skipped else ()
     production = tuple(dict.fromkeys(text for role, text in gaps if role == "production"))
     other = tuple(dict.fromkeys(text for role, text in gaps if role != "production"))
     return tuple(files), production, other, scope_gap
