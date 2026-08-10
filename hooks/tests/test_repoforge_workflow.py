@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -223,6 +224,28 @@ class RepoForgeWorkflowTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:
+            # Popen returning only means the child was forked, and the bootstrap resolves
+            # repository identity — git, realpath and cksum, three subprocesses of its own —
+            # before it captures the workflow id. Only the producer starting proves the
+            # capture already happened, so match the child's command line instead of
+            # accepting any child; otherwise the replacement below can still land first and
+            # become the instance the child captures, which fails on exit 0.
+            children = Path(f"/proc/{process.pid}/task/{process.pid}/children")
+            producer = ""
+            deadline = time.monotonic() + 300
+            while not producer and time.monotonic() < deadline:
+                for pid in children.read_text().split():
+                    try:
+                        command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                    except OSError:
+                        continue  # an identity subprocess that exited between the two reads
+                    if str(CANONICAL_BOOTSTRAP).encode("utf-8") in command:
+                        producer = pid
+                        break
+                if not producer:
+                    time.sleep(0.001)
+            self.assertTrue(producer, "the real producer never started, so no capture was observed")
+
             replaced = self.pass_state("begin", "--slug", self.slug, "--intent", "replacement pass")
             self.assertEqual(replaced.returncode, 0, replaced.stdout + replaced.stderr)
             self.assertIsNone(
@@ -235,6 +258,9 @@ class RepoForgeWorkflowTests(unittest.TestCase):
 
         self.assertEqual(process.returncode, 2, stdout + stderr)
         self.assertIn("cannot record Repo Context Forge graph evidence", stderr)
+        # The specific cause, not just the adapter's wrapper: any WorkflowError produces
+        # the line above, so only this one proves the stale instance was what refused.
+        self.assertIn("--workflow-id does not match the active workflow instance", stderr)
         state = self.status()
         self.assertEqual(state["workflowId"], json.loads(replaced.stdout)["workflowId"])
         self.assertEqual(state["repoContextForge"], "pending")
