@@ -68,6 +68,19 @@ def _quality_gate(runs: list[subprocess.CompletedProcess[str]]) -> tuple[dict[st
             "qualityGateManifestId": bool(state["qualityGateManifestId"])}, keys
 
 
+def _retired_transition(runs: list[subprocess.CompletedProcess[str]]) -> tuple[dict[str, object], list[str]]:
+    """The refusal's own reason, because an exit code is not one.
+
+    `gitnexus` already reads `passed` before this step runs — the seed recorded Repo
+    Context Forge evidence once per arm — so the status that follows the transition
+    cannot testify about the transition. Without the reason, an arm that failed for an
+    unrelated cause is indistinguishable from one that correctly refused a retired step.
+    """
+    state, keys = project(runs[-1].stdout, STATE_FIELDS)
+    refused = runs[0].returncode == 2 and "gitnexus is no longer a workflow step" in runs[0].stderr
+    return {**state, "retiredTransitionRefused": refused}, keys
+
+
 # Every governed operation downstream of Repo Context Forge, in order, each driven through
 # the arm's own shipped producer rather than a reimplementation of its contract. Each entry
 # builds the commands to run, projects what they reached, and names the transition it must
@@ -83,9 +96,9 @@ REPLAY = (
     ("replay-gitnexus", lambda c: [[*c["cli"], "set-phase", *c["bound"], "--phase", "gitnexus",
                                    "--status", "passed"],
                                    [*c["cli"], "status", "--repo", c["repo"]]],
-     _fields(STATE_FIELDS),
-     lambda p: p["exits"] in ([0, 0], [2, 0]) and p["gitnexus"] == "passed"
-     and p["nextAction"] == "advisor-preflight"),
+     _retired_transition,
+     lambda p: (p["exits"] == [0, 0] or (p["exits"] == [2, 0] and p["retiredTransitionRefused"]))
+     and p["gitnexus"] == "passed" and p["nextAction"] == "advisor-preflight"),
     ("replay-advisor-preflight", lambda c: [[*c["cli"], "advisor-result", *c["bound"], "--stage", "preflight",
                                             "--source", "codex-advisor", "--verdict", "completed"]],
      _fields(STATE_FIELDS), lambda p: p["advisorPreflight.status"] == "completed"),

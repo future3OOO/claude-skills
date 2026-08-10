@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -39,6 +40,10 @@ target, marker = Path(sys.argv[1]), Path(sys.argv[2])
 # whole program in its /proc cmdline, and a mutator that matches itself would
 # start writing before the gate exists and never stop.
 GATE = "code_quality" + "_gate.py"
+# The gate is launched as `--repo <canonical root>`, which the workflow derives through
+# `realpath -e`, so the fixture path is canonicalised here too: an alternate spelling of
+# the same directory would otherwise never match and silently stop confirming anything.
+REPO = str(target.parent.resolve())
 
 
 def identity(pid):
@@ -54,10 +59,17 @@ def gate_child():
         if not entry.name.isdigit():
             continue
         try:
-            if GATE in (entry / "cmdline").read_bytes().decode("utf-8", "replace"):
-                return entry.name, identity(entry.name)
+            args = (entry / "cmdline").read_bytes().decode("utf-8", "replace").split(chr(0))
         except OSError:
             continue
+        # Both conditions, and against parsed argv rather than the raw text: the script
+        # name alone also matches a shell whose command line merely mentions it and any
+        # gate running for another repository, and confirming against one of those
+        # certifies an overlap window this run never controlled.
+        if not any(GATE in arg for arg in args):
+            continue
+        if any(args[index] == "--repo" and args[index + 1] == REPO for index in range(len(args) - 1)):
+            return entry.name, identity(entry.name)
     return None, None
 
 
@@ -824,6 +836,50 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(state["verification"], "pending")
         self.assertNotIn("qualityGateManifestId", state)
+
+    def test_the_mutator_ignores_a_gate_running_for_another_repository(self) -> None:
+        """Overlap is only overlap with this fixture's own gate.
+
+        The detector reads every process on the host, so a gate belonging to a
+        concurrent developer or CI job can satisfy it. Confirming against one of
+        those certifies a window this test never controlled, and if it exits before
+        the real gate starts the fixture holds still and the verification passes for
+        the wrong reason. Both false-positive shapes are present here at once: real
+        `code_quality_gate.py` invocations for a different repository, and the shell
+        looping them, whose own command line carries the script name too.
+        """
+        other = self.tmp / "other-repo"
+        other.mkdir()
+        marker = self.tmp / "foreign-writes"
+        decoy = subprocess.Popen(
+            ["bash", "-c", f'while :; do "{sys.executable}" "{QUALITY_GATE}" check --repo "{other}" >/dev/null 2>&1; done'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        mutator = subprocess.Popen(
+            [sys.executable, "-c", MID_GATE_MUTATOR, str(self.repo / "app.py"), str(marker)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            # A window, because absence is what is being proved: the current detector
+            # matches within a millisecond and writes every millisecond after that, so
+            # two seconds is thousands of chances to record a confirmation.
+            time.sleep(2)
+            alive = mutator.poll() is None
+        finally:
+            mutator.terminate()
+            _, mutator_stderr = mutator.communicate(timeout=30)
+            decoy.kill()
+            decoy.wait(timeout=30)
+
+        # Asserted before the count, so a mutator that died cannot pass this by silence.
+        self.assertTrue(alive, f"the mutator exited before it could confirm anything: {mutator_stderr!r}")
+        confirmed = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
+        self.assertEqual(
+            confirmed, 0,
+            "the mutator confirmed writes against a quality gate belonging to another "
+            f"repository, so its overlap marker certifies a window it never controlled; "
+            f"mutator stderr: {mutator_stderr!r}",
+        )
 
     def test_a_gate_that_cannot_capture_the_tree_says_why(self) -> None:
         """A capture that fails is as unusable as one that drifts, and must be named.

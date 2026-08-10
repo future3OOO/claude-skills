@@ -408,6 +408,39 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertIn("repo-context-forge-graph", differences[0]["candidate"]["missing"])
         self.assertTrue(artifact["isolation"]["ok"], "a behavioural mismatch is not an isolation failure")
 
+    def test_an_unrelated_exit_two_does_not_satisfy_the_retired_transition(self) -> None:
+        """Exit 2 is not a reason, and the state that follows it was set by the seed.
+
+        `gitnexus` reads `passed` from the moment the seed records Repo Context Forge
+        evidence, so the status read after the transition cannot testify about the
+        transition. If the invariant also accepts any exit 2, an arm that failed for an
+        unrelated reason looks identical to one that correctly refused a retired step.
+        Both arms are that ref here, so nothing diverges and only the invariant can
+        catch it — which is the identically-broken pair the benchmark exists to reject.
+        """
+        cli = self.clone / "hooks" / "lib" / "workflow_cli.py"
+        original = cli.read_text(encoding="utf-8")
+        perturbed_text = original.replace(
+            '"gitnexus": "gitnexus is no longer a workflow step; Repo Context Forge records the graph "',
+            '"gitnexus": "workflow-id binding failed for this instance; Repo Context Forge records the graph "',
+        )
+        self.assertNotEqual(perturbed_text, original, "the retired-transition message moved")
+        cli.write_text(perturbed_text, encoding="utf-8")
+        self.run_git("commit", "--quiet", "--all", "-m", "refuse the retired transition for an unrelated reason")
+        head = self.run_git("rev-parse", "HEAD")
+
+        result, artifact = self.benchmark(head, head)
+
+        step = [item for item in artifact["scenarios"] if item["name"] == "replay-gitnexus"][0]
+        self.assertEqual(step["observed"]["exits"], [2, 0], "the perturbed arm did not refuse with exit 2")
+        self.assertFalse(step["differences"], "two identical arms cannot differ; only the invariant can catch this")
+        self.assertFalse(
+            step["invariantsHeld"],
+            "an exit 2 carrying an unrelated reason satisfied the retired-transition invariant",
+        )
+        self.assertFalse(artifact["ok"])
+        self.assertNotEqual(result.returncode, 0, "an identically broken pair was reported as a pass")
+
     def test_a_candidate_that_never_converts_the_seeded_store_fails(self) -> None:
         """The false green the migration differential exists to catch.
 
