@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import tdd_surface
 from ._workflow_db import LedgerError, history
 from .preflight_document import validated_document
 from .repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity
@@ -254,6 +255,39 @@ def _print_output(raw: bytes) -> None:
             _mute_stdout()
 
 
+def _candidate_drift(
+    existing: dict[str, object],
+    contract: dict[str, str],
+    surface: dict[str, object],
+    command_text: str,
+) -> tuple[list[dict[str, object]], str]:
+    """Every field the requested candidate differs on, plus any operator guidance."""
+    drift = [
+        {"field": name, "recorded": existing.get(name), "requested": value}
+        for name, value in contract.items() if existing.get(name) != value
+    ]
+    recorded = existing.get("surface")
+    if isinstance(recorded, dict):
+        return drift + tdd_surface.differences(recorded, surface), ""
+    # A cycle recorded before surfaces existed gets no guessed identity: it stays
+    # bound to the exact command that produced its RED.
+    if existing.get("command") == command_text:
+        return drift, ""
+    drift.append({
+        "field": "command",
+        "recorded": existing.get("command"),
+        "requested": command_text,
+    })
+    return drift, "\n  this candidate predates normalized surfaces; rerun RED under the new contract"
+
+
+def _drift_report(drift: list[dict[str, object]]) -> str:
+    return "".join(
+        f"\n  {item['field']}: recorded {item['recorded']!r}, requested {item['requested']!r}"
+        for item in drift
+    )
+
+
 def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:
     state, slug, workflow_id = _active_candidate(identity, args.slug)
     existing_id = state.get("tddEvidence") if isinstance(state.get("tddEvidence"), str) else None
@@ -297,17 +331,19 @@ def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:
         raise ValueError("a command is required after --")
 
     command_text = shlex.join(command)
+    surface = tdd_surface.identify(command)
     same_instance = isinstance(existing, dict) and existing.get("workflowId") == workflow_id
-    matches = same_instance and all(existing.get(key) == value for key, value in {
-        "slug": slug,
-        "behavior": behavior,
-        "seam": seam,
-        "command": command_text,
-    }.items())
+    drift, guidance = _candidate_drift(
+        existing, {"slug": slug, "behavior": behavior, "seam": seam}, surface, command_text,
+    ) if same_instance else ([], "")
+    matches = same_instance and not drift
     completed_cycle = same_instance and existing.get("status") in {"passed", "not-required"}
     drifted = same_instance and not matches
     if drifted and (args.phase == "green" or not completed_cycle):
-        raise WorkflowError("candidate does not match the active cycle; finish or regress the current candidate first")
+        raise WorkflowError(
+            "candidate does not match the active cycle; finish or regress the current "
+            "candidate first" + _drift_report(drift) + guidance
+        )
 
     raw, exit_code, timed_out = _run(command, identity, args.timeout)
     expected = str(args.expected_failure or "").strip()
@@ -328,7 +364,7 @@ def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:
     regression = args.phase == "green" and matches and not valid
     run = _run_entry(
         raw, exit_code, timed_out,
-        phase=args.phase, expectedFailure=expected or None, valid=valid,
+        phase=args.phase, command=command_text, expectedFailure=expected or None, valid=valid,
     )
     evidence_id = existing_id
     if recorded:
@@ -346,6 +382,7 @@ def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:
                 "behavior": behavior,
                 "seam": seam,
                 "command": command_text,
+                "surface": surface,
                 "runs": [*prior_runs, run] if matches else [run],
                 "updatedAt": utc_timestamp(),
             },

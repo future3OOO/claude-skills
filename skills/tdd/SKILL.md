@@ -171,6 +171,18 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   --seam "<same real public Interface/Seam>" -- <targeted-command>
 ```
 
+GREEN must rerun the test surface that produced RED, not repeat its spelling.
+For a directly invoked stdlib unittest or pytest command the recorder compares a
+normalized surface — runner family, invocation, and the ordered arguments that
+select tests — so a rerun differing only by pytest `-x`/`--exitfirst`/`--maxfail=1`,
+unittest `-f`/`--failfast`, or a verbosity alias is the same candidate. Everything
+else stays load-bearing: a different target, `-k`/`-m` selector, config path,
+start or root directory, runner, behavior, or Seam refuses before the command
+runs and names each differing field with both normalized values. Any other
+command — including `bash -lc`, a pipeline, or an unknown runner — keeps exact
+identity and records why. A cycle whose RED predates this contract stays bound to
+its exact command; rerun RED to move it onto a surface.
+
 For a genuinely non-behavioral change, record the decision explicitly:
 
 ```bash
