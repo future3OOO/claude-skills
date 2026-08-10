@@ -216,6 +216,27 @@ class TddSummaryTests(unittest.TestCase):
             "fallbackReason": None,
         })
 
+    def test_repeated_unittest_verbosity_is_still_the_same_test_surface(self) -> None:
+        target = self.unittest_target()
+        red = self.tdd("red", (sys.executable, "-m", "unittest", "-vv", target),
+                       expected="AssertionError")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd("green", (sys.executable, "-m", "unittest", target))
+        self.assertEqual(green.returncode, 0,
+                         "GREEN dropping repeated unittest verbosity was refused: " + green.stderr)
+        self.assertEqual(
+            self.evidence_document(json.loads(green.stdout.splitlines()[-1])["summaryId"])["status"],
+            "passed",
+        )
+        quieted = self.tdd("green", (sys.executable, "-m", "unittest", "-qq", target))
+        self.assertEqual(quieted.returncode, 0,
+                         "a GREEN adding repeated unittest quiet was refused: " + quieted.stderr)
+        self.assertIn("surface.arguments", self.refuses(
+            sys.executable, "-m", "unittest", "-vf", target),
+            "a mixed short cluster was dropped as pure verbosity")
+
     def test_a_different_test_surface_refuses_and_names_both_normalized_values(self) -> None:
         target = self.unittest_target()
         red = self.tdd("red", (sys.executable, "-m", "unittest", "--failfast", target),

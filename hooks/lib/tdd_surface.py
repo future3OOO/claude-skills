@@ -20,13 +20,12 @@ REPEATED_VERBOSITY = re.compile(r"^-(v+|q+)$")
 DIRECT_RUNNERS = {"pytest": "pytest", "py.test": "pytest"}
 # Only the spellings demonstrated not to select tests, per runner grammar.
 # Anything unlisted stays in `arguments` and keeps refusing: the separated
-# `--maxfail 1`, `--maxfail=2`, clustered shorts such as `-xq`, and unittest's
-# `-vv`, which that runner rejects rather than treats as extra verbosity.
+# `--maxfail 1`, `--maxfail=2`, and mixed short clusters such as `-xq` or `-vf`.
+# Both runners bundle repeated short verbosity, which REPEATED_VERBOSITY owns.
 IGNORED_BY_RUNNER = {
     "unittest": {
         "-f": "fail-fast", "--failfast": "fail-fast",
-        "-v": "verbosity", "--verbose": "verbosity",
-        "-q": "verbosity", "--quiet": "verbosity",
+        "--verbose": "verbosity", "--quiet": "verbosity",
     },
     "pytest": {
         "-x": "fail-fast", "--exitfirst": "fail-fast", "--maxfail=1": "fail-fast",
@@ -92,7 +91,7 @@ def _ignored_class(runner: str, token: str) -> str | None:
     named = IGNORED_BY_RUNNER[runner].get(token)
     if named is not None:
         return named
-    return "verbosity" if runner == "pytest" and REPEATED_VERBOSITY.match(token) else None
+    return "verbosity" if REPEATED_VERBOSITY.match(token) else None
 
 
 def _surface(
