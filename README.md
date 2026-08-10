@@ -84,7 +84,7 @@ The final hooks diff should report only deliberate externally managed files
 (currently `herdr-agent-state.sh`) and files retired under the procedure below.
 Any other difference needs reconciliation.
 
-Only one of those line types is ever actionable. `Only in ~/.claude/` is an
+Only one of those line types reports content drift. `Only in ~/.claude/` is an
 orphan or a machine-owned file, classified below; the install never deletes, so
 these accumulate with every upstream rename. `Files … differ` is content drift,
 in either direction, and should never appear — check it alone rather than
