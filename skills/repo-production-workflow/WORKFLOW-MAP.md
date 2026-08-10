@@ -5,12 +5,11 @@ ordinary delivery tool.
 
 ```mermaid
 flowchart LR
-    B[begin] --> R[Repo Context Forge]
+    B[begin] --> R[Repo Context Forge records the packet graph evidence]
     R --> D{bug or regression?}
     D -->|yes| DG[diagnose]
-    D -->|no| G[packet-scoped GitNexus]
-    DG --> G
-    G --> A1[advisor preflight]
+    D -->|no| A1[advisor preflight]
+    DG --> A1
     A1 --> P[production preflight]
     P --> T[TDD when required]
     T --> PC[production-code]
@@ -34,7 +33,7 @@ workflow begin                 # assigns and activates a random workflowId
 workflow status|summary        # active canonical state
 workflow history               # ordered accepted events and logical references
 workflow evidence              # read one logical evidence record
-workflow set-phase             # lead-owned gitnexus, implementation, trivial review
+workflow set-phase             # lead-owned implementation and trivial review
 workflow record-preflight      # validates the thirteen-section document
 workflow record-production-code # validates the bundled gate verdict
 workflow tdd                   # runs RED/GREEN or records not-required
@@ -55,23 +54,23 @@ never includes a database path, SQLite table or column name, journal detail, or
 other storage mechanism. With no authoritative workflow it prints no JSON,
 returns exit 2, names `no active workflow`, and creates no state.
 
-Preflight, production-code, TDD, verification, review, and addressed advisor
-dispositions record only with their native validated documents as logical
-evidence, inserted in the same SQLite transaction as the accepted event; a
+Repo Context Forge, preflight, production-code, TDD, verification, review, and
+addressed advisor dispositions record only with their native validated documents
+as logical evidence, inserted in the same SQLite transaction as the accepted event; a
 findings-none advisor disposition intentionally carries no document, and a
 refusal names the missing evidence and mutates nothing.
 Exit 2 alone does not prove a refusal: the verification, TDD, and review
 producers each document a path that commits first and returns 2 after — a
 command that failed after being recorded, an invalid TDD run recorded as
 `reopen` or `in-progress`, and a review whose material findings remain
-unresolved. Preflight, production-code, and verification keep their accepted
-reference only while producer-recorded as passed — every other transition drops
+unresolved. Repo Context Forge, preflight, production-code, and verification keep their
+accepted reference only while producer-recorded as passed — every other transition drops
 it, so a bare replay can never resurrect prior evidence. Tdd and code review
 instead keep a current producer reference across their own non-passed states —
 tdd while in-progress and when not-required, code review while pending — so a
 later run can validate or supersede it; only tdd's in-progress reference serves
 GREEN's validation of the RED it follows. Tdd entry demands
-the recorded preflight evidence, not just its status. Each producer stamps the workflow instance into its evidence and the ledger keeps its logical identity, so a passed preflight, production-code, or verification phase without one — legacy state, or a bare
+the recorded preflight evidence, not just its status. Each producer stamps the workflow instance into its evidence and the ledger keeps its logical identity, so a passed Repo Context Forge, preflight, production-code, or verification phase without one — legacy state, or a bare
 library claim — reads pending at completion, never success; completion gates tdd
 on its status and both reviews on their own record predicates. Evidence proves the
 output exists, not that the analysis is good; fabrication remains deception and
@@ -91,7 +90,7 @@ readiness for the advisor phases without mutating anything.
 
 `complete` requires:
 
-- Repo Context Forge and GitNexus completed;
+- Repo Context Forge completed, carrying its producer graph evidence;
 - advisor preflight completed with findings dispositioned, or explicitly
   unavailable with a measured reason;
 - production preflight completed;

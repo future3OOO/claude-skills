@@ -32,7 +32,6 @@ from .state_store import (
 JsonObject = dict[str, object]
 STEP_FIELDS = {
     "repo-context-forge": "repoContextForge",
-    "gitnexus": "gitnexus",
     "preflight": "preflight",
     "tdd": "tdd",
     "production-code": "productionCode",
@@ -41,7 +40,6 @@ STEP_FIELDS = {
 }
 WORKFLOW_SEQUENCE = (
     "repo-context-forge",
-    "gitnexus",
     "advisor-preflight",
     "preflight",
     "tdd",
@@ -125,7 +123,7 @@ def _commit(
     return transaction.append(_updated(state), kind, evidence=evidence, manifests=manifests)
 
 
-EVIDENCE_PHASES = ("preflight", "production-code", "verification")
+EVIDENCE_PHASES = ("repo-context-forge", "preflight", "production-code", "verification")
 
 
 def _evidence_ready(state: JsonObject, phase: str) -> bool:
@@ -212,7 +210,6 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "phase": "intake",
         "nextAction": "repo-context-forge",
         "repoContextForge": "pending",
-        "gitnexus": "pending",
         "advisorPreflight": {"source": None, "status": "pending", "findings": "pending", "reason": None},
         "preflight": "pending",
         "tdd": "pending",
@@ -356,25 +353,6 @@ def set_phase(
             transaction,
             state,
             f"set-{phase}",
-            manifests=[manifest] if manifest else [],
-        )
-
-
-def producer_set_phase(
-    identity: RepoIdentity,
-    slug: str,
-    workflow_id: str | None,
-    phase: str,
-    status: str,
-) -> JsonObject:
-    """Instance-bound phase transition for a producer Adapter."""
-    with mutation(identity) as transaction:
-        state = _bound_instance_state(transaction.state, slug, workflow_id)
-        manifest = _apply_step(identity, state, phase, status)
-        return _commit(
-            transaction,
-            state,
-            f"record-{phase}",
             manifests=[manifest] if manifest else [],
         )
 
@@ -686,10 +664,11 @@ def advisor_disposition(
 def completion_missing(state: JsonObject) -> list[str]:
     """Canonical completion readiness shared by complete and the Stop latch."""
     missing: list[str] = [] if instance_id(state) else ["workflowId"]
-    for field in ("repoContextForge", "gitnexus", "preflight", "productionCode", "implementation", "verification"):
+    for field in ("repoContextForge", "preflight", "productionCode", "implementation", "verification"):
         if state.get(field) != "passed":
             missing.append(field)
-    for field in ("preflight", "productionCode", "verification"):
+    for phase in EVIDENCE_PHASES:
+        field = STEP_FIELDS[phase]
         if state.get(field) == "passed" and not state.get(f"{field}Evidence"):
             missing.append(f"{field}Evidence")
     if state.get("verification") == "passed":
@@ -712,10 +691,8 @@ CHECKPOINT_PHASES = {"preflight-advice", "final-review"}
 
 
 def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:
-    return (
-        ("repo-context-forge", state.get("repoContextForge") == "passed"),
-        ("gitnexus", state.get("gitnexus") == "passed"),
-    )
+    """The graph context this pass stands on, which is Repo Context Forge's evidence."""
+    return (("repo-context-forge", _evidence_ready(state, "repo-context-forge")),)
 
 
 def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
@@ -825,6 +802,28 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
     return not missing, missing
 
 
+def public_status(state: JsonObject) -> JsonObject:
+    """The schemaVersion 1 status projection.
+
+    A Repo Context Forge pass is only as good as its producer evidence, so a stored
+    `passed` without one is published as pending: the phase reads to every consumer the
+    way it already reads to nextAction, the checkpoint, edit readiness and completion,
+    and a legacy pass cannot report graph work that has no evidence behind it. Any other
+    stored status is passed through untouched; only a bare claim is downgraded.
+
+    `gitnexus` survives only as derived compatibility output for readers of the retired
+    phase, reporting that same readiness. It is never stored, never writable, and never
+    a second readiness source.
+    """
+    ready = _evidence_ready(state, "repo-context-forge")
+    stored = state.get("repoContextForge")
+    return {
+        **state,
+        "repoContextForge": stored if ready or stored != "passed" else "pending",
+        "gitnexus": "passed" if ready else "pending",
+    }
+
+
 def summary(identity: RepoIdentity, limit: int = 1200) -> str:
     state = read_workflow(identity)
     if state is None:
@@ -834,7 +833,10 @@ def summary(identity: RepoIdentity, limit: int = 1200) -> str:
     final_review = state.get("finalReview") if isinstance(state.get("finalReview"), dict) else {}
     text = (
         f"Active workflow: slug={state.get('slug')} phase={state.get('phase')} next={state.get('nextAction')}. "
-        f"Steps: repo-context-forge={state.get('repoContextForge')}, gitnexus={state.get('gitnexus')}, "
+        # Evidence-aware, not the raw status: a compacted session reads this line, and
+        # a legacy pass that claims the phase without producer evidence is pending
+        # everywhere else in the workflow.
+        f"Steps: repo-context-forge={'passed' if _evidence_ready(state, 'repo-context-forge') else 'pending'}, "
         f"advisor-preflight={advisor.get('status')}/{advisor.get('findings')}, preflight={state.get('preflight')}, tdd={state.get('tdd')}, "
         f"production-code={state.get('productionCode') or 'pending'}, "
         f"implementation={state.get('implementation')}, verification={state.get('verification')}, "

@@ -103,9 +103,11 @@ rerun the bootstrap.
   first and deterministic synthetic fill is used without live LLM calls
 - use `<gitnexus_status><repo>` as the repo value for every GitNexus MCP call
 - in `pr` mode, do not treat dirty source-worktree files as PR targets
-- run the listed `<gitnexus_required_checks>` as the first GitNexus validation
-  step before editing production code; these checks are scoped to the
-  SoulForge packet and the freshly indexed analysis repo
+- read `<gitnexus_analysis>` as the first GitNexus validation step before
+  editing production code: the bootstrap already executed the packet-scoped
+  checks against the freshly indexed analysis repo and recorded that resolved
+  result as this pass's `repo-context-forge` evidence, so
+  `<gitnexus_required_checks>` records the plan it ran, not work still to do
 - for `pr`, use the live `base...HEAD` packet surface; for `local`, use dirty
   worktree packet targets; for `intent`, use the intent-ranked packet targets
 - do not let unscoped `gitnexus_detect_changes(compare)` choose the target
@@ -141,10 +143,16 @@ GitNexus is registered as an MCP server in Claude Code (`gitnexus`). Claude Code
 exposes its tools as `mcp__gitnexus__<name>`; the names below are the GitNexus
 tool semantics (use the equivalent MCP-prefixed tool).
 
-For each `<check>` in `<gitnexus_required_checks>`:
+The packet's `<gitnexus_analysis>` already answers every `<check>` the plan
+listed — `kind="symbol_context"` entries carry their callers, `kind="symbol_impact"`
+entries their impacted files. Read those entries rather than reissuing the same
+calls. No entry carries callees, so the analysis never completes the
+callers-AND-callees requirement on its own. Spend MCP calls on what the packet
+did not fix: callees of anything you are about to edit, a symbol the plan
+omitted, and the post-edit validation below.
 
-- `kind="symbol_context"` means call `gitnexus_context` for that symbol/file
-- `kind="symbol_impact"` means call `gitnexus_impact` upstream for that symbol
+When you do call out:
+
 - if a GitNexus MCP call says the repo is missing or stale, rerun the bootstrap
   with `--gitnexus-mode auto`, then retry using the new `<gitnexus_status><repo>`
 - do not call `gitnexus_list_repos` during normal recovery; the packet repo is

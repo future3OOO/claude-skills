@@ -37,6 +37,7 @@ from .workflow_state import (
     evidence_record,
     instance_id,
     pause,
+    public_status,
     read_workflow,
     record_advisor_result,
     safe_slug,
@@ -46,8 +47,11 @@ from .workflow_state import (
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_CAPTURE = 16000
-LEAD_PHASES = {"gitnexus", "implementation", "code-review"}
+LEAD_PHASES = {"implementation", "code-review"}
 PRODUCER_OWNED = {
+    "repo-context-forge": "repo-context-forge is producer-owned; run the Repo Context Forge bootstrap",
+    "gitnexus": "gitnexus is no longer a workflow step; Repo Context Forge records the graph "
+                "evidence automatically, so there is nothing to transition",
     "preflight": "preflight is recorder-owned; use workflow record-preflight",
     "production-code": "production-code is recorder-owned; use workflow record-production-code",
     "verification": "verification is runner-owned; use workflow verify",
@@ -180,6 +184,14 @@ def _emit_json(value: object) -> None:
         # The command's mutation, when any, is already committed. A reporting
         # failure cannot be re-labelled as a refused transition.
         _mute_stdout()
+
+
+def _emit_state(value: dict[str, object]) -> None:
+    """Every full-state emission goes out as the one schemaVersion 1 projection.
+
+    `history` deliberately does not: recorded events are read back verbatim.
+    """
+    _emit_json(public_status(value))
 
 
 def _state(identity: RepoIdentity) -> dict[str, object]:
@@ -413,10 +425,23 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
             gate = validate_gate_result(json.loads(raw.decode("utf-8")))
             valid = valid and gate.get("ok") is True
             errors = gate.get("errors")
-            if binding_error is None and isinstance(errors, list) and any(
-                isinstance(error, str) and error.startswith("candidate capture drift:") for error in errors
-            ):
-                binding_error = "reviewable tree changed during the quality-gate run"
+            capture = next(
+                (
+                    error for error in (errors if isinstance(errors, list) else ())
+                    if isinstance(error, str) and error.startswith("candidate capture ")
+                ),
+                None,
+            )
+            if binding_error is None and capture is not None:
+                # Drift and outright capture failure are one condition here: the gate
+                # never held a tree still, so nothing it reports binds to one. Only the
+                # drift shape has a settled name; the rest carry the gate's own words
+                # rather than being attributed to a cause the runner cannot know.
+                binding_error = (
+                    "reviewable tree changed during the quality-gate run"
+                    if capture.startswith("candidate capture drift:")
+                    else f"the quality gate could not capture the reviewable tree: {capture}"
+                )
         except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
             valid = False
             binding_error = str(exc)
@@ -503,9 +528,9 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     identity = resolve_repo_identity(args.repo)
     if args.command == "begin":
-        _emit_json(begin(identity, args.slug, args.intent))
+        _emit_state(begin(identity, args.slug, args.intent))
     elif args.command == "status":
-        _emit_json(_state(identity))
+        _emit_state(_state(identity))
     elif args.command == "summary":
         print(summary(identity))
     elif args.command == "history":
@@ -520,10 +545,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         if phase in PRODUCER_OWNED:
             raise ValueError(PRODUCER_OWNED[phase])
         if phase not in LEAD_PHASES:
-            raise ValueError("set-phase is lead-owned only for gitnexus, implementation, and code-review not-required")
+            raise ValueError("set-phase is lead-owned only for implementation and code-review not-required")
         if phase == "code-review" and (args.status != "not-required" or args.findings != "none"):
             raise ValueError("code-review passed is recorder-owned; lead-owned set-phase permits only not-required with findings none")
-        _emit_json(set_phase(
+        _emit_state(set_phase(
             identity,
             phase,
             args.status,
@@ -532,7 +557,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             workflow_id=args.workflow_id,
         ))
     elif args.command == "advisor-result":
-        _emit_json(record_advisor_result(
+        _emit_state(record_advisor_result(
             identity,
             args.slug,
             args.workflow_id,
@@ -553,7 +578,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             workflow_id=args.workflow_id,
             stage=args.stage,
         ) if args.input else None
-        _emit_json(advisor_disposition(
+        _emit_state(advisor_disposition(
             identity,
             args.slug,
             args.workflow_id,
@@ -562,11 +587,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             document=document,
         ))
     elif args.command == "pause":
-        _emit_json(pause(identity, args.slug, args.workflow_id, args.reason))
+        _emit_state(pause(identity, args.slug, args.workflow_id, args.reason))
     elif args.command == "checkpoint":
         _emit_json(checkpoint(identity, args.phase))
     elif args.command == "complete":
-        _emit_json(complete(identity, slug=args.slug, workflow_id=args.workflow_id))
+        _emit_state(complete(identity, slug=args.slug, workflow_id=args.workflow_id))
     elif args.command == "record-preflight":
         return _record_phase(args, identity, "preflight", "document", validated_document(args.input))
     elif args.command == "record-production-code":

@@ -325,21 +325,22 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertEqual(len(resolutions), 3, f"expected one resolution per run, got {resolutions}")
 
     def test_the_migration_differential_continues_a_baseline_seeded_state_root(self) -> None:
-        """The candidate reads state the baseline wrote, which is the only way #74's import runs.
+        """The candidate continues state the baseline wrote, which is what a real handover is.
 
-        Both arms are the same ref here, so this proves the mechanism: a real legacy
-        seed, two real continuations, equal projected state. The two-engine differential
-        is the acceptance run against a candidate whose store is SQLite.
+        Both arms are the same ref here, so this proves the mechanism: a real seed,
+        two real continuations, equal projected state, one store throughout. The
+        two-engine differential — a candidate that adopts a different store and never
+        converts what it was given — is the separate case below.
         """
         _, artifact = self.benchmark("HEAD", "HEAD")
         migration = artifact["migration"]
 
-        self.assertEqual(migration["seedStores"], ["workflow.json"],
-                         "the baseline CLI did not leave legacy state for the candidate to import")
+        self.assertEqual(migration["seedStores"], ["workflow.sqlite3"],
+                         "the baseline CLI did not leave state for the candidate to continue")
         self.assertEqual(migration["exits"], [0, 0], "a continuation refused the seeded state root")
         self.assertTrue(migration["match"], json.dumps(migration, indent=2)[:2000])
-        self.assertIn("workflow.json", migration["candidateStores"],
-                      "the candidate did not read the legacy store it was given")
+        self.assertIn("workflow.sqlite3", migration["candidateStores"],
+                      "the candidate did not read the store it was given")
 
     def test_a_candidate_that_escapes_its_state_root_is_caught(self) -> None:
         """An arm whose redirect genuinely fails, not a planted trace.
@@ -386,7 +387,10 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         # diverge while the rest stay in parity.
         state = self.clone / "hooks" / "lib" / "workflow_state.py"
         original = state.read_text(encoding="utf-8")
-        perturbed_text = original.replace('("gitnexus", state.get("gitnexus")', '("gitnexus-graph", state.get("gitnexus")')
+        perturbed_text = original.replace(
+            '(("repo-context-forge", _evidence_ready(state, "repo-context-forge")),)',
+            '(("repo-context-forge-graph", _evidence_ready(state, "repo-context-forge")),)',
+        )
         self.assertNotEqual(perturbed_text, original, "the perturbation point moved; the test is no longer valid")
         state.write_text(perturbed_text, encoding="utf-8")
         self.run_git("commit", "--quiet", "--all", "-m", "perturb the checkpoint requirement label")
@@ -400,9 +404,42 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertEqual(list(diverged), ["checkpoint-not-ready"], "the wrong scenarios diverged")
         differences = diverged["checkpoint-not-ready"]["differences"]
         self.assertEqual(len(differences), 5, "a deterministic mismatch must show in every repetition")
-        self.assertIn("gitnexus", differences[0]["baseline"]["missing"])
-        self.assertIn("gitnexus-graph", differences[0]["candidate"]["missing"])
+        self.assertIn("repo-context-forge", differences[0]["baseline"]["missing"])
+        self.assertIn("repo-context-forge-graph", differences[0]["candidate"]["missing"])
         self.assertTrue(artifact["isolation"]["ok"], "a behavioural mismatch is not an isolation failure")
+
+    def test_an_unrelated_exit_two_does_not_satisfy_the_retired_transition(self) -> None:
+        """Exit 2 is not a reason, and the state that follows it was set by the seed.
+
+        `gitnexus` reads `passed` from the moment the seed records Repo Context Forge
+        evidence, so the status read after the transition cannot testify about the
+        transition. If the invariant also accepts any exit 2, an arm that failed for an
+        unrelated reason looks identical to one that correctly refused a retired step.
+        Both arms are that ref here, so nothing diverges and only the invariant can
+        catch it — which is the identically-broken pair the benchmark exists to reject.
+        """
+        cli = self.clone / "hooks" / "lib" / "workflow_cli.py"
+        original = cli.read_text(encoding="utf-8")
+        perturbed_text = original.replace(
+            '"gitnexus": "gitnexus is no longer a workflow step; Repo Context Forge records the graph "',
+            '"gitnexus": "workflow-id binding failed for this instance; Repo Context Forge records the graph "',
+        )
+        self.assertNotEqual(perturbed_text, original, "the retired-transition message moved")
+        cli.write_text(perturbed_text, encoding="utf-8")
+        self.run_git("commit", "--quiet", "--all", "-m", "refuse the retired transition for an unrelated reason")
+        head = self.run_git("rev-parse", "HEAD")
+
+        result, artifact = self.benchmark(head, head)
+
+        step = [item for item in artifact["scenarios"] if item["name"] == "replay-gitnexus"][0]
+        self.assertEqual(step["observed"]["exits"], [2, 0], "the perturbed arm did not refuse with exit 2")
+        self.assertFalse(step["differences"], "two identical arms cannot differ; only the invariant can catch this")
+        self.assertFalse(
+            step["invariantsHeld"],
+            "an exit 2 carrying an unrelated reason satisfied the retired-transition invariant",
+        )
+        self.assertFalse(artifact["ok"])
+        self.assertNotEqual(result.returncode, 0, "an identically broken pair was reported as a pass")
 
     def test_a_candidate_that_never_converts_the_seeded_store_fails(self) -> None:
         """The false green the migration differential exists to catch.
@@ -413,12 +450,12 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         see that; comparing each arm's own native store against what it left behind can.
         """
         parent = self.run_git("rev-parse", "HEAD")
-        state = self.clone / "hooks" / "lib" / "workflow_state.py"
+        state = self.clone / "hooks" / "lib" / "_workflow_db.py"
         original = state.read_text(encoding="utf-8")
         perturbed_text = original.replace(
-            '    return repo_state_dir(identity) / "workflow.json"',
-            '    legacy = repo_state_dir(identity) / "workflow.json"\n'
-            '    return legacy if legacy.exists() else repo_state_dir(identity) / "workflow.v2.json"')
+            "        path = repo_state_dir(identity) / DATABASE_NAME",
+            "        legacy = repo_state_dir(identity) / DATABASE_NAME\n"
+            '        path = legacy if legacy.exists() else repo_state_dir(identity) / "workflow.v2.sqlite3"')
         self.assertNotEqual(perturbed_text, original, "the workflow store path moved")
         state.write_text(perturbed_text, encoding="utf-8")
         self.run_git("commit", "--quiet", "--all", "-m", "adopt a new store without converting legacy state")
@@ -429,9 +466,9 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         migration = artifact["migration"]
         self.assertEqual(migration["exits"], [0, 0], "the candidate refused the seeded root for some other reason")
         self.assertTrue(migration["match"], "this candidate must agree on state; only its storage differs")
-        self.assertEqual(migration["candidateNativeStores"], ["workflow.v2.json"])
-        self.assertEqual(migration["candidateStores"], ["workflow.json"],
-                         "the candidate was supposed to leave the legacy file unconverted")
+        self.assertEqual(migration["candidateNativeStores"], ["workflow.v2.sqlite3"])
+        self.assertEqual(migration["candidateStores"], ["workflow.sqlite3"],
+                         "the candidate was supposed to leave the seeded store unconverted")
         self.assertFalse(migration["ok"], "an unconverted store was accepted")
         self.assertFalse(artifact["ok"])
         self.assertNotEqual(result.returncode, 0, "an unconverted store was reported as a pass")
@@ -439,8 +476,8 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         # that reports FAILED while showing one of them tells the operator nothing about
         # which arm caused it. These two arms hold deliberately different native stores, so
         # a swapped or duplicated label cannot satisfy this assertion.
-        self.assertEqual(migration["baselineNativeStores"], ["workflow.json"])
-        self.assertIn("native baseline workflow.json | candidate workflow.v2.json", result.stdout,
+        self.assertEqual(migration["baselineNativeStores"], ["workflow.sqlite3"])
+        self.assertIn("native baseline workflow.sqlite3 | candidate workflow.v2.sqlite3", result.stdout,
                       f"the summary does not name the arm that failed\n{result.stdout}")
 
     def test_the_workflow_state_replay_times_every_downstream_operation(self) -> None:
@@ -511,12 +548,25 @@ class ABEstateBenchmarkTests(unittest.TestCase):
     def test_an_arm_without_the_typed_gate_records_not_supported(self) -> None:
         """Two refs that do not ship `verify --kind`, so the step must be declared absent.
 
-        Both arms here are this branch, which has no typed quality gate, so the honest
-        record is a step with no runs on either side. A synthesised pass would be exactly
-        the fake green the comparison exists to catch, and because both arms agree there
-        is no capability delta to report either.
+        This branch does ship the typed gate, so an arm without it has to be built: the
+        option is renamed, which is exactly what a ref predating it looks like to the
+        capability probe. Both arms are that ref, so the honest record is a step with no
+        runs on either side. A synthesised pass would be exactly the fake green the
+        comparison exists to catch, and because both arms agree there is no capability
+        delta to report either.
         """
+        cli = self.clone / "hooks" / "lib" / "workflow_cli.py"
+        original = cli.read_text(encoding="utf-8")
+        # Renamed rather than removed: the runner still needs its own `kind` attribute
+        # for the generic verification the replay depends on.
+        perturbed_text = original.replace(
+            'command.add_argument("--kind", choices=("generic", "quality-gate"), default="generic")',
+            'command.add_argument("--gate-kind", dest="kind", choices=("generic", "quality-gate"), default="generic")')
+        self.assertNotEqual(perturbed_text, original, "the typed-gate option moved")
+        cli.write_text(perturbed_text, encoding="utf-8")
+        self.run_git("commit", "--quiet", "--all", "-m", "retire the typed quality gate option")
         head = self.run_git("rev-parse", "HEAD")
+
         result, artifact = self.benchmark(head, head)
 
         for name in ("baseline", "candidate"):
@@ -529,7 +579,17 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         self.assertFalse(typed["capabilityDelta"], "two identical arms cannot differ in capability")
         self.assertTrue(typed["invariantsHeld"])
         self.assertFalse(typed["differences"])
-        self.assertEqual(result.returncode, 0, result.stdout[-1500:] + result.stderr[-1500:])
+        # The typed gate now carries the final-review tree binding and completion
+        # requires its evidence, so an arm without it genuinely cannot finish the
+        # governed sequence. The run must fail for exactly that reason and no other:
+        # the absent step itself stays absent rather than being synthesised into a pass.
+        self.assertNotEqual(result.returncode, 0, "an arm that cannot complete was reported as a pass")
+        self.assertEqual(
+            [item["name"] for item in artifact["scenarios"] if not item["invariantsHeld"]],
+            ["replay-code-review", "replay-advisor-final", "replay-final-disposition", "replay-complete"],
+            "the missing typed gate broke something other than the steps that depend on it",
+        )
+        self.assertTrue(artifact["isolation"]["ok"], "a capability gap is not an isolation failure")
 
     def test_a_baseline_that_cannot_seed_is_reported_rather_than_crashing(self) -> None:
         """A failed seed must reach the artifact, because a traceback reports nothing.
@@ -538,15 +598,17 @@ class ABEstateBenchmarkTests(unittest.TestCase):
         operator still gets their comparison alongside the migration failure.
         """
         parent = self.run_git("rev-parse", "HEAD")
-        cli = self.clone / "skills" / "repo-production-workflow" / "scripts" / "pass-state.py"
+        # The entry point behind every shim, so the refusal reaches the seed whichever
+        # script the benchmark invokes.
+        cli = self.clone / "hooks" / "lib" / "workflow_cli.py"
         original = cli.read_text(encoding="utf-8")
         perturbed_text = original.replace(
-            "def main() -> int:\n    arguments = parser()",
-            "def main() -> int:\n"
+            "def main(argv: list[str] | None = None) -> int:\n    try:",
+            "def main(argv: list[str] | None = None) -> int:\n"
             '    if "migration seed" in sys.argv:\n'
             '        sys.stderr.write("seeding refused\\n")\n'
             "        return 3\n"
-            "    arguments = parser()")
+            "    try:")
         self.assertTrue(perturbed_text != original, "the CLI entry point moved")
         cli.write_text(perturbed_text, encoding="utf-8")
         self.run_git("commit", "--quiet", "--all", "-m", "refuse the migration seed")

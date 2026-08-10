@@ -156,7 +156,7 @@ check "slug-mismatch refusal names both slugs" "does not match the active workfl
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
   "$WRAPPER" --slug real-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "not-ready checkpoint refused before the consult" 2 "$status"
-check "checkpoint refusal names the missing steps" "missing: repo-context-forge,gitnexus" "$out"
+check "checkpoint refusal names the missing steps" "missing: repo-context-forge" "$out"
 
 # Ineligible checkpoints must refuse before the expensive `claude` call. A refusal
 # naming the checkpoint (not the ~/.bashrc transport parse that follows it) is the
@@ -164,14 +164,15 @@ check "checkpoint refusal names the missing steps" "missing: repo-context-forge,
 git -C "$gatetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
 workflow_py() { CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 -c "$1" "$ROOT" "$gatetmp/repo" "$2"; }
 workflow_py 'import sys
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.lib.repo_identity import resolve_repo_identity
 from hooks.lib import workflow_state as w
+from hooks.tests.support import record_context_forge
 identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
 w.begin(identity, slug)
 wid = w.read_workflow(identity)["workflowId"]
-for phase in ("repo-context-forge", "gitnexus"):
-    w.set_phase(identity, phase, "passed")
+record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)
 w.record_advisor_result(identity, slug, wid, "preflight", "codex-advisor", "completed")
 w.advisor_disposition(identity, slug, wid, "preflight", "none")
 import json as j, subprocess as sp, tempfile as tf, os as o
@@ -218,8 +219,7 @@ from hooks.lib.repo_identity import resolve_repo_identity
 from hooks.lib import workflow_state as w
 identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
 w.begin(identity, slug)
-for phase in ("repo-context-forge", "gitnexus"):
-    w.set_phase(identity, phase, "passed")
+w.set_phase(identity, "repo-context-forge", "passed")
 connection = sqlite3.connect(database_path(identity))
 event_id = connection.execute("SELECT event_id FROM active_projection WHERE slot = 1").fetchone()[0]
 state = json.loads(connection.execute("SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)).fetchone()[0])
@@ -285,108 +285,106 @@ check_status "sid lands under the workflow state root override" "1" "$override_s
 check_status "no sid lands under the CLAUDE_HOME fallback" "0" "$fallback_sids"
 rm -rf "$roottmp"
 
-printf '== gitnexus envelope validation (offline)\n'
+printf '== Repo Context Forge graph evidence (offline)\n'
 envtmp=$(mktemp -d)
 mkdir -p "$envtmp/home" "$envtmp/repo"
 git -C "$envtmp/repo" init -q
 git -C "$envtmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-env_root=$(python3 "$ROOT/hooks/lib/repo_identity.py" --path "$envtmp/repo" --field root)
-env_head=$(git -C "$envtmp/repo" rev-parse HEAD)
-# Ungoverned invocations die at the ~/.bashrc alias-parse stage in this fake
-# HOME, the last stop before the provider. A refusal naming the gitnexus
-# condition instead proves validation fired before any provider effect.
-env_invoke() { HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope --cwd "$envtmp/repo" --gitnexus "$1" -- "q" 2>&1; }
 
-printf 'not json' > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "malformed gitnexus JSON refused" 2 "$status"
-check "malformed refusal names invalid JSON" "gitnexus evidence is not valid JSON" "$out"
+# The hand-authored envelope is gone, not merely ignored: a caller cannot supply
+# graph transport at all.
+out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope \
+  --cwd "$envtmp/repo" --gitnexus /dev/null -- "q" 2>&1); status=$?
+check_status "the retired --gitnexus option is refused" 2 "$status"
+check "retired option names itself" "unknown argument: --gitnexus" "$out"
 
-# RFC 8259 has no NaN/Infinity constants; Python's default decoder accepts all
-# three, so each token must land in the same invalid-JSON refusal class.
-for constant in NaN Infinity -Infinity; do
-  printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":%s}}' \
-    "$env_root" "$env_head" "$constant" > "$envtmp/evidence.json"
-  out=$(env_invoke "$envtmp/evidence.json"); status=$?
-  check_status "non-RFC constant $constant refused" 2 "$status"
-  check "non-RFC constant $constant refuses as invalid JSON" "gitnexus evidence is not valid JSON" "$out"
-done
+# Governed consults die at the ~/.bashrc alias-parse stage in this fake HOME, the
+# last stop before the provider. A refusal naming the graph evidence instead proves
+# the wrapper resolved it first, and refused without paying for a consultation.
+env_state="$envtmp/state"
+graph_py() { CLAUDE_WORKFLOW_STATE_ROOT="$env_state" python3 -c "$1" "$ROOT" "$envtmp/repo" "$2"; }
+graph_py 'import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.lib import workflow_state as w
+from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.tests.support import record_context_forge
+w.begin(resolve_repo_identity(sys.argv[2]), sys.argv[3])
+record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)' graph-pass
+out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
+  "$WRAPPER" --slug graph-pass --phase preflight-advice --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+check_status "recorded graph evidence clears the consult gate" 2 "$status"
+check "automatic graph evidence reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
 
-printf '[1, 2]' > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "non-object gitnexus top level refused" 2 "$status"
-check "non-object refusal names the envelope" "gitnexus evidence must be a JSON object envelope" "$out"
+# A state that claims evidence this instance does not own must refuse rather than
+# consult on another pass's graph result.
+graph_py 'import json, sqlite3, sys
+sys.path.insert(0, sys.argv[1])
+from hooks.lib._workflow_db import database_path
+from hooks.lib.repo_identity import resolve_repo_identity
+identity = resolve_repo_identity(sys.argv[2])
+connection = sqlite3.connect(database_path(identity))
+event_id = connection.execute("SELECT event_id FROM active_projection WHERE slot = 1").fetchone()[0]
+state = json.loads(connection.execute("SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)).fetchone()[0])
+state["repoContextForgeEvidence"] = "evidence-" + "0" * 32
+connection.execute("UPDATE workflow_events SET state_json = ? WHERE event_id = ?",
+                   (json.dumps(state, sort_keys=True, separators=(",", ":")), event_id))
+connection.commit(); connection.close()' graph-pass
+out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
+  "$WRAPPER" --slug graph-pass --phase preflight-advice --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+check_status "unowned graph evidence refused before the consult" 2 "$status"
+check "unowned refusal instructs a bootstrap rerun" "rerun the Repo Context Forge bootstrap" "$out"
 
-printf '{"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "missing schemaVersion refused" 2 "$status"
-check "missing schemaVersion names the condition" "requires schemaVersion 1, got: null" "$out"
+# A graph result far larger than the bound must still be reported within it, and
+# must say how many checks it dropped: an excerpt that quietly exceeds its own
+# limit reads to the delegate as complete evidence while costing unbounded input.
+graph_py 'import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.lib.workflow_documents import graph_evidence_document
+from hooks.lib import workflow_state as w
+identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
+w.begin(identity, slug)
+state, root = w.read_workflow(identity), str(resolve_repo_identity(sys.argv[2]).root)
+entry = lambda n: {"kind": "symbol_context", "file": f"module_{n}.py", "target": f"symbol_{n}",
+                   "direction": "", "status": "resolved",
+                   "resolved_identity": f"Function:module_{n}.py:symbol_{n}",
+                   "callers": [{"identity": f"Function:caller_{n}_{i}.py:run_{i}", "name": f"run_{i}",
+                                "file": f"caller_{n}_{i}.py"} for i in range(40)]}
+packet = {"target_state": {"source_repo": root},
+          "gitnexus": {"analysis": {"status": "resolved", "entries": [entry(n) for n in range(40)],
+                                    "unresolved_checks": [], "elapsed_ms": 1, "process_count": 1,
+                                    "graph_call_count": 40, "output_bytes": 1,
+                                    "authority": {"source_repository": root},
+                                    "producer_revision": {"commit": "0" * 40, "dirty": False}}}}
+packet_path = Path(sys.argv[2]).parent / "oversized-packet.json"
+packet_path.write_text(json.dumps(packet), encoding="utf-8")
+w.commit_evidence_phase(identity, slug, w.instance_id(state), "repo-context-forge",
+                        graph_evidence_document(str(packet_path), slug=slug,
+                                                workflow_id=str(w.instance_id(state)), source_root=root))' oversized-graph
+out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
+  "$WRAPPER" --slug oversized-graph --phase preflight-advice --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+check_status "an oversized graph result still reaches the consult gate" 2 "$status"
+measured=$(printf '%s' "$out" | sed -n 's/.*codex_advisor_graph_evidence //p')
+bytes=$(printf '%s' "$measured" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
+omitted=$(printf '%s' "$measured" | sed -n 's/.*checks_omitted=\([0-9]*\).*/\1/p')
+check "the wrapper reports what the excerpt actually cost" "checks_total=40" "$measured"
+if [[ -n "$bytes" && "$bytes" -le 9000 ]]; then
+  printf 'PASS  the emitted excerpt honours its own bound (%s bytes)\n' "$bytes"; pass=$((pass + 1))
+else
+  printf 'FAIL  the emitted excerpt honours its own bound\n      expected <=9000 bytes, got: %s\n' "${bytes:-<unreported>}"; fail=$((fail + 1))
+fi
+if [[ -n "$omitted" && "$omitted" -gt 0 ]]; then
+  printf 'PASS  the trimmed excerpt names its omitted checks (%s)\n' "$omitted"; pass=$((pass + 1))
+else
+  printf 'FAIL  the trimmed excerpt names its omitted checks\n      expected >0, got: %s\n' "${omitted:-<unreported>}"; fail=$((fail + 1))
+fi
 
-printf '{"schemaVersion":true,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "boolean schemaVersion refused despite True == 1" 2 "$status"
-check "boolean schemaVersion names the condition" "requires schemaVersion 1, got: true" "$out"
-
-printf '{"schemaVersion":2,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "unknown schemaVersion refused" 2 "$status"
-check "unknown schemaVersion names the condition" "requires schemaVersion 1, got: 2" "$out"
-
-printf '{"schemaVersion":1.0,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "float schemaVersion refused despite 1.0 == 1" 2 "$status"
-check "float schemaVersion names the condition" "requires schemaVersion 1, got: 1.0" "$out"
-
-printf '{"schemaVersion":1,"repositoryRoot":42,"headSha":"%s","graphEvidence":{"context":"x"}}' "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "non-string repositoryRoot refused" 2 "$status"
-check "non-string repositoryRoot names the condition" "repositoryRoot must be the canonical repository root path" "$out"
-
-mkdir -p "$envtmp/other"
-git -C "$envtmp/other" init -q
-printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$envtmp/other" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "wrong repositoryRoot refused" 2 "$status"
-check "wrong-repository refusal names the expected root" "expected $env_root" "$out"
-
-printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"abc123","graphEvidence":{"context":"x"}}' "$env_root" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "abbreviated headSha refused as malformed" 2 "$status"
-check "abbreviated headSha names the shape condition" "headSha must be the full 40-hex commit sha" "$out"
-
-stale_sha=$(printf '%040d' 0)
-printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$stale_sha" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "stale well-formed headSha refused" 2 "$status"
-check "stale-head refusal names the current HEAD" "does not match the current HEAD $env_head" "$out"
-
-printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":"prose"}' "$env_root" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "non-object graphEvidence refused" 2 "$status"
-check "non-object graphEvidence names the condition" "graphEvidence must be a JSON object" "$out"
-
-printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "empty graphEvidence refused" 2 "$status"
-check "empty graphEvidence names the condition" "graphEvidence is empty" "$out"
-
-# Accepted evidence must clear validation and die at the alias-parse stage,
-# exactly where an omitted --gitnexus dies: the provider is never cheaper to
-# reach with evidence than without it.
-printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$env_root" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "matching envelope clears validation" 2 "$status"
-check "matching envelope reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
-
-ln -s "$envtmp/repo" "$envtmp/repolink"
-printf '{"schemaVersion":1,"repositoryRoot":"%s","headSha":"%s","graphEvidence":{"context":"x"}}' "$envtmp/repolink" "$env_head" > "$envtmp/evidence.json"
-out=$(env_invoke "$envtmp/evidence.json"); status=$?
-check_status "symlink spelling of the same root accepted" 2 "$status"
-check "symlink spelling reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
-
+# Ungoverned consults never had graph evidence to read and must keep working.
 out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
-check_status "omitted --gitnexus keeps current optional-input behavior" 2 "$status"
-check "omitted --gitnexus reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
+check_status "ungoverned consult keeps its optional-input behavior" 2 "$status"
+check "ungoverned consult reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
 rm -rf "$envtmp"
 
 if [[ "${LIVE:-0}" = "1" ]]; then

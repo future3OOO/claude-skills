@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
@@ -22,10 +21,85 @@ REARM = ROOT / "hooks" / "skill-discipline-rearm.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
-from hooks.tests.support import build_document  # noqa: E402
+from hooks.tests.support import build_document, record_context_forge  # noqa: E402
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
+
+
+# Driven as a child process by the mid-gate mutation test. It runs outside this
+# interpreter deliberately: a thread here competes for one GIL with the runner and
+# can be starved for a whole gate on a two-core machine, which is how the same
+# assertion failed two different ways on CI while passing locally every time.
+MID_GATE_MUTATOR = '''
+import os, sys, time
+from pathlib import Path
+
+target, marker = Path(sys.argv[1]), Path(sys.argv[2])
+# Split so this script's own text never carries the token: `python -c` puts the
+# whole program in its /proc cmdline, and a mutator that matches itself would
+# start writing before the gate exists and never stop.
+GATE = "code_quality" + "_gate.py"
+# The gate is launched as `--repo <canonical root>`, which the workflow derives through
+# `realpath -e`, so the fixture path is canonicalised here too: an alternate spelling of
+# the same directory would otherwise never match and silently stop confirming anything.
+REPO = str(target.parent.resolve())
+
+
+def identity(pid):
+    """The process start time, which pins a pid to one incarnation of it."""
+    try:
+        return (Path("/proc") / pid / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def gate_child():
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            args = (entry / "cmdline").read_bytes().decode("utf-8", "replace").split(chr(0))
+        except OSError:
+            continue
+        # Both conditions, and against parsed argv rather than the raw text: the script
+        # name alone also matches a shell whose command line merely mentions it and any
+        # gate running for another repository, and confirming against one of those
+        # certifies an overlap window this run never controlled.
+        if not any(GATE in arg for arg in args):
+            continue
+        if any(args[index] == "--repo" and args[index + 1] == REPO for index in range(len(args) - 1)):
+            return entry.name, identity(entry.name)
+    return None, None
+
+
+def record(count):
+    """Atomically, so the reader cannot catch a half-written marker."""
+    temporary = marker.with_name(marker.name + ".partial")
+    temporary.write_text(str(count), encoding="utf-8")
+    os.replace(temporary, marker)
+
+
+confirmed, counter, deadline = 0, 0, time.monotonic() + 300
+pid, started = None, None
+while pid is None and time.monotonic() < deadline:
+    pid, started = gate_child()
+    if pid is None:
+        time.sleep(0.001)
+while pid is not None and started is not None:
+    counter += 1
+    target.write_text("value = %d\\n" % counter, encoding="utf-8")
+    # Confirmed only once the same incarnation is still running after the write:
+    # a check taken beforehand races the child's exit and would count an overlap
+    # that never happened.
+    if identity(pid) != started:
+        break
+    confirmed += 1
+    record(confirmed)
+    # The gate needs the machine more than this loop does; the handshake above,
+    # not write volume, is what makes the overlap real.
+    time.sleep(0.001)
+'''
 
 
 class PassLifecycleTests(unittest.TestCase):
@@ -151,12 +225,11 @@ class PassLifecycleTests(unittest.TestCase):
             result = self.cli(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def advance_to_gitnexus(self) -> None:
-        self.owner_phase("repo-context-forge", "passed")
-        self.run_cli(("set-phase", "--phase", "gitnexus", "--status", "passed"))
+    def advance_to_context_forge(self) -> None:
+        record_context_forge(self.repo, self.tmp)
 
     def advance_to_preflight(self, slug: str, wid: str) -> None:
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -557,7 +630,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_preflight_records_only_with_its_document(self) -> None:
         wid = self.begin_slug("evidence-preflight")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "evidence-preflight", "--workflow-id", wid,
              "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
@@ -713,20 +786,18 @@ class PassLifecycleTests(unittest.TestCase):
         generic = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(generic.returncode, 0, generic.stdout + generic.stderr)
 
-        mutated = self.repo / "app.py"
-        stop = threading.Event()
-        writes = []
-
-        def mutate() -> None:
-            counter = 0
-            while not stop.is_set():
-                counter += 1
-                mutated.write_text(f"value = {counter}\n", encoding="utf-8")
-                writes.append(counter)
-                time.sleep(0.001)
-
-        thread = threading.Thread(target=mutate)
-        thread.start()
+        # The mutation has to land between the two manifests the runner samples
+        # around the gate child. A thread spraying writes only makes that likely:
+        # on a loaded two-core runner it can be starved for the whole gate, and
+        # the run then passes for the wrong reason. So the mutator is a separate
+        # process, and it counts a write only once it has re-confirmed that the
+        # same gate child — identified by pid and start time, so a recycled pid
+        # cannot stand in for it — was still alive after the write landed.
+        marker = self.tmp / "confirmed-writes"
+        mutator = subprocess.Popen(
+            [sys.executable, "-c", MID_GATE_MUTATOR, str(self.repo / "app.py"), str(marker)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
         try:
             result = subprocess.run(
                 [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo),
@@ -735,17 +806,118 @@ class PassLifecycleTests(unittest.TestCase):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
             )
         finally:
-            stop.set()
-            thread.join()
-        # The refusal is meaningless unless the tree really changed mid-run.
-        self.assertGreater(len(writes), 1, "mutator never ran during the gate")
+            mutator.terminate()
+            _, mutator_stderr = mutator.communicate(timeout=30)
+        confirmed = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
+        # The refusal is meaningless unless the tree really changed mid-run. A child
+        # that died instead of overlapping reports the same zero, so its own output
+        # travels with the failure rather than being thrown away; it is not asserted
+        # empty, because the child is terminated on every run and says so.
+        self.assertGreater(
+            confirmed, 0,
+            "the mutation never overlapped the gate child, so the drift window was never "
+            f"exercised; mutator stderr: {mutator_stderr!r}",
+        )
 
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         emitted = json.loads(result.stdout.splitlines()[-1])
         run = self.evidence(emitted["evidenceId"])["runs"][-1]
         self.assertFalse(run["valid"])
-        self.assertEqual(run["bindingError"], "reviewable tree changed during the quality-gate run")
+        # Either attribution proves the same thing: the gate never saw a tree that
+        # held still. Which one surfaces depends on whether the write landed in the
+        # runner's own sampling window or inside the gate's `git add` capture, and
+        # the second is what made this test intermittent before it was named.
+        reason = run["bindingError"] or ""
+        self.assertTrue(
+            reason == "reviewable tree changed during the quality-gate run"
+            or reason.startswith("the quality gate could not capture the reviewable tree:"),
+            f"the mid-run mutation went unattributed: {reason!r}",
+        )
+        self.assertEqual(state["verification"], "pending")
+        self.assertNotIn("qualityGateManifestId", state)
+
+    def test_the_mutator_ignores_a_gate_running_for_another_repository(self) -> None:
+        """Overlap is only overlap with this fixture's own gate.
+
+        The detector reads every process on the host, so a gate belonging to a
+        concurrent developer or CI job can satisfy it. Confirming against one of
+        those certifies a window this test never controlled, and if it exits before
+        the real gate starts the fixture holds still and the verification passes for
+        the wrong reason. Both false-positive shapes are present here at once: real
+        `code_quality_gate.py` invocations for a different repository, and the shell
+        looping them, whose own command line carries the script name too.
+        """
+        other = self.tmp / "other-repo"
+        other.mkdir()
+        marker = self.tmp / "foreign-writes"
+        decoy = subprocess.Popen(
+            ["bash", "-c", f'while :; do "{sys.executable}" "{QUALITY_GATE}" check --repo "{other}" >/dev/null 2>&1; done'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        mutator = subprocess.Popen(
+            [sys.executable, "-c", MID_GATE_MUTATOR, str(self.repo / "app.py"), str(marker)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            # A window, because absence is what is being proved: the current detector
+            # matches within a millisecond and writes every millisecond after that, so
+            # two seconds is thousands of chances to record a confirmation.
+            time.sleep(2)
+            alive = mutator.poll() is None
+        finally:
+            mutator.terminate()
+            _, mutator_stderr = mutator.communicate(timeout=30)
+            decoy.kill()
+            decoy.wait(timeout=30)
+
+        # Asserted before the count, so a mutator that died cannot pass this by silence.
+        self.assertTrue(alive, f"the mutator exited before it could confirm anything: {mutator_stderr!r}")
+        confirmed = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
+        self.assertEqual(
+            confirmed, 0,
+            "the mutator confirmed writes against a quality gate belonging to another "
+            f"repository, so its overlap marker certifies a window it never controlled; "
+            f"mutator stderr: {mutator_stderr!r}",
+        )
+
+    def test_a_gate_that_cannot_capture_the_tree_says_why(self) -> None:
+        """A capture that fails is as unusable as one that drifts, and must be named.
+
+        A required clean filter that exits non-zero makes the gate's own `git add`
+        capture fail deterministically, which is the same condition a mid-run
+        mutation produces intermittently. `tree_manifest` hashes with
+        `--no-filters`, so the runner's own sampling is untouched: the only thing
+        broken is the gate's view of the tree.
+        """
+        slug = "capture-failure"
+        wid = self.begin_slug(slug)
+        self.advance_to_preflight(slug, wid)
+        self.owner_phase("tdd", "not-required")
+        self.record_real_gate(wid)
+        self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
+        self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0)
+
+        self.git("config", "filter.boom.clean", "exit 1")
+        self.git("config", "filter.boom.required", "true")
+        (self.repo / ".gitattributes").write_text("app.py filter=boom\n", encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo),
+             "--slug", slug, "--kind", "quality-gate", "--base-ref", "HEAD"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        run = self.evidence(json.loads(result.stdout.splitlines()[-1])["evidenceId"])["runs"][-1]
+        self.assertFalse(run["valid"])
+        self.assertIsNotNone(
+            run["bindingError"], "a gate that could not capture the tree reported no reason",
+        )
+        self.assertIn("could not capture the reviewable tree", run["bindingError"])
+        self.assertIn("candidate capture failed at git add", run["bindingError"])
+        state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["verification"], "pending")
         self.assertNotIn("qualityGateManifestId", state)
 
@@ -930,7 +1102,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_a_fix_round_demands_fresh_evidence_and_tdd_waits_for_preflight_evidence(self) -> None:
         wid = self.begin_slug("fresh-evidence")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "fresh-evidence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "fresh-evidence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -958,7 +1130,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertNotEqual(new_wid, wid)
         self.assertEqual(json.loads(self.cli("status").stdout)["preflight"], "pending",
                          "the replacement instance inherited a recorded preflight")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "fresh-evidence", "--workflow-id", new_wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "fresh-evidence", "--workflow-id", new_wid, "--stage", "preflight", "--findings", "none"),
@@ -1000,7 +1172,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_tdd_demands_preflight_evidence_not_just_status(self) -> None:
         wid = self.begin_slug("bare-preflight-tdd")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "bare-preflight-tdd", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "bare-preflight-tdd", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -1021,7 +1193,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_exit_codes_reflect_the_recording_not_the_reporting(self) -> None:
         wid = self.begin_slug("exit-honesty")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "exit-honesty", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", "exit-honesty", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
@@ -1130,19 +1302,58 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(out_of_order.returncode, 2, out_of_order.stdout + out_of_order.stderr)
         self.assertIn("implementation", out_of_order.stderr)
 
-        for phase in ("repo-context-forge", "tdd", "code-review"):
+        for phase, refusal in (
+            ("repo-context-forge", "run the Repo Context Forge bootstrap"),
+            ("tdd", "lead-owned"),
+            ("code-review", "lead-owned"),
+        ):
             shortcut = self.cli("set-phase", "--phase", phase, "--status", "passed")
             self.assertEqual(shortcut.returncode, 2, shortcut.stdout + shortcut.stderr)
-            self.assertIn("lead-owned", shortcut.stderr)
+            self.assertIn(refusal, shortcut.stderr)
+
+    def test_a_bare_context_forge_claim_publishes_as_pending_everywhere(self) -> None:
+        """Producer evidence is what a passed graph step means; a claim alone is not it."""
+        self.begin_slug("bare-context-claim")
+        self.owner_phase("repo-context-forge", "passed")
+
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual(state["repoContextForge"], "pending", "a bare claim published as passed")
+        self.assertEqual(state["gitnexus"], "pending")
+        self.assertEqual(state["nextAction"], "repo-context-forge")
+        self.assertIn("repo-context-forge=pending", self.cli("summary").stdout)
+        self.assertFalse(self.checkpoint("preflight-advice")["ready"])
+        self.assertIn("repoContextForgeEvidence", self.cli("complete").stderr)
+
+        # The same claim carrying real producer evidence reads passed on every surface.
+        record_context_forge(self.repo, self.tmp)
+        state = json.loads(self.cli("status").stdout)
+        self.assertEqual((state["repoContextForge"], state["gitnexus"]), ("passed", "passed"))
+        self.assertTrue(self.checkpoint("preflight-advice")["ready"])
+
+    def test_the_retired_gitnexus_transition_refuses_as_an_obsolete_step(self) -> None:
+        """No manual bookkeeping survives: the graph step is producer-recorded or absent."""
+        self.begin_slug("obsolete-gitnexus")
+        before = json.loads(self.cli("status").stdout)
+        self.assertEqual(before["gitnexus"], "pending")
+
+        for identity in ((), ("--slug", "obsolete-gitnexus", "--workflow-id", before["workflowId"])):
+            refused = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed", *identity)
+            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+            self.assertIn("no longer a workflow step", refused.stderr)
+        self.assertEqual(json.loads(self.cli("status").stdout), before)
+
+        # Derived, not written: the same field reads passed once the producer's own
+        # evidence exists, and nothing else can move it.
+        record_context_forge(self.repo, self.tmp)
+        self.assertEqual(json.loads(self.cli("status").stdout)["gitnexus"], "passed")
 
     def test_next_action_derives_from_the_complete_state(self) -> None:
         wid = self.begin_slug("derived-next")
         self.advance_to_preflight("derived-next", wid)
 
-        rerecorded = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed")
-        self.assertEqual(rerecorded.returncode, 0, rerecorded.stdout + rerecorded.stderr)
+        record_context_forge(self.repo, self.tmp)
         self.assertEqual(
-            json.loads(rerecorded.stdout)["nextAction"], "tdd",
+            json.loads(self.cli("status").stdout)["nextAction"], "tdd",
             "re-recording an earlier phase rewound nextAction instead of deriving it",
         )
 
@@ -1181,7 +1392,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_preflight_advice_requires_a_measured_outage_or_disposed_findings(self) -> None:
         wid = self.begin_slug("advisor-preflight-contract")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         unavailable = self.cli(
             "advisor-result", "--slug", "advisor-preflight-contract", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor",
@@ -1207,7 +1418,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_legacy_preflight_state_requires_an_explicit_findings_disposition(self) -> None:
         wid = self.begin_slug("legacy-advisor-state")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         self.rewrite_latest_state(
             lambda state: state.__setitem__("advisorPreflight", {"source": "codex-advisor", "status": "completed"})
@@ -1230,7 +1441,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_advisor_disposition_cannot_create_or_alter_raw_results(self) -> None:
         wid = self.begin_slug("producer-owned-advice")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         orphan = self.dispose("producer-owned-advice", wid, "preflight", "addressed", self.disposition_document())
         self.assertEqual(orphan.returncode, 2, orphan.stdout + orphan.stderr)
@@ -1272,7 +1483,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_addressed_disposition_demands_a_structured_document(self) -> None:
         wid = self.begin_slug("disposition-document")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli((
             "advisor-result", "--slug", "disposition-document", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
@@ -1366,7 +1577,7 @@ class PassLifecycleTests(unittest.TestCase):
 
     def test_a_disposition_document_answers_only_for_its_own_stage_and_instance(self) -> None:
         wid = self.begin_slug("disposition-lifetime")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli((
             "advisor-result", "--slug", "disposition-lifetime", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
@@ -1407,7 +1618,7 @@ class PassLifecycleTests(unittest.TestCase):
         # A same-slug begin starts a new instance without clearing artifacts, so a
         # findings-none pass must stop publishing the dead instance's dispositions.
         reused = self.begin_slug("disposition-lifetime")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
         self.run_cli(
             ("advisor-result", "--slug", "disposition-lifetime", "--workflow-id", reused,
              "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
@@ -1426,7 +1637,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         first = json.loads(begun.stdout)
         self.assertTrue(first.get("workflowId"), "begin did not assign a workflowId")
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         bound = self.cli(
             "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
@@ -1438,7 +1649,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
         second = json.loads(rebegun.stdout)
         self.assertNotEqual(second["workflowId"], first["workflowId"])
-        self.advance_to_gitnexus()
+        self.advance_to_context_forge()
 
         delayed = self.cli(
             "advisor-result", "--stage", "preflight", "--source", "codex-advisor",
@@ -1556,7 +1767,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("repo-context-forge", "passed")
 
         for label, transition in (
-            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+            ("set-phase", ("set-phase", "--phase", "implementation", "--status", "passed",
                            "--slug", "lead-identity", "--workflow-id", stale_wid)),
             ("complete", ("complete", "--slug", "lead-identity", "--workflow-id", stale_wid)),
         ):
@@ -1568,7 +1779,7 @@ class PassLifecycleTests(unittest.TestCase):
         # replacement's slug with the stale id: that is the only input reaching
         # the instance comparison.
         for label, transition in (
-            ("set-phase", ("set-phase", "--phase", "gitnexus", "--status", "passed",
+            ("set-phase", ("set-phase", "--phase", "implementation", "--status", "passed",
                            "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
             ("complete", ("complete", "--slug", "lead-identity-replacement", "--workflow-id", stale_wid)),
         ):
@@ -1578,14 +1789,20 @@ class PassLifecycleTests(unittest.TestCase):
 
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["workflowId"], replacement["workflowId"])
-        self.assertEqual(state["gitnexus"], "pending",
+        self.assertEqual(state["implementation"], "pending",
                          "a stale lead command advanced the replacement workflow")
 
-        matching = self.cli("set-phase", "--phase", "gitnexus", "--status", "passed",
-                            "--slug", "lead-identity-replacement",
-                            "--workflow-id", replacement["workflowId"])
-        self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
-        self.run_cli(("set-phase", "--phase", "gitnexus", "--status", "passed"))
+        # A matching identity, and an omitted one, both reach the transition itself:
+        # they fail on this pass's readiness rather than on identity.
+        for label, identity in (
+            ("matching", ("--slug", "lead-identity-replacement",
+                          "--workflow-id", str(replacement["workflowId"]))),
+            ("omitted", ()),
+        ):
+            accepted = self.cli("complete", *identity)
+            self.assertEqual(accepted.returncode, 2, f"{label}: {accepted.stdout}{accepted.stderr}")
+            self.assertNotIn("does not match", accepted.stderr, label)
+            self.assertIn("workflow incomplete", accepted.stderr, label)
 
     def test_production_code_records_once_and_survives_the_rest_of_the_pass(self) -> None:
         from hooks.lib.workflow_state import invalidate_after_edit, ready_for_edit
@@ -1713,8 +1930,13 @@ class PassLifecycleTests(unittest.TestCase):
     def test_rearm_adapter_restores_only_recorded_pass_state(self) -> None:
         begun = self.cli("begin", "--slug", "compact recovery")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        self.owner_phase("repo-context-forge", "passed")
 
+        # A bare claim with no producer evidence must not re-arm a compacted session
+        # with graph readiness it never earned.
+        self.owner_phase("repo-context-forge", "passed")
+        self.assertIn("repo-context-forge=pending", self.cli("summary").stdout)
+
+        record_context_forge(self.repo, self.tmp)
         rearmed = subprocess.run(
             [str(REARM)], cwd=ROOT, env=self.env, text=True,
             input=json.dumps({"cwd": str(self.repo), "source": "compact"}),

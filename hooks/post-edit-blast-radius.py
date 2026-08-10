@@ -161,7 +161,7 @@ def _context(identity: RepoIdentity, state: JsonObject | None, read_error: str |
         + changed_line
         + "\n"
         + _state_summary(identity, read_error)
-        + "\nblast radius: callers=unknown; callees=unknown until packet-scoped GitNexus analysis runs"
+        + "\nblast radius after this edit: unknown until the edited checkout is reanalysed and change-detected"
         + "\nAny production edit after review makes code review and final review pending."
     )[:3600]
 

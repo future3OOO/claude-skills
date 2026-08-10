@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.tests.support import build_document  # noqa: E402
+from hooks.tests.support import build_document, record_context_forge  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
@@ -45,9 +45,7 @@ class TddSummaryTests(unittest.TestCase):
         self.git("commit", "-q", "-m", "base")
         begun = self.run_script(WORKFLOW, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        identity = resolve_repo_identity(self.repo)
-        set_phase(identity, "repo-context-forge", "passed")
-        set_phase(identity, "gitnexus", "passed")
+        identity = record_context_forge(self.repo, self.tmp)
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         self.record_preflight_evidence()
@@ -261,8 +259,7 @@ class TddSummaryTests(unittest.TestCase):
 
         rebegun = self.run_script(WORKFLOW, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
         self.assertEqual(rebegun.returncode, 0, rebegun.stdout + rebegun.stderr)
-        set_phase(identity, "repo-context-forge", "passed")
-        set_phase(identity, "gitnexus", "passed")
+        record_context_forge(self.repo, self.tmp)
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         self.record_preflight_evidence()
@@ -377,9 +374,7 @@ class TddSummaryTests(unittest.TestCase):
         state = json.loads(self.run_script(WORKFLOW, "status", "--repo", str(self.repo)).stdout)
         self.assertEqual((state["tdd"], state["implementation"]), ("pending", "pending"))
 
-        identity = resolve_repo_identity(self.repo)
-        set_phase(identity, "repo-context-forge", "passed")
-        set_phase(identity, "gitnexus", "passed")
+        identity = record_context_forge(self.repo, self.tmp)
         record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         self.record_preflight_evidence()
