@@ -214,58 +214,6 @@ Use a three-way decision for every material unknown:
 
 Do not pause for ceremonial approval after evidence has resolved the decision.
 
-## Review-Comment Doctrine
-
-When the turn is driven by review feedback:
-
-- Restate the actual issue in technical terms.
-- Verify whether the comment matches current HEAD and the repo contract.
-- Run both admission checks below before classifying. Severity labels are not a
-  work queue; automated reviewers are reliable about what code *can* do and
-  unreliable about whether it *does*.
-- Distinguish:
-  - valid defect: mechanism verified AND occurrence demonstrated,
-  - false premise: the finding's assumption about the runtime, config, or
-    environment does not hold,
-  - no occurrence: mechanism is real but the failing shape appears nowhere in
-    captured data or reachable callers,
-  - wording mismatch but behavior already correct,
-  - genuine contract conflict.
-- If the comment conflicts with the repo's `CLAUDE.md` (or `AGENTS.md`), the canonical spec, or verified current behavior, stop and surface the conflict in `openQuestions` instead of silently implementing to comment wording.
-
-### Admission checks
-
-**Premise check.** Name the finding's assumption and verify it directly against
-the live system, not by reading code. Runtime defaults, unit settings, schema and
-installed state are all checkable in one command. A finding whose premise is false
-is rejected with the measurement quoted, and no code changes.
-
-**Occurrence check.** Establish whether the failing shape exists. Query the
-captured corpus, the projection, the logs, or trace a caller that actually reaches
-the path. Record the count. Zero occurrences means the finding is a report line,
-not a change — restate it with its evidence and move on.
-
-Both checks are cheap relative to a regression. Skipping them is how a correct
-finding becomes a worse defect than the one it described.
-
-### Fix validation
-
-Classifying the finding is not validating the fix. Before shipping a change to a
-parser, matcher, predicate, or any code consuming external text or markup, run the
-NEW code over values already captured in the system and require zero regressions.
-A test written from the same assumption that produced the fix cannot detect this;
-only the corpus can.
-
-For in-page browser JavaScript and other seams a local test cannot drive, say so
-and let the authenticated staging run be the proof. Do not write a fixture that
-would pass either way.
-
-### Disposition record
-
-Every finding gets a disposition with its evidence: fixed, rejected-with-evidence,
-or reported-not-actioned. Post them where the reviewer loop can see them. A
-finding rejected without a measurement is indistinguishable from one ignored.
-
 ## Execution Gate
 
 - Preflight must happen before the first tracked edit on the governed pass.

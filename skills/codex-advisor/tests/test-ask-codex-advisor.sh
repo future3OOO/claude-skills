@@ -91,6 +91,7 @@ final_block=$(phase_block final-review)
 check "preflight-advice arm extracts" "Checkpoint Interface: preflight-advice" "$preflight_block"
 check "final-review arm extracts" "Checkpoint Interface: final-review" "$final_block"
 check "final-review states the materiality verdict criterion" "$materiality" "$final_block"
+check "final-review remeasures changed findings" "Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation." "$final_block"
 
 if [[ "$preflight_block" == *"$materiality"* ]]; then
   printf 'FAIL  materiality rule must stay out of preflight-advice, which emits no gating verdict\n'; fail=$((fail+1))
@@ -102,9 +103,9 @@ grep -q 'is never RED/GREEN or production proof' "$WRAPPER" \
   && { printf 'PASS  fake-test hard rule present\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  fake-test rule must be a hard violation\n'; fail=$((fail+1)); }
 
-grep -q 'cannot require code' "$WRAPPER" \
-  && { printf 'PASS  imaginary-risk rule present\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  imaginary-risk rule missing\n'; fail=$((fail+1)); }
+grep -q 'cannot require code.*caller enumeration proves absence only on a closed, complete execution surface' "$WRAPPER" \
+  && { printf 'PASS  imaginary-risk rule handles open execution surfaces\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  imaginary-risk open-surface rule missing\n'; fail=$((fail+1)); }
 
 grep -q '"Read,Grep,Glob,Skill"' "$WRAPPER" \
   && { printf 'PASS  rubric skills permitted\n'; pass=$((pass+1)); } \
