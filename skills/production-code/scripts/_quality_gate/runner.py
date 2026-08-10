@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .checks import changed_file_failures, duplicate_added_blocks, evaluate_growth, scan_quality_escapes
+from .checks import changed_file_failures, evaluate_growth, scan_quality_escapes
 from .git_scope import collect_scope
 from .findings import Finding, RULE_GITNEXUS_CONTEXT, RULE_GROWTH, RULE_INCOMPLETE, gitnexus_context_finding, incompleteness_findings, promoted_errors
+from .redundancy import find_exact_duplicates
 from .reuse import detect_reuse_issues
 from .snapshot import EvaluationSnapshot
 
-GATE_VERSION = "2026-08-08.1"
+GATE_VERSION = "2026-08-10.1"
 
 # The immediate checks, each stated once: name, the error reported on a find,
 # sample cap, and which gap stream makes an otherwise-clean result unknown.
@@ -16,7 +17,6 @@ _SIMPLE_CHECKS = (
     ("no-merge-conflict-markers", "merge conflict markers found in {n} file(s)", 10, "capture"),
     ("no-temp-artifacts", "temporary artifact paths detected in {n} changed file(s)", 10, "capture"),
     ("no-quality-escapes", "quality escapes detected in {n} changed location(s)", 10, "attribution"),
-    ("no-duplicate-added-blocks", "duplicate added code blocks detected: {n}", 4, "attribution-production"),
 )
 
 
@@ -37,26 +37,24 @@ def check(
         "no-merge-conflict-markers": conflicts,
         "no-temp-artifacts": temps,
         "no-quality-escapes": scan_quality_escapes(snapshot),
-        "no-duplicate-added-blocks": duplicate_added_blocks(snapshot),
     }
     reuse_rule, gitnexus_queries = detect_reuse_issues(snapshot)
     growth_rule = evaluate_growth(snapshot)
-    findings: list[Finding] = [growth_rule, reuse_rule]
-    if snapshot.gitnexus_warnings:
-        findings.append(gitnexus_context_finding(list(snapshot.gitnexus_warnings)))
-    gitnexus_rule = findings[2] if snapshot.gitnexus_warnings else None
+    duplicate_rules, duplicates = find_exact_duplicates(snapshot)
+    duplicate_warnings = {rule.rule_id: _duplicate_warnings(rule) for rule in duplicate_rules}
+    gitnexus_rule = gitnexus_context_finding(list(snapshot.gitnexus_warnings)) if snapshot.gitnexus_warnings else None
+    findings: list[Finding] = [growth_rule, reuse_rule, *duplicate_rules, *duplicates, *([gitnexus_rule] if gitnexus_rule else [])]
     findings.extend(incompleteness_findings(findings))
 
     streams = snapshot.gap_streams()
-    # Hunk-reading rules cannot claim they saw the whole change when hunks are
-    # unattributed, capture failed, or a file's counts were never measured
-    # (Git supplied no hunks to inspect); path-reading rules depend on capture
-    # only, and each rule carries only the measurement gaps inside its own
-    # scope: all-source for the escape scan, production for the duplicate walk.
+    # The escape scan cannot claim it saw the whole change when hunks are
+    # unattributed, capture failed, or a source file's counts were never
+    # measured (Git supplied no hunks to inspect); the path-reading rules
+    # depend on capture only. The exact-duplicate rules carry their own
+    # equivalent scopes, which redundancy.py owns.
     gaps_for = {
         "capture": streams["capture"],
         "attribution": streams["attribution"] + streams["measurement"] + streams["capture"],
-        "attribution-production": streams["attribution"] + streams["measurement_production"] + streams["capture"],
     }
 
     # One walk builds checks, warnings, and errors from the typed outcomes; the
@@ -93,6 +91,12 @@ def check(
     # incomplete: incompleteness qualifies the number, it does not delete it.
     growth_warning = f"{RULE_GROWTH}: human-authored net growth {net} exceeds the 500-line review budget" if net > 500 else ""
     checks.append({"name": "reuse-existing-helpers", "warnings": reuse_warnings[:10], "sample": reuse_errors[:10], **projected(reuse_rule)})
+    # One projection per exact rule ID, named by that ID: promotion, calibration,
+    # and consumers all address these rules exactly, never by family or prefix.
+    checks.extend(
+        {"name": rule.rule_id, "warnings": duplicate_warnings[rule.rule_id], **projected(rule)}
+        for rule in duplicate_rules
+    )
     checks.append({"name": "cumulative-growth", "warnings": [growth_warning] if growth_warning else [], **projected(growth_rule)})
     checks.append({
         "name": "gitnexus-context",
@@ -110,6 +114,8 @@ def check(
         f"{match['existingFile']}:{match['existingLine']} {match['existingSymbol']} ({match['reason']})"
         for match in reuse_warnings
     )
+    for rule in duplicate_rules:
+        warnings.extend(duplicate_warnings[rule.rule_id])
     if gitnexus_rule:
         warnings.extend(gitnexus_rule.evidence["messages"])
     errors.extend(promoted_errors(findings, fail_on_warnings))
@@ -152,7 +158,10 @@ def check(
         "resolvedFindings": [],
         "checks": checks,
         "hardRules": {
-            "noDuplication": hard_rule("no-duplicate-added-blocks", "reuse-existing-helpers"),
+            # Warning-only exact rules are deliberately absent: #54 has not
+            # approved any QG54-DUPLICATE-* ID for promotion, so none of them
+            # may decide a hard rule.
+            "noDuplication": hard_rule("reuse-existing-helpers"),
             "cleanup": hard_rule("no-quality-escapes", "no-temp-artifacts"),
             "noMergeConflictMarkers": hard_rule("no-merge-conflict-markers"),
             "consequenceCoverage": {
@@ -166,6 +175,15 @@ def check(
         "warnings": warnings,
         "gitnexusQueries": gitnexus_queries,
     }
+
+
+def _duplicate_warnings(rule: Finding) -> list[str]:
+    """One warning per duplicate group, naming every region that carries it."""
+    return [
+        f"{rule.rule_id}: identical implementation in "
+        + ", ".join(f"{region['path']}:{region['displayLine']}" for region in group["regions"])
+        for group in rule.evidence["duplicates"]
+    ]
 
 
 def format_text(result: dict[str, object]) -> str:

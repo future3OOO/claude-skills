@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 
 from .findings import SymbolDef
 
@@ -90,6 +92,42 @@ def _definition_content(lines: list[str], line_no: int, language: str, known_end
         indent = len(lines[start]) - len(lines[start].lstrip())
         end = next((index for index in range(line_no, len(lines)) if lines[index].strip() and len(lines[index]) - len(lines[index].lstrip()) <= indent), end)
     return "\n".join(lines[start:end]).rstrip()
+
+
+def canonical_lines(text: str, language: str) -> dict[int, str] | None:
+    """Line number to canonical content for one captured file, or `None` when
+    the language has no real tokenizer to prove what a comment is.
+
+    Exactness is the point, so this removes only what a tokenizer proves is
+    removable: whole-line comments and blank lines. Identifiers, literals,
+    operators, control flow, indentation, and trailing whitespace all survive,
+    and nothing inside a multi-line string token is dropped — a blank line
+    there is content, and deleting it would make two different strings
+    canonicalize identically. A trailing comment keeps its whole line for the
+    same reason: the code beside it is not a comment.
+    """
+    if language != "python":
+        return None
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    # A captured tree is untrusted input: a .py path holding NUL bytes reaches
+    # CPython's C tokenizer, which reports that as SystemError rather than a
+    # syntax error. Every one of these is "this file was not read", never a
+    # blanket except: the caller turns None into a named incomplete scope.
+    except (IndentationError, SyntaxError, SystemError, UnicodeError, ValueError, tokenize.TokenError):
+        return None
+    dropped: set[int] = set()
+    protected: set[int] = set()
+    for token in tokens:
+        if token.type == tokenize.COMMENT and not token.line[: token.start[1]].strip():
+            dropped.add(token.start[0])
+        elif token.type == tokenize.STRING and token.end[0] > token.start[0]:
+            protected.update(range(token.start[0], token.end[0] + 1))
+    return {
+        number: line
+        for number, line in enumerate(text.splitlines(), 1)
+        if number in protected or (line.strip() and number not in dropped)
+    }
 
 
 def subtree_score(path_a: str, path_b: str) -> int:

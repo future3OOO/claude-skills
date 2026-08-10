@@ -267,9 +267,16 @@ Required proof includes:
 - [x] Child #77 published, linked, and blocked by #76.
 - [x] Parent #54 seven-slice list replaced by the approved structure.
 - [x] Governing plan reviewed and merged in PR #78.
-- [ ] PR A (#90) merged with its checklist and reviewer loop complete,
-  completing #75 and superseding PR #80 (kept open as reference until then).
-- [ ] PR B merged with its checklist and reviewer loop complete.
+- [x] PR A (#90) merged with its checklist and reviewer loop complete,
+  completing #75 and superseding PR #80 (closed unmerged, reference only).
+- [ ] PR B merged with its checklist and reviewer loop complete. Implemented on
+  `feat/issue-76-exact-duplicates` from `origin/main`: the three warning-only
+  `QG54-DUPLICATE-*` rules in the new `redundancy.py` owner, per-role baseline
+  capture, and the superseded three-line-window/collapse/duplicate-blocker path
+  deleted. The gate-package ceiling was raised 1,950 to 2,300 and then to 2,350
+  by explicit operator approval on 2026-08-10, after the complete slice measured
+  2,255 and then 2,320 with every mandatory deletion already applied; the second
+  raise carries three correctness fixes the independent review forced.
 - [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
   before PR C is dispatched.
 - [ ] PR C merged with its checklist and reviewer loop complete.
