@@ -50,7 +50,8 @@ Run **Standards** and **Spec** independently:
 - Standards: documented-standard violations, smell judgements, hard-invariant
   violations, and tooling issues only when the tool was unavailable or skipped.
 - Spec: missing/partial requirements, unauthorized behavior, incorrect
-  implementation, and acceptance criteria without proof.
+  implementation, acceptance criteria without proof, and Interface claims
+  contradicted by caveats or implementation limits.
 
 Do not promote a possibility to a defect without verifying premise and
 occurrence. Every finding states severity, whether it is material, evidence,

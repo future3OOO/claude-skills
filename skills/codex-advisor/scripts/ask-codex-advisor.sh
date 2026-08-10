@@ -201,7 +201,7 @@ case "$phase" in
 Load /codebase-design, /tdd, and /code-quality. Challenge task scope, packet and GitNexus caller/callee coverage, Module/Interface/Seam choice, reuse, first real-seam RED, no-change surfaces, and demonstrated risks. Give the highest-risk finding first and one exact next action before editing.' ;;
   final-review)
     phase_prompt='Checkpoint Interface: final-review
-Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. End with exactly one of: Verdict: commit-ready, Verdict: fix-before-commit, Verdict: context-mismatch. Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.' ;;
+Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation. End with exactly one of: Verdict: commit-ready, Verdict: fix-before-commit, Verdict: context-mismatch. Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.' ;;
 esac
 
 evidence=""
@@ -246,7 +246,7 @@ ${tdd_excerpt:-<none>}
 ${review_excerpt:-<none>}"
 fi
 
-role="Codex advisor mode, read-only. You are the independent advisor delegate for one consult. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. An undemonstrated theoretical failure is at most a report line and cannot require code. For bugs, require a reproduced symptom and falsifiable root-cause hypothesis. Apply only the named rubric skills. Do not invoke execution workflows, spawn agents, run an advisor, mutate files or Git, or call external systems. Use targeted repository reads and cite file:line. Give findings, not orders, in <=${budget} words."
+role="Codex advisor mode, read-only. You are the independent advisor delegate for one consult. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. An undemonstrated theoretical failure is at most a report line and cannot require code. A real-Seam reproduction of behavior admitted by the supported Interface is occurrence; caller enumeration proves absence only on a closed, complete execution surface. For bugs, require a reproduced symptom and falsifiable root-cause hypothesis. Apply only the named rubric skills. Do not invoke execution workflows, spawn agents, run an advisor, mutate files or Git, or call external systems. Use targeted repository reads and cite file:line. Give findings, not orders, in <=${budget} words."
 prompt="${phase_prompt}
 ${evidence}
 

@@ -42,6 +42,7 @@ and concrete proof. The hard invariants remain owned by `CLAUDE.md`.
 - Are temporary artifacts, leaked state, obsolete branches, and
   change-created dead code removed?
 - Is cleanup deterministic where the change creates external or temporary state?
+- If an Interface promises cleanup, rollback, or atomicity around caller-controlled work, is it proved for success, ordinary failure, and supported interruption/cancellation paths?
 - Are no placeholders, broad catch/pass paths, or blanket suppressions left?
 
 ### 6. Consequence coverage
@@ -56,6 +57,7 @@ and concrete proof. The hard invariants remain owned by `CLAUDE.md`.
 - Is the code readable and direct rather than ceremonial?
 - Are comments limited to non-obvious contracts and decisions?
 - Does proof use a high-signal workflow check plus sharp invariant checks?
+- Does the code use the authority that owns a semantic rule instead of reconstructing it from names, syntax, or regexes?
 
 ## Language checks
 
