@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -17,10 +18,12 @@ if str(ROOT) not in sys.path:
 
 from hooks.tests.support import build_document, record_context_forge  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.tdd_surface import differences, identify  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, pause, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+SEAM = "workflow.py tdd subprocess boundary"
 
 
 class TddSummaryTests(unittest.TestCase):
@@ -70,6 +73,49 @@ class TddSummaryTests(unittest.TestCase):
             [sys.executable, str(script), *args], cwd=self.repo, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
+
+    def tdd(
+        self,
+        phase: str,
+        command: tuple[str, ...],
+        *,
+        behavior: str = "value is two",
+        seam: str = SEAM,
+        expected: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        args = [WORKFLOW, "tdd", "--cwd", str(self.repo), "--slug", "tdd-summary",
+                "--phase", phase, "--behavior", behavior, "--seam", seam]
+        if expected:
+            args += ["--expected-failure", expected]
+        return self.run_script(*args, "--", *command)
+
+    def unittest_target(self) -> str:
+        """A real unittest target that logs every argv it is actually run with."""
+        (self.repo / "test_app.py").write_text(
+            "import pathlib, sys, unittest\n"
+            "import app\n"
+            "with pathlib.Path('runs.log').open('a', encoding='utf-8') as log:\n"
+            "    log.write(' '.join(sys.argv) + '\\n')\n"
+            "class TargetTests(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            "        self.assertEqual(app.value, 2, 'AssertionError: value must be 2')\n"
+            "    def test_other(self):\n"
+            "        self.assertEqual(app.value, app.value)\n",
+            encoding="utf-8",
+        )
+        return "test_app.TargetTests.test_value"
+
+    def runs_log(self) -> str:
+        log = self.repo / "runs.log"
+        return log.read_text(encoding="utf-8") if log.exists() else ""
+
+    def refuses(self, *command: str, **candidate: str) -> str:
+        """Assert a GREEN candidate refuses before the runner executes; return its report."""
+        before = self.runs_log()
+        result = self.tdd("green", command, **candidate)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(self.runs_log(), before, "a refused candidate executed its command")
+        return result.stderr
 
     def evidence_record(self, evidence_id: str) -> dict[str, object]:
         result = self.run_script(
@@ -140,6 +186,141 @@ class TddSummaryTests(unittest.TestCase):
         )
         self.assertEqual(downgraded.returncode, 2, downgraded.stdout + downgraded.stderr)
         self.assertIn("cannot replace valid TDD evidence", downgraded.stderr)
+
+    def test_green_may_drop_fail_fast_and_verbosity_for_the_same_test_surface(self) -> None:
+        target = self.unittest_target()
+        red_command = (sys.executable, "-m", "unittest", "--failfast", "-v", target)
+        green_command = (sys.executable, "-m", "unittest", target)
+        red = self.tdd("red", red_command, expected="AssertionError")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd("green", green_command)
+        self.assertEqual(
+            green.returncode, 0,
+            "GREEN dropping fail-fast and verbosity was refused: " + green.stderr,
+        )
+        summary = self.evidence_document(json.loads(green.stdout.splitlines()[-1])["summaryId"])
+        self.assertEqual((summary["status"], summary["schemaVersion"]), ("passed", 1))
+        self.assertEqual(
+            [entry["command"] for entry in summary["runs"]],
+            [shlex.join(red_command), shlex.join(green_command)],
+            "the evidence lost one of the two raw commands",
+        )
+        self.assertEqual(summary["surface"], {
+            "surfaceSchemaVersion": 1,
+            "runner": "unittest",
+            "invocation": shlex.join((sys.executable, "-m", "unittest")),
+            "arguments": [target],
+            "ignored": [],
+            "fallbackReason": None,
+        })
+
+    def test_repeated_unittest_verbosity_is_still_the_same_test_surface(self) -> None:
+        target = self.unittest_target()
+        red = self.tdd("red", (sys.executable, "-m", "unittest", "-vv", target),
+                       expected="AssertionError")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd("green", (sys.executable, "-m", "unittest", target))
+        self.assertEqual(green.returncode, 0,
+                         "GREEN dropping repeated unittest verbosity was refused: " + green.stderr)
+        self.assertEqual(
+            self.evidence_document(json.loads(green.stdout.splitlines()[-1])["summaryId"])["status"],
+            "passed",
+        )
+        quieted = self.tdd("green", (sys.executable, "-m", "unittest", "-qq", target))
+        self.assertEqual(quieted.returncode, 0,
+                         "a GREEN adding repeated unittest quiet was refused: " + quieted.stderr)
+        self.assertIn("surface.arguments", self.refuses(
+            sys.executable, "-m", "unittest", "-vf", target),
+            "a mixed short cluster was dropped as pure verbosity")
+
+    def test_a_different_test_surface_refuses_and_names_both_normalized_values(self) -> None:
+        target = self.unittest_target()
+        red = self.tdd("red", (sys.executable, "-m", "unittest", "--failfast", target),
+                       expected="AssertionError")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+
+        other = self.refuses(sys.executable, "-m", "unittest", "test_app.TargetTests.test_other")
+        self.assertIn("surface.arguments", other)
+        self.assertIn("test_app.TargetTests.test_other", other)
+        self.assertIn(target, other)
+        self.assertIn("surface.arguments", self.refuses(
+            sys.executable, "-m", "unittest", "-k", "value", target))
+        self.assertIn("surface.runner", self.refuses("pytest", "test_app.py::TargetTests::test_value"))
+        self.assertIn("behavior", self.refuses(
+            sys.executable, "-m", "unittest", target, behavior="a different behavior"))
+        self.assertIn("seam", self.refuses(
+            sys.executable, "-m", "unittest", target, seam="a different interface"))
+
+        state = json.loads(self.run_script(WORKFLOW, "status", "--repo", str(self.repo)).stdout)
+        self.assertEqual(state["tdd"], "in-progress", "a refused candidate moved the TDD gate")
+
+    def test_an_opaque_shell_command_keeps_exact_command_identity(self) -> None:
+        target = self.unittest_target()
+        script = f"{shlex.quote(sys.executable)} -m unittest --failfast {target}"
+        red = self.tdd("red", ("bash", "-lc", script), expected="AssertionError")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        surface = self.evidence_document(
+            json.loads(red.stdout.splitlines()[-1])["summaryId"])["surface"]
+        self.assertEqual(surface["runner"], "exact")
+        self.assertEqual(surface["arguments"], ["bash", "-lc", script])
+        self.assertTrue(surface["fallbackReason"], "an exact-bound surface gave no reason")
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        report = self.refuses("bash", "-lc", script.replace(" --failfast", ""))
+        self.assertIn("surface.arguments", report)
+
+    def test_pytest_options_are_classified_by_that_runners_own_grammar(self) -> None:
+        """Classification coverage for pytest, whose grammar differs from unittest's.
+
+        The repository ships no pytest, so this crosses the surface Module's own
+        public Interface rather than manufacturing a stand-in runner; the CLI-Seam
+        RED/GREEN above uses the real stdlib runner.
+        """
+        target = "tests/test_thing.py::TestThing::test_value"
+        selected = identify(("pytest", target))
+        for equivalent in (("pytest", "-x", "-vv", target),
+                           ("pytest", "--exitfirst", "--quiet", target),
+                           ("pytest", "--maxfail=1", target)):
+            self.assertEqual(differences(identify(equivalent), selected), [],
+                             f"{equivalent} was not recognised as the same test surface")
+        for retained in (("pytest", "--maxfail=2", target),
+                         ("pytest", "--maxfail", "1", target),
+                         ("pytest", "-xq", target),
+                         ("pytest", "-k", "value", target),
+                         ("pytest", "--rootdir", "other", target),
+                         (sys.executable, "-m", "pytest", target)):
+            self.assertTrue(differences(identify(retained), selected),
+                            f"{retained} silently compared equal to a different surface")
+        self.assertEqual(identify(("pytest", "--", "-x"))["arguments"], ["--", "-x"],
+                         "an option spelling after a bare -- was dropped as an option")
+
+    def test_in_flight_evidence_without_a_surface_stays_bound_to_its_exact_command(self) -> None:
+        # Contract pin (not Seam proof): this change makes the CLI always record a
+        # surface, so only the Module boundary can still produce the pre-surface
+        # shape. The cross-version proof drives the pre-change CLI at the real Seam.
+        from hooks.lib.workflow_state import commit_tdd
+        target = self.unittest_target()
+        red_command = (sys.executable, "-m", "unittest", "--failfast", target)
+        red = self.tdd("red", red_command, expected="AssertionError")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        identity = resolve_repo_identity(self.repo)
+        recorded = self.evidence_document(json.loads(red.stdout.splitlines()[-1])["summaryId"])
+        commit_tdd(
+            identity, "tdd-summary", read_workflow(identity)["workflowId"],
+            {key: value for key, value in recorded.items() if key != "surface"},
+            "in-progress", expected_evidence_id=read_workflow(identity)["tddEvidence"],
+        )
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        report = self.refuses(sys.executable, "-m", "unittest", target)
+        self.assertIn("rerun RED under the new contract", report)
+        exact = self.tdd("green", red_command)
+        self.assertEqual(exact.returncode, 0, exact.stdout + exact.stderr)
 
     def test_invalid_or_mismatched_runs_do_not_regress_recorded_tdd_state(self) -> None:
         behavior_command = (
@@ -301,21 +482,11 @@ class TddSummaryTests(unittest.TestCase):
         self.assertEqual(state["tdd"], "pending", "the replacement workflow inherited the raced producer's state")
 
     def test_next_tracer_red_reopens_the_cycle_and_midcycle_switches_reject(self) -> None:
-        def tracer(phase, behavior, command, expected=None):
-            args = [
-                WORKFLOW, "tdd", "--cwd", str(self.repo), "--slug", "tdd-summary",
-                "--phase", phase, "--behavior", behavior,
-                "--seam", "workflow.py tdd subprocess boundary",
-            ]
-            if expected:
-                args += ["--expected-failure", expected]
-            return self.run_script(*args, "--", *command)
-
         check_two = (sys.executable, "-c", "import app; assert app.value == 2, 'AssertionError: value must be 2'")
-        first = tracer("red", "first behavior", check_two, "AssertionError")
+        first = self.tdd("red", check_two, behavior="first behavior", expected="AssertionError")
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = tracer("green", "first behavior", check_two)
+        green = self.tdd("green", check_two, behavior="first behavior")
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
 
         identity = resolve_repo_identity(self.repo)
@@ -327,7 +498,7 @@ class TddSummaryTests(unittest.TestCase):
         self.assertIn("paused", read_workflow(identity))
 
         check_three = (sys.executable, "-c", "import app; assert app.value == 3, 'AssertionError: value must be 3'")
-        second = tracer("red", "second behavior", check_three, "AssertionError")
+        second = self.tdd("red", check_three, behavior="second behavior", expected="AssertionError")
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         state = json.loads(self.run_script(WORKFLOW, "status", "--repo", str(self.repo)).stdout)
         self.assertEqual(state["tdd"], "in-progress")
@@ -337,23 +508,24 @@ class TddSummaryTests(unittest.TestCase):
         self.assertNotIn("paused", state, "a next-tracer RED did not clear the pause")
 
         (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
-        second_green = tracer("green", "second behavior", check_three)
+        second_green = self.tdd("green", check_three, behavior="second behavior")
         self.assertEqual(second_green.returncode, 0, second_green.stdout + second_green.stderr)
         state = json.loads(self.run_script(WORKFLOW, "status", "--repo", str(self.repo)).stdout)
         self.assertEqual(state["tdd"], "passed")
         self.assertEqual(state["verification"], "pending", "stale verification survived the next GREEN")
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
 
-        third = tracer("red", "third behavior", (sys.executable, "-c", "raise AssertionError('AssertionError: four')"), "AssertionError")
+        third = self.tdd("red", (sys.executable, "-c", "raise AssertionError('AssertionError: four')"),
+                         behavior="third behavior", expected="AssertionError")
         self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
         summary_id = json.loads(third.stdout.splitlines()[-1])["summaryId"]
         before = self.evidence_document(summary_id)
         marker = self.tmp / "midcycle-command-ran"
-        switch = tracer(
-            "red", "fourth behavior mid-cycle",
+        switch = self.tdd(
+            "red",
             (sys.executable, "-c",
              f"open({str(marker)!r}, 'w').close(); raise AssertionError('AssertionError: five')"),
-            "AssertionError",
+            behavior="fourth behavior mid-cycle", expected="AssertionError",
         )
         self.assertEqual(switch.returncode, 2, "a mid-cycle candidate switch was accepted")
         self.assertIn("candidate does not match the active cycle", switch.stderr)
