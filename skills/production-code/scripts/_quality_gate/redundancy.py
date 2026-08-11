@@ -698,12 +698,10 @@ def find_owner_competition(
         for name in OWNER_CLASSES:
             for members in per_class[name]:
                 rule_candidates.append(_owner_candidate(snapshot, rule_id, name, members))
-        # Parse failures, unreadable supplied graph evidence, and capture
-        # failures hide candidates; unread owner discovery matters once a
-        # changed-side unit could pair against it.
-        # Parent #54 decision 1b: bound graph evidence must also carry symbol
-        # results for the changed owner surface; a bare declaration is not
-        # caller/callee evidence.
+        # Parse, graph, and capture failures hide candidates; unread owner
+        # discovery matters once a changed-side unit could pair against it.
+        # Decision 1b: bound graph evidence must also carry symbol results
+        # for the changed owner surface; a bare declaration is not evidence.
         uncovered = sorted({unit["path"] for unit in units if unit["changed"]} - set(snapshot.graph_files)) \
             if not snapshot.graph_gap else []
         coverage_gap = (
@@ -722,8 +720,7 @@ def find_owner_competition(
         active = applied + [item for item in rule_candidates if item.finding_id() not in consumed]
         candidates.extend(active)
         resolved.extend(rule_resolved)
-        # A record that could not bind is rule-specific incompleteness, never
-        # a silently dropped claim.
+        # A record that could not bind is rule-specific incompleteness.
         owner_gaps = tuple(dict.fromkeys(list(owner_gaps) + [f"disposition record: {note}" for note in notes]))
         ledger = [
             {"class": name, "status": "incomplete" if parse_gaps else "evaluated", "files": file_count,
@@ -785,9 +782,8 @@ _REPAIRS = ("deepen", "replace", "consolidate")
 
 # Parent #54 decision (2026-08-12): resolution silences a warning, so it
 # requires a record the parent explicitly pinned — identifier AND digest,
-# sourced verbatim from #54 comment 5251048442. Confirmation only adds
-# visible debt and accepts content-consistent records. Extending this table
-# is a parent-approved code change, exactly like promotion eligibility.
+# verbatim from #54 comment 5251048442; confirmation only adds visible debt.
+# Extending this table is a parent-approved code change, like promotion.
 _PINNED_VALIDATION_IDENTIFIER = "future3OOO/claude-skills#54 comment 5251048442"
 _PINNED_VALIDATION_DIGESTS = frozenset({
     "08f61bed0d5df8b9435a38b1fb1712530bebb063d7c9b457dbe85770f97a016e",
@@ -917,8 +913,7 @@ def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> 
         for ref in owners
     ):
         return f"{key}: record rejected: at least two owner references, each a path with a symbol or exact content anchor, are required"
-    # Trust comes from an immutable validation root outside the candidate
-    # tree: the record names its root and carries a digest over its own
+    # The record names its validation root and carries a digest over its
     # canonical content, so a candidate-side edit breaks the binding.
     root = record.get("validationRoot")
     if not isinstance(root, dict) or not isinstance(root.get("identifier"), str) or not root["identifier"] \
@@ -943,9 +938,8 @@ def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> 
         return f"{key}: record rejected: temporary-coexistence requires a tracked followUp and an expiry"
     if record.get("resolvedBase") != snapshot.base_identity or record.get("resolvedCandidateTree") != snapshot.candidate_tree:
         return f"{key}: record is stale: its base/candidate do not name the evaluated snapshot"
-    # An owner behind an unread capture bound is unverifiable, not absent:
-    # the claim stays active while discovery is incomplete. A reference that
-    # resolves nowhere in a path the capture never even recorded is rejected.
+    # Unread capture bound: unverifiable, not absent; an unrecorded path
+    # rejects.
     unresolved = [
         ref for ref in owners
         if all(_anchor_line(_captured_text(snapshot, str(ref["path"]), side), ref) is None
@@ -971,16 +965,24 @@ def _apply_dispositions(
 ) -> tuple[list[Finding], list[Finding], set[str], list[str]]:
     """Validated records drive the state machine; everything else is a
     note. same-responsibility confirms and resolves only via the one-owner
-    predicate; distinct-authority resolves from candidate with complete
-    scope; temporary-coexistence stays visible debt. Partial deletion,
-    unresolved anchors, surviving references, and missing scope stay active."""
+    predicate plus the parent-pinned table; distinct-authority resolves from
+    candidate with complete scope and a pinned record; coexistence stays
+    visible debt; everything unresolved or unpinned stays active."""
     applied: list[Finding] = []
     resolved: list[Finding] = []
     consumed: set[str] = set()
     notes: list[str] = []
+    seen_digests: set[str] = set()
     for record in records:
         if record.get("ruleId") != rule_id and record.get("ruleId") in _OWNER_ROLES:
             continue
+        # A duplicate reference cannot bind twice; the second copy is a note.
+        root = record.get("validationRoot")
+        digest = str(root.get("digest")) if isinstance(root, dict) else ""
+        if digest and digest in seen_digests:
+            notes.append(f"duplicate record reference rejected: digest {digest[:16]} already applied")
+            continue
+        seen_digests.add(digest)
         problem = _record_problem(snapshot, record)
         if problem is not None:
             notes.append(problem)

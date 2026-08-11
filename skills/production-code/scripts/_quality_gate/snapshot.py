@@ -46,9 +46,8 @@ def parse_gitnexus_context_json(text: str) -> tuple[dict[str, int], list[str]]:
             boosts[f"{path}:{name}"] = min(15, boost)
     return boosts, []
 
-# The fixed disposition carrier: a git-dir path is repo-scoped, filesystem-
-# readable during capture, and never part of any candidate tree, so a record
-# there is out-of-tree by construction.
+# The fixed disposition carrier: a git-dir path is readable during capture
+# and never part of any candidate tree, so records there are out-of-tree.
 DISPOSITIONS_CARRIER = "qg54-dispositions.json"
 
 
@@ -85,9 +84,8 @@ def _disposition_records(repo: Path) -> tuple[dict[str, object], ...]:
 
 def _graph_binding(repo: Path, gitnexus_context_json: str, base: str, tree: str) -> tuple[str, frozenset[str]]:
     """The graph evidence's snapshot binding, resolved during capture: the
-    gap that leaves caller/callee scope unestablished (parent #54 decision
-    1b, 2026-08-12 — the snapshot index is not a substitute), and the files
-    the supplied evidence actually carries symbols for."""
+    gap that leaves caller/callee scope unestablished (parent decision 1b —
+    the snapshot index is not a substitute), and the files it covers."""
     absent = "no snapshot-bound external graph evidence: caller/callee scope is unestablished"
     if not gitnexus_context_json.strip():
         return absent, frozenset()
