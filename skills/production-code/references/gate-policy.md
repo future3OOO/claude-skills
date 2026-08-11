@@ -64,10 +64,13 @@ tests, build, or domain-specific gates.
 - Base-tree owner capture covers production, test, and test-support source,
   kept apart per role so one rule family's discovery cannot widen or dirty
   another's.
-- `--repo-context-packet` and `--gitnexus-context-json` may strengthen owner
-  discovery and caller evidence already gathered by the workflow; malformed
-  graph input becomes per-affected-rule `QG54-ANALYSIS-INCOMPLETE` evidence.
-  The gate never creates reports, caches, or repository artifacts itself.
+- `--repo-context-packet` may widen owner discovery. `--gitnexus-context-json`
+  is the external graph evidence the owner rules' caller/callee scope
+  requires (parent #54 decision, 2026-08-12): only a document declaring the
+  evaluated base and candidate establishes that scope, so an absent, unbound,
+  stale, or malformed graph input leaves both owner rules incomplete as
+  per-affected-rule `QG54-ANALYSIS-INCOMPLETE` evidence. The gate never
+  creates reports, caches, or repository artifacts itself.
 - The gate's evaluated hard-rule results are `cleanup` and
   `noMergeConflictMarkers`. `noDuplication` keeps its key and reports
   `not_evaluated`: every surviving duplication/owner rule is warning-only,

@@ -666,6 +666,7 @@ def find_owner_competition(
     snapshot: EvaluationSnapshot,
     duplicates: list[Finding],
     records: list[dict[str, object]],
+    graph_gap: str,
 ) -> tuple[list[Finding], list[Finding], list[Finding]]:
     """The responsibility-owner rules: state findings, active candidates,
     and resolved telemetry, generated independently of duplicate detection.
@@ -701,7 +702,7 @@ def find_owner_competition(
         # Parse failures, unreadable supplied graph evidence, and capture
         # failures hide candidates; unread owner discovery matters once a
         # changed-side unit could pair against it.
-        owner_gaps = hidden + parse_gaps + list(snapshot.gitnexus_warnings)
+        owner_gaps = hidden + parse_gaps + list(snapshot.gitnexus_warnings) + ([graph_gap] if graph_gap else [])
         if any(unit["changed"] for unit in units):
             discovery = streams["baseline"] if "production" in roles else streams["baseline_roles"]
             owner_gaps += list(discovery + streams["baseline_scope"])

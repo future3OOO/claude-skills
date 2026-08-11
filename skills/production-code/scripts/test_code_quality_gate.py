@@ -417,12 +417,14 @@ def test_completeness_scopes_are_rule_specific(repo: Path) -> None:
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert code == 0, (code, payload["errors"])
     assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)["completeness"]
-    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert any("big.py" in gap for gap in gaps), gaps
 
     write(repo / "src" / "new.py", "NOTES = 2\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert code == 0, (code, payload["errors"])
-    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
+    gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert not any("big.py" in gap for gap in gaps), gaps
 
 
 @with_repo
@@ -439,8 +441,12 @@ def test_completeness_follows_each_rule_own_role_scope(repo: Path) -> None:
     assert_exact_rules(payload, {
         "QG54-DUPLICATE-ADDED-SYMBOL": "incomplete",
         "QG54-OWNER-COMPETITION-TEST": "incomplete",
-        "QG54-OWNER-COMPETITION-PRODUCTION": "passed",
     })
+    # Role separation shows in the gap sets: the blob dirties the TEST rule's
+    # scope while the production rule carries only the universal graph gap.
+    assert any("blob.py" in gap for gap in owner_rule_finding(payload, "QG54-OWNER-COMPETITION-TEST")["completeness"]["gaps"])
+    production_gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert production_gaps == ["no snapshot-bound external graph evidence: caller/callee scope is unestablished"], production_gaps
     assert code == 0, (code, payload["errors"])
 
 
@@ -693,7 +699,11 @@ def test_repeated_inline_scaffolds_are_one_owner_candidate(repo: Path) -> None:
     # candidate when the resolved layer, callees, and ordered lifecycle
     # signature match; and no duplicate finding is required for it.
     write(repo / "tests" / "test_lifecycle.py", _LIFECYCLE_SCAFFOLDS)
-    code, payload, _ = run_gate(repo)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "five scaffolds")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    bound = graph_evidence(base, run(["git", "rev-parse", "HEAD"], repo).stdout.strip())
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
     names = {item["name"] for item in payload["checks"]}
     assert "QG54-OWNER-COMPETITION-TEST" in names, sorted(names)
     assert_exact_rules(payload, {**dict.fromkeys(EXACT_RULES, "passed"), "QG54-OWNER-COMPETITION-TEST": "finding"})
@@ -762,6 +772,50 @@ def write_disposition(records: list[dict[str, object]]) -> Path:
     return document
 
 
+def graph_evidence(base: str, candidate: str, symbols: tuple = ()) -> Path:
+    """Snapshot-bound external graph evidence OUTSIDE the evaluated repo."""
+    document = Path(tempfile.mkdtemp(prefix="graph-evidence-")) / "graph.json"
+    document.write_text(json.dumps({"base": base, "candidate": candidate, "symbols": list(symbols)}), encoding="utf-8")
+    return document
+
+
+@with_repo
+def test_absent_graph_evidence_leaves_caller_callee_scope_unestablished(repo: Path) -> None:
+    # Parent #54 decision (2026-08-12): an absent graph input cannot establish
+    # complete caller/callee scope, and the snapshot index is not a
+    # substitute. Bound evidence restores completeness; unbound or stale
+    # evidence does not.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "incomplete",
+    })
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("graph evidence" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert code == 0, (code, payload["errors"])
+
+    bound = graph_evidence(base, head)
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "finding",
+        "QG54-OWNER-COMPETITION-TEST": "passed",
+    })
+
+    stale = graph_evidence(base, base)
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(stale))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert rule["status"] == "incomplete", rule
+    assert any("graph evidence" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert code == 0, (code, payload["errors"])
+
+
 @with_repo
 def test_same_responsibility_disposition_confirms_the_candidate(repo: Path) -> None:
     # A parent-bound same-responsibility record turns the mechanical candidate
@@ -812,7 +866,8 @@ def test_rename_only_repair_leaves_the_warning_unresolved(repo: Path) -> None:
     git(repo, "commit", "-q", "-m", "rename the competitor")
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     document = write_disposition([state_root_record(base=base, candidate=head)])
-    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document),
+                                "--gitnexus-context-json", str(graph_evidence(base, head)))
     assert payload["resolvedFindings"] == [], json.dumps(payload["resolvedFindings"], indent=2)
     states = sorted(item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"))
     assert "confirmed-unresolved" in states, states
@@ -834,7 +889,8 @@ def test_consolidate_and_delete_resolves_to_telemetry_only(repo: Path) -> None:
     git(repo, "commit", "-q", "-m", "consolidate onto the surviving owner")
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     document = write_disposition([state_root_record(base=base, candidate=head)])
-    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document),
+                                "--gitnexus-context-json", str(graph_evidence(base, head)))
     assert owner_findings(payload, "") == [], json.dumps(payload["findings"], indent=2)
     resolved = payload["resolvedFindings"]
     assert [item["state"] for item in resolved] == ["resolved"], resolved
@@ -869,7 +925,8 @@ def test_distinct_authority_resolves_directly_from_candidate(repo: Path) -> None
         ],
         "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
     }])
-    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document),
+                                "--gitnexus-context-json", str(graph_evidence(base, head)))
     assert owner_findings(payload, "") == [], json.dumps(payload["findings"], indent=2)
     assert [item["state"] for item in payload["resolvedFindings"]] == ["resolved"], payload["resolvedFindings"]
     assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
@@ -1023,7 +1080,11 @@ def test_parameterized_single_lifecycle_owner_is_negative(repo: Path) -> None:
         "",
     ))
     write(repo / "tests" / "test_rows.py", consolidated)
-    code, payload, _ = run_gate(repo)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "one parameterized owner")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(graph_evidence(base, head)))
     assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
     assert owner_findings(payload, "QG54-OWNER-COMPETITION-TEST") == [], payload["findings"]
     assert code == 0, (code, payload["errors"])
@@ -1103,7 +1164,8 @@ def test_deletion_without_rewiring_stays_unresolved(repo: Path) -> None:
     git(repo, "commit", "-q", "-m", "delete without rewiring")
     dropped = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     document = write_disposition([{**record, "candidate": dropped}])
-    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document),
+                                "--gitnexus-context-json", str(graph_evidence(base, dropped)))
     assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
     states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
     assert states == ["confirmed-unresolved"], states
@@ -1113,7 +1175,8 @@ def test_deletion_without_rewiring_stays_unresolved(repo: Path) -> None:
     git(repo, "commit", "-q", "-m", "rewire to the survivor")
     rewired = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     document = write_disposition([{**record, "candidate": rewired}])
-    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document),
+                                "--gitnexus-context-json", str(graph_evidence(base, rewired)))
     assert [item["state"] for item in payload["resolvedFindings"]] == ["resolved"], payload["resolvedFindings"]
     assert owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION") == [], payload["findings"]
     assert code == 0, (code, payload["errors"])
@@ -1485,10 +1548,15 @@ def test_a_test_owner_gap_does_not_dirty_the_production_owner_rule(repo: Path) -
     assert_exact_rules(payload, {
         "QG54-DUPLICATE-BASELINE": "incomplete",
         "QG54-OWNER-COMPETITION-TEST": "incomplete",
-        "QG54-OWNER-COMPETITION-PRODUCTION": "finding",
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
     })
     baseline_rule = check_named(payload, "QG54-DUPLICATE-BASELINE")
     assert any("huge_helpers.py" in gap for gap in baseline_rule["gaps"]), baseline_rule
+    # Role separation shows in the gap sets: the unread test owner dirties the
+    # TEST rule while the production rule carries only the universal graph gap.
+    assert any("huge_helpers.py" in gap for gap in owner_rule_finding(payload, "QG54-OWNER-COMPETITION-TEST")["completeness"]["gaps"])
+    production_gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert not any("huge_helpers.py" in gap for gap in production_gaps), production_gaps
     # The exact retained copy is owner-competition evidence with no duplicate
     # prerequisite, and every rule here stays warning-only.
     assert owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"), payload["findings"]
@@ -1721,8 +1789,9 @@ def _decoder_row(repo: Path, config, baseline: dict, candidate: dict, growth, er
         assert code == 0, (name, code, stderr)
     if growth is not None:
         assert growth_totals(payload)["production"] == growth, (name, growth_totals(payload))
-        # The odd name is unusual, not unmeasurable: it contributes no gap.
-        assert payload["evaluation"]["complete"] is True, (name, payload["evaluation"]["gaps"])
+        # The odd name is unusual, not unmeasurable: it contributes no gap of
+        # its own — only the universal graph-evidence gap may remain.
+        assert all("graph evidence" in gap for gap in payload["evaluation"]["gaps"]), (name, payload["evaluation"]["gaps"])
     if sample is not None:
         encoded = [item.encode("utf-8", "surrogateescape") for item in payload["changedFilesSample"]]
         assert sample in encoded, (name, payload["changedFilesSample"])
@@ -1865,7 +1934,8 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     digest = canonical_diff_sha256(repo, base, candidate)
     assert digest == CORPUS_DIFF_SHA256, digest
 
-    payload = replay_pinned_range(CORPUS_BASE, CORPUS_CANDIDATE)
+    payload = replay_pinned_range(CORPUS_BASE, CORPUS_CANDIDATE,
+                                  "--gitnexus-context-json", str(graph_evidence(CORPUS_BASE, CORPUS_CANDIDATE)))
     growth = growth_totals(payload)
     assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
     assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
@@ -1897,6 +1967,20 @@ _MANIFEST_FIVE = (
     "test_test_any_annotations_do_not_fail_cleanup", "test_test_fake_green_escapes_still_fail",
 )
 _MANIFEST_PARENT = "future3OOO/claude-skills#54 comment 5251048442"
+# The parent decision of 2026-08-12 binds every state-changing disposition
+# record by its canonical content digest; a record cannot mint its own root.
+_PINNED_RECORD_DIGESTS = {
+    "R": "08f61bed0d5df8b9435a38b1fb1712530bebb063d7c9b457dbe85770f97a016e",
+    "P1": "d7bda52e9bff988face173e92467cc2db78d159c1564f2817075b4cd1c195de8",
+    "P2": "3e96fd97af71111fc5e724f457ca5b3f32ef79fdd4d0a7a25e635ce600a0b39c",
+    "G": "6c2fdd01db924618efc9df048884b2ef64082d5d254657e6fae4d47c92d15575",
+}
+
+
+def assert_pinned_digest(document: Path, case: str, index: int = 0) -> None:
+    """The replayed record must be byte-identical to the parent-pinned one."""
+    record = json.loads(document.read_text(encoding="utf-8"))["records"][index]
+    assert record["validationRoot"]["digest"] == _PINNED_RECORD_DIGESTS[case], (case, record["validationRoot"])
 _P1_SHELL_ANCHOR = 'state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/_advisor-sessions"'
 
 
@@ -1948,6 +2032,7 @@ def test_owner_manifest_calibration_is_reproducible() -> None:
     # Case R with the record: repeated-scaffolding RED confirms and stays
     # active; the bare five-candidate retires into the confirmed finding.
     document = write_disposition([_lifecycle_record(*_MANIFEST_R[:2])])
+    assert_pinned_digest(document, "R")
     payload = replay_pinned_range(*_MANIFEST_R[:2], "--dispositions", str(document))
     states = _active_states(payload, "QG54-OWNER-COMPETITION-TEST")
     assert sorted(states) == ["candidate"] * 3 + ["confirmed-unresolved"], states
@@ -1976,7 +2061,10 @@ def test_owner_manifest_calibration_is_reproducible() -> None:
                     {"path": "hooks/lib/state_prune.py", "symbol": "_retire_associations"}],
          "parentRecord": _MANIFEST_PARENT},
     ])
-    payload = replay_pinned_range(CORPUS_BASE, CORPUS_CANDIDATE, "--dispositions", str(document))
+    assert_pinned_digest(document, "P1", 0)
+    assert_pinned_digest(document, "P2", 1)
+    payload = replay_pinned_range(CORPUS_BASE, CORPUS_CANDIDATE, "--dispositions", str(document),
+                                  "--gitnexus-context-json", str(graph_evidence(CORPUS_BASE, CORPUS_CANDIDATE)))
     for rule in ("QG54-OWNER-COMPETITION-PRODUCTION", "QG54-OWNER-COMPETITION-TEST"):
         assert owner_rule_finding(payload, rule)["completeness"] == {"complete": True, "gaps": []}, rule
     production = _active_states(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
@@ -2001,8 +2089,10 @@ def test_owner_manifest_calibration_is_reproducible() -> None:
     document = write_disposition([
         _lifecycle_record(*_MANIFEST_G[:2], survivor={"path": _MANIFEST_TESTFILE, "symbol": "_escape_row"}),
     ])
+    assert_pinned_digest(document, "G")
     payload = replay_pinned_range(*_MANIFEST_G[:2], "--dispositions", str(document),
-                                  "--repo-context-packet", str(packet))
+                                  "--repo-context-packet", str(packet),
+                                  "--gitnexus-context-json", str(graph_evidence(*_MANIFEST_G[:2])))
     assert [(item["evidence"]["responsibilityKey"], item["state"]) for item in payload["resolvedFindings"]] == [
         (_MANIFEST_KEY, "resolved")], payload["resolvedFindings"]
     assert _active_states(payload, "QG54-OWNER-COMPETITION-TEST") == ["candidate"] * 4, (
@@ -2491,16 +2581,18 @@ def test_gate_implementation_budget() -> None:
         # (2026-08-08), then from 1950 by explicit operator approval on PR B
         # (#76, 2026-08-10), then to 2350 on the same PR after independent
         # review forced three correctness fixes, then to 2650 and finally
-        # 2734 by explicit operator approvals on PR C (#77, 2026-08-11):
+        # 2734 and then 2761 by explicit operator approvals on PR C (#77,
+        # 2026-08-11 and 2026-08-12):
         # first for the complete slice with the mandatory lexical-reuse
         # deletions applied — the owner-competition rules' eight evidence
         # classes, three-state machine, and snapshot-bound disposition
         # records cost more than the deleted scorer freed — then for the
         # independent final review's forced contract work: versioned records
         # with digest binding, the rewiring-to-survivor predicate, and
-        # command-token/control-flow signature discriminators. The operator
+        # command-token/control-flow signature discriminators; last for the
+        # parent 1b decision's graph-evidence binding machinery. The operator
         # directed raising the ceiling over cutting scope or weakening proof.
-        "total_lines": 2734,
+        "total_lines": 2761,
     }
     review_triggers = {
         "module_lines": 700,
@@ -2508,7 +2600,7 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "complete #75 canonical evaluation, #76 exact duplication, and #77 responsibility ownership: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, three QG54-DUPLICATE-* rules and two QG54-OWNER-COMPETITION-* rules over one redundancy owner with disposition records, with the lexical reuse scorer deleted; 2734 ceiling operator-approved 2026-08-11",
+        "TOTAL": "complete #75 canonical evaluation, #76 exact duplication, and #77 responsibility ownership: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, three QG54-DUPLICATE-* rules and two QG54-OWNER-COMPETITION-* rules over one redundancy owner with disposition records, with the lexical reuse scorer deleted; 2761 ceiling operator-approved 2026-08-12",
         "_quality_gate/redundancy.py": "the one redundancy owner the architecture mandates: exact-duplicate phases plus the responsibility phases (eight evidence classes, three finding states, disposition validation, one-owner resolution) behind runner.check",
         "_quality_gate/runner.py:check": "the one evaluation walk the architecture mandates: every check, warning, error, and hard rule derives from a single typed outcome column",
     }

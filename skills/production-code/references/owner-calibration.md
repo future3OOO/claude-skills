@@ -48,6 +48,28 @@ Outside-pinned-scope candidate counts by case, for parent #54:
 | P1/P2 | 13 |
 | G | 4 |
 
+## Parent-pinned record digests
+
+The parent decision of 2026-08-12 binds every state-changing disposition
+record by the SHA-256 of its canonical content (sorted-key JSON,
+`schemaVersion: 1` stamped, `validationRoot` excluded). The gate never
+queries GitHub: it validates a supplied record against its declared digest,
+the replay asserts these parent-pinned values verbatim, and external review
+establishes the parent binding.
+
+| Case | Canonical record SHA-256 |
+|---|---|
+| R | `08f61bed0d5df8b9435a38b1fb1712530bebb063d7c9b457dbe85770f97a016e` |
+| P1 | `d7bda52e9bff988face173e92467cc2db78d159c1564f2817075b4cd1c195de8` |
+| P2 | `3e96fd97af71111fc5e724f457ca5b3f32ef79fdd4d0a7a25e635ce600a0b39c` |
+| G | `6c2fdd01db924618efc9df048884b2ef64082d5d254657e6fae4d47c92d15575` |
+
+The same decision chose 1b for graph evidence: an absent graph input cannot
+establish complete caller/callee scope and the snapshot index is not a
+substitute, so every replay above supplies exact, snapshot-bound graph
+evidence (`--gitnexus-context-json` declaring the replay's base and
+candidate); without it the owner rules read incomplete and nothing resolves.
+
 `unexaminedCount = 0`: every pinned anchor above is adjudicated by its
 manifest record, and every additional candidate is enumerated in the counts
 above. The largest recurring outside-scope shapes are repeated

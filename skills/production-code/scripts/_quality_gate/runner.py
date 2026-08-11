@@ -42,7 +42,17 @@ def check(
     }
     growth_rule = evaluate_growth(snapshot)
     duplicate_rules, duplicates = find_exact_duplicates(snapshot)
-    owner_rules, owner_candidates, owner_resolved = find_owner_competition(snapshot, duplicates, records)
+    # Parent #54 decision (2026-08-12): the snapshot index is not a substitute
+    # for external graph evidence; only supplied evidence naming the evaluated
+    # snapshot establishes caller/callee scope.
+    binding = _graph_binding(repo, gitnexus_context_json)
+    graph_gap = (
+        "no snapshot-bound external graph evidence: caller/callee scope is unestablished"
+        if binding is None
+        else "" if binding == (snapshot.base_identity, snapshot.candidate_tree)
+        else "external graph evidence is stale: it does not name the evaluated snapshot"
+    )
+    owner_rules, owner_candidates, owner_resolved = find_owner_competition(snapshot, duplicates, records, graph_gap)
     duplicate_warnings = {rule.rule_id: _duplicate_warnings(rule) for rule in duplicate_rules}
     findings: list[Finding] = [growth_rule, *duplicate_rules, *duplicates, *owner_rules, *owner_candidates]
     findings.extend(incompleteness_findings(findings))
@@ -194,6 +204,22 @@ def _disposition_records(repo: Path, dispositions_json: str) -> list[dict[str, o
         tree, _ = git_read(repo, ["rev-parse", "--verify", f"{record.get('candidate', '')}^{{tree}}"])
         resolved.append({**record, "resolvedBase": base.strip(), "resolvedCandidateTree": tree.strip()})
     return resolved
+
+
+def _graph_binding(repo: Path, gitnexus_context_json: str) -> tuple[str, str] | None:
+    """Supplied graph evidence's declared base commit and candidate tree,
+    resolved pre-freeze; None when absent, malformed, or undeclared."""
+    if not gitnexus_context_json.strip():
+        return None
+    try:
+        payload = json.loads(gitnexus_context_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or not payload.get("base") or not payload.get("candidate"):
+        return None
+    base, _ = git_read(repo, ["rev-parse", "--verify", f"{payload['base']}^{{commit}}"])
+    tree, _ = git_read(repo, ["rev-parse", "--verify", f"{payload['candidate']}^{{tree}}"])
+    return base.strip(), tree.strip()
 
 
 def _duplicate_warnings(rule: Finding) -> list[str]:

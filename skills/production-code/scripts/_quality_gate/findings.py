@@ -37,6 +37,7 @@ _SCOPE_KINDS = (
     ("diff hunks matched no changed file", "attribution"),
     ("no caller-supplied base", "base-binding"),
     ("gitnexus context JSON ignored", "graph-input"),
+    ("graph evidence", "graph-input"),
 )
 
 
