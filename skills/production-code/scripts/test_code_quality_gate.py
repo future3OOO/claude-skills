@@ -1308,6 +1308,27 @@ def test_disposition_trust_negatives_leave_the_rule_incomplete(repo: Path) -> No
 
 
 @with_repo
+def test_a_duplicate_record_reference_binds_nothing(repo: Path) -> None:
+    # The v1 contract rejects duplicate references: the same stamped record
+    # twice on the carrier yields exactly one confirmed transition and a
+    # duplicate-reference note for the second copy.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    record = state_root_record(base=base, candidate=head)
+    write_disposition(repo, [record, record])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["confirmed-unresolved"], states
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("duplicate record reference rejected" in note for note in notes), notes
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
 def test_an_unknown_disposition_value_is_rejected(repo: Path) -> None:
     write(repo / "src" / "state.py", _RESOLVER_A)
     write(repo / "src" / "advisor.py", _RESOLVER_B)
