@@ -12,9 +12,13 @@ It **replays the corpus through the real `code_quality_gate.py` CLI** and derive
 from that run: the per-rule fires and their regions, the exact ordered list of
 unreadable scopes, and the warning-only projection.
 
-It **binds the rest by assertion, not by replay**: the pinned base, candidate and
-diff hash are checked as strings present in this document, and the threshold is
-read from `redundancy.py` source and required to match the value published here.
+It **binds the rest by assertion, not by replay**: the threshold is read from
+`redundancy.py` source and required to match the value published here, and the
+pinned identities are checked as strings present in this document. Those
+identities are separately *recomputed* by
+`test_captured_round_six_corpus_reports_pinned_totals`, which re-runs the pinned
+`git diff` and asserts its SHA-256, and asserts the `+1129/-8` human-authored
+totals from a real CLI run — so a stale hash or count cannot pass.
 
 It does **not** replay the detector at a shorter bound. The threshold
 adjudication below is a dated one-time measurement with a runnable command that
@@ -70,38 +74,43 @@ scan that never happened.
 ## Threshold adjudication
 
 `MIN_REGION_LINES = 6` is the shortest canonical implementation any exact rule
-reports. It was measured, not assumed. Replaying this corpus on 2026-08-11 with
-the constant temporarily set to `2` produced **17 groups** where six produces
-**1** — sixteen additional candidates, almost all of them two- and three-line
-test scaffolding:
+reports. It was measured, not assumed. Replaying this corpus against the gate at
+commit `004843f24c95b1016d60fff077b7563a8f6e4554` with the threshold lowered to
+`2` produced **17 groups** where six produces **1** — sixteen additional
+candidates, almost all of them two- and three-line test scaffolding:
 
 | at bound 2 | groups | character |
 |---|---|---|
 | `QG54-DUPLICATE-ADDED-BLOCK` | 15 | repeated `subprocess.run` preambles, assertion pairs and env dicts in `hooks/tests/test_state_prune.py`, plus two short pairs in `hooks/lib/state_prune.py` |
 | `QG54-DUPLICATE-BASELINE` | 2 | a shared two-line `tearDown` (`hooks/tests/test_repoforge_workflow.py:44` vs `hooks/tests/test_state_prune.py:45`), and a three-region short-statement group |
 
-Reproduce it directly through the shipped CLI — this does **not** run the replay
-test, whose drift assertion pins the constant at six. `6` and `2` are the same
-size, so a stale `__pycache__` entry stays timestamp- and size-valid; `-B` only
-stops writing bytecode, not reading it, so the run needs its own cache prefix:
+Reproduce it entirely inside one disposable directory, so an interrupted run
+leaves **no repository state** behind — no mutated source, and no worktree
+registered against your repository. `6` and `2` are the same size, so the copy also needs its own
+bytecode cache: `-B` only stops *writing* bytecode, not reading a valid stale
+`.pyc`.
 
 ```bash
-cache="$(mktemp -d)"
+work="$(mktemp -d)"
+cp -a skills/production-code/scripts "$work/scripts"
 sed -i 's/^MIN_REGION_LINES = 6$/MIN_REGION_LINES = 2/' \
-  skills/production-code/scripts/_quality_gate/redundancy.py
-git worktree add -q --detach /tmp/round-six-corpus 28cf04e63fa6eb598b938d3a78d782969538d9a9
-PYTHONPYCACHEPREFIX="$cache" python3 -B \
-  skills/production-code/scripts/code_quality_gate.py check \
-  --repo /tmp/round-six-corpus \
+  "$work/scripts/_quality_gate/redundancy.py"
+git clone -q -n . "$work/corpus"
+git -C "$work/corpus" checkout -q 28cf04e63fa6eb598b938d3a78d782969538d9a9
+PYTHONPYCACHEPREFIX="$work/cache" python3 -B "$work/scripts/code_quality_gate.py" check \
+  --repo "$work/corpus" \
   --base-ref 4cfffcb8d5724bfc2b03dce505da8cf930fb49fa --json \
   | python3 -B -c "import json,sys; [print(f['ruleId'], [(r['path'], r['displayLine']) \
       for r in f['region']['regions']]) for f in json.load(sys.stdin)['findings'] \
       if f['region']['scope'] == 'duplicate']"
-git worktree remove --force /tmp/round-six-corpus
-sed -i 's/^MIN_REGION_LINES = 2$/MIN_REGION_LINES = 6/' \
-  skills/production-code/scripts/_quality_gate/redundancy.py
-rm -rf "$cache"
+rm -rf "$work"
 ```
+
+Interrupting it therefore touches nothing in your repository, because everything
+it writes lives under `$work`. `$work` itself does remain: bash runs neither `EXIT` nor `INT` traps reliably when the
+process group is signalled, which was measured while writing this, so a trap
+here would be decoration. `$work` is a `mktemp -d` directory, which the system
+reaps.
 
 Those candidates are repeated test *lifecycle* and invocation boilerplate, not
 repeated implementations. Issue #76 explicitly leaves fixture/harness lifecycle

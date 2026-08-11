@@ -811,7 +811,7 @@ def test_varying_scaffolding_is_not_an_exact_duplicate(repo: Path) -> None:
             f"def test_case_{index}(tmp_path):",
             f"    target = tmp_path / 'case_{index}.json'",
             f"    target.write_text('{{\"attempts\": {index}}}')",
-            f"    parsed = load_attempts(target)",
+            "    parsed = load_attempts(target)",
             f"    assert parsed['attempts'] == {index}",
             f"    assert target.name == 'case_{index}.json'",
         ))
@@ -1033,7 +1033,11 @@ def test_test_baseline_files_cannot_spend_the_production_read_budget(repo: Path)
     owner = f"def normalize_user_identifier(config, attempt):\n{RETRY_BLOCK}\n"
     bulk = repo / "apitests"
     bulk.mkdir(parents=True, exist_ok=True)
-    for index in range(4000):
+    # Exactly the enforced cap, read from the shipping constant so the fixture
+    # tracks the contract it exists to exercise rather than restating it.
+    snapshot = (SCRIPT_DIR / "_quality_gate" / "snapshot.py").read_text(encoding="utf-8")
+    budget = int(next(l for l in snapshot.splitlines() if l.startswith("MAX_INDEX_FILES")).split("=")[1])
+    for index in range(budget):
         (bulk / f"test_{index:05d}.py").write_text(f"VALUE_{index} = {index}\n", encoding="utf-8")
     write(repo / "src" / "owner.py", owner)
     git(repo, "add", ".")
@@ -1373,6 +1377,24 @@ def _growth_row(repo, baseline, ops, candidate, based, buckets, clean_check, nam
     assert code == 0, (name, code, payload["errors"])
 
 
+def replay_round_six_corpus() -> dict[str, object]:
+    """Run the gate over the pinned corpus in a throwaway detached worktree.
+
+    Both corpus replays need the same add/run/remove lifecycle; owning it once
+    keeps their cleanup from drifting apart.
+    """
+    repo = source_repo()
+    replay = Path(tempfile.mkdtemp(prefix="round-six-corpus-")) / "candidate"
+    try:
+        git(repo, "worktree", "add", "-q", "--detach", str(replay), CORPUS_CANDIDATE)
+        return run_gate(replay, "--base-ref", CORPUS_BASE)[1]
+    finally:
+        # Cleanup failures must surface, not silently leak a registered
+        # worktree into the shared source repository.
+        git(repo, "worktree", "remove", "--force", str(replay))
+        shutil.rmtree(replay.parent, ignore_errors=True)
+
+
 def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     # The diff options are part of the fixture identity pinned by the target
     # architecture; changing one requires a parent re-pin.
@@ -1413,31 +1435,23 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     digest = hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()
     assert digest == CORPUS_DIFF_SHA256, digest
 
-    replay = Path(tempfile.mkdtemp(prefix="round-six-corpus-")) / "candidate"
-    try:
-        git(repo, "worktree", "add", "-q", "--detach", str(replay), candidate)
-        _, payload, _ = run_gate(replay, "--base-ref", base)
-        growth = growth_totals(payload)
-        assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
-        assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
-        assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
-        assert growth["humanAuthored"] == {"added": 1129, "deleted": 8, "net": 1121}, growth
-        assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
-        # The corpus adds new committed files; their absent baselines are not
-        # discovery failures, so every rule must still read complete.
-        assert reuse_finding(payload)["completeness"] == {"complete": True, "gaps": []}, reuse_finding(payload)
-        # The exact rules carry their own corpus verdict in the calibration
-        # replay below, including the shell scope no tokenizer can read.
-        assert all(
-            item["status"] != "incomplete"
-            for item in payload["checks"]
-            if not item["name"].startswith("QG54-DUPLICATE-")
-        ), payload["checks"]
-    finally:
-        # Cleanup failures must surface, not silently leak a registered
-        # worktree into the shared source repository.
-        git(repo, "worktree", "remove", "--force", str(replay))
-        shutil.rmtree(replay.parent, ignore_errors=True)
+    payload = replay_round_six_corpus()
+    growth = growth_totals(payload)
+    assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
+    assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
+    assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
+    assert growth["humanAuthored"] == {"added": 1129, "deleted": 8, "net": 1121}, growth
+    assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
+    # The corpus adds new committed files; their absent baselines are not
+    # discovery failures, so every rule must still read complete.
+    assert reuse_finding(payload)["completeness"] == {"complete": True, "gaps": []}, reuse_finding(payload)
+    # The exact rules carry their own corpus verdict in the calibration
+    # replay below, including the shell scope no tokenizer can read.
+    assert all(
+        item["status"] != "incomplete"
+        for item in payload["checks"]
+        if not item["name"].startswith("QG54-DUPLICATE-")
+    ), payload["checks"]
 
 
 def test_captured_corpus_duplicate_calibration_is_reproducible() -> None:
@@ -1455,48 +1469,42 @@ def test_captured_corpus_duplicate_calibration_is_reproducible() -> None:
     assert threshold.replace(" ", "") == "MIN_REGION_LINES=6", threshold
     assert "`MIN_REGION_LINES = 6`" in published, "the document must name the shipped threshold"
 
-    repo = source_repo()
-    replay = Path(tempfile.mkdtemp(prefix="round-six-calibration-")) / "candidate"
-    try:
-        git(repo, "worktree", "add", "-q", "--detach", str(replay), CORPUS_CANDIDATE)
-        _, payload, _ = run_gate(replay, "--base-ref", CORPUS_BASE)
-        fires: dict[str, list[list[tuple[str, int]]]] = {
-            rule: [] for rule in
-            ("QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK", "QG54-DUPLICATE-BASELINE")
-        }
-        for finding in duplicate_findings(payload):
-            fires[finding["ruleId"]].append(
-                [(region["path"], region["displayLine"]) for region in finding["region"]["regions"]]
-            )
-        assert fires == {
-            "QG54-DUPLICATE-ADDED-SYMBOL": [],
-            "QG54-DUPLICATE-ADDED-BLOCK": [[
-                ("hooks/tests/test_state_prune.py", 50),
-                ("hooks/tests/test_state_prune.py", 395),
-            ]],
-            "QG54-DUPLICATE-BASELINE": [],
-        }, json.dumps(fires, indent=2)
-        # Every fire and every unreadable scope is named in the published
-        # adjudication; an unexamined one would be a silent regression.
-        unreadable = [
-            "hooks/tests/run.sh",
-            "skills/codex-advisor/scripts/ask-codex-advisor.sh",
-            "skills/codex-advisor/tests/test-ask-codex-advisor.sh",
-        ]
-        for rule in fires:
-            state = check_named(payload, rule)
-            assert state["status"] == "incomplete" and state["passed"] is None, state
-            assert [gap.split(":")[0] for gap in state["gaps"]] == unreadable, state["gaps"]
-            for path in unreadable:
-                assert path in published, path
-        for finding in duplicate_findings(payload):
-            assert finding["severity"] == "warning" and finding["passed"] is True, finding
-            for region in finding["region"]["regions"]:
-                assert f"{region['path']}:{region['displayLine']}" in published, region
-        assert not any("QG54-DUPLICATE-" in error for error in payload["errors"]), payload["errors"]
-    finally:
-        git(repo, "worktree", "remove", "--force", str(replay))
-        shutil.rmtree(replay.parent, ignore_errors=True)
+    payload = replay_round_six_corpus()
+
+    fires: dict[str, list[list[tuple[str, int]]]] = {
+        rule: [] for rule in
+        ("QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK", "QG54-DUPLICATE-BASELINE")
+    }
+    for finding in duplicate_findings(payload):
+        fires[finding["ruleId"]].append(
+            [(region["path"], region["displayLine"]) for region in finding["region"]["regions"]]
+        )
+    assert fires == {
+        "QG54-DUPLICATE-ADDED-SYMBOL": [],
+        "QG54-DUPLICATE-ADDED-BLOCK": [[
+            ("hooks/tests/test_state_prune.py", 50),
+            ("hooks/tests/test_state_prune.py", 395),
+        ]],
+        "QG54-DUPLICATE-BASELINE": [],
+    }, json.dumps(fires, indent=2)
+    # Every fire and every unreadable scope is named in the published
+    # adjudication; an unexamined one would be a silent regression.
+    unreadable = [
+        "hooks/tests/run.sh",
+        "skills/codex-advisor/scripts/ask-codex-advisor.sh",
+        "skills/codex-advisor/tests/test-ask-codex-advisor.sh",
+    ]
+    for rule in fires:
+        state = check_named(payload, rule)
+        assert state["status"] == "incomplete" and state["passed"] is None, state
+        assert [gap.split(":")[0] for gap in state["gaps"]] == unreadable, state["gaps"]
+        for path in unreadable:
+            assert path in published, path
+    for finding in duplicate_findings(payload):
+        assert finding["severity"] == "warning" and finding["passed"] is True, finding
+        for region in finding["region"]["regions"]:
+            assert f"{region['path']}:{region['displayLine']}" in published, region
+    assert not any("QG54-DUPLICATE-" in error for error in payload["errors"]), payload["errors"]
 
 
 @with_repo
