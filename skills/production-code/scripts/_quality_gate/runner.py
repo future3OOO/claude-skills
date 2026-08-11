@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
+
 from .checks import changed_file_failures, evaluate_growth, scan_quality_escapes
-from .git_scope import collect_scope
-from .findings import Finding, RULE_GITNEXUS_CONTEXT, RULE_GROWTH, RULE_INCOMPLETE, gitnexus_context_finding, incompleteness_findings, promoted_errors
-from .redundancy import find_exact_duplicates
-from .reuse import detect_reuse_issues
+from .git_scope import collect_scope, git_read
+from .findings import Finding, RULE_GROWTH, RULE_INCOMPLETE, incompleteness_findings, promoted_errors
+from .redundancy import find_exact_duplicates, find_owner_competition
 from .snapshot import EvaluationSnapshot
 
 GATE_VERSION = "2026-08-10.1"
@@ -27,10 +28,12 @@ def check(
     repo_context_packet: str = "",
     gitnexus_context_json: str = "",
     staged_only: bool = False,
+    dispositions_json: str = "",
 ) -> dict[str, object]:
     scope = collect_scope(repo, base_ref, staged_only=staged_only)
     errors: list[str] = list(scope["errors"])
     snapshot = EvaluationSnapshot.from_scope(repo, scope, repo_context_packet, gitnexus_context_json)
+    records = _disposition_records(repo, dispositions_json)
 
     conflicts, temps = changed_file_failures(snapshot)
     found = {
@@ -38,12 +41,11 @@ def check(
         "no-temp-artifacts": temps,
         "no-quality-escapes": scan_quality_escapes(snapshot),
     }
-    reuse_rule, gitnexus_queries = detect_reuse_issues(snapshot)
     growth_rule = evaluate_growth(snapshot)
     duplicate_rules, duplicates = find_exact_duplicates(snapshot)
+    owner_rules, owner_candidates, owner_resolved = find_owner_competition(snapshot, duplicates, records)
     duplicate_warnings = {rule.rule_id: _duplicate_warnings(rule) for rule in duplicate_rules}
-    gitnexus_rule = gitnexus_context_finding(list(snapshot.gitnexus_warnings)) if snapshot.gitnexus_warnings else None
-    findings: list[Finding] = [growth_rule, reuse_rule, *duplicate_rules, *duplicates, *([gitnexus_rule] if gitnexus_rule else [])]
+    findings: list[Finding] = [growth_rule, *duplicate_rules, *duplicates, *owner_rules, *owner_candidates]
     findings.extend(incompleteness_findings(findings))
 
     streams = snapshot.gap_streams()
@@ -63,9 +65,6 @@ def check(
     # violation; an active warning-only rule keeps its intrinsic pass visible.
     checks: list[dict[str, object]] = []
     warnings: list[str] = []
-    matches = list(reuse_rule.evidence["matches"])
-    reuse_errors = [match for match in matches if match["severity"] == "error"]
-    reuse_warnings = [match for match in matches if match["severity"] == "warning"]
 
     for name, template, cap, stream in _SIMPLE_CHECKS:
         items = found[name]
@@ -84,40 +83,32 @@ def check(
             out["gaps"] = sorted(rule.gaps)
         return out
 
-    if reuse_errors:
-        errors.append(f"new code appears to reimplement existing helpers or loops: {len(reuse_errors)}")
     net = growth_rule.evidence["humanAuthored"]["net"]
     # The measured growth is reported whether or not the claim is also
     # incomplete: incompleteness qualifies the number, it does not delete it.
     growth_warning = f"{RULE_GROWTH}: human-authored net growth {net} exceeds the 500-line review budget" if net > 500 else ""
-    checks.append({"name": "reuse-existing-helpers", "warnings": reuse_warnings[:10], "sample": reuse_errors[:10], **projected(reuse_rule)})
     # One projection per exact rule ID, named by that ID: promotion, calibration,
     # and consumers all address these rules exactly, never by family or prefix.
     checks.extend(
         {"name": rule.rule_id, "warnings": duplicate_warnings[rule.rule_id], **projected(rule)}
         for rule in duplicate_rules
     )
+    owner_warnings = {rule.rule_id: _owner_warnings(rule.rule_id, owner_candidates) for rule in owner_rules}
+    checks.extend(
+        {"name": rule.rule_id, "warnings": owner_warnings[rule.rule_id], **projected(rule)}
+        for rule in owner_rules
+    )
     checks.append({"name": "cumulative-growth", "warnings": [growth_warning] if growth_warning else [], **projected(growth_rule)})
-    checks.append({
-        "name": "gitnexus-context",
-        "warnings": list(gitnexus_rule.evidence["messages"]) if gitnexus_rule else [],
-        **(projected(gitnexus_rule) if gitnexus_rule else {"passed": True, "status": "passed"}),
-    })
 
     for finding in findings:
         if finding.rule_id == RULE_INCOMPLETE:
             warnings.extend(f"{RULE_INCOMPLETE} for {finding.evidence['affectedRuleId']}: {gap}" for gap in finding.evidence["gaps"])
     if growth_warning:
         warnings.append(growth_warning)
-    warnings.extend(
-        f"possible reusable existing path for {match['newFile']}:{match['newLine']} -> "
-        f"{match['existingFile']}:{match['existingLine']} {match['existingSymbol']} ({match['reason']})"
-        for match in reuse_warnings
-    )
     for rule in duplicate_rules:
         warnings.extend(duplicate_warnings[rule.rule_id])
-    if gitnexus_rule:
-        warnings.extend(gitnexus_rule.evidence["messages"])
+    for rule in owner_rules:
+        warnings.extend(owner_warnings[rule.rule_id])
     errors.extend(promoted_errors(findings, fail_on_warnings))
 
     outcome = {item["name"]: item["passed"] for item in checks}
@@ -155,13 +146,18 @@ def check(
             "gaps": sorted(evaluation_gaps),
         },
         "findings": [finding.as_dict(snapshot.base_identity, snapshot.candidate_identity) for finding in findings],
-        "resolvedFindings": [],
+        "resolvedFindings": [finding.as_dict(snapshot.base_identity, snapshot.candidate_identity) for finding in owner_resolved],
         "checks": checks,
         "hardRules": {
-            # Warning-only exact rules are deliberately absent: #54 has not
-            # approved any QG54-DUPLICATE-* ID for promotion, so none of them
-            # may decide a hard rule.
-            "noDuplication": hard_rule("reuse-existing-helpers"),
+            # Hard rules are computed from blocker policy only. Every surviving
+            # duplication/owner rule is warning-only, so this key keeps its
+            # place without a blocker to derive from.
+            "noDuplication": {
+                "status": "not_evaluated",
+                "passed": None,
+                "checks": [],
+                "reason": "no blocker-eligible duplication rule remains; QG54 duplicate and owner rules are warning-only",
+            },
             "cleanup": hard_rule("no-quality-escapes", "no-temp-artifacts"),
             "noMergeConflictMarkers": hard_rule("no-merge-conflict-markers"),
             "consequenceCoverage": {
@@ -173,8 +169,35 @@ def check(
         },
         "errors": errors,
         "warnings": warnings,
-        "gitnexusQueries": gitnexus_queries,
+        # Retained projection until its documented consumer migrates; the
+        # lexical scorer that filled it is deleted.
+        "gitnexusQueries": [],
     }
+
+
+def _disposition_records(repo: Path, dispositions_json: str) -> list[dict[str, object]]:
+    """Caller-supplied disposition records with their commits resolved to
+    trees, before the snapshot freezes. A record that is not an object, or
+    whose commits do not resolve, keeps its raw shape and fails structural
+    validation downstream instead of vanishing here."""
+    if not dispositions_json.strip():
+        return []
+    try:
+        payload = json.loads(dispositions_json)
+    except json.JSONDecodeError as exc:
+        return [{"invalidDocument": f"dispositions JSON ignored: {exc}"}]
+    records = payload.get("records") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return [{"invalidDocument": "dispositions JSON has no records array"}]
+    resolved: list[dict[str, object]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            resolved.append({"invalidDocument": "record is not an object"})
+            continue
+        base, _ = git_read(repo, ["rev-parse", "--verify", f"{record.get('base', '')}^{{commit}}"])
+        tree, _ = git_read(repo, ["rev-parse", "--verify", f"{record.get('candidate', '')}^{{tree}}"])
+        resolved.append({**record, "resolvedBase": base.strip(), "resolvedCandidateTree": tree.strip()})
+    return resolved
 
 
 def _duplicate_warnings(rule: Finding) -> list[str]:
@@ -183,6 +206,17 @@ def _duplicate_warnings(rule: Finding) -> list[str]:
         f"{rule.rule_id}: identical implementation in "
         + ", ".join(f"{region['path']}:{region['displayLine']}" for region in group["regions"])
         for group in rule.evidence["duplicates"]
+    ]
+
+
+def _owner_warnings(rule_id: str, candidates: list[Finding]) -> list[str]:
+    """One warning per active owner candidate, naming its evidence class and
+    every competing owner region."""
+    return [
+        f"{rule_id}: {candidate.state} {candidate.region['evidenceClass']} competing owners "
+        + ", ".join(candidate.evidence["owners"])
+        for candidate in candidates
+        if candidate.rule_id == rule_id and candidate.state in ("candidate", "confirmed-unresolved")
     ]
 
 

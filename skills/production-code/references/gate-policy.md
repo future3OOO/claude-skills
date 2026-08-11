@@ -10,9 +10,8 @@ tests, build, or domain-specific gates.
   (base/candidate identity plus growth), structured `findings` with exact rule
   IDs, and `resolvedFindings`.
 - Hard failures include merge-conflict markers, temporary artifacts,
-  high-confidence reimplementation of existing helpers or loops, fake-green
-  suppressions, empty or broad catch/pass patterns, unsafe type shortcuts, and
-  TODO/FIXME/HACK in changed source.
+  fake-green suppressions, empty or broad catch/pass patterns, unsafe type
+  shortcuts, and TODO/FIXME/HACK in changed source.
 - Exact duplication is warning-only structured evidence, never a blocker:
   `QG54-DUPLICATE-ADDED-SYMBOL` (a complete added symbol body repeated),
   `QG54-DUPLICATE-ADDED-BLOCK` (a repeated contiguous added block), and
@@ -36,27 +35,43 @@ tests, build, or domain-specific gates.
   discovery, and unattributed hunks propagate `incomplete` to affected checks
   and hard rules. Typed incomplete findings are additionally surfaced as
   `QG54-ANALYSIS-INCOMPLETE`.
+- Responsibility-owner competition is warning-only structured evidence:
+  `QG54-OWNER-COMPETITION-PRODUCTION` and `QG54-OWNER-COMPETITION-TEST`
+  generate candidates independently of duplicate detection from eight
+  mechanical evidence classes, each evaluated on every run with a serialized
+  per-class ledger. Every finding carries exactly one state — `candidate`,
+  `confirmed-unresolved`, or `resolved` — and only the first two are active
+  warnings; `resolved` evidence lives in `resolvedFindings` as telemetry and
+  never keeps the visible gate non-green. Semantic dispositions arrive only
+  through `--dispositions`, a records file the CLI refuses from stdin or any
+  path inside the evaluated repository; each record is structurally validated
+  against the exact evaluated snapshot, and resolution requires the one-owner
+  predicate — superseded surfaces absent and unreferenced, one surviving
+  owner, complete owner discovery — so partial deepening, renames, facades,
+  and discovery-shrinking never resolve.
+  `references/owner-calibration.md` publishes the parent-pinned manifest
+  replay.
 - `--fail-on-warnings` promotes only typed active findings whose exact rule ID
-  carries promotion eligibility in immutable rule-policy metadata. All QG54
-  IDs start ineligible; the transitional `QG-LEGACY-REUSE-ADVISORY` and
-  `QG-LEGACY-GITNEXUS-CONTEXT` IDs stay eligible to preserve schema-v1
-  behavior. Promotion keeps the finding `severity=warning` with its intrinsic
-  check passed, adds an exact-ID error, and sets top-level `ok=false`.
+  carries promotion eligibility in immutable rule-policy metadata. Every rule
+  ID currently starts ineligible; promotion of an exact ID is a separate
+  human decision on parent #54. Promotion keeps the finding
+  `severity=warning` with its intrinsic check passed, adds an exact-ID error,
+  and sets top-level `ok=false`.
 - Checks are path-aware through one stored classification per entry (role,
   parser language, human-authored/source status, test-like compatibility,
   exclusion reason). Production source remains strict; tests still fail
   suppression, broad catch/pass, TODO/FIXME/HACK, and `|| true` patterns.
-- Reuse detection is candidate-first and scores only relevant base-tree
-  production source. It skips tests, fixtures, and generated paths; suppresses
-  likely moves and weak cross-domain overlap; and reports actionable candidates.
-  Base-tree capture itself covers production, test, and test-support source,
-  kept apart per role so the exact rules can see test owners without widening
-  which production owners the reuse advisory scores.
-- `--repo-context-packet` and `--gitnexus-context-json` may strengthen caller
-  evidence already gathered by the workflow. The gate never creates reports,
-  caches, or repository artifacts itself.
-- The gate's evaluated hard-rule results are `noDuplication`, `cleanup`, and
-  `noMergeConflictMarkers`.
+- Base-tree owner capture covers production, test, and test-support source,
+  kept apart per role so one rule family's discovery cannot widen or dirty
+  another's.
+- `--repo-context-packet` and `--gitnexus-context-json` may strengthen owner
+  discovery and caller evidence already gathered by the workflow; malformed
+  graph input becomes per-affected-rule `QG54-ANALYSIS-INCOMPLETE` evidence.
+  The gate never creates reports, caches, or repository artifacts itself.
+- The gate's evaluated hard-rule results are `cleanup` and
+  `noMergeConflictMarkers`. `noDuplication` keeps its key and reports
+  `not_evaluated`: every surviving duplication/owner rule is warning-only,
+  and a warning cannot decide a hard rule.
 - `consequenceCoverage` is explicitly `not_evaluated` unless caller-supplied
   evidence supports it. A syntax proxy must never be labeled consequence
   analysis.

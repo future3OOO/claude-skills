@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ast
+import re
 from collections import Counter
 
 from .findings import (
     Finding, RULE_DUPLICATE_BASELINE, RULE_DUPLICATE_BLOCK, RULE_DUPLICATE_SYMBOL,
+    RULE_OWNER_PRODUCTION, RULE_OWNER_TEST,
     anchor, finding_id, pass_condition,
 )
 from .snapshot import BASELINE_ROLES, EvaluationSnapshot
@@ -158,7 +160,7 @@ def _scan(snapshot: EvaluationSnapshot) -> tuple[list[dict[str, object]], list[s
             # that it did not read this file.
             gaps.append(f"{entry.path}: exact duplicate analysis {reason} this {language}")
             continue
-        symbols = extract_symbols(entry.path, text, "added", language)
+        symbols = extract_symbols(entry.path, text, language)
         # Every symbol edge, opening and closing: a block running out of one
         # symbol into the next would span a boundary the contract forbids.
         edges = {symbol.line for symbol in symbols} | {
@@ -378,4 +380,592 @@ def _finding(
         action=DUPLICATE_ACTION,
         pass_condition=DUPLICATE_PASS_CONDITION,
         gaps=tuple(dict.fromkeys(gaps)),
+    )
+
+
+# Responsibility-owner competition (#77). Candidates come only from mechanical
+# snapshot evidence; semantic authority never comes from names, proximity, or
+# prose, and no state here blocks completion.
+
+OWNER_ACTION = "Deepen, replace, or consolidate until one owner remains for the responsibility, and delete the competing surface."
+
+OWNER_PASS_CONDITION = pass_condition(
+    "one-owner",
+    ("content anchors of every named owner region", "every evidence class evaluated"),
+    "no responsibility has two mechanically evidenced owners, with every evidence class evaluated",
+)
+
+# The eight mechanical evidence classes the issue requires. Every class is
+# evaluated on every run; an entry that could not look reports its gap and the
+# rule reads incomplete, never clean.
+OWNER_CLASSES = (
+    "state-writers", "invariant-validators", "interface-overlap",
+    "lifecycle-coordinators", "parallel-entry-points", "fixture-lifecycle",
+    "forwarding-surfaces", "exact-retained",
+)
+
+_OWNER_ROLES = {RULE_OWNER_PRODUCTION: ("production",), RULE_OWNER_TEST: ("test", "test-support")}
+# Signature-equality classes fire per role family: repeated lifecycles are
+# coordinator debt in production and fixture debt in tests.
+_SIGNATURE_CLASS = {RULE_OWNER_PRODUCTION: "lifecycle-coordinators", RULE_OWNER_TEST: "fixture-lifecycle"}
+
+_SHELL_ENV_READ = re.compile(r"\$\{([A-Z][A-Z0-9_]{3,})[:}\-]")
+_MUTATORS = frozenset({"mkdir", "rename", "rmdir", "rmtree", "unlink", "write_bytes", "write_text"})
+# Path segments so role-generic that sharing one is directory vocabulary, not
+# shared state.
+_SEGMENT_STOP = frozenset({"docs", "hooks", "src", "lib", "test", "tests"})
+# Framework-reserved entry and lifecycle names: sharing one is convention,
+# not an overlapping Interface for a domain operation.
+_GENERIC_PUBLIC = frozenset({"main", "setUp", "tearDown"})
+_MIN_SIGNATURE_OPS = 4
+
+
+def _called_names(node: ast.AST) -> tuple[str, ...]:
+    """Callee anchors in deterministic walk order, including calls nested in
+    payload expressions: a call is an operation wherever it sits."""
+    names = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            target = sub.func
+            name = target.attr if isinstance(target, ast.Attribute) else target.id if isinstance(target, ast.Name) else ""
+            if name:
+                names.append(name)
+    return tuple(names)
+
+
+def _operation_signature(body: list[ast.stmt]) -> tuple:
+    """The ordered lifecycle-operation signature of one function body.
+
+    Callee anchors, operation order, and statement/control-flow kind are
+    preserved; only call-free local bindings and the literal payload/value
+    slots normalize, so varying filenames, payloads, and expected values keep
+    one signature while an extra operation or a different callee breaks it.
+    """
+    ops: list[tuple] = []
+    for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            ops.append(("def", _operation_signature(stmt.body)))
+            continue
+        calls = _called_names(stmt)
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and not calls:
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        ops.append((type(stmt).__name__, calls))
+    return tuple(ops)
+
+
+def _signature_weight(signature: tuple) -> int:
+    return sum(1 + (_signature_weight(op[1]) if op[0] == "def" else 0) for op in signature)
+
+
+def _owner_functions(text: str) -> list[dict[str, object]] | None:
+    """Mechanical per-function facts for the owner classes, or None when the
+    file does not parse. Module functions and one level of methods: the
+    corpus's competing owners live at both depths."""
+    try:
+        tree = ast.parse(text)
+    except (IndentationError, SyntaxError, SystemError, UnicodeError, ValueError):
+        return None
+    scopes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    scopes += [item for node in tree.body if isinstance(node, ast.ClassDef)
+               for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    functions = []
+    for node in scopes:
+        envs: set[str] = set()
+        segments: set[str] = set()
+        mutates = False
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                target = sub.func
+                name = target.attr if isinstance(target, ast.Attribute) else target.id if isinstance(target, ast.Name) else ""
+                mutates = mutates or name in _MUTATORS
+                # os.environ.get / os.getenv with a literal name is an external
+                # configuration boundary being resolved.
+                if name in {"get", "getenv"} and sub.args and isinstance(sub.args[0], ast.Constant) \
+                        and isinstance(sub.args[0].value, str) and sub.args[0].value.isupper():
+                    root = target.value if isinstance(target, ast.Attribute) else None
+                    if name == "getenv" or (isinstance(root, ast.Attribute) and root.attr == "environ"):
+                        envs.add(sub.args[0].value)
+            elif isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Attribute) \
+                    and sub.value.attr == "environ" and isinstance(sub.slice, ast.Constant) \
+                    and isinstance(sub.slice.value, str):
+                envs.add(sub.slice.value)
+            elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Div) \
+                    and isinstance(sub.right, ast.Constant) and isinstance(sub.right.value, str):
+                segment = sub.right.value.strip("/")
+                if len(segment) >= 4 and "/" not in segment and segment.lower() not in _SEGMENT_STOP:
+                    segments.add(segment)
+        signature = _operation_signature(node.body)
+        body = node.body[1:] if node.body and isinstance(node.body[0], ast.Expr) \
+            and isinstance(node.body[0].value, ast.Constant) else node.body
+        forwards = ""
+        if len(body) == 1 and isinstance(body[0], ast.Return) and isinstance(body[0].value, ast.Call) \
+                and isinstance(body[0].value.func, ast.Name) \
+                and all(isinstance(arg, ast.Name) for arg in body[0].value.args):
+            forwards = body[0].value.func.id
+        functions.append({
+            "name": node.name, "line": min([item.lineno for item in node.decorator_list] + [node.lineno]),
+            "public": not node.name.startswith("_"), "calls": _called_names(node),
+            "signature": signature, "weight": _signature_weight(signature),
+            "envs": envs, "segments": segments, "mutates": mutates, "forwards": forwards,
+            "compares": _compare_keys(node),
+        })
+    return functions
+
+
+def _compare_keys(node: ast.AST) -> frozenset[tuple[str, str]]:
+    """What this function decides, when predicate-shaped: each comparison's
+    dotted subject and literal, the mechanical shape of an invariant check."""
+    decides = any(
+        isinstance(sub, ast.Return) and isinstance(sub.value, (ast.Compare, ast.BoolOp))
+        for sub in ast.walk(node)
+    ) or any(isinstance(sub, ast.Raise) for sub in ast.walk(node))
+    if not decides:
+        return frozenset()
+    keys = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Compare) and len(sub.comparators) == 1 \
+                and isinstance(sub.comparators[0], ast.Constant):
+            subject = sub.left
+            parts = []
+            while isinstance(subject, ast.Attribute):
+                parts.append(subject.attr)
+                subject = subject.value
+            if isinstance(subject, ast.Name):
+                parts.append(subject.id)
+            if parts:
+                keys.add((".".join(reversed(parts)), repr(sub.comparators[0].value)))
+    return frozenset(keys)
+
+
+def _owner_units(snapshot: EvaluationSnapshot, roles: tuple[str, ...]) -> tuple[list[dict[str, object]], int, list[str]]:
+    """Evidence units for one role family over changed entries and captured
+    baseline, with the file count and the named parse gaps.
+
+    One unit per parsed function — facts closed over same-file callees one
+    hop, where a resolver delegates its boundary reads — and one per shell
+    env-resolving line, so a language without a structural parser still
+    contributes its boundary evidence rather than silently vanishing.
+    """
+    files = [(entry.path, entry.classification.role, entry.classification.language,
+              entry.current_text or "", True) for entry in snapshot.role_entries(*roles)]
+    changed = {item[0] for item in files}
+    files += [(path, base.role, base.language, base.text, False)
+              for base in snapshot.baseline
+              for path in [snapshot.renamed_to.get(base.path, base.path)]
+              if base.role in roles and base.text is not None
+              and path not in changed and snapshot.entry(path) is None]
+    units: list[dict[str, object]] = []
+    gaps: list[str] = []
+    for path, role, language, text, is_changed in files:
+        common = {"path": path, "role": role, "language": language, "changed": is_changed}
+        if language != "python":
+            units += [{**common, "name": line.strip(), "line": number, "public": True, "calls": (),
+                       "signature": (), "weight": 0, "envs": envs, "segments": frozenset(),
+                       "mutates": True, "forwards": "", "compares": frozenset()}
+                      for number, line in enumerate(text.splitlines(), 1)
+                      for envs in [frozenset(_SHELL_ENV_READ.findall(line))] if len(envs) >= 2]
+            continue
+        functions = _owner_functions(text)
+        if functions is None:
+            gaps.append(f"{path}: owner evidence could not parse this python")
+            continue
+        by_name = {fn["name"]: fn for fn in functions}
+        for fn in functions:
+            closed = [fn] + [by_name[called] for called in fn["calls"]
+                             if called in by_name and by_name[called] is not fn]
+            units.append({**fn, **common,
+                          "envs": frozenset().union(*[member["envs"] for member in closed]),
+                          "segments": frozenset().union(*[member["segments"] for member in closed]),
+                          "mutates": any(member["mutates"] for member in closed)})
+    return units, len(files), gaps
+
+
+def _owner_groups(units: list[dict[str, object]]) -> dict[str, list[list[dict[str, object]]]]:
+    """Candidate groups per evidence class. Every group spans at least two
+    files and touches the changed surface; each grouping key is the shared
+    mechanical evidence itself, never a name alone."""
+    def grouped(keyed: dict[object, list[dict[str, object]]], accept=lambda members: True) -> list[list[dict[str, object]]]:
+        found = []
+        for members in keyed.values():
+            files = {member["path"] for member in members}
+            if len(files) >= 2 and any(member["changed"] for member in members) and accept(members):
+                found.append(sorted(members, key=lambda member: (member["path"], member["line"])))
+        return found
+
+    def collect(key_of) -> dict[object, list[dict[str, object]]]:
+        keyed: dict[object, list[dict[str, object]]] = {}
+        for unit in units:
+            for key in key_of(unit):
+                keyed.setdefault(key, []).append(unit)
+        return keyed
+
+    by_name = {}
+    for unit in units:
+        by_name.setdefault((unit["path"], unit["name"]), unit)
+    callers: set[str] = set()
+    for unit in units:
+        callers.update(unit["calls"])
+    defined = {unit["name"] for unit in units}
+
+    return {
+        # Two resolvers of one external configuration boundary: the same pair
+        # of environment anchors resolved in two files.
+        "state-writers": grouped(collect(
+            lambda unit: [unit["envs"]] if len(unit["envs"]) >= 2 else []))
+        # One state segment touched from two files, at least one mutating it.
+        + grouped(collect(lambda unit: sorted(unit["segments"])),
+                  lambda members: any(member["mutates"] for member in members)),
+        "invariant-validators": grouped(collect(
+            lambda unit: [unit["compares"]] if unit["compares"] else [])),
+        # Overlapping public Interfaces need shared behavior evidence beyond
+        # the name: a shared resolved callee or boundary anchor.
+        "interface-overlap": grouped(
+            collect(lambda unit: [unit["name"]] if unit["public"] and unit["name"] not in _GENERIC_PUBLIC and unit["signature"] else []),
+            lambda members: bool(
+                set.intersection(*[set(member["calls"]) for member in members])
+                or frozenset.intersection(*[member["envs"] | member["segments"] for member in members])
+            ),
+        ),
+        "parallel-entry-points": grouped(collect(
+            lambda unit: [frozenset(set(unit["calls"]) & defined)]
+            if unit["name"] not in callers and len(set(unit["calls"]) & defined) >= 3 and unit["signature"] else [])),
+        "forwarding-surfaces": grouped(collect(
+            lambda unit: [unit["forwards"]] if unit["forwards"] and unit["forwards"] in defined
+            and by_name.get((unit["path"], unit["forwards"])) is None else [])),
+    }
+
+
+def _signature_groups(units: list[dict[str, object]]) -> list[list[dict[str, object]]]:
+    """Functions owning one ordered lifecycle-operation signature, at least
+    twice, inside or across files of one role family."""
+    keyed: dict[tuple, list[dict[str, object]]] = {}
+    for unit in units:
+        if unit["signature"] and unit["weight"] >= _MIN_SIGNATURE_OPS:
+            keyed.setdefault(unit["signature"], []).append(unit)
+    return [
+        sorted(members, key=lambda member: (member["path"], member["line"]))
+        for members in keyed.values()
+        if len(members) >= 2 and any(member["changed"] for member in members)
+    ]
+
+
+def find_owner_competition(
+    snapshot: EvaluationSnapshot,
+    duplicates: list[Finding],
+    records: list[dict[str, object]],
+) -> tuple[list[Finding], list[Finding], list[Finding]]:
+    """The responsibility-owner rules: per-rule state findings, one finding per
+    active candidate, and resolved telemetry, generated independently of
+    duplicate detection.
+
+    Exact evidence is one class among eight, not an entry requirement; the
+    exact rules separately own their scan completeness. Dispositions are
+    caller-supplied parent-bound records: structural validation against the
+    exact evaluated snapshot decides everything, and a record that does not
+    bind is reported inapplicable, never applied.
+    """
+    streams = snapshot.gap_streams()
+    states: list[Finding] = []
+    candidates: list[Finding] = []
+    resolved: list[Finding] = []
+    for rule_id, roles in _OWNER_ROLES.items():
+        # Capture and attribution failures can hide any candidate; measurement
+        # gaps stay with the role family that owns the unmeasured file.
+        hidden = list(streams["attribution"] + streams["capture"]) + sorted(
+            {gap for entry in snapshot.role_entries(*roles) for gap in entry.gaps}
+        )
+        units, file_count, parse_gaps = _owner_units(snapshot, roles)
+        groups = _owner_groups(units)
+        retained = [
+            [dict(region, line=region["displayLine"], name=str(region["contentAnchor"]))
+             for region in finding.evidence["duplicates"][0]["regions"]]
+            for finding in duplicates
+            if str(finding.evidence["duplicates"][0]["regions"][0]["role"]) in roles
+        ]
+        per_class: dict[str, list] = {name: [] for name in OWNER_CLASSES}
+        per_class.update(groups)
+        per_class[_SIGNATURE_CLASS[rule_id]] = _signature_groups(units)
+        per_class["exact-retained"] = retained
+        rule_candidates = []
+        for name in OWNER_CLASSES:
+            for members in per_class[name]:
+                rule_candidates.append(_owner_candidate(snapshot, rule_id, name, members))
+        # An owner rule that could not parse a file, was handed graph evidence
+        # it could not read, or whose candidates could be hidden by capture
+        # failures, has not evaluated its classes. Unread owner discovery in
+        # this rule's own roles matters once a changed-side unit could pair
+        # against it; the cross-role scope bound can hide owners of any role.
+        owner_gaps = hidden + parse_gaps + list(snapshot.gitnexus_warnings)
+        if any(unit["changed"] for unit in units):
+            discovery = streams["baseline"] if "production" in roles else streams["baseline_roles"]
+            owner_gaps += list(discovery + streams["baseline_scope"])
+        owner_gaps = tuple(dict.fromkeys(owner_gaps))
+        applied, rule_resolved, consumed, notes = _apply_dispositions(
+            snapshot, rule_id, records, rule_candidates, not owner_gaps
+        )
+        active = applied + [item for item in rule_candidates if item.finding_id() not in consumed]
+        candidates.extend(active)
+        resolved.extend(rule_resolved)
+        ledger = [
+            {"class": name, "status": "evaluated", "files": file_count,
+             "candidates": len(per_class[name]), "gaps": sorted(parse_gaps)}
+            for name in OWNER_CLASSES
+        ]
+        states.append(Finding(
+            rule_id=rule_id,
+            severity="warning",
+            status="incomplete" if owner_gaps else "finding" if active else "passed",
+            passed=None if owner_gaps else True,
+            identity=(snapshot.base_identity, snapshot.candidate_identity),
+            region={"scope": "evaluation", "changedScope": snapshot.changed_scope,
+                    "fileCount": file_count},
+            evidence={"classes": ledger, "candidates": len(active), "records": notes},
+            action=OWNER_ACTION,
+            pass_condition=OWNER_PASS_CONDITION,
+            gaps=owner_gaps,
+        ))
+    return states, candidates, resolved
+
+
+def _owner_candidate(
+    snapshot: EvaluationSnapshot,
+    rule_id: str,
+    evidence_class: str,
+    members: list[dict[str, object]],
+) -> Finding:
+    regions = [
+        {"path": member["path"], "role": member["role"], "language": member["language"],
+         "displayLine": member.get("displayLine", member["line"]), "owner": str(member["name"]),
+         "contentAnchor": member.get("contentAnchor")
+         or anchor("owner", str(member["role"]), str(member["language"]), str(member["name"])),
+         "evidenceRole": "owner"}
+        for member in members
+    ]
+    identity = (evidence_class, *sorted(str(region["contentAnchor"]) for region in regions))
+    return Finding(
+        rule_id=rule_id,
+        severity="warning",
+        status="finding",
+        passed=True,
+        identity=identity,
+        region={"scope": "candidate", "evidenceClass": evidence_class, "regions": regions},
+        evidence={"evidenceClass": evidence_class,
+                  "owners": [f"{region['path']}:{region['displayLine']}" for region in regions]},
+        action=OWNER_ACTION,
+        pass_condition=OWNER_PASS_CONDITION,
+        gaps=(),
+        state="candidate",
+    )
+
+
+_SEMANTIC_DISPOSITIONS = ("same-responsibility", "distinct-authority", "temporary-coexistence")
+_REPAIRS = ("deepen", "replace", "consolidate")
+
+
+def _captured_text(snapshot: EvaluationSnapshot, path: str, side: str) -> str | None:
+    """The captured text of one path on the base or candidate side. An
+    unchanged captured baseline file carries the same bytes on both sides."""
+    entry = snapshot.entry(path)
+    if entry is not None:
+        return entry.base_text if side == "base" else entry.current_text
+    for base in snapshot.baseline:
+        if (base.path if side == "base" else snapshot.renamed_to.get(base.path, base.path)) == path:
+            return base.text
+    return None
+
+
+def _anchor_line(text: str | None, ref: dict[str, object]) -> int | None:
+    """Where one owner reference resolves in captured text: an exact content
+    line, or a parsed symbol definition. Wildcards have nowhere to resolve."""
+    if text is None:
+        return None
+    content = ref.get("content")
+    if isinstance(content, str) and content.strip():
+        for number, line in enumerate(text.splitlines(), 1):
+            if line.strip() == content.strip():
+                return number
+        return None
+    symbol = ref.get("symbol")
+    if isinstance(symbol, str) and symbol:
+        for fn in _owner_functions(text) or []:
+            if fn["name"] == symbol:
+                return int(fn["line"])
+    return None
+
+
+def _still_referenced(snapshot: EvaluationSnapshot, ref: dict[str, object]) -> bool:
+    """Whether any candidate-tree surface still resolves to a superseded
+    symbol anchor: a caller, test, or test-support reference that survives
+    the deletion keeps the conflict alive."""
+    symbol = ref.get("symbol")
+    if not isinstance(symbol, str) or not symbol:
+        return False
+    pattern = re.compile(rf"(?<!def )\b{re.escape(symbol)}\s*\(")
+    paths = {entry.path for entry in snapshot.entries}
+    texts = [entry.current_text for entry in snapshot.entries]
+    texts += [base.text for base in snapshot.baseline
+              if snapshot.renamed_to.get(base.path, base.path) not in paths]
+    return any(text and pattern.search(text) for text in texts)
+
+
+def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> str | None:
+    """The reason this record cannot bind, or None when it validates. Every
+    check is structural and snapshot-bound; nothing here trusts prose."""
+    if "invalidDocument" in record:
+        return str(record["invalidDocument"])
+    key = record.get("responsibilityKey")
+    disposition = record.get("disposition")
+    owners = record.get("owners")
+    if not isinstance(key, str) or not key or disposition not in _SEMANTIC_DISPOSITIONS:
+        return f"record rejected: responsibilityKey and a semantic disposition from {_SEMANTIC_DISPOSITIONS} are required"
+    if not isinstance(owners, list) or len(owners) < 2 or not all(
+        isinstance(ref, dict) and isinstance(ref.get("path"), str) and ref["path"] for ref in owners
+    ):
+        return f"{key}: record rejected: at least two owner references with paths are required"
+    if not isinstance(record.get("parentRecord"), str) or not record["parentRecord"]:
+        return f"{key}: record rejected: a parent-bound validation record reference is required"
+    repair = record.get("repair")
+    if disposition == "distinct-authority":
+        if repair is not None:
+            return f"{key}: record rejected: a repair strategy is meaningless for distinct-authority"
+    elif repair not in _REPAIRS:
+        return f"{key}: record rejected: repair must be one of {_REPAIRS}"
+    if disposition == "temporary-coexistence" and not all(
+        isinstance(record.get(field), str) and record[field] for field in ("followUp", "expiry")
+    ):
+        return f"{key}: record rejected: temporary-coexistence requires a tracked followUp and an expiry"
+    if record.get("resolvedBase") != snapshot.base_identity or record.get("resolvedCandidateTree") != snapshot.candidate_tree:
+        return f"{key}: record is stale: its base/candidate do not name the evaluated snapshot"
+    if not any(
+        _anchor_line(_captured_text(snapshot, str(ref["path"]), side), ref) is not None
+        for ref in owners for side in ("base", "candidate")
+    ):
+        return f"{key}: record rejected: no owner reference resolves in the evaluated snapshot"
+    return None
+
+
+def _apply_dispositions(
+    snapshot: EvaluationSnapshot,
+    rule_id: str,
+    records: list[dict[str, object]],
+    rule_candidates: list[Finding],
+    scope_complete: bool,
+) -> tuple[list[Finding], list[Finding], set[str], list[str]]:
+    """Validated records drive the state machine; everything else is a note.
+
+    same-responsibility confirms, and resolves only through the one-owner
+    predicate; distinct-authority resolves directly from candidate with
+    complete scope; temporary-coexistence stays visible debt. Partial
+    deletion, unresolved anchors, surviving references, and missing scope all
+    leave the warning active.
+    """
+    applied: list[Finding] = []
+    resolved: list[Finding] = []
+    consumed: set[str] = set()
+    notes: list[str] = []
+    for record in records:
+        if record.get("ruleId") != rule_id and record.get("ruleId") in _OWNER_ROLES:
+            continue
+        problem = _record_problem(snapshot, record)
+        if problem is not None:
+            notes.append(problem)
+            continue
+        if record.get("ruleId") not in _OWNER_ROLES:
+            notes.append(f"{record['responsibilityKey']}: record rejected: unknown ruleId {record.get('ruleId')!r}")
+            continue
+        owners = [dict(ref) for ref in record["owners"]]
+        survivor = record.get("survivor")
+        refs = owners + ([dict(survivor)] if isinstance(survivor, dict) else [])
+        present = []
+        for ref in refs:
+            line = _anchor_line(_captured_text(snapshot, str(ref["path"]), "candidate"), ref)
+            if line is not None:
+                present.append((str(ref["path"]), line, ref))
+        key = str(record["responsibilityKey"])
+        disposition = record["disposition"]
+        if disposition == "distinct-authority":
+            if len({(path, line) for path, line, _ in present}) >= len(owners) and scope_complete:
+                resolved.append(_record_finding(snapshot, rule_id, record, present, "resolved"))
+                consumed |= _consumed(rule_candidates, present)
+            else:
+                notes.append(f"{key}: distinct-authority record left the candidate active: unresolved anchors or incomplete scope")
+            continue
+        if disposition == "temporary-coexistence":
+            applied.append(_record_finding(snapshot, rule_id, record, present, "confirmed-unresolved"))
+            consumed |= _consumed(rule_candidates, present)
+            continue
+        gone = [ref for ref in owners if _anchor_line(_captured_text(snapshot, str(ref["path"]), "candidate"), ref) is None]
+        deletion_proven = all(
+            _anchor_line(_captured_text(snapshot, str(ref["path"]), "base"), ref) is not None
+            and not _still_referenced(snapshot, ref)
+            for ref in gone
+        )
+        record_consumed = _consumed(rule_candidates, present)
+        # A renamed or facaded competitor deletes the anchor, not the
+        # competition: a surviving mechanical candidate that still names the
+        # remaining owner keeps the conflict confirmed.
+        named = {(path, line) for path, line, _ in present}
+        survivor_contested = any(
+            item.finding_id() not in record_consumed
+            and named & {(str(region["path"]), int(region["displayLine"])) for region in item.region["regions"]}
+            for item in rule_candidates
+        )
+        one_owner = len(named) == 1
+        if scope_complete and one_owner and gone and deletion_proven and not survivor_contested:
+            resolved.append(_record_finding(snapshot, rule_id, record, present, "resolved"))
+        else:
+            applied.append(_record_finding(snapshot, rule_id, record, present, "confirmed-unresolved"))
+        consumed |= record_consumed
+    return applied, resolved, consumed, notes
+
+
+def _consumed(rule_candidates: list[Finding], present: list[tuple[str, int, dict[str, object]]]) -> set[str]:
+    """Mechanical candidates whose every owner region the record names: the
+    record-backed finding owns that pair, so the bare candidate retires."""
+    named = {(path, line) for path, line, _ in present}
+    return {
+        item.finding_id() for item in rule_candidates
+        if {(str(region["path"]), int(region["displayLine"])) for region in item.region["regions"]} <= named
+    }
+
+
+def _record_finding(
+    snapshot: EvaluationSnapshot,
+    rule_id: str,
+    record: dict[str, object],
+    present: list[tuple[str, int, dict[str, object]]],
+    state: str,
+) -> Finding:
+    stored = {entry.path: entry.classification for entry in snapshot.entries}
+    regions = []
+    for path, line, ref in sorted(present, key=lambda item: (item[0], item[1])):
+        classification = stored.get(path)
+        role = classification.role if classification else next(
+            (base.role for base in snapshot.baseline if snapshot.renamed_to.get(base.path, base.path) == path), "unknown")
+        language = classification.language if classification else "other"
+        regions.append({
+            "path": path, "role": role, "language": language, "displayLine": line,
+            "owner": str(ref.get("symbol") or ref.get("content") or path),
+            "contentAnchor": anchor("owner", str(role), str(language), str(ref.get("symbol") or ref.get("content") or path)),
+            "evidenceRole": "owner",
+        })
+    key = str(record["responsibilityKey"])
+    return Finding(
+        rule_id=rule_id,
+        severity="warning",
+        status="finding",
+        passed=True,
+        identity=(key, *sorted(str(region["contentAnchor"]) for region in regions)),
+        region={"scope": "candidate", "evidenceClass": "disposition", "regions": regions},
+        evidence={"responsibilityKey": key, "disposition": record["disposition"],
+                  "repair": record.get("repair"), "parentRecord": record["parentRecord"],
+                  "owners": [f"{region['path']}:{region['displayLine']}" for region in regions],
+                  **({"followUp": record.get("followUp"), "expiry": record.get("expiry")}
+                     if record["disposition"] == "temporary-coexistence" else {})},
+        action=OWNER_ACTION,
+        pass_condition=OWNER_PASS_CONDITION,
+        gaps=(),
+        state=state,
     )

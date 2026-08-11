@@ -269,16 +269,20 @@ Required proof includes:
 - [x] Governing plan reviewed and merged in PR #78.
 - [x] PR A (#90) merged with its checklist and reviewer loop complete,
   completing #75 and superseding PR #80 (closed unmerged, reference only).
-- [ ] PR B merged with its checklist and reviewer loop complete. Implemented on
-  `feat/issue-76-exact-duplicates` from `origin/main`: the three warning-only
-  `QG54-DUPLICATE-*` rules in the new `redundancy.py` owner, per-role baseline
-  capture, and the superseded three-line-window/collapse/duplicate-blocker path
-  deleted. The gate-package ceiling was raised 1,950 to 2,300 and then to 2,350
-  by explicit operator approval on 2026-08-10, after the complete slice measured
-  2,255 and then 2,320 with every mandatory deletion already applied; the second
-  raise carries three correctness fixes the independent review forced.
-- [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
-  before PR C is dispatched.
+- [x] PR B merged with its checklist and reviewer loop complete (PR #101,
+  merged into `main` as `b391d30` on 2026-08-11, completing #76). Implemented
+  on `feat/issue-76-exact-duplicates` from `origin/main`: the three
+  warning-only `QG54-DUPLICATE-*` rules in the new `redundancy.py` owner,
+  per-role baseline capture, and the superseded
+  three-line-window/collapse/duplicate-blocker path deleted. The gate-package
+  ceiling was raised 1,950 to 2,300 and then to 2,350 by explicit operator
+  approval on 2026-08-10, after the complete slice measured 2,255 and then
+  2,320 with every mandatory deletion already applied; the second raise
+  carries three correctness fixes the independent review forced.
+- [x] Parent #54 pinned the exact responsibility-owner calibration manifest
+  before PR C was dispatched (#54 comment 5251048442, 2026-08-11: cases R,
+  P1, P2, and G with exact bases, candidates, diff SHA-256s, roles, and
+  adjudications).
 - [ ] PR C merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 calibration evidence reviewed by a human.
 - [x] Operator recorded the exact-rule schema-v2 `fail_on_warnings` meaning
@@ -316,3 +320,8 @@ Required proof includes:
   the measured net (+1,414 human-authored, +653 production). Fleet and cubic
   reviewer rounds on the delivery heads were dispositioned with premise and
   occurrence measurements.
+- 2026-08-11: ticked PR B (merged as PR #101) and the parent-pinned owner
+  manifest gate (#54 comment 5251048442); PR C dispatched on
+  `feat/issue-54-responsibility-owners` from `b391d30`, delivering the two
+  warning-only owner-competition rules, disposition records, the pinned
+  manifest calibration, and the mandatory lexical-reuse deletion.

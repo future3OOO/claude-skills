@@ -11,8 +11,8 @@ RULE_INCOMPLETE = "QG54-ANALYSIS-INCOMPLETE"
 RULE_DUPLICATE_SYMBOL = "QG54-DUPLICATE-ADDED-SYMBOL"
 RULE_DUPLICATE_BLOCK = "QG54-DUPLICATE-ADDED-BLOCK"
 RULE_DUPLICATE_BASELINE = "QG54-DUPLICATE-BASELINE"
-RULE_REUSE_ADVISORY = "QG-LEGACY-REUSE-ADVISORY"
-RULE_GITNEXUS_CONTEXT = "QG-LEGACY-GITNEXUS-CONTEXT"
+RULE_OWNER_PRODUCTION = "QG54-OWNER-COMPETITION-PRODUCTION"
+RULE_OWNER_TEST = "QG54-OWNER-COMPETITION-TEST"
 
 # Warning promotion is decided by this immutable per-exact-rule-ID metadata and
 # nothing else: never rendered text, prefixes, families, roles, or scores.
@@ -24,8 +24,8 @@ _PROMOTION_ELIGIBLE = {
     RULE_DUPLICATE_SYMBOL: False,
     RULE_DUPLICATE_BLOCK: False,
     RULE_DUPLICATE_BASELINE: False,
-    RULE_REUSE_ADVISORY: True,
-    RULE_GITNEXUS_CONTEXT: True,
+    RULE_OWNER_PRODUCTION: False,
+    RULE_OWNER_TEST: False,
 }
 
 # The scope kind for each gap the gate's own producers emit. Identity uses the
@@ -36,6 +36,7 @@ _SCOPE_KINDS = (
     ("reuse baseline", "baseline-discovery"),
     ("diff hunks matched no changed file", "attribution"),
     ("no caller-supplied base", "base-binding"),
+    ("gitnexus context JSON ignored", "graph-input"),
 )
 
 
@@ -121,9 +122,6 @@ class SymbolDef:
     line: int
     kind: str
     language: str
-    tokens: tuple[str, ...]
-    source: str
-    context_boost: int = 0
     content: str = ""
 
 
@@ -150,6 +148,9 @@ class Finding:
     action: str
     pass_condition: dict[str, object]
     gaps: tuple[str, ...]
+    # Owner-competition findings carry one of candidate, confirmed-unresolved,
+    # or resolved; every other rule family has no state machine and stays None.
+    state: str | None = None
 
     def finding_id(self) -> str:
         return finding_id(self.rule_id, self.identity)
@@ -161,7 +162,7 @@ class Finding:
             "severity": self.severity,
             "status": self.status,
             "passed": self.passed,
-            "state": None,
+            "state": self.state,
             "base": base,
             "candidate": candidate,
             "region": self.region,
@@ -173,22 +174,6 @@ class Finding:
         # A JSON round trip hands the caller its own copy, so later mutation of
         # the returned structure can never reshape the evaluated finding.
         return json.loads(json.dumps(serialized, sort_keys=True))
-
-
-def gitnexus_context_finding(messages: list[str]) -> Finding:
-    """The surviving typed form of the malformed-GitNexus-context warning."""
-    return Finding(
-        rule_id=RULE_GITNEXUS_CONTEXT,
-        severity="warning",
-        status="finding",
-        passed=True,
-        identity=tuple(sorted(messages)),
-        region={"scope": "input", "input": "gitnexus-context-json"},
-        evidence={"messages": sorted(messages)},
-        action="Supply well-formed GitNexus context JSON or drop the input.",
-        pass_condition=pass_condition("input-parses", ("gitnexus-context-json",), "supplied GitNexus context parses"),
-        gaps=(),
-    )
 
 
 def _scope_kind(gap: str) -> str:
