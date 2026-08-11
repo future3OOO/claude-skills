@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from .checks import changed_file_failures, evaluate_growth, scan_quality_escapes
-from .git_scope import collect_scope, git_read
+from .git_scope import collect_scope
 from .findings import Finding, RULE_GROWTH, RULE_INCOMPLETE, incompleteness_findings, promoted_errors
 from .redundancy import find_exact_duplicates, find_owner_competition
 from .snapshot import EvaluationSnapshot
@@ -27,12 +26,10 @@ def check(
     repo_context_packet: str = "",
     gitnexus_context_json: str = "",
     staged_only: bool = False,
-    dispositions_json: str = "",
 ) -> dict[str, object]:
     scope = collect_scope(repo, base_ref, staged_only=staged_only)
     errors: list[str] = list(scope["errors"])
     snapshot = EvaluationSnapshot.from_scope(repo, scope, repo_context_packet, gitnexus_context_json)
-    records = _disposition_records(repo, dispositions_json)
 
     conflicts, temps = changed_file_failures(snapshot)
     found = {
@@ -42,17 +39,7 @@ def check(
     }
     growth_rule = evaluate_growth(snapshot)
     duplicate_rules, duplicates = find_exact_duplicates(snapshot)
-    # Parent #54 decision (2026-08-12): the snapshot index is not a substitute
-    # for external graph evidence; only supplied evidence naming the evaluated
-    # snapshot establishes caller/callee scope.
-    binding = _graph_binding(repo, gitnexus_context_json)
-    graph_gap = (
-        "no snapshot-bound external graph evidence: caller/callee scope is unestablished"
-        if binding is None
-        else "" if binding == (snapshot.base_identity, snapshot.candidate_tree)
-        else "external graph evidence is stale: it does not name the evaluated snapshot"
-    )
-    owner_rules, owner_candidates, owner_resolved = find_owner_competition(snapshot, duplicates, records, graph_gap)
+    owner_rules, owner_candidates, owner_resolved = find_owner_competition(snapshot, duplicates)
     duplicate_warnings = {rule.rule_id: _duplicate_warnings(rule) for rule in duplicate_rules}
     findings: list[Finding] = [growth_rule, *duplicate_rules, *duplicates, *owner_rules, *owner_candidates]
     findings.extend(incompleteness_findings(findings))
@@ -180,46 +167,6 @@ def check(
         # Retained until its documented consumer migrates; its scorer is gone.
         "gitnexusQueries": [],
     }
-
-
-def _disposition_records(repo: Path, dispositions_json: str) -> list[dict[str, object]]:
-    """Caller-supplied disposition records with their commits resolved
-    pre-freeze; a malformed record keeps its raw shape and fails structural
-    validation downstream instead of vanishing here."""
-    if not dispositions_json.strip():
-        return []
-    try:
-        payload = json.loads(dispositions_json)
-    except json.JSONDecodeError as exc:
-        return [{"invalidDocument": f"dispositions JSON ignored: {exc}"}]
-    records = payload.get("records") if isinstance(payload, dict) else None
-    if not isinstance(records, list):
-        return [{"invalidDocument": "dispositions JSON has no records array"}]
-    resolved: list[dict[str, object]] = []
-    for record in records:
-        if not isinstance(record, dict):
-            resolved.append({"invalidDocument": "record is not an object"})
-            continue
-        base, _ = git_read(repo, ["rev-parse", "--verify", f"{record.get('base', '')}^{{commit}}"])
-        tree, _ = git_read(repo, ["rev-parse", "--verify", f"{record.get('candidate', '')}^{{tree}}"])
-        resolved.append({**record, "resolvedBase": base.strip(), "resolvedCandidateTree": tree.strip()})
-    return resolved
-
-
-def _graph_binding(repo: Path, gitnexus_context_json: str) -> tuple[str, str] | None:
-    """Supplied graph evidence's declared base commit and candidate tree,
-    resolved pre-freeze; None when absent, malformed, or undeclared."""
-    if not gitnexus_context_json.strip():
-        return None
-    try:
-        payload = json.loads(gitnexus_context_json)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict) or not payload.get("base") or not payload.get("candidate"):
-        return None
-    base, _ = git_read(repo, ["rev-parse", "--verify", f"{payload['base']}^{{commit}}"])
-    tree, _ = git_read(repo, ["rev-parse", "--verify", f"{payload['candidate']}^{{tree}}"])
-    return base.strip(), tree.strip()
 
 
 def _duplicate_warnings(rule: Finding) -> list[str]:

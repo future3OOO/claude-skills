@@ -665,8 +665,6 @@ def _signature_groups(units: list[dict[str, object]]) -> list[list[dict[str, obj
 def find_owner_competition(
     snapshot: EvaluationSnapshot,
     duplicates: list[Finding],
-    records: list[dict[str, object]],
-    graph_gap: str,
 ) -> tuple[list[Finding], list[Finding], list[Finding]]:
     """The responsibility-owner rules: state findings, active candidates,
     and resolved telemetry, generated independently of duplicate detection.
@@ -674,6 +672,7 @@ def find_owner_competition(
     dispositions bind only through structural validation against the exact
     evaluated snapshot."""
     streams = snapshot.gap_streams()
+    records = list(snapshot.disposition_records)
     states: list[Finding] = []
     candidates: list[Finding] = []
     resolved: list[Finding] = []
@@ -702,7 +701,17 @@ def find_owner_competition(
         # Parse failures, unreadable supplied graph evidence, and capture
         # failures hide candidates; unread owner discovery matters once a
         # changed-side unit could pair against it.
-        owner_gaps = hidden + parse_gaps + list(snapshot.gitnexus_warnings) + ([graph_gap] if graph_gap else [])
+        # Parent #54 decision 1b: bound graph evidence must also carry symbol
+        # results for the changed owner surface; a bare declaration is not
+        # caller/callee evidence.
+        uncovered = sorted({unit["path"] for unit in units if unit["changed"]} - set(snapshot.graph_files)) \
+            if not snapshot.graph_gap else []
+        coverage_gap = (
+            f"external graph evidence carries no symbol results for {len(uncovered)} changed file(s): "
+            + ", ".join(uncovered[:5]) if uncovered else ""
+        )
+        graph_gaps = [gap for gap in (snapshot.graph_gap, coverage_gap) if gap]
+        owner_gaps = hidden + parse_gaps + list(snapshot.gitnexus_warnings) + graph_gaps
         if any(unit["changed"] for unit in units):
             discovery = streams["baseline"] if "production" in roles else streams["baseline_roles"]
             owner_gaps += list(discovery + streams["baseline_scope"])
@@ -773,6 +782,25 @@ def _owner_candidate(
 
 _SEMANTIC_DISPOSITIONS = ("same-responsibility", "distinct-authority", "temporary-coexistence")
 _REPAIRS = ("deepen", "replace", "consolidate")
+
+# Parent #54 decision (2026-08-12): resolution silences a warning, so it
+# requires a record the parent explicitly pinned — identifier AND digest,
+# sourced verbatim from #54 comment 5251048442. Confirmation only adds
+# visible debt and accepts content-consistent records. Extending this table
+# is a parent-approved code change, exactly like promotion eligibility.
+_PINNED_VALIDATION_IDENTIFIER = "future3OOO/claude-skills#54 comment 5251048442"
+_PINNED_VALIDATION_DIGESTS = frozenset({
+    "08f61bed0d5df8b9435a38b1fb1712530bebb063d7c9b457dbe85770f97a016e",
+    "d7bda52e9bff988face173e92467cc2db78d159c1564f2817075b4cd1c195de8",
+    "3e96fd97af71111fc5e724f457ca5b3f32ef79fdd4d0a7a25e635ce600a0b39c",
+    "6c2fdd01db924618efc9df048884b2ef64082d5d254657e6fae4d47c92d15575",
+})
+
+
+def _parent_pinned(record: dict[str, object]) -> bool:
+    root = record.get("validationRoot")
+    return isinstance(root, dict) and root.get("identifier") == _PINNED_VALIDATION_IDENTIFIER \
+        and root.get("digest") in _PINNED_VALIDATION_DIGESTS
 
 
 def _captured_text(snapshot: EvaluationSnapshot, path: str, side: str) -> str | None:
@@ -971,9 +999,11 @@ def _apply_dispositions(
         key = str(record["responsibilityKey"])
         disposition = record["disposition"]
         if disposition == "distinct-authority":
-            if len({(path, line) for path, line, _ in present}) >= len(owners) and scope_complete:
+            if len({(path, line) for path, line, _ in present}) >= len(owners) and scope_complete and _parent_pinned(record):
                 resolved.append(_record_finding(snapshot, rule_id, record, present, "resolved"))
                 consumed |= _consumed(rule_candidates, present)
+            elif not _parent_pinned(record):
+                notes.append(f"{key}: resolution requires a parent-pinned validation record")
             else:
                 notes.append(f"{key}: distinct-authority record left the candidate active: unresolved anchors or incomplete scope")
             continue
@@ -999,10 +1029,14 @@ def _apply_dispositions(
             for item in rule_candidates
         )
         one_owner = len(named) == 1
-        if scope_complete and one_owner and gone and deletion_proven and not survivor_contested:
+        one_owner_holds = scope_complete and one_owner and bool(gone) and deletion_proven and not survivor_contested
+        if one_owner_holds and _parent_pinned(record):
             resolved.append(_record_finding(snapshot, rule_id, record, present, "resolved"))
         else:
-            applied.append(_record_finding(snapshot, rule_id, record, present, "confirmed-unresolved"))
+            if one_owner_holds:
+                notes.append(f"{key}: resolution requires a parent-pinned validation record")
+            applied.append(_record_finding(snapshot, rule_id, record, present, "confirmed-unresolved",
+                                           {"oneOwnerPredicate": one_owner_holds}))
         consumed |= record_consumed
     return applied, resolved, consumed, notes
 
@@ -1023,6 +1057,7 @@ def _record_finding(
     record: dict[str, object],
     present: list[tuple[str, int, dict[str, object]]],
     state: str,
+    extra: dict[str, object] | None = None,
 ) -> Finding:
     stored = {entry.path: entry.classification for entry in snapshot.entries}
     regions = []
@@ -1049,6 +1084,7 @@ def _record_finding(
         region={"scope": "candidate", "evidenceClass": "disposition", "regions": regions},
         evidence={"responsibilityKey": key, "disposition": record["disposition"],
                   "repair": record.get("repair"), "parentRecord": record["parentRecord"],
+                  **(extra or {}),
                   "owners": [f"{region['path']}:{region['displayLine']}" for region in regions],
                   **({"followUp": record.get("followUp"), "expiry": record.get("expiry")}
                      if record["disposition"] == "temporary-coexistence" else {})},

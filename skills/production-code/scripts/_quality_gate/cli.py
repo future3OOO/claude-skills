@@ -21,22 +21,6 @@ def read_optional_input(value: str) -> tuple[str, str | None]:
         return "", f"could not read optional input {value}: {exc}"
 
 
-def read_disposition_input(value: str, root: Path) -> tuple[str, str | None]:
-    """Disposition records are trusted only from outside the candidate tree:
-    stdin and in-repository paths cannot prove that, so both are refused."""
-    if not value:
-        return "", None
-    if value == "-":
-        return "", "dispositions input refused: stdin cannot prove out-of-tree provenance"
-    path = Path(value).resolve()
-    if path.is_relative_to(root):
-        return "", f"dispositions input refused: {value} resolves inside the evaluated repository"
-    try:
-        return path.read_text(encoding="utf-8", errors="replace"), None
-    except OSError as exc:
-        return "", f"could not read dispositions input {value}: {exc}"
-
-
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Run the global production code quality gate.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -47,7 +31,6 @@ def main(argv: list[str]) -> int:
     check_parser.add_argument("--fail-on-warnings", action="store_true")
     check_parser.add_argument("--repo-context-packet", default="")
     check_parser.add_argument("--gitnexus-context-json", default="")
-    check_parser.add_argument("--dispositions", default="")
     check_parser.add_argument(
         "--staged-only",
         action="store_true",
@@ -62,7 +45,6 @@ def main(argv: list[str]) -> int:
     root = Path(git_text(repo, ["rev-parse", "--show-toplevel"]).strip()).resolve()
     repo_context_packet, repo_context_error = read_optional_input(args.repo_context_packet)
     gitnexus_context_json, gitnexus_context_error = read_optional_input(args.gitnexus_context_json)
-    dispositions_json, dispositions_error = read_disposition_input(args.dispositions, root)
     if args.staged_only and not args.base_ref:
         parser.error("--staged-only requires --base-ref")
     result = check(
@@ -72,9 +54,8 @@ def main(argv: list[str]) -> int:
         repo_context_packet,
         gitnexus_context_json,
         args.staged_only,
-        dispositions_json,
     )
-    optional_errors = [error for error in (repo_context_error, gitnexus_context_error, dispositions_error) if error]
+    optional_errors = [error for error in (repo_context_error, gitnexus_context_error) if error]
     if optional_errors:
         result["warnings"] = [*result.get("warnings", []), *optional_errors]
     if args.json:

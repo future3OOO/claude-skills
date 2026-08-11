@@ -11,9 +11,9 @@ architecture already pins. The manifest supplements that replay and never
 replaces it; the implementing slice neither selected nor broadened either.
 `test_owner_manifest_calibration_is_reproducible` replays every case through
 the real `code_quality_gate.py` CLI in detached worktrees, re-derives the
-diff SHA-256 identities with the canonical diff options, drives each pinned
-disposition record through `--dispositions`, and asserts the per-case states
-and volumes published here, so a stale number cannot pass.
+diff SHA-256 identities with the canonical diff options, places each pinned
+disposition record on the fixed out-of-tree carrier, and asserts the
+per-case states and volumes published here, so a stale number cannot pass.
 
 ## Pinned cases
 
@@ -67,8 +67,14 @@ establishes the parent binding.
 The same decision chose 1b for graph evidence: an absent graph input cannot
 establish complete caller/callee scope and the snapshot index is not a
 substitute, so every replay above supplies exact, snapshot-bound graph
-evidence (`--gitnexus-context-json` declaring the replay's base and
-candidate); without it the owner rules read incomplete and nothing resolves.
+evidence — `--gitnexus-context-json` declaring the replay's base and
+candidate and carrying caller/callee symbol results for the range's changed
+source files (a bare declaration is not evidence). Without it the owner
+rules read incomplete and nothing resolves. Records reach each replay
+through the fixed out-of-tree carrier (`$GIT_DIR/qg54-dispositions.json` in
+the throwaway worktree), and only records matching the shipped parent-pinned
+identifier and digest table may resolve; self-issued records leave findings
+active with rule incompleteness, which the negative tests prove.
 
 `unexaminedCount = 0`: every pinned anchor above is adjudicated by its
 manifest record, and every additional candidate is enumerated in the counts

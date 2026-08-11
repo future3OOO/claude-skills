@@ -43,12 +43,20 @@ tests, build, or domain-specific gates.
   `confirmed-unresolved`, or `resolved` — and only the first two are active
   warnings; `resolved` evidence lives in `resolvedFindings` as telemetry and
   never keeps the visible gate non-green. Semantic dispositions arrive only
-  through `--dispositions`, a records file the CLI refuses from stdin or any
-  path inside the evaluated repository; each record is structurally validated
-  against the exact evaluated snapshot, and resolution requires the one-owner
-  predicate — superseded surfaces absent and unreferenced, one surviving
-  owner, complete owner discovery — so partial deepening, renames, facades,
-  and discovery-shrinking never resolve.
+  through the fixed out-of-tree carrier `$GIT_DIR/qg54-dispositions.json`,
+  read during capture and frozen on the snapshot — a git-dir path is never
+  part of any candidate tree, so records-shaped files inside the evaluated
+  tree are never read. Each record is structurally validated against the
+  exact evaluated snapshot, and resolution requires the one-owner predicate —
+  superseded surfaces absent and unreferenced, every affected function
+  rewired to the survivor, one surviving owner, complete owner discovery —
+  so partial deepening, renames, facades, and discovery-shrinking never
+  resolve. The trust asymmetry is deliberate (parent #54 decision,
+  2026-08-12): **resolution** silences a warning, so it additionally requires
+  a record whose validation-root identifier and digest match the shipped
+  parent-pinned table (extending that table is a parent-approved code change,
+  exactly like promotion eligibility); **confirmation** only adds visible
+  debt, so it accepts content-consistent records.
   `references/owner-calibration.md` publishes the parent-pinned manifest
   replay.
 - `--fail-on-warnings` promotes only typed active findings whose exact rule ID

@@ -46,6 +46,72 @@ def parse_gitnexus_context_json(text: str) -> tuple[dict[str, int], list[str]]:
             boosts[f"{path}:{name}"] = min(15, boost)
     return boosts, []
 
+# The fixed disposition carrier: a git-dir path is repo-scoped, filesystem-
+# readable during capture, and never part of any candidate tree, so a record
+# there is out-of-tree by construction.
+DISPOSITIONS_CARRIER = "qg54-dispositions.json"
+
+
+def _disposition_records(repo: Path) -> tuple[dict[str, object], ...]:
+    """Disposition records from the fixed out-of-tree carrier, decoded and
+    shape-checked, with their commits resolved during capture. Trust,
+    finding state, and severity stay with the owner rules."""
+    located, failure = git_read(repo, ["rev-parse", "--git-path", DISPOSITIONS_CARRIER])
+    if failure:
+        return ()
+    carrier = Path(located.strip())
+    carrier = carrier if carrier.is_absolute() else repo / carrier
+    try:
+        text = carrier.read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return ({"invalidDocument": f"dispositions carrier ignored: {exc}"},)
+    records = payload.get("records") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return ({"invalidDocument": "dispositions carrier has no records array"},)
+    resolved = []
+    for record in records:
+        if not isinstance(record, dict):
+            resolved.append({"invalidDocument": "record is not an object"})
+            continue
+        base, _ = git_read(repo, ["rev-parse", "--verify", f"{record.get('base', '')}^{{commit}}"])
+        tree, _ = git_read(repo, ["rev-parse", "--verify", f"{record.get('candidate', '')}^{{tree}}"])
+        resolved.append({**record, "resolvedBase": base.strip(), "resolvedCandidateTree": tree.strip()})
+    return tuple(resolved)
+
+
+def _graph_binding(repo: Path, gitnexus_context_json: str, base: str, tree: str) -> tuple[str, frozenset[str]]:
+    """The graph evidence's snapshot binding, resolved during capture: the
+    gap that leaves caller/callee scope unestablished (parent #54 decision
+    1b, 2026-08-12 — the snapshot index is not a substitute), and the files
+    the supplied evidence actually carries symbols for."""
+    absent = "no snapshot-bound external graph evidence: caller/callee scope is unestablished"
+    if not gitnexus_context_json.strip():
+        return absent, frozenset()
+    try:
+        payload = json.loads(gitnexus_context_json)
+    except json.JSONDecodeError:
+        return absent, frozenset()
+    if not isinstance(payload, dict) or not payload.get("base") or not payload.get("candidate"):
+        return absent, frozenset()
+    symbols = payload.get("symbols")
+    files = frozenset(
+        normalize_path(str(item.get("file") or item.get("path") or ""))
+        for item in (symbols if isinstance(symbols, list) else [])
+        if isinstance(item, dict) and any(key in item for key in ("callers", "calleeOf", "references"))
+    ) - {""}
+    if not files:
+        return "external graph evidence carries no caller/callee symbol results: a bare declaration is not evidence", frozenset()
+    declared_base, _ = git_read(repo, ["rev-parse", "--verify", f"{payload['base']}^{{commit}}"])
+    declared_tree, _ = git_read(repo, ["rev-parse", "--verify", f"{payload['candidate']}^{{tree}}"])
+    if (declared_base.strip(), declared_tree.strip()) != (base, tree):
+        return "external graph evidence is stale: it does not name the evaluated snapshot", files
+    return "", files
+
+
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 _QUOTED_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "\\": "\\"}
@@ -103,6 +169,13 @@ class EvaluationSnapshot:
     packet_paths: frozenset[str]
     gitnexus_boosts: dict[str, int]
     gitnexus_warnings: tuple[str, ...]
+    # The two external data Interfaces #77 versions, captured and frozen: the
+    # graph evidence's snapshot binding (empty gap when it names this exact
+    # snapshot and covers real symbols) and the disposition records read from
+    # the fixed out-of-tree carrier with their commits resolved.
+    graph_gap: str
+    graph_files: frozenset[str]
+    disposition_records: tuple[dict[str, object], ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_by_path", {entry.path: entry for entry in self.entries})
@@ -132,10 +205,14 @@ class EvaluationSnapshot:
         baseline, baseline_gaps, baseline_role_gaps, baseline_scope_gaps = _baseline_index(
             repo, base, entries, packet_paths, {key.rsplit(":", 1)[0] for key in boosts}
         )
+        graph_gap, graph_files = _graph_binding(repo, gitnexus_context_json, base, tree)
         return cls(
             packet_paths=packet_paths,
             gitnexus_boosts=boosts,
             gitnexus_warnings=tuple(warnings),
+            graph_gap=graph_gap,
+            graph_files=graph_files,
+            disposition_records=_disposition_records(repo),
             base_identity=base,
             base_source=str(scope["base_source"]),
             candidate_source=str(scope["candidate_source"]),
