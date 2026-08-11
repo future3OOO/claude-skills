@@ -17,10 +17,10 @@ tests, build, or domain-specific gates.
   `QG54-DUPLICATE-ADDED-SYMBOL` (a complete added symbol body repeated),
   `QG54-DUPLICATE-ADDED-BLOCK` (a repeated contiguous added block), and
   `QG54-DUPLICATE-BASELINE` (an added copy whose base-tree owner is still
-  retained in the candidate). Each names every region carrying the
-  implementation with a content anchor, over production, test, and
-  test-support roles, and a decorator counts as part of the definition it
-  decorates. Comparison is exact — identifiers, literals, operators,
+  retained in the candidate). Each names every added region carrying the
+  implementation — plus, for the baseline rule, one retained baseline owner —
+  with a content anchor, over production, test, and test-support roles, and a
+  decorator counts as part of the definition it decorates. Comparison is exact — identifiers, literals, operators,
   control flow, symbol boundaries, and hunk boundaries all discriminate, and
   separate hunks are never joined. Only Python is canonicalized, by its real
   tokenizer; any other language in scope is reported as incomplete rather than
