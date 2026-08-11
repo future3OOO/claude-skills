@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import re
 from collections import Counter
 
@@ -420,9 +422,16 @@ _GENERIC_PUBLIC = frozenset({"main", "setUp", "tearDown"})
 _MIN_SIGNATURE_OPS = 4
 
 
+# A command-token string argument — a flag or bare subcommand word — is an
+# operation discriminator (Git subcommands, CLI modes); payload strings with
+# spaces, paths, or newlines stay normalized value slots.
+_COMMAND_TOKEN = re.compile(r"^--?[A-Za-z][\w-]{0,23}$|^[a-z][a-z0-9_-]{1,15}$")
+
+
 def _called_names(node: ast.AST) -> tuple[str, ...]:
-    """Callee anchors in deterministic walk order, including calls nested in
-    payload expressions: a call is an operation wherever it sits."""
+    """Callee anchors with their command-token discriminators, in
+    deterministic walk order: a call is an operation wherever it sits, and
+    `git('add')` is not the operation `git('commit')`."""
     names = []
     for sub in ast.walk(node):
         if isinstance(sub, ast.Call):
@@ -430,33 +439,44 @@ def _called_names(node: ast.AST) -> tuple[str, ...]:
             name = target.attr if isinstance(target, ast.Attribute) else target.id if isinstance(target, ast.Name) else ""
             if name:
                 names.append(name)
+                names.extend(arg.value for arg in sub.args
+                             if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                             and _COMMAND_TOKEN.match(arg.value))
     return tuple(names)
 
 
 def _operation_signature(body: list[ast.stmt]) -> tuple:
     """The ordered lifecycle-operation signature of one function body.
 
-    Callee anchors, operation order, and statement/control-flow kind are
-    preserved; only call-free local bindings and the literal payload/value
-    slots normalize, so varying filenames, payloads, and expected values keep
-    one signature while an extra operation or a different callee breaks it.
+    Callee anchors, command-token discriminators, operation order, and nested
+    control-flow shape are preserved; only call-free local bindings and the
+    literal payload/value slots normalize, so varying filenames, payloads,
+    and expected values keep one signature while an extra operation, a
+    different callee, a different subcommand or CLI mode, or a reshaped
+    control flow breaks it.
     """
     ops: list[tuple] = []
     for stmt in body:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            ops.append(("def", _operation_signature(stmt.body)))
+            ops.append(("def", (), _operation_signature(stmt.body)))
+            continue
+        blocks = [part for name in ("body", "orelse", "finalbody")
+                  for part in [getattr(stmt, name, None)] if part]
+        if blocks:
+            inner = tuple(item for block in blocks for item in _operation_signature(block))
+            ops.append((type(stmt).__name__, (), inner))
             continue
         calls = _called_names(stmt)
         if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and not calls:
             continue
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
             continue
-        ops.append((type(stmt).__name__, calls))
+        ops.append((type(stmt).__name__, calls, ()))
     return tuple(ops)
 
 
 def _signature_weight(signature: tuple) -> int:
-    return sum(1 + (_signature_weight(op[1]) if op[0] == "def" else 0) for op in signature)
+    return sum(1 + _signature_weight(op[2]) for op in signature)
 
 
 def _owner_functions(text: str) -> list[dict[str, object]] | None:
@@ -708,8 +728,11 @@ def find_owner_competition(
         active = applied + [item for item in rule_candidates if item.finding_id() not in consumed]
         candidates.extend(active)
         resolved.extend(rule_resolved)
+        # A record that could not bind is rule-specific incompleteness, never
+        # a silently dropped claim.
+        owner_gaps = tuple(dict.fromkeys(list(owner_gaps) + [f"disposition record: {note}" for note in notes]))
         ledger = [
-            {"class": name, "status": "evaluated", "files": file_count,
+            {"class": name, "status": "incomplete" if parse_gaps else "evaluated", "files": file_count,
              "candidates": len(per_class[name]), "gaps": sorted(parse_gaps)}
             for name in OWNER_CLASSES
         ]
@@ -795,6 +818,24 @@ def _anchor_line(text: str | None, ref: dict[str, object]) -> int | None:
     return None
 
 
+def _sides(snapshot: EvaluationSnapshot) -> list[tuple[str | None, str | None]]:
+    """Every captured surface as (base text, candidate text); an unchanged
+    captured baseline file carries the same bytes on both sides."""
+    paths = {entry.path for entry in snapshot.entries}
+    pairs = [(entry.base_text, entry.current_text) for entry in snapshot.entries]
+    pairs += [(base.text, base.text) for base in snapshot.baseline
+              if snapshot.renamed_to.get(base.path, base.path) not in paths]
+    return pairs
+
+
+def _call_pattern(ref: dict[str, object]) -> re.Pattern[str] | None:
+    symbol = ref.get("symbol")
+    if isinstance(symbol, str) and symbol:
+        return re.compile(rf"(?<!def )\b{re.escape(symbol)}\s*\(")
+    content = ref.get("content")
+    return re.compile(re.escape(str(content).strip())) if isinstance(content, str) and content.strip() else None
+
+
 def _still_referenced(snapshot: EvaluationSnapshot, ref: dict[str, object]) -> bool:
     """Whether any candidate-tree surface still resolves to a superseded
     symbol anchor: a caller, test, or test-support reference that survives
@@ -803,29 +844,58 @@ def _still_referenced(snapshot: EvaluationSnapshot, ref: dict[str, object]) -> b
     if not isinstance(symbol, str) or not symbol:
         return False
     pattern = re.compile(rf"(?<!def )\b{re.escape(symbol)}\s*\(")
-    paths = {entry.path for entry in snapshot.entries}
-    texts = [entry.current_text for entry in snapshot.entries]
-    texts += [base.text for base in snapshot.baseline
-              if snapshot.renamed_to.get(base.path, base.path) not in paths]
-    return any(text and pattern.search(text) for text in texts)
+    return any(current and pattern.search(current) for _, current in _sides(snapshot))
+
+
+def _rewired_to_survivor(snapshot: EvaluationSnapshot, ref: dict[str, object], present) -> bool:
+    """Every affected surface must reach the survivor: a file that referenced
+    the superseded anchor on the base side and still exists must resolve a
+    reference to a surviving owner, or the repair merely deleted behavior."""
+    gone_pattern = _call_pattern(ref)
+    survivor_patterns = [pattern for _, _, kept in present for pattern in [_call_pattern(kept)] if pattern]
+    if gone_pattern is None or not survivor_patterns:
+        return True
+    return all(
+        any(pattern.search(current) for pattern in survivor_patterns)
+        for base_text, current in _sides(snapshot)
+        if base_text and gone_pattern.search(base_text) and current
+    )
 
 
 def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> str | None:
     """The reason this record cannot bind, or None when it validates. Every
-    check is structural and snapshot-bound; nothing here trusts prose."""
+    check is structural and snapshot-bound; nothing here trusts prose, and a
+    record that fails leaves the finding active with rule incompleteness."""
     if "invalidDocument" in record:
         return str(record["invalidDocument"])
     key = record.get("responsibilityKey")
     disposition = record.get("disposition")
     owners = record.get("owners")
+    if record.get("schemaVersion") != 1:
+        return f"record rejected: unknown disposition schema version {record.get('schemaVersion')!r}"
     if not isinstance(key, str) or not key or disposition not in _SEMANTIC_DISPOSITIONS:
         return f"record rejected: responsibilityKey and a semantic disposition from {_SEMANTIC_DISPOSITIONS} are required"
     if not isinstance(owners, list) or len(owners) < 2 or not all(
-        isinstance(ref, dict) and isinstance(ref.get("path"), str) and ref["path"] for ref in owners
+        isinstance(ref, dict) and isinstance(ref.get("path"), str) and ref["path"]
+        and (isinstance(ref.get("symbol"), str) and ref["symbol"]
+             or isinstance(ref.get("content"), str) and ref["content"].strip())
+        for ref in owners
     ):
-        return f"{key}: record rejected: at least two owner references with paths are required"
-    if not isinstance(record.get("parentRecord"), str) or not record["parentRecord"]:
-        return f"{key}: record rejected: a parent-bound validation record reference is required"
+        return f"{key}: record rejected: at least two owner references, each a path with a symbol or exact content anchor, are required"
+    # Trust comes from an immutable validation root outside the candidate
+    # tree: the record names its root and carries a digest over its own
+    # canonical content, so a candidate-side edit breaks the binding.
+    root = record.get("validationRoot")
+    if not isinstance(root, dict) or not isinstance(root.get("identifier"), str) or not root["identifier"] \
+            or not isinstance(record.get("parentRecord"), str) or not record["parentRecord"]:
+        return f"{key}: record rejected: a parent-bound validation root and record reference are required"
+    canonical = json.dumps(
+        {name: value for name, value in record.items()
+         if name not in ("validationRoot", "resolvedBase", "resolvedCandidateTree")},
+        sort_keys=True,
+    )
+    if root.get("digest") != hashlib.sha256(canonical.encode("utf-8")).hexdigest():
+        return f"{key}: record rejected: its content does not match the validation root digest"
     repair = record.get("repair")
     if disposition == "distinct-authority":
         if repair is not None:
@@ -838,12 +908,25 @@ def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> 
         return f"{key}: record rejected: temporary-coexistence requires a tracked followUp and an expiry"
     if record.get("resolvedBase") != snapshot.base_identity or record.get("resolvedCandidateTree") != snapshot.candidate_tree:
         return f"{key}: record is stale: its base/candidate do not name the evaluated snapshot"
-    if not any(
-        _anchor_line(_captured_text(snapshot, str(ref["path"]), side), ref) is not None
-        for ref in owners for side in ("base", "candidate")
-    ):
-        return f"{key}: record rejected: no owner reference resolves in the evaluated snapshot"
+    # An owner behind an unread capture bound is unverifiable, not absent:
+    # the claim stays active while discovery is incomplete. A reference that
+    # resolves nowhere in a path the capture never even recorded is rejected.
+    unresolved = [
+        ref for ref in owners
+        if all(_anchor_line(_captured_text(snapshot, str(ref["path"]), side), ref) is None
+               for side in ("base", "candidate"))
+        and not _path_known_unread(snapshot, str(ref["path"]))
+    ]
+    if unresolved:
+        return f"{key}: record rejected: {len(unresolved)} owner reference(s) resolve nowhere in the evaluated snapshot"
     return None
+
+
+def _path_known_unread(snapshot: EvaluationSnapshot, path: str) -> bool:
+    return any(
+        base.text is None and snapshot.renamed_to.get(base.path, base.path) == path
+        for base in snapshot.baseline
+    )
 
 
 def _apply_dispositions(
@@ -900,6 +983,7 @@ def _apply_dispositions(
         deletion_proven = all(
             _anchor_line(_captured_text(snapshot, str(ref["path"]), "base"), ref) is not None
             and not _still_referenced(snapshot, ref)
+            and _rewired_to_survivor(snapshot, ref, present)
             for ref in gone
         )
         record_consumed = _consumed(rule_candidates, present)

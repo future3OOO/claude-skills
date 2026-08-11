@@ -724,10 +724,41 @@ _RESOLVER_B = (
 )
 
 
+def state_root_record(**fields) -> dict[str, object]:
+    """The manifest-shaped record for the two-resolver fixture, one owner."""
+    return {
+        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
+        "responsibilityKey": "app-state-root-location",
+        "disposition": "same-responsibility",
+        "repair": "consolidate",
+        "owners": [
+            {"path": "src/state.py", "symbol": "resolve_state_root"},
+            {"path": "src/advisor.py", "symbol": "advisor_state_dir"},
+        ],
+        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
+        **fields,
+    }
+
+
 def write_disposition(records: list[dict[str, object]]) -> Path:
-    """A parent-bound record file OUTSIDE the evaluated repository."""
+    """A parent-bound record file OUTSIDE the evaluated repository.
+
+    Emulates issuance from the validation root: v1 schema stamped and each
+    record's digest computed over its canonical content, unless the record
+    already carries explicit (possibly wrong-on-purpose) trust fields.
+    """
+    stamped = []
+    for record in records:
+        record = {"schemaVersion": 1, **record}
+        if "validationRoot" not in record:
+            canonical = json.dumps(record, sort_keys=True)
+            record["validationRoot"] = {
+                "identifier": record.get("parentRecord", ""),
+                "digest": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            }
+        stamped.append(record)
     document = Path(tempfile.mkdtemp(prefix="dispositions-")) / "records.json"
-    document.write_text(json.dumps({"records": records}), encoding="utf-8")
+    document.write_text(json.dumps({"records": stamped}), encoding="utf-8")
     return document
 
 
@@ -742,19 +773,11 @@ def test_same_responsibility_disposition_confirms_the_candidate(repo: Path) -> N
     git(repo, "commit", "-q", "-m", "two resolvers")
     base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    document = write_disposition([{
-        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
-        "responsibilityKey": "app-state-root-location",
-        "disposition": "same-responsibility",
-        "repair": "consolidate",
-        "base": base,
-        "candidate": head,
-        "owners": [
-            {"path": "src/state.py", "symbol": "resolve_state_root"},
-            {"path": "lib/advisor.py", "symbol": "advisor_state_dir"},
-        ],
-        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
-    }])
+    document = write_disposition([state_root_record(
+        base=base, candidate=head,
+        owners=[{"path": "src/state.py", "symbol": "resolve_state_root"},
+                {"path": "lib/advisor.py", "symbol": "advisor_state_dir"}],
+    )])
     code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
     confirmed = [
         item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
@@ -788,19 +811,7 @@ def test_rename_only_repair_leaves_the_warning_unresolved(repo: Path) -> None:
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "rename the competitor")
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    document = write_disposition([{
-        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
-        "responsibilityKey": "app-state-root-location",
-        "disposition": "same-responsibility",
-        "repair": "consolidate",
-        "base": base,
-        "candidate": head,
-        "owners": [
-            {"path": "src/state.py", "symbol": "resolve_state_root"},
-            {"path": "src/advisor.py", "symbol": "advisor_state_dir"},
-        ],
-        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
-    }])
+    document = write_disposition([state_root_record(base=base, candidate=head)])
     code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
     assert payload["resolvedFindings"] == [], json.dumps(payload["resolvedFindings"], indent=2)
     states = sorted(item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"))
@@ -822,19 +833,7 @@ def test_consolidate_and_delete_resolves_to_telemetry_only(repo: Path) -> None:
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "consolidate onto the surviving owner")
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    document = write_disposition([{
-        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
-        "responsibilityKey": "app-state-root-location",
-        "disposition": "same-responsibility",
-        "repair": "consolidate",
-        "base": base,
-        "candidate": head,
-        "owners": [
-            {"path": "src/state.py", "symbol": "resolve_state_root"},
-            {"path": "src/advisor.py", "symbol": "advisor_state_dir"},
-        ],
-        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
-    }])
+    document = write_disposition([state_root_record(base=base, candidate=head)])
     code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
     assert owner_findings(payload, "") == [], json.dumps(payload["findings"], indent=2)
     resolved = payload["resolvedFindings"]
@@ -888,18 +887,9 @@ def test_stale_or_inapplicable_records_never_clear_a_candidate(repo: Path) -> No
     git(repo, "commit", "-q", "-m", "two resolvers")
     base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    shared = {
-        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
-        "responsibilityKey": "app-state-root-location",
-        "owners": [
-            {"path": "src/state.py", "symbol": "resolve_state_root"},
-            {"path": "src/advisor.py", "symbol": "advisor_state_dir"},
-        ],
-        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
-    }
     document = write_disposition([
-        {**shared, "disposition": "same-responsibility", "repair": "consolidate", "base": base, "candidate": base},
-        {**shared, "disposition": "distinct-authority", "repair": "consolidate", "base": base, "candidate": head},
+        state_root_record(base=base, candidate=base),
+        state_root_record(disposition="distinct-authority", base=base, candidate=head),
     ])
     code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
     candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
@@ -940,19 +930,11 @@ def test_truncated_owner_discovery_keeps_the_finding_unresolved(repo: Path) -> N
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "touch the readable owner")
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    document = write_disposition([{
-        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
-        "responsibilityKey": "app-state-root-location",
-        "disposition": "same-responsibility",
-        "repair": "consolidate",
-        "base": base,
-        "candidate": head,
-        "owners": [
-            {"path": "src/state.py", "symbol": "resolve_state_root"},
-            {"path": "src/huge.py", "symbol": "normalize_user_identifier"},
-        ],
-        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
-    }])
+    document = write_disposition([state_root_record(
+        base=base, candidate=head,
+        owners=[{"path": "src/state.py", "symbol": "resolve_state_root"},
+                {"path": "src/huge.py", "symbol": "normalize_user_identifier"}],
+    )])
     code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
     assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
     rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
@@ -1082,19 +1064,7 @@ def test_temporary_coexistence_stays_visible_confirmed_debt(repo: Path) -> None:
     git(repo, "commit", "-q", "-m", "two resolvers")
     base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    record = {
-        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
-        "responsibilityKey": "app-state-root-location",
-        "disposition": "temporary-coexistence",
-        "repair": "consolidate",
-        "base": base,
-        "candidate": head,
-        "owners": [
-            {"path": "src/state.py", "symbol": "resolve_state_root"},
-            {"path": "src/advisor.py", "symbol": "advisor_state_dir"},
-        ],
-        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
-    }
+    record = state_root_record(disposition="temporary-coexistence", base=base, candidate=head)
     document = write_disposition([record])
     code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
     notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
@@ -1114,17 +1084,126 @@ def test_temporary_coexistence_stays_visible_confirmed_debt(repo: Path) -> None:
 
 
 @with_repo
+def test_deletion_without_rewiring_stays_unresolved(repo: Path) -> None:
+    # Deleting the competitor and its call sites without rewiring the
+    # affected surface to the survivor merely deletes behavior; resolution
+    # requires every affected path to reach the survivor.
+    caller = "from src.advisor import advisor_state_dir\n\n\ndef locate():\n    return advisor_state_dir()\n"
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    write(repo / "src" / "caller.py", caller)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers and a caller")
+    base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    record = state_root_record(base=base)
+
+    write(repo / "src" / "advisor.py", "ADVISOR_SUFFIX = '/advisor'\n")
+    write(repo / "src" / "caller.py", "def locate():\n    return '/var/state/advisor'\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "delete without rewiring")
+    dropped = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    document = write_disposition([{**record, "candidate": dropped}])
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["confirmed-unresolved"], states
+
+    write(repo / "src" / "caller.py", "from src.state import resolve_state_root\n\n\ndef locate():\n    return resolve_state_root() + '/advisor'\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "rewire to the survivor")
+    rewired = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    document = write_disposition([{**record, "candidate": rewired}])
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    assert [item["state"] for item in payload["resolvedFindings"]] == ["resolved"], payload["resolvedFindings"]
+    assert owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION") == [], payload["findings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_signature_preserves_command_discriminators(repo: Path) -> None:
+    # Git subcommands, CLI-mode flags, and nested control-flow shape are
+    # operation discriminators: scaffolds differing only there never share a
+    # lifecycle signature, while payload strings stay normalized slots.
+    scaffolds = "\n".join((
+        "def run_gate(repo, *args):",
+        "    return 0, {}",
+        "",
+        "",
+        "def git(repo, *args):",
+        "    return repo",
+        "",
+        "",
+        "def test_adds():",
+        "    git('r', 'add')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_commits():",
+        "    git('r', 'commit')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_worktree_mode():",
+        "    git('r', 'add')",
+        "    code, payload = run_gate('r', '--staged-only')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_looped():",
+        "    for attempt in range(2):",
+        "        git('r', 'add')",
+        "        code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+    ))
+    write(repo / "tests" / "test_modes.py", scaffolds)
+    code, payload, _ = run_gate(repo)
+    lifecycle = [
+        item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+        if item["region"]["evidenceClass"] == "fixture-lifecycle"
+    ]
+    assert lifecycle == [], json.dumps([item["evidence"]["owners"] for item in lifecycle], indent=2)
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_disposition_trust_negatives_leave_the_rule_incomplete(repo: Path) -> None:
+    # Unknown schema versions, broken digests, and path-only wildcard owner
+    # references cannot bind; each is reported and the rule reads incomplete,
+    # never clean, with the candidate untouched.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    record = state_root_record(base=base, candidate=head)
+    document = write_disposition([
+        {**record, "schemaVersion": 2},
+        {**record, "validationRoot": {"identifier": "future3OOO/claude-skills#54", "digest": "0" * 64}},
+        {**record, "owners": [{"path": "src/state.py"}, {"path": "src/advisor.py"}]},
+        {**record, "owners": [{"path": "src/state.py", "symbol": "resolve_state_root"},
+                              {"path": "src/advisor.py", "symbol": "vanished_resolver"}]},
+    ])
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    for expected in ("unknown disposition schema version", "does not match the validation root digest",
+                     "symbol or exact content anchor", "resolve nowhere"):
+        assert any(expected in note for note in notes), (expected, notes)
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
 def test_an_unknown_disposition_value_is_rejected(repo: Path) -> None:
     write(repo / "src" / "state.py", _RESOLVER_A)
     write(repo / "src" / "advisor.py", _RESOLVER_B)
-    document = write_disposition([{
-        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
-        "responsibilityKey": "app-state-root-location",
-        "disposition": "waived",
-        "owners": [{"path": "src/state.py", "symbol": "resolve_state_root"},
-                   {"path": "src/advisor.py", "symbol": "advisor_state_dir"}],
-        "parentRecord": "prose",
-    }])
+    document = write_disposition([state_root_record(disposition="waived", parentRecord="prose")])
     code, payload, _ = run_gate(repo, "--dispositions", str(document))
     notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
     assert any("semantic disposition" in note for note in notes), notes
@@ -1845,7 +1924,7 @@ def test_owner_manifest_calibration_is_reproducible() -> None:
     ]
     assert len(five_groups) == 1, [item["evidence"]["owners"] for item in test_candidates]
     assert five_groups[0]["region"]["evidenceClass"] == "fixture-lifecycle", five_groups[0]
-    assert len(test_candidates) == 5 and not owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"), (
+    assert len(test_candidates) == 4 and not owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"), (
         [item["evidence"]["owners"] for item in test_candidates])
 
     # Case R with the record: repeated-scaffolding RED confirms and stays
@@ -1853,7 +1932,7 @@ def test_owner_manifest_calibration_is_reproducible() -> None:
     document = write_disposition([_lifecycle_record(*_MANIFEST_R[:2])])
     payload = replay_pinned_range(*_MANIFEST_R[:2], "--dispositions", str(document))
     states = _active_states(payload, "QG54-OWNER-COMPETITION-TEST")
-    assert sorted(states) == ["candidate"] * 4 + ["confirmed-unresolved"], states
+    assert sorted(states) == ["candidate"] * 3 + ["confirmed-unresolved"], states
     confirmed = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
                  if item["state"] == "confirmed-unresolved"]
     assert [region["owner"] for region in confirmed[0]["region"]["regions"]] == list(_MANIFEST_FIVE), confirmed
@@ -1912,7 +1991,7 @@ def test_owner_manifest_calibration_is_reproducible() -> None:
         [item["evidence"]["owners"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")])
     assert not any(_MANIFEST_KEY in warning for warning in payload["warnings"]), payload["warnings"]
     # The published outside-pinned-scope counts are these measured volumes.
-    for count in ("| R | 4 |", "| P1/P2 | 13 |", "| G | 4 |"):
+    for count in ("| R | 3 |", "| P1/P2 | 13 |", "| G | 4 |"):
         assert count in published, count
 
 
@@ -2393,14 +2472,17 @@ def test_gate_implementation_budget() -> None:
         # Raised from 1800 by explicit operator approval on PR #90
         # (2026-08-08), then from 1950 by explicit operator approval on PR B
         # (#76, 2026-08-10), then to 2350 on the same PR after independent
-        # review forced three correctness fixes, then to 2650 by explicit
-        # operator approval on PR C (#77, 2026-08-11) after the complete
-        # slice measured exactly that with the mandatory lexical-reuse
-        # deletions applied: the owner-competition rules' eight evidence
+        # review forced three correctness fixes, then to 2650 and finally
+        # 2734 by explicit operator approvals on PR C (#77, 2026-08-11):
+        # first for the complete slice with the mandatory lexical-reuse
+        # deletions applied — the owner-competition rules' eight evidence
         # classes, three-state machine, and snapshot-bound disposition
-        # records cost more than the deleted scorer freed. The operator
+        # records cost more than the deleted scorer freed — then for the
+        # independent final review's forced contract work: versioned records
+        # with digest binding, the rewiring-to-survivor predicate, and
+        # command-token/control-flow signature discriminators. The operator
         # directed raising the ceiling over cutting scope or weakening proof.
-        "total_lines": 2650,
+        "total_lines": 2734,
     }
     review_triggers = {
         "module_lines": 700,
@@ -2408,7 +2490,7 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "complete #75 canonical evaluation, #76 exact duplication, and #77 responsibility ownership: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, three QG54-DUPLICATE-* rules and two QG54-OWNER-COMPETITION-* rules over one redundancy owner with disposition records, with the lexical reuse scorer deleted; 2650 ceiling operator-approved 2026-08-11",
+        "TOTAL": "complete #75 canonical evaluation, #76 exact duplication, and #77 responsibility ownership: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, three QG54-DUPLICATE-* rules and two QG54-OWNER-COMPETITION-* rules over one redundancy owner with disposition records, with the lexical reuse scorer deleted; 2734 ceiling operator-approved 2026-08-11",
         "_quality_gate/redundancy.py": "the one redundancy owner the architecture mandates: exact-duplicate phases plus the responsibility phases (eight evidence classes, three finding states, disposition validation, one-owner resolution) behind runner.check",
         "_quality_gate/runner.py:check": "the one evaluation walk the architecture mandates: every check, warning, error, and hard rule derives from a single typed outcome column",
     }
