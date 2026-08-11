@@ -213,8 +213,9 @@ def _owner_warnings(rule_id: str, candidates: list[Finding]) -> list[str]:
     """One warning per active owner candidate, naming its evidence class and
     every competing owner region."""
     return [
-        f"{rule_id}: {candidate.state} {candidate.region['evidenceClass']} competing owners "
-        + ", ".join(candidate.evidence["owners"])
+        " ".join(filter(None, (f"{rule_id}: {candidate.state}", candidate.region["evidenceClass"],
+                               candidate.evidence.get("responsibilityKey"),
+                               "competing owners", ", ".join(candidate.evidence["owners"]))))
         for candidate in candidates
         if candidate.rule_id == rule_id and candidate.state in ("candidate", "confirmed-unresolved")
     ]

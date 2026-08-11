@@ -23,8 +23,7 @@ def read_optional_input(value: str) -> tuple[str, str | None]:
 
 def read_disposition_input(value: str, root: Path) -> tuple[str, str | None]:
     """Disposition records are trusted only from outside the candidate tree:
-    stdin and paths inside the evaluated repository cannot prove out-of-tree
-    provenance, so both are refused rather than read."""
+    stdin and in-repository paths cannot prove that, so both are refused."""
     if not value:
         return "", None
     if value == "-":

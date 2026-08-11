@@ -1048,6 +1048,91 @@ def test_parameterized_single_lifecycle_owner_is_negative(repo: Path) -> None:
 
 
 @with_repo
+def test_two_validators_deciding_one_invariant_are_a_candidate(repo: Path) -> None:
+    # Two predicate-shaped functions deciding the same comparison in two
+    # files compete to own the invariant; same names with no shared decision,
+    # callee, or boundary evidence never form a candidate.
+    validator = (
+        "def ensure_ready(record):\n"
+        "    if record.status != 'ready':\n"
+        "        raise ValueError(record.status)\n"
+        "    return record\n"
+    )
+    write(repo / "src" / "intake.py", validator)
+    write(repo / "src" / "dispatch.py", validator.replace("ensure_ready", "require_ready").replace("return record", "return True"))
+    write(repo / "src" / "alpha.py", "def handler(value):\n    return value.strip()\n")
+    write(repo / "src" / "beta.py", "def handler(value):\n    return [item for item in value]\n")
+    code, payload, _ = run_gate(repo)
+    candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    validators = [item for item in candidates if item["region"]["evidenceClass"] == "invariant-validators"]
+    assert len(validators) == 1, json.dumps(payload["findings"], indent=2)
+    assert {region["owner"] for region in validators[0]["region"]["regions"]} == {"ensure_ready", "require_ready"}, validators
+    assert [item for item in candidates if item["region"]["evidenceClass"] == "interface-overlap"] == [], candidates
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_temporary_coexistence_stays_visible_confirmed_debt(repo: Path) -> None:
+    # temporary-coexistence never resolves: it stays confirmed-unresolved
+    # visible debt, and a record without its tracked follow-up and expiry is
+    # rejected rather than applied.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    record = {
+        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
+        "responsibilityKey": "app-state-root-location",
+        "disposition": "temporary-coexistence",
+        "repair": "consolidate",
+        "base": base,
+        "candidate": head,
+        "owners": [
+            {"path": "src/state.py", "symbol": "resolve_state_root"},
+            {"path": "src/advisor.py", "symbol": "advisor_state_dir"},
+        ],
+        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
+    }
+    document = write_disposition([record])
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("followUp" in note and "expiry" in note for note in notes), notes
+    assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["candidate"]
+
+    document = write_disposition([{**record, "followUp": "future3OOO/claude-skills#88", "expiry": "one slice"}])
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--dispositions", str(document))
+    debt = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+            if item["state"] == "confirmed-unresolved"]
+    assert len(debt) == 1, payload["findings"]
+    assert debt[0]["evidence"]["followUp"] == "future3OOO/claude-skills#88", debt
+    assert debt[0]["evidence"]["expiry"] == "one slice", debt
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert any("app-state-root-location" in warning for warning in payload["warnings"]), payload["warnings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_an_unknown_disposition_value_is_rejected(repo: Path) -> None:
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    document = write_disposition([{
+        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
+        "responsibilityKey": "app-state-root-location",
+        "disposition": "waived",
+        "owners": [{"path": "src/state.py", "symbol": "resolve_state_root"},
+                   {"path": "src/advisor.py", "symbol": "advisor_state_dir"}],
+        "parentRecord": "prose",
+    }])
+    code, payload, _ = run_gate(repo, "--dispositions", str(document))
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("semantic disposition" in note for note in notes), notes
+    assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["candidate"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
 def test_duplicate_identity_survives_insertion_and_rename(repo: Path) -> None:
     # Content anchors, not positions: an unrelated line above a region and a
     # path rename must not orphan a disposition against the same debt.
