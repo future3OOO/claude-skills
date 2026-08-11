@@ -50,10 +50,16 @@ _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 _QUOTED_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "\\": "\\"}
 
-# Baseline capture bounds: how many owner files may be read and how large one
-# may be. They live with the capture because the cap must prevent the read.
+# Baseline capture bounds: how many owner files may be read PER ROLE, so one
+# role cannot spend another's budget, and how large one may be. They live with
+# the capture because the cap must prevent the read.
 MAX_INDEX_FILES = 4000
 MAX_INDEX_FILE_BYTES = 500_000
+
+# Roles whose implementation the exact rules read and whose base-tree files are
+# captured as owner evidence: an exact copy of an existing helper is the same
+# defect wherever it lives; generated and vendored code is never an owner.
+BASELINE_ROLES = ("production", "test", "test-support")
 
 
 def top_dir(path: str) -> str:
@@ -80,6 +86,16 @@ class EvaluationSnapshot:
     entries: tuple[SnapshotEntry, ...]
     baseline: tuple[BaselineFile, ...]
     baseline_gaps: tuple[str, ...]
+    # Owner-discovery gaps outside the production role: the reuse advisory
+    # scores production owners only, so a test owner it never reads cannot
+    # make its verdict unknown.
+    baseline_role_gaps: tuple[str, ...]
+    # Same-role, same-language owners the candidate-relevance bound never read.
+    baseline_scope_gaps: tuple[str, ...]
+    # Where each renamed base path lives in the candidate. A renamed path has
+    # no entry of its own, so without this its content could neither be found
+    # nor be proven gone.
+    renamed_to: dict[str, str]
     unattributed: tuple[str, ...]
     capture_gaps: tuple[str, ...]
     # Caller-supplied evidence, parsed once and frozen here with everything
@@ -113,7 +129,7 @@ class EvaluationSnapshot:
         )
         packet_paths = frozenset(parse_repo_context_packet(repo_context_packet))
         boosts, warnings = parse_gitnexus_context_json(gitnexus_context_json)
-        baseline, baseline_gaps = _baseline_index(
+        baseline, baseline_gaps, baseline_role_gaps, baseline_scope_gaps = _baseline_index(
             repo, base, entries, packet_paths, {key.rsplit(":", 1)[0] for key in boosts}
         )
         return cls(
@@ -128,6 +144,9 @@ class EvaluationSnapshot:
             entries=entries,
             baseline=baseline,
             baseline_gaps=baseline_gaps,
+            baseline_role_gaps=baseline_role_gaps,
+            baseline_scope_gaps=baseline_scope_gaps,
+            renamed_to={old: new for new, old in renamed.items()},
             unattributed=tuple(sorted(set(hunks) - changed)),
             capture_gaps=capture_gaps,
         )
@@ -163,6 +182,8 @@ class EvaluationSnapshot:
         return {
             "capture": self.capture_gaps,
             "baseline": self.baseline_gaps,
+            "baseline_roles": self.baseline_role_gaps,
+            "baseline_scope": self.baseline_scope_gaps,
             "attribution": tuple(f"{path}: diff hunks matched no changed file" for path in self.unattributed),
             "measurement": tuple(sorted({gap for entry in self.entries if entry.classification.source for gap in entry.gaps})),
             "measurement_production": tuple(sorted({gap for entry in self.role_entries("production") for gap in entry.gaps})),
@@ -207,28 +228,33 @@ def _baseline_index(
     entries: tuple[SnapshotEntry, ...],
     packet_paths: frozenset[str],
     gitnexus_paths: set[str],
-) -> tuple[tuple[BaselineFile, ...], tuple[str, ...]]:
+) -> tuple[tuple[BaselineFile, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Bounded owner capture: the base-tree source files a change could
     reimplement, read before the snapshot freezes so no detector reads Git.
 
     Candidate-independent eligibility (owner language among the changed
-    production languages, and a shared top directory or packet/GitNexus
-    naming) and the file and size caps all apply before any blob read. A file
-    skipped by a cap, or whose read failed, is a recorded gap — unread scope
-    never reads as absence — while a path the change adds simply has no base
-    entry.
+    languages of the SAME role, and a shared top directory or packet/GitNexus
+    naming) and the file and size caps all apply before any blob read. Roles
+    are kept apart so widening capture to tests cannot widen which production
+    owners the production rules see. A file skipped by a cap, or whose read
+    failed, is a recorded gap — unread scope never reads as absence — while a
+    path the change adds simply has no base entry.
     """
     if not base:
-        return (), ()
+        return (), (), (), ()
     listed, failure = git_read(repo, ["ls-tree", "-r", "-l", "-z", base])
     if failure:
-        return (), (f"reuse baseline listing failed: {failure}",)
-    production = [entry for entry in entries if entry.classification.role == "production"]
-    languages = {entry.classification.language for entry in production}
-    roots = {top_dir(entry.path) for entry in production}
+        return (), (f"reuse baseline listing failed: {failure}",), (), ()
+    scope: dict[str, tuple[set[str], set[str]]] = {}
+    for entry in entries:
+        if entry.classification.role in BASELINE_ROLES:
+            languages, roots = scope.setdefault(entry.classification.role, (set(), set()))
+            languages.add(entry.classification.language)
+            roots.add(top_dir(entry.path))
     files: list[BaselineFile] = []
-    gaps: list[str] = []
-    read_count = 0
+    gaps: list[tuple[str, str]] = []
+    reads: dict[str, int] = {}
+    skipped = 0
     for record in listed.split("\0"):
         # ls-tree -l: "<mode> <type> <oid> <size>\t<path>".
         meta, sep, rel_path = record.partition("\t")
@@ -238,26 +264,33 @@ def _baseline_index(
         classification = classify_path(rel_path)
         if not classification.source:
             continue
-        eligible = (
-            classification.role == "production"
-            and classification.language in languages
-            and (top_dir(rel_path) in roots or rel_path in packet_paths or rel_path in gitnexus_paths)
+        languages, roots = scope.get(classification.role, (set(), set()))
+        eligible = classification.language in languages and (
+            top_dir(rel_path) in roots or rel_path in packet_paths or rel_path in gitnexus_paths
         )
         text = None
+        # An owner excluded by the candidate-relevance bound is unread scope,
+        # not proven absence: the exact rules must report that, and no cap or
+        # bound may shrink their denominator into a clean verdict.
+        skipped += classification.language in languages and not eligible
         if eligible and int(fields[3]) > MAX_INDEX_FILE_BYTES:
-            gaps.append(f"{rel_path}: reuse baseline exceeds {MAX_INDEX_FILE_BYTES} bytes")
-        elif eligible and read_count >= MAX_INDEX_FILES:
-            gaps.append(f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files")
+            gaps.append((classification.role, f"{rel_path}: reuse baseline exceeds {MAX_INDEX_FILE_BYTES} bytes"))
+        elif eligible and reads.get(classification.role, 0) >= MAX_INDEX_FILES:
+            gaps.append((classification.role, f"reuse baseline discovery stopped at {MAX_INDEX_FILES} files"))
         elif eligible:
             # Attempts consume the cap, not successes: confirmed read failures
             # must not buy unbounded extra Git reads.
-            read_count += 1
+            reads[classification.role] = reads.get(classification.role, 0) + 1
             text, read_failure = git_read(repo, ["show", f"{base}:{rel_path}"])
             if read_failure:
                 text = None
-                gaps.append(f"{rel_path}: reuse baseline could not be read")
+                gaps.append((classification.role, f"{rel_path}: reuse baseline could not be read"))
         files.append(BaselineFile(rel_path, classification.role, classification.language, text))
-    return tuple(files), tuple(dict.fromkeys(gaps))
+    scope_gap = (f"reuse baseline scope read only the changed top directories: {skipped} "
+                 f"same-role source file(s) elsewhere were never read",) if skipped else ()
+    production = tuple(dict.fromkeys(text for role, text in gaps if role == "production"))
+    other = tuple(dict.fromkeys(text for role, text in gaps if role != "production"))
+    return tuple(files), production, other, scope_gap
 
 
 def _counts_for(rel_path: str, record: Numstat | None) -> tuple[int, int, tuple[str, ...]]:

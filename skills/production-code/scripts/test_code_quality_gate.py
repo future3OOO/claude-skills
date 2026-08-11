@@ -21,6 +21,11 @@ SCRIPT_DIR = Path(__file__).parent
 PINNED_PRE_75 = "9f01e5f"
 POLICY_PATH = "skills/production-code/scripts/_quality_gate/path_policy.py"
 
+# The captured PR #68 round-six corpus, not the merged PR's final head.
+CORPUS_BASE = "4cfffcb8d5724bfc2b03dce505da8cf930fb49fa"
+CORPUS_CANDIDATE = "28cf04e63fa6eb598b938d3a78d782969538d9a9"
+CORPUS_DIFF_SHA256 = "885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a"
+
 
 def _load_path_policy(path: Path):
     """Load a path_policy module standalone, the way workflow state loads it."""
@@ -101,6 +106,39 @@ def reuse_matches(payload: dict[str, object]) -> list[dict[str, object]]:
 
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
     return next(item for item in payload["checks"] if item["name"] == name)
+
+
+def duplicate_findings(payload: dict[str, object], rule: str = "") -> list[dict[str, object]]:
+    """One finding per duplicated implementation, optionally one rule's.
+
+    The per-rule state findings (`region.scope == "evaluation"`) carry the pass
+    and completeness projection and are read through `check_named` instead.
+    """
+    return [
+        item
+        for item in payload["findings"]
+        if item["ruleId"].startswith("QG54-DUPLICATE-")
+        and item["region"]["scope"] == "duplicate"
+        and (not rule or item["ruleId"] == rule)
+    ]
+
+
+EXACT_RULES = ("QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK", "QG54-DUPLICATE-BASELINE")
+
+# The schema couples the two facts, so one place knows the pairing: an absence
+# of findings alone proves nothing, because an incomplete rule produces one too.
+_RULE_STATES = {"passed": (True, "passed"), "finding": (True, "finding"), "incomplete": (None, "incomplete")}
+
+
+def assert_exact_rules(payload: dict[str, object], expected: dict[str, str]) -> None:
+    """Assert the state of each named exact rule, never a bare absence."""
+    for rule, state in expected.items():
+        item = check_named(payload, rule)
+        assert (item["passed"], item["status"]) == _RULE_STATES[state], (rule, state, item)
+
+
+def duplicate_regions(finding: dict[str, object]) -> set[tuple[str, str]]:
+    return {(region["path"], region["evidenceRole"]) for region in finding["region"]["regions"]}
 
 
 def snapshot_paths(repo: Path) -> set[str]:
@@ -204,7 +242,62 @@ def test_gate_creates_no_repo_artifacts(repo: Path) -> None:
 
 
 @with_repo
-def test_duplicate_added_block_fails(repo: Path) -> None:
+def test_unparseable_python_is_incomplete_not_duplicate(repo: Path) -> None:
+    # This file tokenizes but does not parse, so no parser can say where a
+    # definition begins or ends. Guessing those edges reports two differently
+    # decorated methods as one implementation; the honest answer is that the
+    # file was not read.
+    body = "\n".join((
+        "        ceiling = int(config.get('max_attempts', 3))",
+        "        remaining = max(0, ceiling - attempt)",
+        "        if not remaining:",
+        "            return 0.0",
+        "        scaled = round(0.5 * (2 ** attempt), 3)",
+        "        return scaled",
+    ))
+    write(
+        repo / "src" / "broken.py",
+        "x = = 2\n"
+        f"class L:\n    @property\n    def budget(self, config, attempt):\n{body}\n"
+        f"class R:\n    @staticmethod\n    def budget(self, config, attempt):\n{body}\n",
+    )
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "incomplete"))
+    for rule in EXACT_RULES:
+        gaps = check_named(payload, rule)["gaps"]
+        assert any("src/broken.py" in gap and "parse" in gap for gap in gaps), (rule, gaps)
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_blank_line_inside_an_f_string_is_content_not_spacing(repo: Path) -> None:
+    # A blank line inside a multi-line f-string is part of the literal. Python
+    # 3.12 tokenizes f-strings as FSTRING_* rather than STRING, so protection
+    # keyed on token type alone would drop it and merge two different strings.
+    def helper(gap: str) -> str:
+        return (
+            "def render_banner(name, count):\n"
+            '    text = f"""welcome {name}\n'
+            f"{gap}"
+            '    you have {count} items"""\n'
+            "    trimmed = text.strip()\n"
+            "    upper = trimmed.upper()\n"
+            "    return upper\n"
+        )
+    write(repo / "src" / "left.py", helper("\n"))
+    write(repo / "src" / "right.py", helper("\n\n"))
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_untokenizable_language_reports_incomplete_not_clean(repo: Path) -> None:
+    # A duplicate the gate cannot read exactly is not an absence of duplicates.
+    # No tokenizer proves what a comment or a string interior is in JavaScript,
+    # so the rule names the scope it could not read instead of passing.
     block = "\n".join(
         [
             "    const payload = normalizeInput(value) + normalizeInput(other);",
@@ -214,9 +307,17 @@ def test_duplicate_added_block_fails(repo: Path) -> None:
     )
 
     write(repo / "src" / "dup.js", f"export function a(value, other) {{\n{block}\n}}\nexport function b(value, other) {{\n{block}\n}}\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 2
-    assert payload["hardRules"]["noDuplication"]["passed"] is False
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    symbol_rule = check_named(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
+    assert symbol_rule["passed"] is None and symbol_rule["status"] == "incomplete", symbol_rule
+    assert any("src/dup.js" in gap and "javascript" in gap for gap in symbol_rule["gaps"]), symbol_rule
+    assert any(
+        finding["evidence"]["affectedRuleId"] == "QG54-DUPLICATE-ADDED-SYMBOL"
+        for finding in payload["findings"]
+        if finding["ruleId"] == "QG54-ANALYSIS-INCOMPLETE"
+    ), payload["findings"]
+    # Incomplete is visible, never blocking: no QG54 rule may fail a run.
+    assert code == 0 and payload["ok"] is True, json.dumps(payload["errors"], indent=2)
 
 
 # One quality-escape payload per row: typed test fakes stay green, fake-green
@@ -505,17 +606,20 @@ def test_completeness_scopes_are_rule_specific(repo: Path) -> None:
 
 
 @with_repo
-def test_binary_test_gap_stays_out_of_the_production_duplicate_rule(repo: Path) -> None:
-    # An unmeasured test blob is outside the production duplicate rule's
-    # scope; the all-source escape scan keeps carrying it.
+def test_completeness_follows_each_rule_own_role_scope(repo: Path) -> None:
+    # An unmeasured test blob is inside the exact rules' scope, because they
+    # read test implementations, and outside the production-only reuse
+    # advisory's. Widening one rule's roles must not dirty the other's.
     (repo / "tests").mkdir()
     (repo / "tests" / "blob.py").write_bytes(b"A = 1\x00\n")
     write(repo / "src" / "app.py", "VALUE = 1\n")
-    code, payload, _ = run_gate(repo)
-    dup = next(item for item in payload["checks"] if item["name"] == "no-duplicate-added-blocks")
-    escapes = next(item for item in payload["checks"] if item["name"] == "no-quality-escapes")
-    assert dup["status"] == "passed", dup
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    exact = check_named(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
+    escapes = check_named(payload, "no-quality-escapes")
+    assert exact["status"] == "incomplete", exact
     assert escapes["status"] == "incomplete", escapes
+    assert reuse_finding(payload)["status"] == "passed", reuse_finding(payload)
+    assert code == 0, (code, payload["errors"])
 
 
 @with_repo
@@ -562,53 +666,515 @@ def test_ambiguous_reuse_warns_with_gitnexus_query(repo: Path) -> None:
     assert payload["gitnexusQueries"]
 
 
+POLLING_BLOCK = "\n".join(
+    [
+        "    deadline = time.monotonic() + timeout_seconds",
+        "    while True:",
+        "        current_url = page.url",
+        "        body_text = page.locator('body').inner_text()",
+        "        if check(current_url, body_text):",
+        "            return current_url, body_text",
+        "        if time.monotonic() >= deadline:",
+        "            return current_url, body_text",
+        "        wait_for_timeout = getattr(page, 'wait_for_timeout', None)",
+        "        if callable(wait_for_timeout):",
+        "            wait_for_timeout(poll_interval_ms)",
+    ]
+)
+
+
 @with_repo
-def test_duplicate_polling_loop_is_grouped(repo: Path) -> None:
-    block = "\n".join(
-        [
-            "    deadline = time.monotonic() + timeout_seconds",
-            "    while True:",
-            "        current_url = page.url",
-            "        body_text = page.locator('body').inner_text()",
-            "        if check(current_url, body_text):",
-            "            return current_url, body_text",
-            "        if time.monotonic() >= deadline:",
-            "            return current_url, body_text",
-            "        wait_for_timeout = getattr(page, 'wait_for_timeout', None)",
-            "        if callable(wait_for_timeout):",
-            "            wait_for_timeout(poll_interval_ms)",
-        ]
+def test_repeated_added_block_is_one_grouped_warning(repo: Path) -> None:
+    # Two differently named helpers share one identical polling body. The
+    # symbols differ, so only the contiguous block inside them duplicates, and
+    # the overlapping windows covering it collapse to that one block.
+    write(
+        repo / "src" / "polls.py",
+        f"def a(page, timeout_seconds, poll_interval_ms):\n{POLLING_BLOCK}\n\n"
+        f"def b(page, timeout_seconds, poll_interval_ms):\n{POLLING_BLOCK}\n",
     )
-    write(repo / "src" / "polls.py", f"def a(page, timeout_seconds, poll_interval_ms):\n{block}\n\ndef b(page, timeout_seconds, poll_interval_ms):\n{block}\n")
-    code, payload, _ = run_gate(repo)
-    duplicate_check = check_named(payload, "no-duplicate-added-blocks")
-    assert code == 2
-    assert len(duplicate_check["sample"]) <= 3
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-ADDED-BLOCK")
+    assert len(findings) == 1, json.dumps(payload["findings"], indent=2)
+    assert [region["displayLine"] for region in findings[0]["region"]["regions"]] == [2, 15], findings[0]
+    assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL"), payload["findings"]
+    assert_exact_rules(payload, {
+        "QG54-DUPLICATE-ADDED-BLOCK": "finding", "QG54-DUPLICATE-ADDED-SYMBOL": "passed",
+    })
+    assert code == 0 and payload["ok"] is True, json.dumps(payload["errors"], indent=2)
+
+
+RETRY_BLOCK = "\n".join(
+    (
+        "    ceiling = int(config.get('max_attempts', 3))",
+        "    remaining = max(0, ceiling - attempt)",
+        "    if not remaining:",
+        "        return 0.0",
+        "    scaled = round(0.5 * (2 ** attempt), 3)",
+        "    return scaled",
+    )
+)
+
+DUPLICATE_HELPER = "\n".join(
+    (
+        "def resolve_retry_budget(config, attempt):",
+        "    ceiling = int(config.get('max_attempts', 3))",
+        "    remaining = max(0, ceiling - attempt)",
+        "    if not remaining:",
+        "        return 0.0",
+        "    return round(0.5 * (2 ** attempt), 3)",
+    )
+)
+
+
+@with_repo
+def test_two_exact_added_symbols_warn_once_naming_both_regions(repo: Path) -> None:
+    # Two files add the same complete helper body. That is one duplication
+    # defect with two source regions, not two findings and not a blocker.
+    write(repo / "src" / "left.py", DUPLICATE_HELPER + "\n")
+    write(repo / "src" / "right.py", DUPLICATE_HELPER + "\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
+    assert len(findings) == 1, json.dumps(payload["findings"], indent=2)
+    finding = findings[0]
+    # Active QG54 warning: the schema keeps its intrinsic check passed and
+    # carries activeness in `status`, so ok stays true either way.
+    assert finding["severity"] == "warning" and finding["passed"] is True, finding
+    assert finding["status"] == "finding", finding
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
+    assert duplicate_regions(finding) == {("src/left.py", "duplicate"), ("src/right.py", "duplicate")}, finding
+    # Warning-only: an exact duplicate never fails the run, even when the
+    # caller asks for warnings to be promoted.
+    assert code == 0 and payload["ok"] is True, json.dumps(payload["errors"], indent=2)
+    _, promoted_payload, _ = run_gate(repo, "--base-ref", "HEAD", "--fail-on-warnings")
+    assert not any("QG54-DUPLICATE-" in error for error in promoted_payload["errors"]), promoted_payload["errors"]
+
+
+@with_repo
+def test_copy_of_retained_baseline_names_both_regions(repo: Path) -> None:
+    # The candidate copies a test helper the base tree still owns. Both regions
+    # are named: the new copy, and the baseline implementation still retained.
+    # A test role also proves capture is no longer production-only, and keeps
+    # the exit code clear of the production-only legacy reuse advisory.
+    write(repo / "tests" / "owner_helpers.py", DUPLICATE_HELPER + "\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(repo / "tests" / "copy_helpers.py", DUPLICATE_HELPER + "\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(findings) == 1, json.dumps(payload["findings"], indent=2)
+    assert findings[0]["severity"] == "warning", findings[0]
+    assert duplicate_regions(findings[0]) == {
+        ("tests/copy_helpers.py", "duplicate"),
+        ("tests/owner_helpers.py", "retained-baseline"),
+    }, findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
+    assert code == 0 and payload["ok"] is True, json.dumps(payload["errors"], indent=2)
+
+
+# Each row is one consolidation outcome the baseline rule must reach. The
+# baseline commit owns DUPLICATE_HELPER at tests/owner_helpers.py; the row
+# describes what the candidate does to it, and whether a retained copy remains.
+# name, candidate files, paths removed from the candidate, expected regions.
+_CONSOLIDATION_ROWS = (
+    ("copy-then-delete", {"tests/copy_helpers.py": DUPLICATE_HELPER + "\n"}, ("tests/owner_helpers.py",), set()),
+    ("moved-to-one-owner", {"tests/moved_helpers.py": DUPLICATE_HELPER + "\n"}, ("tests/owner_helpers.py",), set()),
+    ("calls-the-owner", {"tests/caller_helpers.py": "from tests.owner_helpers import resolve_retry_budget\n\n\ndef budget(config):\n    return resolve_retry_budget(config, 1)\n"}, (), set()),
+    ("edited-past-the-anchor", {"tests/copy_helpers.py": DUPLICATE_HELPER + "\n",
+                                "tests/owner_helpers.py": DUPLICATE_HELPER.replace("0.5", "0.75") + "\n"}, (), set()),
+    # Retention is about the implementation, not the bytes around it: adding a
+    # comment to the owner must not make a live duplicate disappear.
+    ("owner-comment-only-edit", {"tests/copy_helpers.py": DUPLICATE_HELPER + "\n",
+                                 "tests/owner_helpers.py": DUPLICATE_HELPER.replace(
+                                     "    remaining =", "    # keep the ceiling honest\n    remaining =") + "\n"}, (),
+     {("tests/copy_helpers.py", "duplicate"), ("tests/owner_helpers.py", "retained-baseline")}),
+    # Git resolves one of the two new copies as the rename of the deleted
+    # owner, so consolidation is only partial: the moved implementation is
+    # still retained and the second copy repeats it.
+    ("partial-consolidation", {"tests/copy_helpers.py": DUPLICATE_HELPER + "\n",
+                               "tests/second_helpers.py": DUPLICATE_HELPER + "\n"}, ("tests/owner_helpers.py",),
+     {("tests/copy_helpers.py", "retained-baseline"), ("tests/second_helpers.py", "duplicate")}),
+    ("retained-owner", {"tests/copy_helpers.py": DUPLICATE_HELPER + "\n"}, (),
+     {("tests/copy_helpers.py", "duplicate"), ("tests/owner_helpers.py", "retained-baseline")}),
+)
+
+
+def test_consolidation_clears_the_duplicate_and_a_retained_copy_does_not() -> None:
+    for name, candidate, removed, expected in _CONSOLIDATION_ROWS:
+        in_repo(lambda repo, c=candidate, r=removed, e=expected, label=name: _consolidation_row(repo, c, r, e, label))
+
+
+def _consolidation_row(repo: Path, candidate, removed, expected, name: str) -> None:
+    write(repo / "tests" / "owner_helpers.py", DUPLICATE_HELPER + "\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    for path, text in candidate.items():
+        write(repo / path, text)
+    for path in removed:
+        (repo / path).unlink()
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    regions = {
+        region
+        for finding in duplicate_findings(payload)
+        for region in duplicate_regions(finding)
+    }
+    assert regions == expected, (name, json.dumps(duplicate_findings(payload), indent=2))
+    # A cleared row must be cleared, and a firing row must be fully read: an
+    # incomplete rule reports no regions either way.
+    # Every row in this table clears or fires the BASELINE rule; the other two
+    # stay clean either way, so one map covers both branches.
+    states = dict.fromkeys(EXACT_RULES, "passed")
+    states["QG54-DUPLICATE-BASELINE"] = "finding" if expected else "passed"
+    assert_exact_rules(payload, states)
+    assert code == 0 and payload["ok"] is True, (name, payload["errors"])
+
+
+@with_repo
+def test_varying_scaffolding_is_not_an_exact_duplicate(repo: Path) -> None:
+    # Five near-identical scenario tests differing only in literals and
+    # expected values. Exactness preserves literals, so this is not a
+    # duplicated implementation; fixture-lifecycle ownership belongs to #77.
+    cases = "\n\n".join(
+        "\n".join((
+            f"def test_case_{index}(tmp_path):",
+            f"    target = tmp_path / 'case_{index}.json'",
+            f"    target.write_text('{{\"attempts\": {index}}}')",
+            "    parsed = load_attempts(target)",
+            f"    assert parsed['attempts'] == {index}",
+            f"    assert target.name == 'case_{index}.json'",
+        ))
+        for index in range(5)
+    )
+    write(repo / "tests" / "test_scenarios.py", "from src.base import load_attempts\n\n\n" + cases + "\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_duplicate_identity_survives_insertion_and_rename(repo: Path) -> None:
+    # Content anchors, not positions: an unrelated line above a region and a
+    # path rename must not orphan a disposition against the same debt.
+    write(repo / "tests" / "left_helpers.py", DUPLICATE_HELPER + "\n")
+    write(repo / "tests" / "right_helpers.py", DUPLICATE_HELPER + "\n")
+    payload_before = run_gate(repo, "--base-ref", "HEAD")[1]
+    assert_exact_rules(payload_before, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
+    before = duplicate_findings(payload_before, "QG54-DUPLICATE-ADDED-SYMBOL")[0]
+    write(repo / "tests" / "left_helpers.py", "UNRELATED = 1\n\n\n" + DUPLICATE_HELPER + "\n")
+    (repo / "tests" / "right_helpers.py").rename(repo / "tests" / "renamed_helpers.py")
+    payload_after = run_gate(repo, "--base-ref", "HEAD")[1]
+    after = duplicate_findings(payload_after, "QG54-DUPLICATE-ADDED-SYMBOL")[0]
+    assert before["findingId"] == after["findingId"], (before["findingId"], after["findingId"])
+    assert before["region"]["contentAnchor"] == after["region"]["contentAnchor"]
+    assert {region["path"] for region in after["region"]["regions"]} == {
+        "tests/left_helpers.py", "tests/renamed_helpers.py",
+    }, after["region"]["regions"]
+    assert_exact_rules(payload_after, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
+
+
+@with_repo
+def test_owner_outside_the_changed_tree_reports_incomplete_not_clean(repo: Path) -> None:
+    # Owner capture is bounded to the changed top directories. An owner the
+    # bound never read is unread scope, not proof the copy is unique, so the
+    # baseline rule reports what it did not read instead of passing.
+    write(repo / "lib" / "owner.py", DUPLICATE_HELPER + "\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner outside the changed tree")
+    write(repo / "src" / "copy.py", DUPLICATE_HELPER + "\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    baseline_rule = check_named(payload, "QG54-DUPLICATE-BASELINE")
+    assert baseline_rule["passed"] is None and baseline_rule["status"] == "incomplete", baseline_rule
+    assert any("reuse baseline scope" in gap for gap in baseline_rule["gaps"]), baseline_rule
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_retained_owner_claims_a_repeated_block_from_the_added_rule(repo: Path) -> None:
+    # One occurrence, one defect: when a repeated added block is also an exact
+    # copy of an owner the base tree still holds, the baseline rule owns it and
+    # the added-block rule must not report the same copies again.
+    write(repo / "tests" / "owner_helpers.py", f"def owner(config, attempt):\n{RETRY_BLOCK}\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    for name in ("first", "second"):
+        write(repo / "tests" / f"{name}_helpers.py", f"def {name}(config, attempt):\n{RETRY_BLOCK}\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-BLOCK"), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, {
+        "QG54-DUPLICATE-BASELINE": "finding", "QG54-DUPLICATE-ADDED-BLOCK": "passed",
+    })
+    baseline = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(baseline) == 1, json.dumps(duplicate_findings(payload), indent=2)
+    # Exact multiplicity, not a set: one physical occurrence, one region.
+    assert [
+        (region["path"], region["displayLine"], region["evidenceRole"])
+        for region in baseline[0]["region"]["regions"]
+    ] == [
+        ("tests/first_helpers.py", 2, "duplicate"),
+        ("tests/owner_helpers.py", 2, "retained-baseline"),
+        ("tests/second_helpers.py", 2, "duplicate"),
+    ], baseline[0]["region"]["regions"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_decorated_definitions_are_not_exact_duplicates(repo: Path) -> None:
+    # A decorator changes how the definition below it behaves, so it belongs to
+    # the implementation. Identical bodies under different decorators are not
+    # one symbol; under the same decorator they are.
+    body = "\n".join((
+        "        ceiling = int(config.get('max_attempts', 3))",
+        "        remaining = max(0, ceiling - attempt)",
+        "        if not remaining:",
+        "            return 0.0",
+        "        scaled = round(0.5 * (2 ** attempt), 3)",
+        "        return scaled",
+    ))
+    write(repo / "src" / "left.py", f"class L:\n    @property\n    def budget(self, config, attempt):\n{body}\n")
+    write(repo / "src" / "right.py", f"class R:\n    @staticmethod\n    def budget(self, config, attempt):\n{body}\n")
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL"), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "passed"})
+
+    # A decorator that spans lines is still one decorator: only the real
+    # parser knows where its list begins.
+    write(repo / "src" / "left.py", f"class L:\n    @retry(\n        attempts=3,\n    )\n    def budget(self, config, attempt):\n{body}\n")
+    write(repo / "src" / "right.py", f"class R:\n    @retry(\n        attempts=9,\n    )\n    def budget(self, config, attempt):\n{body}\n")
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL"), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "passed"})
+
+    write(repo / "src" / "left.py", f"class L:\n    @property\n    def budget(self, config, attempt):\n{body}\n")
+    write(repo / "src" / "right.py", f"class R:\n    @property\n    def budget(self, config, attempt):\n{body}\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
+    assert len(findings) == 1, json.dumps(duplicate_findings(payload), indent=2)
+    # The named region starts at the decorator, not at the def below it.
+    assert {(region["path"], region["displayLine"]) for region in findings[0]["region"]["regions"]} == {
+        ("src/left.py", 2), ("src/right.py", 2),
+    }, findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_block_never_spans_a_symbol_boundary(repo: Path) -> None:
+    # Three body lines and three module-level lines are identical in both
+    # files, but each side of the symbol's closing edge is under the reported
+    # minimum. Only a block that ran past that edge would reach six lines.
+    body = "\n".join((
+        "    resolved = normalize_identifier(value)",
+        "    combined = resolved.strip().lower()",
+        "    return combined or 'id_unknown'",
+    ))
+    tail = "\n".join((
+        "REGISTERED_PREFIXES = ('id_', 'ref_', 'key_')",
+        "DEFAULT_PREFIX = REGISTERED_PREFIXES[0]",
+        "FALLBACK_IDENTIFIER = DEFAULT_PREFIX + 'unknown'",
+    ))
+    for name in ("first", "second"):
+        write(repo / "src" / f"{name}.py", f"def build_{name}(value):\n{body}\n\n\n{tail}\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_renamed_copy_of_a_retained_owner_is_still_a_copy(repo: Path) -> None:
+    # The signature line alone cannot hide a copy: the implementation under it
+    # is the owner's, and the owner is still retained. The body must itself
+    # reach the reported minimum, which is the same threshold as any region.
+    write(repo / "tests" / "owner_helpers.py", f"def resolve_retry_budget(config, attempt):\n{RETRY_BLOCK}\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(repo / "tests" / "copy_helpers.py", f"def compute_retry_budget(config, attempt):\n{RETRY_BLOCK}\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(findings) == 1, json.dumps(duplicate_findings(payload), indent=2)
+    assert duplicate_regions(findings[0]) == {
+        ("tests/copy_helpers.py", "duplicate"),
+        ("tests/owner_helpers.py", "retained-baseline"),
+    }, findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_reformatted_signature_does_not_hide_a_copied_body(repo: Path) -> None:
+    # The copy renames the helper AND splits its signature across lines. Only
+    # the implementation under the signature is the owner's, so the body-only
+    # candidate must start at the suite, not one line below the `def`.
+    write(repo / "tests" / "owner_helpers.py", f"def resolve_retry_budget(config, attempt):\n{RETRY_BLOCK}\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(
+        repo / "tests" / "copy_helpers.py",
+        f"def compute_retry_budget(\n    config,\n    attempt,\n):\n{RETRY_BLOCK}\n",
+    )
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(findings) == 1, json.dumps(duplicate_findings(payload), indent=2)
+    # The copy's region points at the first line of its suite, not into the
+    # signature that spans lines 1 to 4.
+    assert [
+        (region["path"], region["displayLine"]) for region in findings[0]["region"]["regions"]
+    ] == [("tests/copy_helpers.py", 5), ("tests/owner_helpers.py", 2)], findings[0]["region"]["regions"]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
+    assert code == 0, (code, payload["errors"])
+
+
+def _nested_decorator_helper(decorator: str) -> str:
+    return (
+        "def build_pipeline(config, attempt):\n"
+        f"    @{decorator}\n"
+        "    def inner(value):\n"
+        "        return value.strip().lower()\n"
+        "    resolved = inner(config['name'])\n"
+        "    scaled = round(0.5 * (2 ** attempt), 3)\n"
+        "    combined = resolved + str(scaled)\n"
+        "    return combined\n"
+    )
+
+
+@with_repo
+def test_a_nested_decorator_belongs_to_the_body_that_contains_it(repo: Path) -> None:
+    # The suite of an outer definition begins at its first statement INCLUDING
+    # that statement's own decorators. Two bodies differing only in a nested
+    # decorator are not the same implementation.
+    write(repo / "tests" / "owner_helpers.py", _nested_decorator_helper("staticmethod"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "owner")
+    write(
+        repo / "tests" / "copy_helpers.py",
+        _nested_decorator_helper("functools.cache").replace("build_pipeline", "assemble_pipeline"),
+    )
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
+
+    # The same nested decorator is the same implementation, and is reported.
+    write(
+        repo / "tests" / "copy_helpers.py",
+        _nested_decorator_helper("staticmethod").replace("build_pipeline", "assemble_pipeline"),
+    )
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    findings = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(findings) == 1, json.dumps(duplicate_findings(payload), indent=2)
+    assert [region["displayLine"] for region in findings[0]["region"]["regions"]] == [2, 2], findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_test_baseline_files_cannot_spend_the_production_read_budget(repo: Path) -> None:
+    # Owner capture covers three roles, so one shared read budget would let
+    # whichever role sorts first exhaust it. Here 4,000 eligible test files sort
+    # before src/, and the production owner must still be read and scored.
+    owner = f"def normalize_user_identifier(config, attempt):\n{RETRY_BLOCK}\n"
+    bulk = repo / "apitests"
+    bulk.mkdir(parents=True, exist_ok=True)
+    # Exactly the enforced cap, read from the shipping constant so the fixture
+    # tracks the contract it exists to exercise rather than restating it.
+    snapshot = (SCRIPT_DIR / "_quality_gate" / "snapshot.py").read_text(encoding="utf-8")
+    budget = int(next(l for l in snapshot.splitlines() if l.startswith("MAX_INDEX_FILES")).split("=")[1])
+    for index in range(budget):
+        (bulk / f"test_{index:05d}.py").write_text(f"VALUE_{index} = {index}\n", encoding="utf-8")
+    write(repo / "src" / "owner.py", owner)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "baseline")
+    write(repo / "src" / "copy.py", owner)
+    write(repo / "apitests" / "test_new.py", "def helper():\n    return 1\n")
+    _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    matches = reuse_matches(payload)
+    assert len(matches) == 1, json.dumps(reuse_finding(payload), indent=2)
+    assert matches[0]["existingFile"] == "src/owner.py", matches
+
+
+@with_repo
+def test_a_test_owner_gap_does_not_dirty_the_production_reuse_advisory(repo: Path) -> None:
+    # Owner capture now covers test roles for the exact rules. The reuse
+    # advisory still scores production owners only, so a test owner it never
+    # reads must not make its verdict unknown.
+    owner = f"def normalize_user_identifier(config, attempt):\n{RETRY_BLOCK}\n"
+    write(repo / "tests" / "huge_helpers.py", _OVERSIZED)
+    write(repo / "src" / "owner.py", owner)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "baseline")
+    write(repo / "src" / "copy.py", owner)
+    write(repo / "tests" / "new_helpers.py", "def helper():\n    return 1\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    reuse = reuse_finding(payload)
+    assert reuse["status"] == "finding", reuse
+    assert reuse["completeness"] == {"complete": True, "gaps": []}, reuse
+    # The exact rules DO read that scope, so the gap stays visible to them.
+    baseline_rule = check_named(payload, "QG54-DUPLICATE-BASELINE")
+    assert baseline_rule["status"] == "incomplete", baseline_rule
+    assert any("huge_helpers.py" in gap for gap in baseline_rule["gaps"]), baseline_rule
+    assert code == 2 and any("reimplement" in error for error in payload["errors"]), payload["errors"]
+
+
+@with_repo
+def test_unreadable_owner_file_cannot_report_a_clean_exact_verdict(repo: Path) -> None:
+    # The copied helper's only owner sits in a base file no tokenizer can
+    # read. Skipping it quietly would report the copy as unique.
+    (repo / "tests").mkdir()
+    (repo / "tests" / "owner_helpers.py").write_bytes(
+        (DUPLICATE_HELPER + "\n").encode("utf-8") + b"\x00\x00trailing\n"
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "unreadable owner")
+    write(repo / "tests" / "copy_helpers.py", DUPLICATE_HELPER + "\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    baseline_rule = check_named(payload, "QG54-DUPLICATE-BASELINE")
+    assert baseline_rule["passed"] is None and baseline_rule["status"] == "incomplete", baseline_rule
+    assert any("tests/owner_helpers.py" in gap for gap in baseline_rule["gaps"]), baseline_rule
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_truncated_baseline_capture_cannot_report_a_clean_exact_verdict(repo: Path) -> None:
+    # The second owner sits behind a capture bound the run never reads. A rule
+    # that never read it has not proven the copy is unique.
+    write(repo / "tests" / "huge_helpers.py", _OVERSIZED)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "oversized owner")
+    write(repo / "tests" / "copy_helpers.py", DUPLICATE_HELPER + "\n")
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    baseline_rule = check_named(payload, "QG54-DUPLICATE-BASELINE")
+    assert baseline_rule["passed"] is None and baseline_rule["status"] == "incomplete", baseline_rule
+    assert any("huge_helpers.py" in gap for gap in baseline_rule["gaps"]), baseline_rule
+    assert code == 0, (code, payload["errors"])
 
 
 SPLIT_LINES = (
     "    resolved = normalize_identifier(candidate_value) + normalize_identifier(fallback_value)",
     "    combined = resolved.strip().lower().replace('-', '_').replace(' ', '_')",
-    "    return combined if combined.startswith('id_') else f'id_{combined}'",
+    "    trimmed = combined[:64] if len(combined) > 64 else combined",
+    "    prefixed = trimmed if trimmed.startswith('id_') else f'id_{trimmed}'",
+    "    checked = prefixed.replace('__', '_').rstrip('_')",
+    "    return checked or 'id_unknown'",
 )
 
 
 @with_repo
 def test_separate_hunks_do_not_form_one_duplicate(repo: Path) -> None:
-    # The three lines exist intact in one file and split across two distant
+    # The six lines exist intact in one file and split across two distant
     # hunks in another. Only joining those hunks makes them look duplicated.
-    filler = "\n".join(f"KEEP_{i} = {i}" for i in range(8))
-    write(repo / "src" / "split.py", f"X = 1\n{filler}\nY = 2\n")
+    # Both files stay parseable, or the rules would report unread scope instead.
+    filler = "\n".join(f"    keep_{i} = {i}" for i in range(8))
+    write(repo / "src" / "split.py", f"def spread(candidate_value, fallback_value):\n    x = 1\n{filler}\n    return x\n")
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "split baseline")
     write(
         repo / "src" / "split.py",
-        f"X = 1\n{SPLIT_LINES[0]}\n{SPLIT_LINES[1]}\n{filler}\nY = 2\n{SPLIT_LINES[2]}\n",
+        "def spread(candidate_value, fallback_value):\n    x = 1\n"
+        + "\n".join(SPLIT_LINES[:3]) + f"\n{filler}\n"
+        + "\n".join(SPLIT_LINES[3:]) + "\n    return x\n",
     )
     write(repo / "src" / "intact.py", "def build_identifier(candidate_value, fallback_value):\n" + "\n".join(SPLIT_LINES) + "\n")
-    code, payload, _ = run_gate(repo)
-    duplicate = check_named(payload, "no-duplicate-added-blocks")
-    assert duplicate["passed"] is True, json.dumps(duplicate, indent=2)
+    code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
     assert code == 0, json.dumps(payload["errors"], indent=2)
 
 
@@ -633,7 +1199,8 @@ _SCOPE_ROWS = (
       "checks": ("reuse-existing-helpers",), "hardRules": ("noDuplication",)}),
     ("unmeasured-production-file", None, {}, {"src/base.py": _BINARY}, False, ("--base-ref", "HEAD"),
      {"code": 0, "growth": "src/base.py", "reuse": "src/base.py",
-      "checks": ("reuse-existing-helpers", "no-quality-escapes", "no-duplicate-added-blocks"),
+      "checks": ("reuse-existing-helpers", "no-quality-escapes",
+                 "QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK"),
       "hardRules": ("noDuplication",)}),
     ("unbased-run", None, {}, {"src/app.py": "VALUE = 1\n"}, False, (),
      {"code": 0, "growth": "no caller-supplied base", "warning": "QG54-GROWTH-CUMULATIVE",
@@ -850,12 +1417,28 @@ def _growth_row(repo, baseline, ops, candidate, based, buckets, clean_check, nam
     assert code == 0, (name, code, payload["errors"])
 
 
+def replay_round_six_corpus() -> dict[str, object]:
+    """Run the gate over the pinned corpus in a throwaway detached worktree.
+
+    Both corpus replays need the same add/run/remove lifecycle; owning it once
+    keeps their cleanup from drifting apart.
+    """
+    repo = source_repo()
+    replay = Path(tempfile.mkdtemp(prefix="round-six-corpus-")) / "candidate"
+    try:
+        git(repo, "worktree", "add", "-q", "--detach", str(replay), CORPUS_CANDIDATE)
+        return run_gate(replay, "--base-ref", CORPUS_BASE)[1]
+    finally:
+        # Cleanup failures must surface, not silently leak a registered
+        # worktree into the shared source repository.
+        git(repo, "worktree", "remove", "--force", str(replay))
+        shutil.rmtree(replay.parent, ignore_errors=True)
+
+
 def test_captured_round_six_corpus_reports_pinned_totals() -> None:
-    # The captured PR #68 round-six corpus, not the merged PR's final head.
     # The diff options are part of the fixture identity pinned by the target
     # architecture; changing one requires a parent re-pin.
-    base = "4cfffcb8d5724bfc2b03dce505da8cf930fb49fa"
-    candidate = "28cf04e63fa6eb598b938d3a78d782969538d9a9"
+    base, candidate = CORPUS_BASE, CORPUS_CANDIDATE
     repo = source_repo()
     for sha in (base, candidate):
         present = run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], repo)
@@ -890,27 +1473,78 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     )
     assert diff.returncode == 0, diff.stderr
     digest = hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()
-    assert digest == "885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a", digest
+    assert digest == CORPUS_DIFF_SHA256, digest
 
-    replay = Path(tempfile.mkdtemp(prefix="round-six-corpus-")) / "candidate"
-    try:
-        git(repo, "worktree", "add", "-q", "--detach", str(replay), candidate)
-        _, payload, _ = run_gate(replay, "--base-ref", base)
-        growth = growth_totals(payload)
-        assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
-        assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
-        assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
-        assert growth["humanAuthored"] == {"added": 1129, "deleted": 8, "net": 1121}, growth
-        assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
-        # The corpus adds new committed files; their absent baselines are not
-        # discovery failures, so every rule must still read complete.
-        assert reuse_finding(payload)["completeness"] == {"complete": True, "gaps": []}, reuse_finding(payload)
-        assert all(item["status"] != "incomplete" for item in payload["checks"]), payload["checks"]
-    finally:
-        # Cleanup failures must surface, not silently leak a registered
-        # worktree into the shared source repository.
-        git(repo, "worktree", "remove", "--force", str(replay))
-        shutil.rmtree(replay.parent, ignore_errors=True)
+    payload = replay_round_six_corpus()
+    growth = growth_totals(payload)
+    assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
+    assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
+    assert growth["testSupport"] == {"added": 0, "deleted": 0, "net": 0}, growth
+    assert growth["humanAuthored"] == {"added": 1129, "deleted": 8, "net": 1121}, growth
+    assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
+    # The corpus adds new committed files; their absent baselines are not
+    # discovery failures, so every rule must still read complete.
+    assert reuse_finding(payload)["completeness"] == {"complete": True, "gaps": []}, reuse_finding(payload)
+    # The exact rules carry their own corpus verdict in the calibration
+    # replay below, including the shell scope no tokenizer can read.
+    assert all(
+        item["status"] != "incomplete"
+        for item in payload["checks"]
+        if not item["name"].startswith("QG54-DUPLICATE-")
+    ), payload["checks"]
+
+
+def test_captured_corpus_duplicate_calibration_is_reproducible() -> None:
+    # The checked-in calibration is evidence only if it is re-derived. The
+    # fires, their regions, the unreadable scopes and the warning projection
+    # come from replaying the pinned corpus through the real CLI; the pinned
+    # identities and the threshold are bound by assertion below. The bound-two
+    # adjudication is a recorded measurement and is deliberately not replayed.
+    published = (SCRIPT_DIR.parent / "references" / "duplicate-calibration.md").read_text(encoding="utf-8")
+    for pinned in (CORPUS_BASE, CORPUS_CANDIDATE, CORPUS_DIFF_SHA256, "unexaminedCount = 0"):
+        assert pinned in published, pinned
+    # The published threshold and the shipped constant cannot drift apart.
+    shipped = (SCRIPT_DIR / "_quality_gate" / "redundancy.py").read_text(encoding="utf-8")
+    threshold = next(line for line in shipped.splitlines() if line.startswith("MIN_REGION_LINES"))
+    assert threshold.replace(" ", "") == "MIN_REGION_LINES=6", threshold
+    assert "`MIN_REGION_LINES = 6`" in published, "the document must name the shipped threshold"
+
+    payload = replay_round_six_corpus()
+
+    fires: dict[str, list[list[tuple[str, int]]]] = {
+        rule: [] for rule in
+        ("QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK", "QG54-DUPLICATE-BASELINE")
+    }
+    for finding in duplicate_findings(payload):
+        fires[finding["ruleId"]].append(
+            [(region["path"], region["displayLine"]) for region in finding["region"]["regions"]]
+        )
+    assert fires == {
+        "QG54-DUPLICATE-ADDED-SYMBOL": [],
+        "QG54-DUPLICATE-ADDED-BLOCK": [[
+            ("hooks/tests/test_state_prune.py", 50),
+            ("hooks/tests/test_state_prune.py", 395),
+        ]],
+        "QG54-DUPLICATE-BASELINE": [],
+    }, json.dumps(fires, indent=2)
+    # Every fire and every unreadable scope is named in the published
+    # adjudication; an unexamined one would be a silent regression.
+    unreadable = [
+        "hooks/tests/run.sh",
+        "skills/codex-advisor/scripts/ask-codex-advisor.sh",
+        "skills/codex-advisor/tests/test-ask-codex-advisor.sh",
+    ]
+    for rule in fires:
+        state = check_named(payload, rule)
+        assert state["status"] == "incomplete" and state["passed"] is None, state
+        assert [gap.split(":")[0] for gap in state["gaps"]] == unreadable, state["gaps"]
+        for path in unreadable:
+            assert path in published, path
+    for finding in duplicate_findings(payload):
+        assert finding["severity"] == "warning" and finding["passed"] is True, finding
+        for region in finding["region"]["regions"]:
+            assert f"{region['path']}:{region['displayLine']}" in published, region
+    assert not any("QG54-DUPLICATE-" in error for error in payload["errors"]), payload["errors"]
 
 
 @with_repo
@@ -1453,7 +2087,7 @@ def test_a_witnessed_violation_outranks_missing_scope(repo: Path) -> None:
     assert escapes["passed"] is False and escapes["status"] == "finding", escapes
     assert payload["hardRules"]["cleanup"]["passed"] is False, payload["hardRules"]["cleanup"]
     # The other hunk-reading rule found nothing and still cannot see it all.
-    duplicates = check_named(payload, "no-duplicate-added-blocks")
+    duplicates = check_named(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
     assert duplicates["passed"] is None and duplicates["status"] == "incomplete", duplicates
 
 
@@ -1462,22 +2096,17 @@ def test_a_failed_hard_rule_child_outranks_an_unknown_sibling(repo: Path) -> Non
     # Aggregation follows the same lattice as a single check: an established
     # failure dominates an unknown sibling, and unknown still beats a pass.
     (repo / "src" / "unmeasured.py").write_bytes(_BINARY)
-    block = (
-        "    total = compute_total(order_items, discount_rate, tax_rate)\n"
-        "    audit_log.append(record_entry(total, order_items, discount_rate))\n"
-        "    return finalize_invoice(total, order_items, discount_rate, tax_rate)\n"
-    )
-    write(repo / "src" / "dup.py", f"def a(order_items, discount_rate, tax_rate):\n{block}\ndef b(order_items, discount_rate, tax_rate):\n{block}")
+    write(repo / "tmp" / "leftover.py", "VALUE = 1\n")
     _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert check_named(payload, "no-duplicate-added-blocks")["passed"] is False, payload["checks"]
-    assert check_named(payload, "reuse-existing-helpers")["passed"] is None, payload["checks"]
-    assert payload["hardRules"]["noDuplication"] == {
+    assert check_named(payload, "no-temp-artifacts")["passed"] is False, payload["checks"]
+    assert check_named(payload, "no-quality-escapes")["passed"] is None, payload["checks"]
+    assert payload["hardRules"]["cleanup"] == {
         "status": "evaluated",
         "passed": False,
-        "checks": ["no-duplicate-added-blocks", "reuse-existing-helpers"],
-    }, payload["hardRules"]["noDuplication"]
-    # Nothing failed under cleanup, so its unreadable scope still wins.
-    assert payload["hardRules"]["cleanup"]["passed"] is None, payload["hardRules"]["cleanup"]
+        "checks": ["no-quality-escapes", "no-temp-artifacts"],
+    }, payload["hardRules"]["cleanup"]
+    # Nothing failed under noDuplication, so its unreadable scope still wins.
+    assert payload["hardRules"]["noDuplication"]["passed"] is None, payload["hardRules"]["noDuplication"]
 
 
 @with_repo
@@ -1507,9 +2136,15 @@ def test_gate_implementation_budget() -> None:
         "module_lines": 1200,
         "function_lines": 180,
         # Raised from 1800 by explicit operator approval on PR #90
-        # (2026-08-08): the complete #75 behavior measured 1,926 and the
-        # operator directed raising the ceiling over cutting scope.
-        "total_lines": 1950,
+        # (2026-08-08), then from 1950 by explicit operator approval on PR B
+        # (#76, 2026-08-10), then to 2350 on the same PR after independent
+        # review forced three correctness fixes: decorator-aware symbol
+        # extents, the schema-v2 incomplete projection, and baseline
+        # precedence for repeated blocks. Measured 2,320 at that head, with
+        # the mandatory three-line-window, cross-hunk, collapse, and
+        # duplicate-blocker deletions already applied. The operator directed
+        # raising the ceiling over cutting scope or weakening proof.
+        "total_lines": 2350,
     }
     review_triggers = {
         "module_lines": 700,
@@ -1517,7 +2152,7 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "complete #75 canonical evaluation: captured base-to-candidate snapshot, typed schema-v2 findings, and warning-only cumulative growth; 1950 ceiling operator-approved 2026-08-08",
+        "TOTAL": "complete #75 canonical evaluation plus #76 exact duplication: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, and the three warning-only QG54-DUPLICATE-* rules over one redundancy owner; 2350 ceiling operator-approved 2026-08-10",
         "_quality_gate/runner.py:check": "the one evaluation walk the architecture mandates: every check, warning, error, and hard rule derives from a single typed outcome column",
     }
     production_files = [SCRIPT, *sorted((SCRIPT_DIR / "_quality_gate").glob("*.py"))]

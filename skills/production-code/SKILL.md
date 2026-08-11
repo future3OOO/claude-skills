@@ -130,6 +130,7 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
 - Run the bundled production code quality gate.
 - If the gate reports errors or actionable warnings, go back to the code, remove the bloat or quality escape, and rerun the gate.
 - If the gate reports `reuse-existing-helpers`, inspect the candidate existing path first. Delete the new duplicate helper, loop, retry, parser, normalizer, formatter, resolver, validator, mapper, or adapter unless there is a concrete behavior difference that justifies one implementation per behavior.
+- If the gate reports a `QG54-DUPLICATE-*` warning, it has named every region carrying that exact implementation. Keep one owner and delete the copies, or call the survivor. These rules are warning-only; a copy left behind is unfinished work, not a passing verdict.
 - For reuse warnings, use the emitted `gitnexusQueries` when GitNexus MCP is available, or inspect callers/callees with local search before deciding. The optimized gate suppresses weak speculative matches, so remaining reuse warnings should be treated as actionable until disproven.
 - Treat touched shallow modules as in-scope debt: absorb, delete, or record the blocker before finalizing.
 - Do not finish the turn while duplicate added code, reimplemented existing helpers, unnecessary growth, fake-green suppressions, broad catch/pass, temp artifacts, or cleanup failures remain in the changed production surface.

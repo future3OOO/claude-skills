@@ -9,10 +9,23 @@ tests, build, or domain-specific gates.
   Every detector reads captured tree objects; the result carries `evaluation`
   (base/candidate identity plus growth), structured `findings` with exact rule
   IDs, and `resolvedFindings`.
-- Hard failures include merge-conflict markers, temporary artifacts, duplicate
-  added blocks, high-confidence reimplementation of existing helpers or loops,
-  fake-green suppressions, empty or broad catch/pass patterns, unsafe type
-  shortcuts, and TODO/FIXME/HACK in changed source.
+- Hard failures include merge-conflict markers, temporary artifacts,
+  high-confidence reimplementation of existing helpers or loops, fake-green
+  suppressions, empty or broad catch/pass patterns, unsafe type shortcuts, and
+  TODO/FIXME/HACK in changed source.
+- Exact duplication is warning-only structured evidence, never a blocker:
+  `QG54-DUPLICATE-ADDED-SYMBOL` (a complete added symbol body repeated),
+  `QG54-DUPLICATE-ADDED-BLOCK` (a repeated contiguous added block), and
+  `QG54-DUPLICATE-BASELINE` (an added copy whose base-tree owner is still
+  retained in the candidate). Each names every added region carrying the
+  implementation — plus, for the baseline rule, one retained baseline owner —
+  with a content anchor, over production, test, and test-support roles, and a
+  decorator counts as part of the definition it decorates. Comparison is exact — identifiers, literals, operators,
+  control flow, symbol boundaries, and hunk boundaries all discriminate, and
+  separate hunks are never joined. Only Python is canonicalized, by its real
+  tokenizer; any other language in scope is reported as incomplete rather than
+  guessed. `references/duplicate-calibration.md` publishes the pinned-corpus
+  replay behind the reported minimum region size.
 - Growth is warning-only: `QG54-GROWTH-CUMULATIVE` reports cumulative
   production, test, test-support, generated, and human-authored added/deleted/
   net, warning when human-authored net exceeds the 500-line review budget.
@@ -33,9 +46,12 @@ tests, build, or domain-specific gates.
   parser language, human-authored/source status, test-like compatibility,
   exclusion reason). Production source remains strict; tests still fail
   suppression, broad catch/pass, TODO/FIXME/HACK, and `|| true` patterns.
-- Reuse detection is candidate-first and indexes only relevant base-tree
+- Reuse detection is candidate-first and scores only relevant base-tree
   production source. It skips tests, fixtures, and generated paths; suppresses
   likely moves and weak cross-domain overlap; and reports actionable candidates.
+  Base-tree capture itself covers production, test, and test-support source,
+  kept apart per role so the exact rules can see test owners without widening
+  which production owners the reuse advisory scores.
 - `--repo-context-packet` and `--gitnexus-context-json` may strengthen caller
   evidence already gathered by the workflow. The gate never creates reports,
   caches, or repository artifacts itself.

@@ -7,13 +7,6 @@ from .path_policy import is_binary_path, is_temp_artifact
 from .snapshot import EvaluationSnapshot
 
 
-# Import statements and the sys.path bootstrap a standalone entry point needs
-# before it can import shared code are module preamble, not behaviour. Files
-# legitimately share them, so they never count toward a duplicate window.
-_IMPORT_PREAMBLE = re.compile(
-    r"^(?:import\s|from\s+\S+\s+import\s|ROOT\s*=|if\s+str\(ROOT\)|sys\.path\.insert)"
-)
-
 GENERAL_ESCAPE_RULES = [
     re.compile(r"\b(?:TODO|FIXME|HACK)\b", re.I),
     re.compile(r"@ts-ignore\b"),
@@ -100,29 +93,6 @@ def rules_for_entry(entry: SnapshotEntry) -> list[re.Pattern[str]]:
     return rules
 
 
-def duplicate_added_blocks(snapshot: EvaluationSnapshot) -> list[dict[str, object]]:
-    windows: dict[str, dict[str, object]] = {}
-    for entry in snapshot.role_entries("production"):
-        # Windows never span a hunk boundary: lines that are far apart in the
-        # file are not one block just because both sides of a gap changed.
-        for hunk in entry.hunks:
-            normalized = _duplicate_candidate_lines(list(hunk.added))
-            for index in range(0, max(0, len(normalized) - 2)):
-                key = _duplicate_window_key(normalized, index)
-                if len(key) < 80:
-                    continue
-                item = windows.setdefault(key, {"count": 0, "files": set(), "sample": key[:180]})
-                item["count"] = int(item["count"]) + 1
-                files = item["files"]
-                assert isinstance(files, set)
-                files.add(entry.path)
-    return _collapse_duplicate_findings([
-        {"count": item["count"], "files": sorted(item["files"]), "sample": item["sample"]}
-        for item in windows.values()
-        if int(item["count"]) > 1
-    ])
-
-
 def evaluate_growth(snapshot: EvaluationSnapshot) -> Finding:
     """Cumulative growth per role, reported every run and warning-only.
 
@@ -162,51 +132,3 @@ def _line_hits(path: str, lines: list[tuple[int, str]], rules: list[re.Pattern[s
 
 def _multiline_hits(path: str, text: str) -> list[str]:
     return [f"{path}:{text[: match.start()].count(chr(10)) + 1}" for rule in EMPTY_CATCH_RULES for match in rule.finditer(text)]
-
-
-def _duplicate_candidate_lines(lines: list[tuple[int, str]]) -> list[str]:
-    normalized = [
-        re.sub(r"\s+", " ", text.strip()).rstrip(";,")
-        for _, text in lines
-        if text.strip() and not text.strip().startswith(("//", "#", "*"))
-    ]
-    return [
-        line
-        for line in normalized
-        if line not in {"{", "}"}
-        and not re.match(r"^(?:export\s+)?(?:async\s+)?function\s+\w+\(", line)
-        and not _IMPORT_PREAMBLE.match(line)
-    ]
-
-
-def _duplicate_window_key(lines: list[str], index: int) -> str:
-    chunk = lines[index : index + 3]
-    if index and lines[index - 1] == lines[index]:
-        return ""
-    if index + 3 < len(lines) and lines[index + 2] == lines[index + 3]:
-        return ""
-    if any("wait_for_timeout" in line for line in chunk) and index >= 2:
-        start = max(0, index - 2)
-        chunk = lines[start : index + 3]
-    return " | ".join(chunk)
-
-
-def _collapse_duplicate_findings(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    collapsed: list[dict[str, object]] = []
-    for item in sorted(items, key=lambda value: (value["files"], value["sample"])):
-        duplicate = next((existing for existing in collapsed if _same_duplicate_family(existing, item)), None)
-        if duplicate is None:
-            collapsed.append(item)
-        else:
-            duplicate["count"] = int(duplicate["count"]) + int(item["count"])
-    return collapsed
-
-
-def _same_duplicate_family(left: dict[str, object], right: dict[str, object]) -> bool:
-    if left["files"] != right["files"]:
-        return False
-    left_tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]+", str(left["sample"])))
-    right_tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]+", str(right["sample"])))
-    if not left_tokens or not right_tokens:
-        return False
-    return len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens)) >= 0.6

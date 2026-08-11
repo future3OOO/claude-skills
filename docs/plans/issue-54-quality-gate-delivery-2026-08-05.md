@@ -219,7 +219,7 @@ Out of scope:
 | PR | Branch | Base | Owner slice | Commit structure | Budget | Entry | Exit |
 |---|---|---|---|---|---:|---|---|
 | A | `feat/issue-75-captured-evaluation` (PR #90) | current `origin/main` at takeover | complete #75: one scope collector with rename detection, frozen snapshot, stored classification, migrated detectors, bounded baseline capture, typed findings, warning-only cumulative growth, exact-ID `fail_on_warnings`, schema v2, hook warning surfacing | real-CLI RED proof; deep Module replacement plus deletion of superseded modules; detector-policy behavior and promotion proof | measured +1,414 net, package 1,926 of the operator-approved 1,950 ceiling | 2026-08-08 operator fold directive and ceiling approval | #75 acceptance complete, capture/decoder/corpus proof green, active warnings visible through the real hook with exit zero, required checks green |
-| B | `feat/issue-54-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
+| B | `feat/issue-76-exact-duplicates` | PR A merge SHA on `origin/main`, recorded in #76 | #76 exact duplicate warnings and calibration | detector behavior and adversarial proof; checked-in corpus evidence | about 500 net | #75 merged | exact findings calibrated and warning-only, required checks green |
 | C | `feat/issue-54-responsibility-owners` | PR B merge SHA on `origin/main`, recorded in #77 | #77 responsibility-owner warnings and dispositions | candidate/disposition behavior; positive, negative, and corpus proof | about 500-600 net | #76 merged; parent #54 owner-corpus manifest pinned | every owner evidence class evaluated; no duplicate prerequisite; candidates calibrated and warning-only; required checks green |
 
 PR C may approach 600 net because its calibrated positive and negative proof
@@ -267,9 +267,16 @@ Required proof includes:
 - [x] Child #77 published, linked, and blocked by #76.
 - [x] Parent #54 seven-slice list replaced by the approved structure.
 - [x] Governing plan reviewed and merged in PR #78.
-- [ ] PR A (#90) merged with its checklist and reviewer loop complete,
-  completing #75 and superseding PR #80 (kept open as reference until then).
-- [ ] PR B merged with its checklist and reviewer loop complete.
+- [x] PR A (#90) merged with its checklist and reviewer loop complete,
+  completing #75 and superseding PR #80 (closed unmerged, reference only).
+- [ ] PR B merged with its checklist and reviewer loop complete. Implemented on
+  `feat/issue-76-exact-duplicates` from `origin/main`: the three warning-only
+  `QG54-DUPLICATE-*` rules in the new `redundancy.py` owner, per-role baseline
+  capture, and the superseded three-line-window/collapse/duplicate-blocker path
+  deleted. The gate-package ceiling was raised 1,950 to 2,300 and then to 2,350
+  by explicit operator approval on 2026-08-10, after the complete slice measured
+  2,255 and then 2,320 with every mandatory deletion already applied; the second
+  raise carries three correctness fixes the independent review forced.
 - [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
   before PR C is dispatched.
 - [ ] PR C merged with its checklist and reviewer loop complete.
