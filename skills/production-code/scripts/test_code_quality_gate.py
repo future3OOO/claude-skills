@@ -1157,6 +1157,20 @@ def test_signature_preserves_command_discriminators(repo: Path) -> None:
         "        code, payload = run_gate('r')",
         "    assert code == 0",
         "",
+        "",
+        "def test_ready_state():",
+        "    write_marker('r', 'ready')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "    assert payload == {}",
+        "",
+        "",
+        "def test_failed_state():",
+        "    write_marker('r', 'failed')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "    assert payload == {}",
+        "",
     ))
     write(repo / "tests" / "test_modes.py", scaffolds)
     code, payload, _ = run_gate(repo)
@@ -1164,7 +1178,11 @@ def test_signature_preserves_command_discriminators(repo: Path) -> None:
         item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
         if item["region"]["evidenceClass"] == "fixture-lifecycle"
     ]
-    assert lifecycle == [], json.dumps([item["evidence"]["owners"] for item in lifecycle], indent=2)
+    # Bare payload words under an ordinary callee stay normalized value
+    # slots: the ready/failed pair is the one group the discriminators leave.
+    assert len(lifecycle) == 1, json.dumps([item["evidence"]["owners"] for item in lifecycle], indent=2)
+    owners = [region["owner"] for region in lifecycle[0]["region"]["regions"]]
+    assert owners == ["test_ready_state", "test_failed_state"], owners
     assert code == 0, (code, payload["errors"])
 
 

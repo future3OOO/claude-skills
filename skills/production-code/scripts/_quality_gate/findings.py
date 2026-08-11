@@ -148,8 +148,8 @@ class Finding:
     action: str
     pass_condition: dict[str, object]
     gaps: tuple[str, ...]
-    # Owner-competition findings carry one of candidate, confirmed-unresolved,
-    # or resolved; every other rule family has no state machine and stays None.
+    # candidate | confirmed-unresolved | resolved for owner-competition
+    # findings; every other rule family has no state machine and stays None.
     state: str | None = None
 
     def finding_id(self) -> str:

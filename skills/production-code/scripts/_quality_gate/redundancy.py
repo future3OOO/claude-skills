@@ -385,9 +385,8 @@ def _finding(
     )
 
 
-# Responsibility-owner competition (#77). Candidates come only from mechanical
-# snapshot evidence; semantic authority never comes from names, proximity, or
-# prose, and no state here blocks completion.
+# Responsibility-owner competition (#77): candidates come only from
+# mechanical snapshot evidence, and no state here blocks completion.
 
 OWNER_ACTION = "Deepen, replace, or consolidate until one owner remains for the responsibility, and delete the competing surface."
 
@@ -397,9 +396,8 @@ OWNER_PASS_CONDITION = pass_condition(
     "no responsibility has two mechanically evidenced owners, with every evidence class evaluated",
 )
 
-# The eight mechanical evidence classes the issue requires. Every class is
-# evaluated on every run; an entry that could not look reports its gap and the
-# rule reads incomplete, never clean.
+# The eight mechanical evidence classes: each evaluated on every run; an
+# entry that could not look reports its gap and the rule reads incomplete.
 OWNER_CLASSES = (
     "state-writers", "invariant-validators", "interface-overlap",
     "lifecycle-coordinators", "parallel-entry-points", "fixture-lifecycle",
@@ -422,16 +420,17 @@ _GENERIC_PUBLIC = frozenset({"main", "setUp", "tearDown"})
 _MIN_SIGNATURE_OPS = 4
 
 
-# A command-token string argument — a flag or bare subcommand word — is an
-# operation discriminator (Git subcommands, CLI modes); payload strings with
-# spaces, paths, or newlines stay normalized value slots.
-_COMMAND_TOKEN = re.compile(r"^--?[A-Za-z][\w-]{0,23}$|^[a-z][a-z0-9_-]{1,15}$")
+# Operation discriminators: flag-shaped strings are CLI modes wherever they
+# appear; a bare subcommand word discriminates only under a command-runner
+# callee (`git('add')` is not the operation `git('commit')`), so ordinary
+# payload words stay normalized value slots.
+_FLAG_TOKEN = re.compile(r"^--?[A-Za-z][\w-]{0,23}$")
+_BARE_TOKEN = re.compile(r"^[a-z][a-z0-9_-]{1,15}$")
+_COMMAND_CALLEES = frozenset({"check_call", "check_output", "exec", "git", "popen", "run", "sh"})
 
 
 def _called_names(node: ast.AST) -> tuple[str, ...]:
-    """Callee anchors with their command-token discriminators, in
-    deterministic walk order: a call is an operation wherever it sits, and
-    `git('add')` is not the operation `git('commit')`."""
+    """Callee anchors with command-token discriminators, in walk order."""
     names = []
     for sub in ast.walk(node):
         if isinstance(sub, ast.Call):
@@ -441,20 +440,18 @@ def _called_names(node: ast.AST) -> tuple[str, ...]:
                 names.append(name)
                 names.extend(arg.value for arg in sub.args
                              if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-                             and _COMMAND_TOKEN.match(arg.value))
+                             and (_FLAG_TOKEN.match(arg.value)
+                                  or name in _COMMAND_CALLEES and _BARE_TOKEN.match(arg.value)))
     return tuple(names)
 
 
 def _operation_signature(body: list[ast.stmt]) -> tuple:
-    """The ordered lifecycle-operation signature of one function body.
-
-    Callee anchors, command-token discriminators, operation order, and nested
-    control-flow shape are preserved; only call-free local bindings and the
-    literal payload/value slots normalize, so varying filenames, payloads,
-    and expected values keep one signature while an extra operation, a
-    different callee, a different subcommand or CLI mode, or a reshaped
-    control flow breaks it.
-    """
+    """The ordered lifecycle-operation signature of one function body:
+    callee anchors, command-token discriminators, operation order, and nested
+    control-flow shape are preserved; only call-free local bindings and
+    payload/value slots normalize, so varying payloads keep one signature
+    while an extra operation, callee, subcommand, mode, or reshaped control
+    flow breaks it."""
     ops: list[tuple] = []
     for stmt in body:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -480,9 +477,8 @@ def _signature_weight(signature: tuple) -> int:
 
 
 def _owner_functions(text: str) -> list[dict[str, object]] | None:
-    """Mechanical per-function facts for the owner classes, or None when the
-    file does not parse. Module functions and one level of methods: the
-    corpus's competing owners live at both depths."""
+    """Per-function mechanical facts (module functions and one level of
+    methods), or None when the file does not parse."""
     try:
         tree = ast.parse(text)
     except (IndentationError, SyntaxError, SystemError, UnicodeError, ValueError):
@@ -500,8 +496,7 @@ def _owner_functions(text: str) -> list[dict[str, object]] | None:
                 target = sub.func
                 name = target.attr if isinstance(target, ast.Attribute) else target.id if isinstance(target, ast.Name) else ""
                 mutates = mutates or name in _MUTATORS
-                # os.environ.get / os.getenv with a literal name is an external
-                # configuration boundary being resolved.
+                # os.environ.get / os.getenv with a literal name resolves a boundary.
                 if name in {"get", "getenv"} and sub.args and isinstance(sub.args[0], ast.Constant) \
                         and isinstance(sub.args[0].value, str) and sub.args[0].value.isupper():
                     root = target.value if isinstance(target, ast.Attribute) else None
@@ -524,8 +519,11 @@ def _owner_functions(text: str) -> list[dict[str, object]] | None:
                 and isinstance(body[0].value.func, ast.Name) \
                 and all(isinstance(arg, ast.Name) for arg in body[0].value.args):
             forwards = body[0].value.func.id
+        line = min([item.lineno for item in node.decorator_list] + [node.lineno])
+        lines = text.splitlines()
         functions.append({
-            "name": node.name, "line": min([item.lineno for item in node.decorator_list] + [node.lineno]),
+            "name": node.name, "line": line,
+            "anchorText": lines[line - 1].strip() if line <= len(lines) else node.name,
             "public": not node.name.startswith("_"), "calls": _called_names(node),
             "signature": signature, "weight": _signature_weight(signature),
             "envs": envs, "segments": segments, "mutates": mutates, "forwards": forwards,
@@ -535,8 +533,8 @@ def _owner_functions(text: str) -> list[dict[str, object]] | None:
 
 
 def _compare_keys(node: ast.AST) -> frozenset[tuple[str, str]]:
-    """What this function decides, when predicate-shaped: each comparison's
-    dotted subject and literal, the mechanical shape of an invariant check."""
+    """Each comparison's dotted subject and literal, when predicate-shaped:
+    the mechanical shape of an invariant check."""
     decides = any(
         isinstance(sub, ast.Return) and isinstance(sub.value, (ast.Compare, ast.BoolOp))
         for sub in ast.walk(node)
@@ -561,13 +559,10 @@ def _compare_keys(node: ast.AST) -> frozenset[tuple[str, str]]:
 
 def _owner_units(snapshot: EvaluationSnapshot, roles: tuple[str, ...]) -> tuple[list[dict[str, object]], int, list[str]]:
     """Evidence units for one role family over changed entries and captured
-    baseline, with the file count and the named parse gaps.
-
-    One unit per parsed function — facts closed over same-file callees one
-    hop, where a resolver delegates its boundary reads — and one per shell
-    env-resolving line, so a language without a structural parser still
-    contributes its boundary evidence rather than silently vanishing.
-    """
+    baseline, with the file count and named parse gaps: one unit per parsed
+    function (facts closed over same-file callees one hop, where a resolver
+    delegates its boundary reads) and one per shell env-resolving line, so a
+    parserless language still contributes its boundary evidence."""
     files = [(entry.path, entry.classification.role, entry.classification.language,
               entry.current_text or "", True) for entry in snapshot.role_entries(*roles)]
     changed = {item[0] for item in files}
@@ -603,9 +598,8 @@ def _owner_units(snapshot: EvaluationSnapshot, roles: tuple[str, ...]) -> tuple[
 
 
 def _owner_groups(units: list[dict[str, object]]) -> dict[str, list[list[dict[str, object]]]]:
-    """Candidate groups per evidence class. Every group spans at least two
-    files and touches the changed surface; each grouping key is the shared
-    mechanical evidence itself, never a name alone."""
+    """Candidate groups per evidence class: every group spans two files,
+    touches the changed surface, and keys on the shared evidence itself."""
     def grouped(keyed: dict[object, list[dict[str, object]]], accept=lambda members: True) -> list[list[dict[str, object]]]:
         found = []
         for members in keyed.values():
@@ -630,17 +624,15 @@ def _owner_groups(units: list[dict[str, object]]) -> dict[str, list[list[dict[st
     defined = {unit["name"] for unit in units}
 
     return {
-        # Two resolvers of one external configuration boundary: the same pair
-        # of environment anchors resolved in two files.
+        # Two resolvers sharing one pair of environment anchors across files.
         "state-writers": grouped(collect(
             lambda unit: [unit["envs"]] if len(unit["envs"]) >= 2 else []))
-        # One state segment touched from two files, at least one mutating it.
+        # One state segment in two files, at least one mutating it.
         + grouped(collect(lambda unit: sorted(unit["segments"])),
                   lambda members: any(member["mutates"] for member in members)),
         "invariant-validators": grouped(collect(
             lambda unit: [unit["compares"]] if unit["compares"] else [])),
-        # Overlapping public Interfaces need shared behavior evidence beyond
-        # the name: a shared resolved callee or boundary anchor.
+        # Overlapping Interfaces need shared evidence beyond the name.
         "interface-overlap": grouped(
             collect(lambda unit: [unit["name"]] if unit["public"] and unit["name"] not in _GENERIC_PUBLIC and unit["signature"] else []),
             lambda members: bool(
@@ -658,8 +650,7 @@ def _owner_groups(units: list[dict[str, object]]) -> dict[str, list[list[dict[st
 
 
 def _signature_groups(units: list[dict[str, object]]) -> list[list[dict[str, object]]]:
-    """Functions owning one ordered lifecycle-operation signature, at least
-    twice, inside or across files of one role family."""
+    """Functions owning one ordered lifecycle signature at least twice."""
     keyed: dict[tuple, list[dict[str, object]]] = {}
     for unit in units:
         if unit["signature"] and unit["weight"] >= _MIN_SIGNATURE_OPS:
@@ -676,23 +667,18 @@ def find_owner_competition(
     duplicates: list[Finding],
     records: list[dict[str, object]],
 ) -> tuple[list[Finding], list[Finding], list[Finding]]:
-    """The responsibility-owner rules: per-rule state findings, one finding per
-    active candidate, and resolved telemetry, generated independently of
-    duplicate detection.
-
-    Exact evidence is one class among eight, not an entry requirement; the
-    exact rules separately own their scan completeness. Dispositions are
-    caller-supplied parent-bound records: structural validation against the
-    exact evaluated snapshot decides everything, and a record that does not
-    bind is reported inapplicable, never applied.
-    """
+    """The responsibility-owner rules: state findings, active candidates,
+    and resolved telemetry, generated independently of duplicate detection.
+    Exact evidence is one class among eight, never an entry requirement;
+    dispositions bind only through structural validation against the exact
+    evaluated snapshot."""
     streams = snapshot.gap_streams()
     states: list[Finding] = []
     candidates: list[Finding] = []
     resolved: list[Finding] = []
     for rule_id, roles in _OWNER_ROLES.items():
-        # Capture and attribution failures can hide any candidate; measurement
-        # gaps stay with the role family that owns the unmeasured file.
+        # Capture/attribution failures hide any candidate; measurement gaps
+        # stay with the owning role family.
         hidden = list(streams["attribution"] + streams["capture"]) + sorted(
             {gap for entry in snapshot.role_entries(*roles) for gap in entry.gaps}
         )
@@ -712,11 +698,9 @@ def find_owner_competition(
         for name in OWNER_CLASSES:
             for members in per_class[name]:
                 rule_candidates.append(_owner_candidate(snapshot, rule_id, name, members))
-        # An owner rule that could not parse a file, was handed graph evidence
-        # it could not read, or whose candidates could be hidden by capture
-        # failures, has not evaluated its classes. Unread owner discovery in
-        # this rule's own roles matters once a changed-side unit could pair
-        # against it; the cross-role scope bound can hide owners of any role.
+        # Parse failures, unreadable supplied graph evidence, and capture
+        # failures hide candidates; unread owner discovery matters once a
+        # changed-side unit could pair against it.
         owner_gaps = hidden + parse_gaps + list(snapshot.gitnexus_warnings)
         if any(unit["changed"] for unit in units):
             discovery = streams["baseline"] if "production" in roles else streams["baseline_roles"]
@@ -761,8 +745,11 @@ def _owner_candidate(
     regions = [
         {"path": member["path"], "role": member["role"], "language": member["language"],
          "displayLine": member.get("displayLine", member["line"]), "owner": str(member["name"]),
+         # Anchored on the resolved implementation line's content, not the
+         # name: a different implementation under one name is different debt.
          "contentAnchor": member.get("contentAnchor")
-         or anchor("owner", str(member["role"]), str(member["language"]), str(member["name"])),
+         or anchor("owner", str(member["role"]), str(member["language"]),
+                   str(member.get("anchorText") or member["name"])),
          "evidenceRole": "owner"}
         for member in members
     ]
@@ -788,8 +775,7 @@ _REPAIRS = ("deepen", "replace", "consolidate")
 
 
 def _captured_text(snapshot: EvaluationSnapshot, path: str, side: str) -> str | None:
-    """The captured text of one path on the base or candidate side. An
-    unchanged captured baseline file carries the same bytes on both sides."""
+    """The captured text of one path on the base or candidate side."""
     entry = snapshot.entry(path)
     if entry is not None:
         return entry.base_text if side == "base" else entry.current_text
@@ -800,8 +786,8 @@ def _captured_text(snapshot: EvaluationSnapshot, path: str, side: str) -> str | 
 
 
 def _anchor_line(text: str | None, ref: dict[str, object]) -> int | None:
-    """Where one owner reference resolves in captured text: an exact content
-    line, or a parsed symbol definition. Wildcards have nowhere to resolve."""
+    """Where one reference resolves in captured text: an exact content
+    line or a parsed symbol definition; wildcards resolve nowhere."""
     if text is None:
         return None
     content = ref.get("content")
@@ -819,8 +805,7 @@ def _anchor_line(text: str | None, ref: dict[str, object]) -> int | None:
 
 
 def _sides(snapshot: EvaluationSnapshot) -> list[tuple[str | None, str | None]]:
-    """Every captured surface as (base text, candidate text); an unchanged
-    captured baseline file carries the same bytes on both sides."""
+    """Every captured surface as (base text, candidate text)."""
     paths = {entry.path for entry in snapshot.entries}
     pairs = [(entry.base_text, entry.current_text) for entry in snapshot.entries]
     pairs += [(base.text, base.text) for base in snapshot.baseline
@@ -837,9 +822,8 @@ def _call_pattern(ref: dict[str, object]) -> re.Pattern[str] | None:
 
 
 def _still_referenced(snapshot: EvaluationSnapshot, ref: dict[str, object]) -> bool:
-    """Whether any candidate-tree surface still resolves to a superseded
-    symbol anchor: a caller, test, or test-support reference that survives
-    the deletion keeps the conflict alive."""
+    """Whether any candidate-tree surface still resolves the superseded
+    symbol: a surviving reference keeps the conflict alive."""
     symbol = ref.get("symbol")
     if not isinstance(symbol, str) or not symbol:
         return False
@@ -847,25 +831,47 @@ def _still_referenced(snapshot: EvaluationSnapshot, ref: dict[str, object]) -> b
     return any(current and pattern.search(current) for _, current in _sides(snapshot))
 
 
+def _function_spans(text: str) -> dict[str, str] | None:
+    try:
+        tree = ast.parse(text)
+    except (IndentationError, SyntaxError, SystemError, UnicodeError, ValueError):
+        return None
+    return {
+        node.name: ast.get_source_segment(text, node) or ""
+        for scope in [tree, *[item for item in tree.body if isinstance(item, ast.ClassDef)]]
+        for node in scope.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
 def _rewired_to_survivor(snapshot: EvaluationSnapshot, ref: dict[str, object], present) -> bool:
-    """Every affected surface must reach the survivor: a file that referenced
-    the superseded anchor on the base side and still exists must resolve a
-    reference to a surviving owner, or the repair merely deleted behavior."""
+    """Every affected surface must reach the survivor, per affected python
+    function (an unrelated neighbor proves nothing) and at file level where
+    no parser exists: a repair that only deletes behavior never resolves."""
     gone_pattern = _call_pattern(ref)
     survivor_patterns = [pattern for _, _, kept in present for pattern in [_call_pattern(kept)] if pattern]
     if gone_pattern is None or not survivor_patterns:
         return True
-    return all(
-        any(pattern.search(current) for pattern in survivor_patterns)
-        for base_text, current in _sides(snapshot)
-        if base_text and gone_pattern.search(base_text) and current
-    )
+
+    def reaches(text: str) -> bool:
+        return any(pattern.search(text) for pattern in survivor_patterns)
+
+    for base_text, current in _sides(snapshot):
+        if not (base_text and gone_pattern.search(base_text) and current):
+            continue
+        base_spans, current_spans = _function_spans(base_text), _function_spans(current)
+        affected = [name for name, segment in (base_spans or {}).items() if gone_pattern.search(segment)]
+        if base_spans is None or current_spans is None or not affected:
+            if not reaches(current):
+                return False
+            continue
+        if not all(reaches(current_spans.get(name) or current) for name in affected):
+            return False
+    return True
 
 
 def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> str | None:
-    """The reason this record cannot bind, or None when it validates. Every
-    check is structural and snapshot-bound; nothing here trusts prose, and a
-    record that fails leaves the finding active with rule incompleteness."""
+    """The reason this record cannot bind, or None. Every check is
+    structural and snapshot-bound; nothing here trusts prose."""
     if "invalidDocument" in record:
         return str(record["invalidDocument"])
     key = record.get("responsibilityKey")
@@ -923,10 +929,8 @@ def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> 
 
 
 def _path_known_unread(snapshot: EvaluationSnapshot, path: str) -> bool:
-    return any(
-        base.text is None and snapshot.renamed_to.get(base.path, base.path) == path
-        for base in snapshot.baseline
-    )
+    return any(base.text is None and snapshot.renamed_to.get(base.path, base.path) == path
+               for base in snapshot.baseline)
 
 
 def _apply_dispositions(
@@ -936,14 +940,11 @@ def _apply_dispositions(
     rule_candidates: list[Finding],
     scope_complete: bool,
 ) -> tuple[list[Finding], list[Finding], set[str], list[str]]:
-    """Validated records drive the state machine; everything else is a note.
-
-    same-responsibility confirms, and resolves only through the one-owner
-    predicate; distinct-authority resolves directly from candidate with
-    complete scope; temporary-coexistence stays visible debt. Partial
-    deletion, unresolved anchors, surviving references, and missing scope all
-    leave the warning active.
-    """
+    """Validated records drive the state machine; everything else is a
+    note. same-responsibility confirms and resolves only via the one-owner
+    predicate; distinct-authority resolves from candidate with complete
+    scope; temporary-coexistence stays visible debt. Partial deletion,
+    unresolved anchors, surviving references, and missing scope stay active."""
     applied: list[Finding] = []
     resolved: list[Finding] = []
     consumed: set[str] = set()
@@ -1006,8 +1007,8 @@ def _apply_dispositions(
 
 
 def _consumed(rule_candidates: list[Finding], present: list[tuple[str, int, dict[str, object]]]) -> set[str]:
-    """Mechanical candidates whose every owner region the record names: the
-    record-backed finding owns that pair, so the bare candidate retires."""
+    """Candidates whose every region the record names: the record-backed
+    finding owns that pair, so the bare candidate retires."""
     named = {(path, line) for path, line, _ in present}
     return {
         item.finding_id() for item in rule_candidates
@@ -1029,10 +1030,12 @@ def _record_finding(
         role = classification.role if classification else next(
             (base.role for base in snapshot.baseline if snapshot.renamed_to.get(base.path, base.path) == path), "unknown")
         language = classification.language if classification else "other"
+        resolved = (_captured_text(snapshot, path, "candidate") or "").splitlines()
+        content = resolved[line - 1].strip() if line <= len(resolved) else str(ref.get("symbol") or ref.get("content") or path)
         regions.append({
             "path": path, "role": role, "language": language, "displayLine": line,
             "owner": str(ref.get("symbol") or ref.get("content") or path),
-            "contentAnchor": anchor("owner", str(role), str(language), str(ref.get("symbol") or ref.get("content") or path)),
+            "contentAnchor": anchor("owner", str(role), str(language), content),
             "evidenceRole": "owner",
         })
     key = str(record["responsibilityKey"])

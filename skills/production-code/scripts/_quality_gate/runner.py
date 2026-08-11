@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import json
+from pathlib import Path
 
 from .checks import changed_file_failures, evaluate_growth, scan_quality_escapes
 from .git_scope import collect_scope, git_read
@@ -149,9 +148,8 @@ def check(
         "resolvedFindings": [finding.as_dict(snapshot.base_identity, snapshot.candidate_identity) for finding in owner_resolved],
         "checks": checks,
         "hardRules": {
-            # Hard rules are computed from blocker policy only. Every surviving
-            # duplication/owner rule is warning-only, so this key keeps its
-            # place without a blocker to derive from.
+            # Hard rules derive from blocker policy only; every surviving
+            # duplication/owner rule is warning-only.
             "noDuplication": {
                 "status": "not_evaluated",
                 "passed": None,
@@ -169,16 +167,14 @@ def check(
         },
         "errors": errors,
         "warnings": warnings,
-        # Retained projection until its documented consumer migrates; the
-        # lexical scorer that filled it is deleted.
+        # Retained until its documented consumer migrates; its scorer is gone.
         "gitnexusQueries": [],
     }
 
 
 def _disposition_records(repo: Path, dispositions_json: str) -> list[dict[str, object]]:
-    """Caller-supplied disposition records with their commits resolved to
-    trees, before the snapshot freezes. A record that is not an object, or
-    whose commits do not resolve, keeps its raw shape and fails structural
+    """Caller-supplied disposition records with their commits resolved
+    pre-freeze; a malformed record keeps its raw shape and fails structural
     validation downstream instead of vanishing here."""
     if not dispositions_json.strip():
         return []
