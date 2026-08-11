@@ -123,6 +123,20 @@ def duplicate_findings(payload: dict[str, object], rule: str = "") -> list[dict[
     ]
 
 
+EXACT_RULES = ("QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK", "QG54-DUPLICATE-BASELINE")
+
+# The schema couples the two facts, so one place knows the pairing: an absence
+# of findings alone proves nothing, because an incomplete rule produces one too.
+_RULE_STATES = {"passed": (True, "passed"), "finding": (True, "finding"), "incomplete": (None, "incomplete")}
+
+
+def assert_exact_rules(payload: dict[str, object], expected: dict[str, str]) -> None:
+    """Assert the state of each named exact rule, never a bare absence."""
+    for rule, state in expected.items():
+        item = check_named(payload, rule)
+        assert (item["passed"], item["status"]) == _RULE_STATES[state], (rule, state, item)
+
+
 def duplicate_regions(finding: dict[str, object]) -> set[tuple[str, str]]:
     return {(region["path"], region["evidenceRole"]) for region in finding["region"]["regions"]}
 
@@ -249,9 +263,10 @@ def test_unparseable_python_is_incomplete_not_duplicate(repo: Path) -> None:
     )
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
-    rule = check_named(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
-    assert rule["passed"] is None and rule["status"] == "incomplete", rule
-    assert any("src/broken.py" in gap and "parse" in gap for gap in rule["gaps"]), rule
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "incomplete"))
+    for rule in EXACT_RULES:
+        gaps = check_named(payload, rule)["gaps"]
+        assert any("src/broken.py" in gap and "parse" in gap for gap in gaps), (rule, gaps)
     assert code == 0, (code, payload["errors"])
 
 
@@ -274,6 +289,7 @@ def test_a_blank_line_inside_an_f_string_is_content_not_spacing(repo: Path) -> N
     write(repo / "src" / "right.py", helper("\n\n"))
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
     assert code == 0, (code, payload["errors"])
 
 
@@ -682,6 +698,9 @@ def test_repeated_added_block_is_one_grouped_warning(repo: Path) -> None:
     assert len(findings) == 1, json.dumps(payload["findings"], indent=2)
     assert [region["displayLine"] for region in findings[0]["region"]["regions"]] == [2, 15], findings[0]
     assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL"), payload["findings"]
+    assert_exact_rules(payload, {
+        "QG54-DUPLICATE-ADDED-BLOCK": "finding", "QG54-DUPLICATE-ADDED-SYMBOL": "passed",
+    })
     assert code == 0 and payload["ok"] is True, json.dumps(payload["errors"], indent=2)
 
 
@@ -722,6 +741,7 @@ def test_two_exact_added_symbols_warn_once_naming_both_regions(repo: Path) -> No
     # carries activeness in `status`, so ok stays true either way.
     assert finding["severity"] == "warning" and finding["passed"] is True, finding
     assert finding["status"] == "finding", finding
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
     assert duplicate_regions(finding) == {("src/left.py", "duplicate"), ("src/right.py", "duplicate")}, finding
     # Warning-only: an exact duplicate never fails the run, even when the
     # caller asks for warnings to be promoted.
@@ -748,6 +768,7 @@ def test_copy_of_retained_baseline_names_both_regions(repo: Path) -> None:
         ("tests/copy_helpers.py", "duplicate"),
         ("tests/owner_helpers.py", "retained-baseline"),
     }, findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
     assert code == 0 and payload["ok"] is True, json.dumps(payload["errors"], indent=2)
 
 
@@ -798,6 +819,13 @@ def _consolidation_row(repo: Path, candidate, removed, expected, name: str) -> N
         for region in duplicate_regions(finding)
     }
     assert regions == expected, (name, json.dumps(duplicate_findings(payload), indent=2))
+    # A cleared row must be cleared, and a firing row must be fully read: an
+    # incomplete rule reports no regions either way.
+    # Every row in this table clears or fires the BASELINE rule; the other two
+    # stay clean either way, so one map covers both branches.
+    states = dict.fromkeys(EXACT_RULES, "passed")
+    states["QG54-DUPLICATE-BASELINE"] = "finding" if expected else "passed"
+    assert_exact_rules(payload, states)
     assert code == 0 and payload["ok"] is True, (name, payload["errors"])
 
 
@@ -819,8 +847,7 @@ def test_varying_scaffolding_is_not_an_exact_duplicate(repo: Path) -> None:
     )
     write(repo / "tests" / "test_scenarios.py", "from src.base import load_attempts\n\n\n" + cases + "\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    for rule in ("QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK", "QG54-DUPLICATE-BASELINE"):
-        assert check_named(payload, rule)["passed"] is True, json.dumps(check_named(payload, rule), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
     assert code == 0, (code, payload["errors"])
 
 
@@ -830,15 +857,19 @@ def test_duplicate_identity_survives_insertion_and_rename(repo: Path) -> None:
     # path rename must not orphan a disposition against the same debt.
     write(repo / "tests" / "left_helpers.py", DUPLICATE_HELPER + "\n")
     write(repo / "tests" / "right_helpers.py", DUPLICATE_HELPER + "\n")
-    before = duplicate_findings(run_gate(repo, "--base-ref", "HEAD")[1], "QG54-DUPLICATE-ADDED-SYMBOL")[0]
+    payload_before = run_gate(repo, "--base-ref", "HEAD")[1]
+    assert_exact_rules(payload_before, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
+    before = duplicate_findings(payload_before, "QG54-DUPLICATE-ADDED-SYMBOL")[0]
     write(repo / "tests" / "left_helpers.py", "UNRELATED = 1\n\n\n" + DUPLICATE_HELPER + "\n")
     (repo / "tests" / "right_helpers.py").rename(repo / "tests" / "renamed_helpers.py")
-    after = duplicate_findings(run_gate(repo, "--base-ref", "HEAD")[1], "QG54-DUPLICATE-ADDED-SYMBOL")[0]
+    payload_after = run_gate(repo, "--base-ref", "HEAD")[1]
+    after = duplicate_findings(payload_after, "QG54-DUPLICATE-ADDED-SYMBOL")[0]
     assert before["findingId"] == after["findingId"], (before["findingId"], after["findingId"])
     assert before["region"]["contentAnchor"] == after["region"]["contentAnchor"]
     assert {region["path"] for region in after["region"]["regions"]} == {
         "tests/left_helpers.py", "tests/renamed_helpers.py",
     }, after["region"]["regions"]
+    assert_exact_rules(payload_after, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
 
 
 @with_repo
@@ -869,6 +900,9 @@ def test_a_retained_owner_claims_a_repeated_block_from_the_added_rule(repo: Path
         write(repo / "tests" / f"{name}_helpers.py", f"def {name}(config, attempt):\n{RETRY_BLOCK}\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-BLOCK"), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, {
+        "QG54-DUPLICATE-BASELINE": "finding", "QG54-DUPLICATE-ADDED-BLOCK": "passed",
+    })
     baseline = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
     assert len(baseline) == 1, json.dumps(duplicate_findings(payload), indent=2)
     # Exact multiplicity, not a set: one physical occurrence, one region.
@@ -900,6 +934,7 @@ def test_decorated_definitions_are_not_exact_duplicates(repo: Path) -> None:
     write(repo / "src" / "right.py", f"class R:\n    @staticmethod\n    def budget(self, config, attempt):\n{body}\n")
     _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL"), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "passed"})
 
     # A decorator that spans lines is still one decorator: only the real
     # parser knows where its list begins.
@@ -907,6 +942,7 @@ def test_decorated_definitions_are_not_exact_duplicates(repo: Path) -> None:
     write(repo / "src" / "right.py", f"class R:\n    @retry(\n        attempts=9,\n    )\n    def budget(self, config, attempt):\n{body}\n")
     _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert not duplicate_findings(payload, "QG54-DUPLICATE-ADDED-SYMBOL"), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "passed"})
 
     write(repo / "src" / "left.py", f"class L:\n    @property\n    def budget(self, config, attempt):\n{body}\n")
     write(repo / "src" / "right.py", f"class R:\n    @property\n    def budget(self, config, attempt):\n{body}\n")
@@ -917,6 +953,7 @@ def test_decorated_definitions_are_not_exact_duplicates(repo: Path) -> None:
     assert {(region["path"], region["displayLine"]) for region in findings[0]["region"]["regions"]} == {
         ("src/left.py", 2), ("src/right.py", 2),
     }, findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-ADDED-SYMBOL": "finding"})
     assert code == 0, (code, payload["errors"])
 
 
@@ -939,7 +976,7 @@ def test_a_block_never_spans_a_symbol_boundary(repo: Path) -> None:
         write(repo / "src" / f"{name}.py", f"def build_{name}(value):\n{body}\n\n\n{tail}\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
-    assert check_named(payload, "QG54-DUPLICATE-ADDED-BLOCK")["passed"] is not False, payload["checks"]
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
     assert code == 0, (code, payload["errors"])
 
 
@@ -959,6 +996,7 @@ def test_a_renamed_copy_of_a_retained_owner_is_still_a_copy(repo: Path) -> None:
         ("tests/copy_helpers.py", "duplicate"),
         ("tests/owner_helpers.py", "retained-baseline"),
     }, findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
     assert code == 0, (code, payload["errors"])
 
 
@@ -982,6 +1020,7 @@ def test_a_reformatted_signature_does_not_hide_a_copied_body(repo: Path) -> None
     assert [
         (region["path"], region["displayLine"]) for region in findings[0]["region"]["regions"]
     ] == [("tests/copy_helpers.py", 5), ("tests/owner_helpers.py", 2)], findings[0]["region"]["regions"]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
     assert code == 0, (code, payload["errors"])
 
 
@@ -1012,6 +1051,7 @@ def test_a_nested_decorator_belongs_to_the_body_that_contains_it(repo: Path) -> 
     )
     _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert not duplicate_findings(payload), json.dumps(duplicate_findings(payload), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
 
     # The same nested decorator is the same implementation, and is reported.
     write(
@@ -1022,6 +1062,7 @@ def test_a_nested_decorator_belongs_to_the_body_that_contains_it(repo: Path) -> 
     findings = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
     assert len(findings) == 1, json.dumps(duplicate_findings(payload), indent=2)
     assert [region["displayLine"] for region in findings[0]["region"]["regions"]] == [2, 2], findings[0]
+    assert_exact_rules(payload, {"QG54-DUPLICATE-BASELINE": "finding"})
     assert code == 0, (code, payload["errors"])
 
 
@@ -1133,8 +1174,7 @@ def test_separate_hunks_do_not_form_one_duplicate(repo: Path) -> None:
     )
     write(repo / "src" / "intact.py", "def build_identifier(candidate_value, fallback_value):\n" + "\n".join(SPLIT_LINES) + "\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    for rule in ("QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK"):
-        assert check_named(payload, rule)["passed"] is True, json.dumps(check_named(payload, rule), indent=2)
+    assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
     assert code == 0, json.dumps(payload["errors"], indent=2)
 
 
