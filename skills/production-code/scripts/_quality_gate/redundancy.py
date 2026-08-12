@@ -480,7 +480,7 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
 
 
 def _signature_weight(signature: tuple) -> int:
-    return sum(1 + _signature_weight(op[2]) for op in signature)
+    return sum((0 if op[0] == "part" else 1) + _signature_weight(op[2]) for op in signature)
 
 
 def _owner_functions(text: str) -> list[dict[str, object]] | None:

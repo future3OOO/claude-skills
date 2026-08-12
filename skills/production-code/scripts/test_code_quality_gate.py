@@ -761,6 +761,35 @@ def test_partition_boundaries_discriminate_lifecycles(repo: Path) -> None:
     assert code == 0, (code, payload["errors"])
 
 
+@with_repo
+def test_partition_wrappers_do_not_satisfy_operation_floor(repo: Path) -> None:
+    # Partition wrappers carry structure for signature equality, never
+    # weight: a two-operation if/else scaffold stays under the lifecycle
+    # floor no matter how many partitions enclose it.
+    scaffold = (
+        "def test_{n}_toggle():\n"
+        "    if flag('mode'):\n"
+        "        enable('mode')\n"
+        "    else:\n"
+        "        disable('mode')\n"
+    )
+    write(repo / "tests" / "test_left.py", scaffold.format(n="left"))
+    write(repo / "tests" / "test_right.py", scaffold.format(n="right"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "toggles")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("tests/test_left.py", "tests/test_right.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    lifecycle = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+                 if item["region"]["evidenceClass"] == "fixture-lifecycle"]
+    regions = [[(region["path"], region["displayLine"]) for region in item["region"]["regions"]]
+               for item in lifecycle]
+    assert regions == [], regions
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
 _RESOLVER_A = (
     "import os\n\n\ndef resolve_state_root():\n"
     "    override = os.environ.get('APP_STATE_ROOT')\n"
