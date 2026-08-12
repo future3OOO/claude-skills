@@ -799,9 +799,9 @@ _V1_FIELDS = frozenset((
 _REPAIRS = ("deepen", "replace", "consolidate")
 
 # Parent #54 decision (2026-08-12): resolution silences a warning, so it
-# requires a record the parent explicitly pinned — identifier AND digest,
-# verbatim from #54 comment 5251048442; confirmation only adds visible debt.
-# Extending this table is a parent-approved code change, like promotion.
+# requires a parent-pinned record — identifier verbatim from #54 comment
+# 5251048442; digests computed over the v1 shape blessed at 5259793024, one
+# per pinned case. Extending this table is parent-approved code, like promotion.
 _PINNED_VALIDATION_IDENTIFIER = "future3OOO/claude-skills#54 comment 5251048442"
 _PINNED_VALIDATION_DIGESTS = frozenset({
     "08f61bed0d5df8b9435a38b1fb1712530bebb063d7c9b457dbe85770f97a016e",
