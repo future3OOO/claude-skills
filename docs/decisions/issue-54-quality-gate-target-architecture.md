@@ -103,7 +103,16 @@ projections. It retains `checks`, `hardRules`, `errors`, `warnings`, and
 Responsibility dispositions are a second external data Interface, even though
 they do not change the Python signature. #77 owns the exact carrier/path and
 must version it; this decision does not mandate a candidate-tree filename.
-The v1 data contract must carry:
+
+> Parent amendment (#54 issuecomment-5259793024, 2026-08-12): v1 is exactly
+> the field set the four parent-pinned record digests were computed over —
+> ruleId, responsibilityKey, disposition, repair where applicable, base,
+> candidate, owner anchors, survivor where applicable, parentRecord, and
+> schemaVersion, with duplicate-reference rejection validation-side. The
+> wider list below is v2 territory requiring a parent re-pin of the digest
+> table; anything v1 cannot express leaves the finding active.
+
+The full data contract must carry:
 
 - its schema version and the evaluated base/candidate identities;
 - the target finding ID and content anchors, never wildcard/path-only claims;

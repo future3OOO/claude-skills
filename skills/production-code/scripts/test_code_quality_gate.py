@@ -85,23 +85,20 @@ def growth_totals(payload: dict[str, object]) -> dict[str, object]:
     return payload["evaluation"]["growth"]
 
 
-REUSE_RULE = "QG-LEGACY-REUSE-ADVISORY"
-
-
 def growth_finding(payload: dict[str, object]) -> dict[str, object]:
     findings = [item for item in payload["findings"] if item["ruleId"] == "QG54-GROWTH-CUMULATIVE"]
     assert len(findings) == 1, findings
     return findings[0]
 
 
-def reuse_finding(payload: dict[str, object]) -> dict[str, object]:
-    findings = [item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-REUSE-ADVISORY"]
+def owner_rule_finding(payload: dict[str, object], rule: str) -> dict[str, object]:
+    """One owner rule's per-evaluation state finding, never a candidate."""
+    findings = [
+        item for item in payload["findings"]
+        if item["ruleId"] == rule and item["region"]["scope"] == "evaluation"
+    ]
     assert len(findings) == 1, findings
     return findings[0]
-
-
-def reuse_matches(payload: dict[str, object]) -> list[dict[str, object]]:
-    return reuse_finding(payload)["evidence"]["matches"]
 
 
 def check_named(payload: dict[str, object], name: str) -> dict[str, object]:
@@ -404,191 +401,14 @@ def test_huge_fixture_growth_stays_warning_only(repo: Path) -> None:
     assert payload["ok"] is True
 
 
-# Each row is one reuse-scoring behaviour: "no-match" rows prove the named
-# shape never reaches the reuse evidence; match rows prove detection AND that
-# the finding names the real owner.
-#
-# name, baseline files, deleted after commit, candidate files, staged,
-# extra gate args (an "@name" argument resolves to a file inside the repo),
-# expected verdict: "pass" | "no-match" | (match key, required value).
 _OWNER = "def normalize_user_id(value: str) -> str:\n    return value.strip().lower()\n"
-_LOOP = (
-    "def import_items(items: list[str]) -> list[str]:\n"
-    "    seen = set()\n"
-    "    result = []\n"
-    "    for item in items:\n"
-    "        if item not in seen:\n"
-    "            seen.add(item)\n"
-    "            result.append(item)\n"
-    "    return result\n"
-)
-_REUSE_ROWS = (
-    ("reimplemented-helper", {"src/ids.py": _OWNER}, (), {"src/users.py": _OWNER},
-     False, (), ("existingFile", "src/ids.py")),
-    ("reimplemented-dedupe-loop",
-     {"src/collections.py": _LOOP.replace("import_items", "dedupe_items").replace("result", "out")},
-     (), {"src/importer.py": _LOOP}, False, (), ("existingSymbol", "dedupe_items")),
-    ("deleted-owner-is-not-a-reuse-candidate",
-     {"src/collections.py": "def dedupe_items(items: list[str]) -> list[str]:\n"
-      "    seen = set()\n"
-      "    return [item for item in items if item not in seen and not seen.add(item)]\n"},
-     ("src/collections.py",), {"src/importer.py": _LOOP}, False, (), "no-match"),
-    ("single-token-cross-domain-suppressed",
-     {"api/contracts.py": "def _parse_limit(value: str) -> int:\n    return int(value)\n"}, (),
-     {"workers/cli.py": "def run(value: str) -> str:\n    parsed = value.split(':')\n    return parsed[0]\n"},
-     False, (), "no-match"),
-    ("generic-serializer-name-is-not-evidence",
-     {"src/existing.py": "class Existing:\n    def as_dict(self) -> dict[str, object]:\n        return {'existing': True}\n"},
-     (), {"src/candidate.py": "class Candidate:\n    def as_dict(self) -> dict[str, object]:\n        return {'candidate': self.__class__.__name__}\n"},
-     False, (), "no-match"),
-    # pytest discovers test_*.py with no tests/ directory involved, so the
-    # fixtures inside one are not a second implementation of the reader.
-    ("pytest-named-module-is-test-source",
-     {"pkg/loader.py": "def read_current(path: str) -> str:\n    return open(path).read()\n"}, (),
-     {"pkg/test_loader.py": "def test_reads(tmp_path) -> None:\n"
-      "    write(tmp_path / 'a.py', 'def read_current(p): return open(p).read()')\n    assert True\n"},
-     False, (), "no-match"),
-    # Prose is not a second implementation; the .py change in the same diff is
-    # what puts the committed reader into the existing-symbol index at all.
-    ("comment-prose-is-not-a-risky-block",
-     {"skills/gate/scripts/context.py": "def read_current(path: str) -> str:\n    return open(path).read()\n"}, (),
-     {"skills/advisor/scripts/ask.sh": "#!/usr/bin/env bash\n"
-      "# Run from the canonical root: the delegate must resolve and read there.\nexec \"$@\"\n",
-      "skills/advisor/scripts/state.py": "def slug() -> str:\n    return 'x'\n"},
-     False, (), "no-match"),
-    ("action-only-wait-helper-suppressed",
-     {"src/waits.py": "def wait_for_tapi_authenticated_signal(page):\n    return page.url\n"}, (),
-     {"src/property_tree.py": "def wait_for_property_tree_authenticated_signal(page):\n    return page.url\n"},
-     False, (), "no-match"),
-    ("calling-the-existing-helper-passes", {"src/ids.py": _OWNER}, (),
-     {"src/users.py": "from src.ids import normalize_user_id\n\n"
-      "def import_user(value: str) -> str:\n    return normalize_user_id(value)\n"},
-     False, (), "pass"),
-    ("move-refactor-passes", {"src/ids.py": _OWNER}, ("src/ids.py",),
-     {"src/identity.py": _OWNER}, False, (), "pass"),
-    ("generic-name-alone-never-fails",
-     {"src/cli.py": "def handler(event: str) -> str:\n    return event\n"}, (),
-     {"src/web.py": "def handler(request: str) -> str:\n    return request\n"}, False, (), "pass"),
-    ("test-helper-is-not-reuse-evidence", {"tests/helpers.py": _OWNER}, (),
-     {"src/users.py": _OWNER}, False, (), "pass"),
-    ("repo-context-packet-boosts-confidence",
-     {"lib/users.py": "def normalize_account(value: str) -> str:\n    return value.strip().lower()\n"}, (),
-     {"app/users.py": "def normalize_account_record(value: str) -> str:\n    return value.strip().lower()\n",
-      "packet.txt": "<top_targets>\n<file path=\"lib/users.py\" />\n</top_targets>\n"},
-     False, ("--repo-context-packet", "@packet.txt"), ("existingFile", "lib/users.py")),
-    ("gitnexus-context-boosts-confidence",
-     {"lib/orders.py": "def resolve_order(value: str) -> str:\n    return value.strip()\n"}, (),
-     {"app/orders.py": "def resolve_order_key(value: str) -> str:\n    return value.strip()\n",
-      "gitnexus.json": json.dumps({"symbols": [{"name": "resolve_order", "file": "lib/orders.py",
-                                                "callers": ["checkout"], "processes": ["order-import"]}]})},
-     False, ("--gitnexus-context-json", "@gitnexus.json"), ("existingSymbol", "resolve_order")),
-    # A staged new file has no baseline, so its own definition line must not be
-    # read as a nearby call that suppresses its reuse match.
-    ("staged-only-reimplementation-detected", {"src/ids.py": _OWNER}, (),
-     {"src/users.py": _OWNER}, True, ("--base-ref", "HEAD", "--staged-only"),
-     ("existingFile", "src/ids.py")),
-    # In a new Python file an unqualified same-name call binds to the local
-    # definition, so only a qualified call proves delegation to the owner;
-    # a reimplementation that merely calls itself elsewhere proves nothing.
-    ("one-line-wrapper-delegates", {"src/ids.py": _OWNER}, (),
-     {"src/oneline.py": "from src import ids\n\n\n"
-      "def normalize_user_id(value: str) -> str: return ids.normalize_user_id(value)\n"},
-     True, ("--base-ref", "HEAD", "--staged-only"), "no-match"),
-    ("multi-line-wrapper-delegates", {"src/ids.py": _OWNER}, (),
-     {"src/adapter.py": "from src import ids\n\n\n"
-      "def normalize_user_id(value: str) -> str:\n    return ids.normalize_user_id(value.strip())\n"},
-     True, ("--base-ref", "HEAD", "--staged-only"), "no-match"),
-    ("self-call-is-not-delegation", {"src/ids.py": _OWNER}, (),
-     {"src/copycat.py": _OWNER + "\n\ndef ingest(value: str) -> str:\n    return normalize_user_id(value)\n"},
-     True, ("--base-ref", "HEAD", "--staged-only"), ("existingFile", "src/ids.py")),
-    # A one-line non-Python wrapper delegates on its own declaration line: the
-    # qualified owner call there is delegation evidence, while a bare
-    # declaration token alone still never suppresses its own match.
-    ("js-one-line-wrapper-delegates",
-     {"src/ids.js": "export function normalizeUserId(value) {\n  return value.trim().toLowerCase();\n}\n"}, (),
-     {"src/wrapper.js": "import * as ids from \"./ids.js\";\nexport function normalizeUserId(v) { return ids.normalizeUserId(v); }\n"},
-     True, ("--base-ref", "HEAD", "--staged-only"), "no-match"),
-    # Owner scope is chosen by the candidates, not by every changed file: an
-    # unrelated no-candidate edit in another top-level area must not pull that
-    # area's owners into scoring range.
-    ("unrelated-edit-does-not-widen-owner-scope",
-     {"workers/util.py": "def resolve_order_key(value: str) -> str:\n    return value.strip()\n",
-      "workers/notes.py": "NOTES = 1\n"}, (),
-     {"api/new.py": "def resolve_order_key(value: str) -> str:\n    return value.strip()\n",
-      "workers/notes.py": "NOTES = 2\n"},
-     False, (), "no-match"),
-    # Appending a same-named definition to an already tracked file is a
-    # reimplementation, not delegation: the declaration's own bare token must
-    # never read as a nearby call that suppresses its reuse match.
-    ("same-name-appended-to-existing-file-detected",
-     {"src/ids.py": _OWNER, "src/users.py": "USERS: list[str] = []\n"}, (),
-     {"src/users.py": "USERS: list[str] = []\n\n" + _OWNER},
-     False, (), ("existingFile", "src/ids.py")),
-    # Root-level files share the repository root as their directory: an owner
-    # beside the candidate at the top level is inside the discovery scope.
-    ("root-level-owner-detected", {"helpers.py": _OWNER}, (),
-     {"main.py": _OWNER}, False, (), ("existingFile", "helpers.py")),
-    # A same-named bare call is recursion into the candidate itself in any
-    # language; only a qualified owner call proves delegation.
-    ("js-self-recursion-is-not-delegation",
-     {"src/ids.js": "export function normalizeUserId(value) {\n  return value.trim().toLowerCase();\n}\n"}, (),
-     {"src/walk.js": "export function normalizeUserId(node) {\n  if (node.child) {\n    return normalizeUserId(node.child);\n  }\n  return node.value.trim().toLowerCase();\n}\n"},
-     False, (), ("existingFile", "src/ids.js")),
-)
-
-
-def test_reuse_scoring_verdict_holds_for_every_behaviour() -> None:
-    for name, baseline, gone, candidate, staged, extra, expect in _REUSE_ROWS:
-        in_repo(lambda repo, b=baseline, g=gone, c=candidate, s=staged, x=extra, e=expect, label=name:
-                _reuse_row(repo, b, g, c, s, x, e, label))
-
-
-def _reuse_row(repo: Path, baseline, gone, candidate, staged, extra, expect, name: str) -> None:
-    for path, text in baseline.items():
-        write(repo / path, text)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "baseline")
-    for path in gone:
-        (repo / path).unlink()
-    for path, text in candidate.items():
-        write(repo / path, text)
-    if staged:
-        git(repo, "add", "-A")
-    args = tuple(str(repo / item[1:]) if item.startswith("@") else item for item in extra)
-    code, payload, _ = run_gate(repo, *args)
-    if expect in ("pass", "no-match"):
-        assert code == 0 and payload["ok"] is True, (name, code, payload["errors"])
-        if expect == "no-match":
-            assert reuse_matches(payload) == [], (name, reuse_matches(payload))
-    else:
-        key, value = expect
-        assert code == 2, (name, code, payload["errors"])
-        assert payload["hardRules"]["noDuplication"]["passed"] is False, (name, payload["hardRules"])
-        assert any(match[key] == value for match in reuse_matches(payload)), (name, reuse_matches(payload))
-
-
-@with_repo
-def test_same_file_related_helper_warns_but_function_edit_passes(repo: Path) -> None:
-    write(repo / "src" / "users.py", "def normalize_user(value: str) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "helper")
-    with (repo / "src" / "users.py").open("a", encoding="utf-8") as handle:
-        handle.write("\ndef normalize_user_record(value: str) -> str:\n    return value.strip().lower()\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert reuse_matches(payload)[0]["severity"] == "warning"
-    assert reuse_matches(payload)[0]["existingFile"] == "src/users.py"
-    write(repo / "src" / "users.py", "def normalize_user(value: str) -> str:\n    return value.strip().casefold()\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
 
 
 @with_repo
 def test_completeness_scopes_are_rule_specific(repo: Path) -> None:
-    # An unread reuse owner is unknown scope for reuse scoring only: growth
-    # keeps its measured claim, and a candidate-free change stays complete
-    # even for reuse.
+    # An owner file the capture bound never read is unknown scope for the
+    # owner rule only once a changed-side unit could pair against it: growth
+    # keeps its measured claim, and a unit-free change stays complete.
     write(repo / "src" / "big.py", "# pad\n" * 130000)
     write(repo / "src" / "ids.py", _OWNER)
     git(repo, "add", ".")
@@ -597,73 +417,37 @@ def test_completeness_scopes_are_rule_specific(repo: Path) -> None:
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert code == 0, (code, payload["errors"])
     assert growth_finding(payload)["completeness"]["complete"] is True, growth_finding(payload)["completeness"]
-    assert reuse_finding(payload)["status"] == "incomplete", reuse_finding(payload)
+    gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert any("big.py" in gap for gap in gaps), gaps
 
     write(repo / "src" / "new.py", "NOTES = 2\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert code == 0, (code, payload["errors"])
-    assert reuse_finding(payload)["status"] == "passed", reuse_finding(payload)
+    gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert not any("big.py" in gap for gap in gaps), gaps
 
 
 @with_repo
 def test_completeness_follows_each_rule_own_role_scope(repo: Path) -> None:
-    # An unmeasured test blob is inside the exact rules' scope, because they
-    # read test implementations, and outside the production-only reuse
-    # advisory's. Widening one rule's roles must not dirty the other's.
+    # An unmeasured, unparseable test blob is inside the exact and TEST owner
+    # rules' scope and outside the production owner rule's. Widening one
+    # rule's roles must not dirty the other's.
     (repo / "tests").mkdir()
     (repo / "tests" / "blob.py").write_bytes(b"A = 1\x00\n")
     write(repo / "src" / "app.py", "VALUE = 1\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    exact = check_named(payload, "QG54-DUPLICATE-ADDED-SYMBOL")
     escapes = check_named(payload, "no-quality-escapes")
-    assert exact["status"] == "incomplete", exact
     assert escapes["status"] == "incomplete", escapes
-    assert reuse_finding(payload)["status"] == "passed", reuse_finding(payload)
+    assert_exact_rules(payload, {
+        "QG54-DUPLICATE-ADDED-SYMBOL": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "incomplete",
+    })
+    # Role separation shows in the gap sets: the blob dirties the TEST rule's
+    # scope while the production rule carries only the universal graph gap.
+    assert any("blob.py" in gap for gap in owner_rule_finding(payload, "QG54-OWNER-COMPETITION-TEST")["completeness"]["gaps"])
+    production_gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert production_gaps == ["no snapshot-bound external graph evidence: caller/callee scope is unestablished"], production_gaps
     assert code == 0, (code, payload["errors"])
-
-
-@with_repo
-def test_reuse_evidence_is_never_silently_truncated(repo: Path) -> None:
-    # 35 confirmed reimplementations must serialize as 35: capped evidence
-    # under completeness=true would hide confirmed violations.
-    owners = "".join(f"def normalize_thing_{i}(value):\n    return value.strip().lower()\n\n" for i in range(35))
-    write(repo / "src" / "owners.py", owners)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "owners")
-    write(repo / "src" / "copies.py", owners)
-    code, payload, _ = run_gate(repo)
-    assert code == 2, (code, payload["errors"])
-    assert len(reuse_matches(payload)) == 35, len(reuse_matches(payload))
-
-
-@with_repo
-def test_multiline_header_identity_moves_with_the_body(repo: Path) -> None:
-    # A multiline signature is part of the definition, not its boundary: the
-    # anchored content must include the body, so editing the body moves the
-    # match ID even when the closing paren shares the declaration's indent.
-    write(repo / "src" / "ids.py", "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.strip().lower()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "owner")
-    write(repo / "src" / "a.py", "def normalize_user_id(\n    value,\n):\n    return value.strip().lower()\n")
-    _, payload, _ = run_gate(repo)
-    before = {m["newFile"]: m["findingId"] for m in reuse_matches(payload)}
-    write(repo / "src" / "a.py", "def normalize_user_id(\n    value,\n):\n    return value.casefold()\n")
-    _, payload, _ = run_gate(repo)
-    after = {m["newFile"]: m["findingId"] for m in reuse_matches(payload)}
-    assert after["src/a.py"] != before["src/a.py"], (before, after)
-
-
-@with_repo
-def test_ambiguous_reuse_warns_with_gitnexus_query(repo: Path) -> None:
-    write(repo / "lib" / "orders.py", "def resolve_order(value: str) -> str:\n    return value.strip()\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "order helper")
-    write(repo / "lib" / "legacy.py", "def resolve_order_record(value: str) -> str:\n    return value.strip()\n")
-    code, payload, _ = run_gate(repo)
-    assert code == 0
-    assert payload["ok"] is True
-    assert reuse_matches(payload)[0]["severity"] == "warning"
-    assert payload["gitnexusQueries"]
 
 
 POLLING_BLOCK = "\n".join(
@@ -848,6 +632,1056 @@ def test_varying_scaffolding_is_not_an_exact_duplicate(repo: Path) -> None:
     write(repo / "tests" / "test_scenarios.py", "from src.base import load_attempts\n\n\n" + cases + "\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
     assert_exact_rules(payload, dict.fromkeys(EXACT_RULES, "passed"))
+    assert code == 0, (code, payload["errors"])
+
+
+def owner_findings(payload: dict[str, object], rule: str) -> list[dict[str, object]]:
+    """One finding per owner-competition candidate, optionally one rule's."""
+    return [
+        item
+        for item in payload["findings"]
+        if item["ruleId"].startswith("QG54-OWNER-COMPETITION-")
+        and item["region"]["scope"] == "candidate"
+        and (not rule or item["ruleId"] == rule)
+    ]
+
+
+_LIFECYCLE_ROWS = (
+    ("alpha", "src/alpha.py", "value = 1", "2", "is False"),
+    ("beta", "src/beta.py", "value = 2", "0", "is True"),
+    ("gamma", "config/gamma.py", "flag = 3", "2", "is False"),
+    ("delta", "src/delta.py", "flag = 4", "0", "is True"),
+    ("epsilon", "lib/epsilon.py", "count = 5", "2", "is False"),
+)
+
+# Five scenario tests owning one write -> run -> assert lifecycle through the
+# same executor, varying only payload and expected-value slots — the pinned
+# case-R shape. Helpers are same-file so every callee anchor resolves locally.
+_LIFECYCLE_SCAFFOLDS = "\n".join((
+    "import json",
+    "import subprocess",
+    "from pathlib import Path",
+    "",
+    "",
+    "def write(path, text):",
+    "    path.parent.mkdir(parents=True, exist_ok=True)",
+    "    path.write_text(text)",
+    "",
+    "",
+    "def run_gate(repo):",
+    "    result = subprocess.run(['gate', 'check'], cwd=repo, capture_output=True, text=True)",
+    "    return result.returncode, json.loads(result.stdout or '{}')",
+    "",
+    "",
+    "def with_repo(body):",
+    "    body(Path('/tmp/fixture'))",
+    "",
+    "",
+    "\n\n\n".join(
+        "\n".join((
+            f"def test_{name}_verdict():",
+            "    def body(repo):",
+            f"        write(repo / '{path}', '{payload}\\n')",
+            "        code, payload = run_gate(repo)",
+            f"        assert code == {code}",
+            f"        assert payload['ok'] {verdict}",
+            "    with_repo(body)",
+        ))
+        for name, path, payload, code, verdict in _LIFECYCLE_ROWS
+    ),
+    "",
+))
+
+
+@with_repo
+def test_repeated_inline_scaffolds_are_one_owner_candidate(repo: Path) -> None:
+    # Varying literals, scenarios, and expected effects do not suppress the
+    # candidate when the resolved layer, callees, and ordered lifecycle
+    # signature match; and no duplicate finding is required for it.
+    write(repo / "tests" / "test_lifecycle.py", _LIFECYCLE_SCAFFOLDS)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "five scaffolds")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    bound = graph_evidence(base, run(["git", "rev-parse", "HEAD"], repo).stdout.strip(), ("tests/test_lifecycle.py",))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    names = {item["name"] for item in payload["checks"]}
+    assert "QG54-OWNER-COMPETITION-TEST" in names, sorted(names)
+    assert_exact_rules(payload, {**dict.fromkeys(EXACT_RULES, "passed"), "QG54-OWNER-COMPETITION-TEST": "finding"})
+    candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+    assert len(candidates) == 1, candidates
+    finding = candidates[0]
+    assert finding["state"] == "candidate", finding
+    expected = [
+        ("tests/test_lifecycle.py", line_no)
+        for line_no, line in enumerate(_LIFECYCLE_SCAFFOLDS.splitlines(), 1)
+        if line.startswith("def test_")
+    ]
+    assert len(expected) == 5, expected
+    regions = [(region["path"], region["displayLine"]) for region in finding["region"]["regions"]]
+    assert regions == expected, (regions, expected)
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+
+
+def assert_no_lifecycle_candidates(repo: Path, base: str, bound: Path) -> None:
+    """The shared negative tail: zero fixture-lifecycle candidates, exact rule state."""
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    lifecycle = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+                 if item["region"]["evidenceClass"] == "fixture-lifecycle"]
+    regions = [[(region["path"], region["displayLine"]) for region in item["region"]["regions"]]
+               for item in lifecycle]
+    assert regions == [], regions
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_partition_boundaries_discriminate_lifecycles(repo: Path) -> None:
+    # An order-preserving transfer across the try/else boundary changes the
+    # exception scope, so the two scaffolds are different lifecycles and
+    # never one fixture-lifecycle candidate.
+    write(repo / "tests" / "test_partitions.py", (
+        "def test_finalize_guarded():\n"
+        "    write_marker('r', 'armed')\n"
+        "    stage = prepare('cfg')\n"
+        "    try:\n"
+        "        apply(stage)\n"
+        "        finalize(stage)\n"
+        "    except OSError:\n"
+        "        rollback(stage)\n\n\n"
+        "def test_finalize_unguarded():\n"
+        "    write_marker('r', 'armed')\n"
+        "    stage = prepare('cfg')\n"
+        "    try:\n"
+        "        apply(stage)\n"
+        "    except OSError:\n"
+        "        rollback(stage)\n"
+        "    else:\n"
+        "        finalize(stage)\n"
+    ))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "partition scaffolds")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("tests/test_partitions.py",))
+    assert_no_lifecycle_candidates(repo, base, bound)
+
+
+@with_repo
+def test_partition_wrappers_do_not_satisfy_operation_floor(repo: Path) -> None:
+    # Partition wrappers carry structure for signature equality, never
+    # weight: a two-operation if/else scaffold stays under the lifecycle
+    # floor no matter how many partitions enclose it.
+    scaffold = (
+        "def test_{n}_toggle():\n"
+        "    if flag('mode'):\n"
+        "        enable('mode')\n"
+        "    else:\n"
+        "        disable('mode')\n"
+    )
+    write(repo / "tests" / "test_left.py", scaffold.format(n="left"))
+    write(repo / "tests" / "test_right.py", scaffold.format(n="right"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "toggles")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("tests/test_left.py", "tests/test_right.py"))
+    assert_no_lifecycle_candidates(repo, base, bound)
+
+
+@with_repo
+def test_unreferenced_nested_helpers_stay_with_their_owner(repo: Path) -> None:
+    # Facts and weight belong to the scope that owns them: two unrelated
+    # outer functions containing similar never-referenced nested helpers
+    # share no owner evidence. The referenced with_repo(body) scaffold shape
+    # stays a lifecycle candidate and is pinned by the scaffold tests above.
+    outer = (
+        "def {name}(config):\n"
+        "    def resolve_defaults():\n"
+        "        root = os.environ.get('APP_STATE_ROOT')\n"
+        "        home = os.environ.get('APP_HOME')\n"
+        "        return root or home\n"
+        "    return {result}\n"
+    )
+    write(repo / "src" / "exporter.py", "import os\n\n\n" + outer.format(name="export_report", result="config['report']"))
+    write(repo / "src" / "importer.py", "import os\n\n\n" + outer.format(name="import_report", result="config['import']"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "unrelated outers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/exporter.py", "src/importer.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    candidates = [(item["region"]["evidenceClass"],
+                   [(region["path"], region["displayLine"]) for region in item["region"]["regions"]])
+                  for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert candidates == [], candidates
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_changed_file_without_units_still_needs_coverage(repo: Path) -> None:
+    # Changed-surface completeness comes from the changed role entries, not
+    # from what the extractor could decompose: a changed module with only
+    # module-level boundary reads still needs graph coverage.
+    write(repo / "src" / "settings.py",
+          "import os\n\nSTATE_ROOT = os.environ.get('APP_STATE_ROOT')\nHOME = os.environ.get('APP_HOME')\n")
+    write(repo / "src" / "other.py", "import os\n\n\ndef untouched():\n    return os.environ.get('APP_CACHE')\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "settings")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    partial = graph_evidence(base, head, ("src/other.py",))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(partial))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("src/settings.py" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+
+    full = graph_evidence(base, head, ("src/other.py", "src/settings.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(full))
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_partition_roles_discriminate_bare_except_and_finally(repo: Path) -> None:
+    # Partition role is lifecycle identity: rollback on error only (bare
+    # except) and rollback always (finally) never group, even with matching
+    # operation sequences and empty headers.
+    scaffold = (
+        "def test_{n}_cleanup():\n"
+        "    write_marker('r', 'armed')\n"
+        "    stage = prepare('cfg')\n"
+        "    try:\n"
+        "        apply(stage)\n"
+        "    {clause}:\n"
+        "        rollback(stage)\n"
+    )
+    write(repo / "tests" / "test_left.py", scaffold.format(n="guarded", clause="except"))
+    write(repo / "tests" / "test_right.py", scaffold.format(n="always", clause="finally"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "cleanups")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("tests/test_left.py", "tests/test_right.py"))
+    assert_no_lifecycle_candidates(repo, base, bound)
+
+
+@with_repo
+def test_a_dead_helper_chain_activates_nothing(repo: Path) -> None:
+    # Activation flows through nesting recursion into referenced defs, never
+    # through references living only inside sibling definitions: a helper
+    # referenced solely from an unreferenced sibling helper stays dead, so
+    # unrelated outers carrying the same dead chain share no lifecycle.
+    outer = (
+        "def {name}(config):\n"
+        "    def resolve_defaults():\n"
+        "        root = os.environ.get('APP_STATE_ROOT')\n"
+        "        home = os.environ.get('APP_HOME')\n"
+        "        return root or home\n"
+        "    def probe_state():\n"
+        "        return resolve_defaults()\n"
+        "    return {result}\n"
+    )
+    write(repo / "src" / "exporter.py", "import os\n\n\n" + outer.format(name="export_report", result="config['report']"))
+    write(repo / "src" / "importer.py", "import os\n\n\n" + outer.format(name="import_report", result="config['import']"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "dead chains")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/exporter.py", "src/importer.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    candidates = [(item["region"]["evidenceClass"],
+                   [(region["path"], region["displayLine"]) for region in item["region"]["regions"]])
+                  for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert candidates == [], candidates
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
+_RESOLVER_A = (
+    "import os\n\n\ndef resolve_state_root():\n"
+    "    override = os.environ.get('APP_STATE_ROOT')\n"
+    "    return override or os.environ.get('APP_HOME', '/var') + '/state'\n"
+)
+_RESOLVER_FILES = ("src/state.py", "src/advisor.py")
+_RESOLVER_B = (
+    "import os\n\n\ndef advisor_state_dir():\n"
+    "    root = os.environ.get('APP_STATE_ROOT') or os.environ.get('APP_HOME', '/var')\n"
+    "    return root + '/advisor'\n"
+)
+
+
+def state_root_record(**fields) -> dict[str, object]:
+    """The manifest-shaped record for the two-resolver fixture, one owner."""
+    return {
+        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
+        "responsibilityKey": "app-state-root-location",
+        "disposition": "same-responsibility",
+        "repair": "consolidate",
+        "owners": [
+            {"path": "src/state.py", "symbol": "resolve_state_root"},
+            {"path": "src/advisor.py", "symbol": "advisor_state_dir"},
+        ],
+        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
+        **fields,
+    }
+
+
+def stamp_records(records: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Issuance emulation: v1 schema stamped and each record's digest
+    computed over its canonical content, unless the record already carries
+    explicit (possibly wrong-on-purpose) trust fields."""
+    stamped = []
+    for record in records:
+        record = {"schemaVersion": 1, **record}
+        if "validationRoot" not in record:
+            canonical = json.dumps(record, sort_keys=True)
+            record["validationRoot"] = {
+                "identifier": record.get("parentRecord", ""),
+                "digest": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            }
+        stamped.append(record)
+    return stamped
+
+
+def write_disposition(repo: Path, records: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Records at the fixed out-of-tree carrier: a git-dir path is never part
+    of any candidate tree, so the provenance is structural."""
+    stamped = stamp_records(records)
+    located = run(["git", "rev-parse", "--git-path", "qg54-dispositions.json"], repo).stdout.strip()
+    carrier = Path(located) if os.path.isabs(located) else repo / located
+    carrier.parent.mkdir(parents=True, exist_ok=True)
+    carrier.write_text(json.dumps({"records": stamped}), encoding="utf-8")
+    return stamped
+
+
+def graph_evidence(base: str, candidate: str, files: tuple = ()) -> Path:
+    """Snapshot-bound external graph evidence OUTSIDE the evaluated repo,
+    carrying caller/callee symbol results for the named files."""
+    document = Path(tempfile.mkdtemp(prefix="graph-evidence-")) / "graph.json"
+    document.write_text(json.dumps({
+        "base": base, "candidate": candidate,
+        "symbols": [{"name": Path(item).stem, "file": item, "callers": []} for item in files],
+    }), encoding="utf-8")
+    return document
+
+
+def two_resolvers(repo: Path) -> tuple[str, str]:
+    """The committed two-file competing-resolver fixture; returns (base, head)."""
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    return (run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip(),
+            run(["git", "rev-parse", "HEAD"], repo).stdout.strip())
+
+
+@with_repo
+def test_absent_graph_evidence_leaves_caller_callee_scope_unestablished(repo: Path) -> None:
+    # Parent #54 decision (2026-08-12): an absent graph input cannot establish
+    # complete caller/callee scope, and the snapshot index is not a
+    # substitute. Bound evidence restores completeness; unbound or stale
+    # evidence does not.
+    base, head = two_resolvers(repo)
+
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "incomplete",
+    })
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("graph evidence" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert code == 0, (code, payload["errors"])
+
+    bound = graph_evidence(base, head, _RESOLVER_FILES)
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "finding",
+        "QG54-OWNER-COMPETITION-TEST": "passed",
+    })
+
+    stale = graph_evidence(base, base)
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(stale))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert rule["status"] == "incomplete", rule
+    assert any("graph evidence" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_scalar_relationship_values_are_not_graph_coverage(repo: Path) -> None:
+    # A relationship key must hold the provider's list-shaped result: a null
+    # or scalar value is malformed input, not caller/callee coverage. The
+    # empty-list validity half lives in the bound-evidence cases above.
+    base, head = two_resolvers(repo)
+    malformed = Path(tempfile.mkdtemp(prefix="graph-evidence-")) / "graph.json"
+    malformed.write_text(json.dumps({
+        "base": base, "candidate": head,
+        "symbols": [{"name": Path(item).stem, "file": item, "references": "invalid"}
+                    for item in _RESOLVER_FILES],
+    }), encoding="utf-8")
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(malformed))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("no caller/callee symbol results" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "incomplete",
+    })
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_ambiguous_same_named_definitions_are_a_gap_not_a_binding(repo: Path) -> None:
+    # Two classes define resolve_root and a caller references the name, so
+    # closure evidence cannot bind one definition silently: the owner
+    # evidence names the ambiguity and the rule reads incomplete.
+    write(repo / "src" / "state.py", (
+        "import os\n\n\n"
+        "class DiskState:\n"
+        "    def resolve_root(self):\n"
+        "        return os.environ.get('APP_STATE_ROOT')\n\n\n"
+        "class MemoryState:\n"
+        "    def resolve_root(self):\n"
+        "        return '/tmp/memory-state'\n\n\n"
+        "def open_state(state):\n"
+        "    return state.resolve_root()\n"
+    ))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "ambiguous resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/state.py",))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("ambiguous same-named definitions referenced in closure: resolve_root" in gap
+               for gap in rule["completeness"]["gaps"]), rule
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "passed",
+    })
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_superset_state_writer_still_competes_and_binds_once(repo: Path) -> None:
+    # Pairwise environment anchors: a resolver reading a superset of another
+    # resolver's keys still shares a pair and competes, and three shared
+    # pairs yield exactly one finding, never one per pair.
+    write(repo / "src" / "sweeper.py", (
+        "import os\n\n\ndef sweep_state():\n"
+        "    root = os.environ.get('APP_STATE_ROOT')\n"
+        "    home = os.environ.get('APP_HOME')\n"
+        "    cache = os.environ.get('APP_CACHE')\n"
+        "    return root or home or cache\n"
+    ))
+    write(repo / "src" / "pruner.py", (
+        "import os\n\n\ndef prune_state():\n"
+        "    root = os.environ.get('APP_STATE_ROOT')\n"
+        "    home = os.environ.get('APP_HOME')\n"
+        "    cache = os.environ.get('APP_CACHE')\n"
+        "    keep = os.environ.get('APP_TMP')\n"
+        "    return root or home or cache or keep\n"
+    ))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two writers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/sweeper.py", "src/pruner.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert [item["state"] for item in candidates] == ["candidate"], candidates
+    regions = [(region["path"], region["displayLine"]) for region in candidates[0]["region"]["regions"]]
+    assert regions == [("src/pruner.py", 4), ("src/sweeper.py", 4)], regions
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "finding"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_same_responsibility_disposition_confirms_the_candidate(repo: Path) -> None:
+    # A parent-bound same-responsibility record turns the mechanical candidate
+    # into confirmed-unresolved while both owners remain; the record itself
+    # never resolves anything.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "lib" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [state_root_record(
+        base=base, candidate=head,
+        owners=[{"path": "src/state.py", "symbol": "resolve_state_root"},
+                {"path": "lib/advisor.py", "symbol": "advisor_state_dir"}],
+    )])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    confirmed = [
+        item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+        if item["state"] == "confirmed-unresolved"
+    ]
+    assert len(confirmed) == 1, json.dumps(payload["findings"], indent=2)
+    finding = confirmed[0]
+    assert finding["evidence"]["responsibilityKey"] == "app-state-root-location", finding
+    assert finding["evidence"]["repair"] == "consolidate", finding
+    assert {region["path"] for region in finding["region"]["regions"]} == {"src/state.py", "lib/advisor.py"}, finding
+    # The confirmed finding owns the pair: the bare mechanical candidate must
+    # not also stay active for the same owners.
+    assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["confirmed-unresolved"]
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+
+
+@with_repo
+def test_rename_only_repair_leaves_the_warning_unresolved(repo: Path) -> None:
+    # Renaming the competitor deletes the superseded anchor without deleting
+    # the competition: a surviving mechanical candidate still names the
+    # survivor, so the same-responsibility record must not read as resolved.
+    # One top directory keeps owner discovery complete, so only the surviving
+    # candidate can block resolution here.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write(repo / "src" / "advisor.py", _RESOLVER_B.replace("advisor_state_dir", "advisor_root_dir"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "rename the competitor")
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [state_root_record(base=base, candidate=head)])
+    code, payload, _ = run_gate(repo, "--base-ref", base,
+                                "--gitnexus-context-json", str(graph_evidence(base, head, _RESOLVER_FILES)))
+    assert payload["resolvedFindings"] == [], json.dumps(payload["resolvedFindings"], indent=2)
+    states = sorted(item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"))
+    assert "confirmed-unresolved" in states, states
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_one_owner_repair_needs_a_parent_pinned_record_to_resolve(repo: Path) -> None:
+    # One owner remains, the superseded surface is absent and unreferenced,
+    # and scope is complete — the one-owner predicate holds and is published
+    # as telemetry — but resolution silences a warning, so it additionally
+    # requires a parent-pinned record (#54 decision, 2026-08-12); a
+    # self-issued record leaves the finding active with rule incompleteness.
+    # The pinned G and P2 replays prove the resolving polarity.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write(repo / "src" / "advisor.py", "from src.state import resolve_state_root\n\n\ndef advisor_dir():\n    return resolve_state_root() + '/advisor'\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "consolidate onto the surviving owner")
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [state_root_record(base=base, candidate=head)])
+    code, payload, _ = run_gate(repo, "--base-ref", base,
+                                "--gitnexus-context-json", str(graph_evidence(base, head, _RESOLVER_FILES)))
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    confirmed = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+                 if item["state"] == "confirmed-unresolved"]
+    assert len(confirmed) == 1 and confirmed[0]["evidence"]["oneOwnerPredicate"] is True, confirmed
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("parent-pinned" in note for note in notes), notes
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+
+
+@with_repo
+def test_an_unpinned_distinct_authority_record_never_resolves(repo: Path) -> None:
+    # Resolution trust is the shipped identifier+digest table: a
+    # distinct-authority record whose digest is not parent-pinned is rejected
+    # with a named note and the mechanical candidate stays active.
+    write(repo / "src" / "reader.py", _RESOLVER_A)
+    write(repo / "src" / "pruner.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "distinct authorities over shared state")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [{
+        "ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
+        "responsibilityKey": "app-state-consumers",
+        "disposition": "distinct-authority",
+        "base": base,
+        "candidate": head,
+        "owners": [
+            {"path": "src/reader.py", "symbol": "resolve_state_root"},
+            {"path": "src/pruner.py", "symbol": "advisor_state_dir"},
+        ],
+        "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
+    }])
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json",
+                                str(graph_evidence(base, head, ("src/reader.py", "src/pruner.py"))))
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("parent-pinned" in note for note in notes), notes
+    assert code == 0 and payload["ok"] is True, (code, payload["errors"])
+
+
+@with_repo
+def test_stale_or_inapplicable_records_never_clear_a_candidate(repo: Path) -> None:
+    # A record naming commits the evaluation did not evaluate, and a record
+    # whose repair is meaningless for its disposition, are reported and
+    # applied to nothing; the mechanical candidate stays active.
+    base, head = two_resolvers(repo)
+    write_disposition(repo, [
+        state_root_record(base=base, candidate=base),
+        state_root_record(disposition="distinct-authority", base=base, candidate=head),
+    ])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert [item["state"] for item in candidates] == ["candidate"], candidates
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("stale" in note for note in notes), notes
+    assert any("meaningless for distinct-authority" in note for note in notes), notes
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_candidate_tree_disposition_files_are_never_read(repo: Path) -> None:
+    # Candidate-authored provenance is not trust: the gate reads records only
+    # from the fixed out-of-tree carrier, so a records-shaped file inside the
+    # evaluated tree — even one named like the carrier — has no effect.
+    base, head = two_resolvers(repo)
+    smuggled = {"records": stamp_records([state_root_record(
+        disposition="distinct-authority", repair=None, base=base, candidate=head)])}
+    smuggled["records"][0].pop("repair")
+    write(repo / "qg54-dispositions.json", json.dumps(smuggled))
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"] == []
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_truncated_owner_discovery_keeps_the_finding_unresolved(repo: Path) -> None:
+    # Interface-level negative on the real skipped-scope path: discovery
+    # observes one owner and stops before the second, so the rule is
+    # incomplete and the record cannot resolve, however clean the diff looks.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "huge.py", _OVERSIZED)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "one readable owner, one behind the bound")
+    base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write(repo / "src" / "state.py", _RESOLVER_A + "\n# widened\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "touch the readable owner")
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [state_root_record(
+        base=base, candidate=head,
+        owners=[{"path": "src/state.py", "symbol": "resolve_state_root"},
+                {"path": "src/huge.py", "symbol": "normalize_user_identifier"}],
+    )])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("huge.py" in gap for gap in rule["completeness"]["gaps"]), rule
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert "confirmed-unresolved" in states, states
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_lifecycle_signature_discriminates_the_near_misses(repo: Path) -> None:
+    # The five pinned-shape scaffolds group; an extra assert operation, a
+    # prelude callee, callees nested in the payload slot, and extra lifecycle
+    # callees each break the ordered signature and stay outside the group.
+    near_misses = "\n".join((
+        "def test_extra_assert_verdict():",
+        "    def body(repo):",
+        "        write(repo / 'src/extra.py', 'value = 9\\n')",
+        "        code, payload = run_gate(repo)",
+        "        assert code == 0",
+        "        assert payload['ok'] is True",
+        "        assert payload['errors'] == []",
+        "    with_repo(body)",
+        "",
+        "",
+        "def test_prelude_callee_verdict():",
+        "    block = '\\n'.join(['value = 1', 'other = 2'])",
+        "    def body(repo):",
+        "        write(repo / 'src/prelude.py', block)",
+        "        code, payload = run_gate(repo)",
+        "        assert code == 0",
+        "        assert payload['ok'] is True",
+        "    with_repo(body)",
+        "",
+        "",
+        "def test_payload_callee_verdict():",
+        "    def body(repo):",
+        "        write(repo / 'src/joined.py', '\\n'.join('v = %d' % i for i in range(3)))",
+        "        code, payload = run_gate(repo)",
+        "        assert code == 0",
+        "        assert payload['ok'] is True",
+        "    with_repo(body)",
+        "",
+        "",
+        "def test_extra_lifecycle_callee_verdict():",
+        "    def body(repo):",
+        "        write(repo / 'src/extra2.py', 'value = 2\\n')",
+        "        snapshot_paths(repo)",
+        "        code, payload = run_gate(repo)",
+        "        assert code == 0",
+        "        assert payload['ok'] is True",
+        "    with_repo(body)",
+        "",
+    ))
+    write(repo / "tests" / "test_lifecycle.py", _LIFECYCLE_SCAFFOLDS + "\n\n" + near_misses)
+    code, payload, _ = run_gate(repo)
+    candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+    assert len(candidates) == 1, json.dumps(payload["findings"], indent=2)
+    owners = [region["owner"] for region in candidates[0]["region"]["regions"]]
+    assert owners == [
+        "test_alpha_verdict", "test_beta_verdict", "test_gamma_verdict",
+        "test_delta_verdict", "test_epsilon_verdict",
+    ], owners
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_parameterized_single_lifecycle_owner_is_negative(repo: Path) -> None:
+    # Centralized setup with one parameterized owner is the resolved shape:
+    # one lifecycle owner, one loop over rows, no candidate.
+    consolidated = "\n".join((
+        "_ROWS = (('a.py', 'value = 1', 0), ('b.py', 'value = 2', 2))",
+        "",
+        "",
+        "def _scenario_row(repo, path, payload, expected):",
+        "    write(repo / path, payload)",
+        "    code, verdict = run_gate(repo)",
+        "    assert code == expected",
+        "    assert verdict['ok'] is (expected == 0)",
+        "",
+        "",
+        "def test_every_scenario_row():",
+        "    for path, payload, expected in _ROWS:",
+        "        with_repo(lambda repo: _scenario_row(repo, path, payload, expected))",
+        "",
+    ))
+    write(repo / "tests" / "test_rows.py", consolidated)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "one parameterized owner")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    code, payload, _ = run_gate(repo, "--base-ref", base,
+                                "--gitnexus-context-json", str(graph_evidence(base, head, ("tests/test_rows.py",))))
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
+    assert owner_findings(payload, "QG54-OWNER-COMPETITION-TEST") == [], payload["findings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_two_validators_deciding_one_invariant_are_a_candidate(repo: Path) -> None:
+    # Two predicate-shaped functions deciding the same comparison in two
+    # files compete to own the invariant; same names with no shared decision,
+    # callee, or boundary evidence never form a candidate.
+    validator = (
+        "def ensure_ready(record):\n"
+        "    if record.status != 'ready':\n"
+        "        raise ValueError(record.status)\n"
+        "    return record\n"
+    )
+    write(repo / "src" / "intake.py", validator)
+    write(repo / "src" / "dispatch.py", validator.replace("ensure_ready", "require_ready").replace("return record", "return True"))
+    write(repo / "src" / "alpha.py", "def handler(value):\n    return value.strip()\n")
+    write(repo / "src" / "beta.py", "def handler(value):\n    return [item for item in value]\n")
+    code, payload, _ = run_gate(repo)
+    candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    validators = [item for item in candidates if item["region"]["evidenceClass"] == "invariant-validators"]
+    assert len(validators) == 1, json.dumps(payload["findings"], indent=2)
+    assert {region["owner"] for region in validators[0]["region"]["regions"]} == {"ensure_ready", "require_ready"}, validators
+    assert [item for item in candidates if item["region"]["evidenceClass"] == "interface-overlap"] == [], candidates
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_temporary_coexistence_is_v2_territory_and_stays_active(repo: Path) -> None:
+    # Parent amendment (#54 issuecomment-5259793024): v1 is exactly the
+    # pinned field set and the tracked follow-up/expiry slice is v2
+    # territory, so a temporary-coexistence claim leaves the candidate
+    # active -- bare, or carrying the wider fields.
+    base, head = two_resolvers(repo)
+    record = state_root_record(disposition="temporary-coexistence", base=base, candidate=head)
+    write_disposition(repo, [record])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("not expressible in schema v1" in note for note in notes), notes
+    assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["candidate"]
+
+    write_disposition(repo, [{**record, "followUp": "future3OOO/claude-skills#88", "expiry": "one slice"}])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("outside the pinned schema-v1 set: expiry, followUp" in note for note in notes), notes
+    assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["candidate"]
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_deletion_without_rewiring_stays_unresolved(repo: Path) -> None:
+    # Deleting the competitor and its call sites without rewiring the
+    # affected surface to the survivor merely deletes behavior; resolution
+    # requires every affected path to reach the survivor.
+    caller = "from src.advisor import advisor_state_dir\n\n\ndef locate():\n    return advisor_state_dir()\n"
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    write(repo / "src" / "caller.py", caller)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers and a caller")
+    base = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    record = state_root_record(base=base)
+
+    write(repo / "src" / "advisor.py", "ADVISOR_SUFFIX = '/advisor'\n")
+    write(repo / "src" / "caller.py", "def locate():\n    return '/var/state/advisor'\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "delete without rewiring")
+    dropped = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [{**record, "candidate": dropped}])
+    code, payload, _ = run_gate(repo, "--base-ref", base,
+                                "--gitnexus-context-json", str(graph_evidence(base, dropped, ("src/state.py", "src/advisor.py", "src/caller.py"))))
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    dropped_confirmed = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+                         if item["state"] == "confirmed-unresolved"]
+    assert dropped_confirmed and dropped_confirmed[0]["evidence"]["oneOwnerPredicate"] is False, dropped_confirmed
+
+    write(repo / "src" / "caller.py", "from src.state import resolve_state_root\n\n\ndef locate():\n    return resolve_state_root() + '/advisor'\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "rewire to the survivor")
+    rewired = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [{**record, "candidate": rewired}])
+    code, payload, _ = run_gate(repo, "--base-ref", base,
+                                "--gitnexus-context-json", str(graph_evidence(base, rewired, ("src/state.py", "src/advisor.py", "src/caller.py"))))
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    confirmed = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+                 if item["state"] == "confirmed-unresolved"]
+    assert confirmed and confirmed[0]["evidence"]["oneOwnerPredicate"] is True, confirmed
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_signature_preserves_command_discriminators(repo: Path) -> None:
+    # Git subcommands, CLI-mode flags, and nested control-flow shape are
+    # operation discriminators: scaffolds differing only there never share a
+    # lifecycle signature, while payload strings stay normalized slots.
+    scaffolds = "\n".join((
+        "def run_gate(repo, *args):",
+        "    return 0, {}",
+        "",
+        "",
+        "def git(repo, *args):",
+        "    return repo",
+        "",
+        "",
+        "def test_adds():",
+        "    git('r', 'add')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_commits():",
+        "    git('r', 'commit')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_worktree_mode():",
+        "    git('r', 'add')",
+        "    code, payload = run_gate('r', '--staged-only')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_looped():",
+        "    for attempt in range(2):",
+        "        git('r', 'add')",
+        "        code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_ready_state():",
+        "    write_marker('r', 'ready')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "    assert payload == {}",
+        "",
+        "",
+        "def test_failed_state():",
+        "    write_marker('r', 'failed')",
+        "    code, payload = run_gate('r')",
+        "    assert code == 0",
+        "    assert payload == {}",
+        "",
+        "",
+        "def test_guarded_cleanup():",
+        "    write_marker('r', 'armed')",
+        "    try:",
+        "        code, payload = run_gate('r')",
+        "    except OSError:",
+        "        rollback('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_guarded_report():",
+        "    write_marker('r', 'armed')",
+        "    try:",
+        "        code, payload = run_gate('r')",
+        "    except OSError:",
+        "        report('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_waits_ready():",
+        "    write_marker('r', 'armed')",
+        "    while probe('r'):",
+        "        code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_waits_settled():",
+        "    write_marker('r', 'armed')",
+        "    while settled('r'):",
+        "        code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+    ))
+    write(repo / "tests" / "test_modes.py", scaffolds)
+    code, payload, _ = run_gate(repo)
+    lifecycle = [
+        item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+        if item["region"]["evidenceClass"] == "fixture-lifecycle"
+    ]
+    # Bare payload words under an ordinary callee stay normalized value
+    # slots: the ready/failed pair is the one group the discriminators leave.
+    assert len(lifecycle) == 1, json.dumps([item["evidence"]["owners"] for item in lifecycle], indent=2)
+    owners = [region["owner"] for region in lifecycle[0]["region"]["regions"]]
+    assert owners == ["test_ready_state", "test_failed_state"], owners
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_disposition_trust_negatives_leave_the_rule_incomplete(repo: Path) -> None:
+    # Unknown schema versions, broken digests, and path-only wildcard owner
+    # references cannot bind; each is reported and the rule reads incomplete,
+    # never clean, with the candidate untouched.
+    base, head = two_resolvers(repo)
+    record = state_root_record(base=base, candidate=head)
+    write_disposition(repo, [
+        {**record, "schemaVersion": 2},
+        {**record, "validationRoot": {"identifier": "future3OOO/claude-skills#54", "digest": "0" * 64}},
+        {**record, "owners": [{"path": "src/state.py"}, {"path": "src/advisor.py"}]},
+        {**record, "owners": [{"path": "src/state.py", "symbol": "resolve_state_root"},
+                              {"path": "src/advisor.py", "symbol": "vanished_resolver"}]},
+    ])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    for expected in ("unknown disposition schema version", "does not match the validation root digest",
+                     "symbol or exact content anchor", "resolve nowhere"):
+        assert any(expected in note for note in notes), (expected, notes)
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_non_string_rule_id_is_rejected_not_a_crash(repo: Path) -> None:
+    # A record whose ruleId is not a string is malformed input the gate must
+    # survive: the record reads rejected, the candidate stays untouched, and
+    # the gate still emits its verdict.
+    base, head = two_resolvers(repo)
+    record = state_root_record(base=base, candidate=head)
+    write_disposition(repo, [{**record, "ruleId": ["QG54-OWNER-COMPETITION-PRODUCTION"]}])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("unknown ruleId" in note for note in notes), notes
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_shapeless_survivor_is_rejected_not_a_crash(repo: Path) -> None:
+    # A survivor without the owner-reference shape is malformed input the
+    # gate must survive: the record reads rejected, the candidate stays
+    # untouched, and the gate still emits its verdict.
+    base, head = two_resolvers(repo)
+    write_disposition(repo, [state_root_record(base=base, candidate=head, survivor={})])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("survivor" in note for note in notes), notes
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_an_undecodable_carrier_is_reported_not_a_crash(repo: Path) -> None:
+    # A carrier that exists but does not decode is damaged input, not an
+    # absent one: the gate reports the ignored carrier, the rule reads
+    # incomplete, and the verdict is still emitted.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    located = run(["git", "rev-parse", "--git-path", "qg54-dispositions.json"], repo).stdout.strip()
+    carrier = Path(located) if os.path.isabs(located) else repo / located
+    carrier.write_bytes(bytes([255, 254]) + b'{"records": []}')
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("dispositions carrier ignored" in note for note in notes), notes
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_an_unreadable_carrier_is_reported_not_absent(repo: Path) -> None:
+    # Only a missing carrier is absent: a carrier that exists but cannot be
+    # read is a capture failure the owner rules must surface, never a silent
+    # no-records run that drops real dispositions.
+    base, head = two_resolvers(repo)
+    write_disposition(repo, [state_root_record(base=base, candidate=head)])
+    located = run(["git", "rev-parse", "--git-path", "qg54-dispositions.json"], repo).stdout.strip()
+    carrier = Path(located) if os.path.isabs(located) else repo / located
+    carrier.chmod(0o000)
+    try:
+        code, payload, _ = run_gate(repo, "--base-ref", base)
+    finally:
+        carrier.chmod(0o644)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("dispositions carrier ignored" in note for note in notes), notes
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_duplicate_record_reference_binds_nothing(repo: Path) -> None:
+    # The v1 contract rejects duplicate references: the same stamped record
+    # twice on the carrier yields exactly one confirmed transition and a
+    # duplicate-reference note for the second copy.
+    base, head = two_resolvers(repo)
+    record = state_root_record(base=base, candidate=head)
+    write_disposition(repo, [record, record])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["confirmed-unresolved"], states
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("duplicate record reference rejected" in note for note in notes), notes
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_an_unknown_disposition_value_is_rejected(repo: Path) -> None:
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    write_disposition(repo, [state_root_record(disposition="waived", parentRecord="prose")])
+    code, payload, _ = run_gate(repo)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("semantic disposition" in note for note in notes), notes
+    assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["candidate"]
     assert code == 0, (code, payload["errors"])
 
 
@@ -1086,16 +1920,16 @@ def test_test_baseline_files_cannot_spend_the_production_read_budget(repo: Path)
     write(repo / "src" / "copy.py", owner)
     write(repo / "apitests" / "test_new.py", "def helper():\n    return 1\n")
     _, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    matches = reuse_matches(payload)
-    assert len(matches) == 1, json.dumps(reuse_finding(payload), indent=2)
-    assert matches[0]["existingFile"] == "src/owner.py", matches
+    baseline_copies = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    assert len(baseline_copies) == 1, json.dumps(payload["findings"], indent=2)
+    assert ("src/owner.py", "retained-baseline") in duplicate_regions(baseline_copies[0]), baseline_copies
 
 
 @with_repo
-def test_a_test_owner_gap_does_not_dirty_the_production_reuse_advisory(repo: Path) -> None:
-    # Owner capture now covers test roles for the exact rules. The reuse
-    # advisory still scores production owners only, so a test owner it never
-    # reads must not make its verdict unknown.
+def test_a_test_owner_gap_does_not_dirty_the_production_owner_rule(repo: Path) -> None:
+    # Owner discovery is role-scoped: a test owner the capture bound never
+    # read must not make the production owner rule's verdict unknown, while
+    # the rules that do read that scope keep the gap visible.
     owner = f"def normalize_user_identifier(config, attempt):\n{RETRY_BLOCK}\n"
     write(repo / "tests" / "huge_helpers.py", _OVERSIZED)
     write(repo / "src" / "owner.py", owner)
@@ -1104,14 +1938,22 @@ def test_a_test_owner_gap_does_not_dirty_the_production_reuse_advisory(repo: Pat
     write(repo / "src" / "copy.py", owner)
     write(repo / "tests" / "new_helpers.py", "def helper():\n    return 1\n")
     code, payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    reuse = reuse_finding(payload)
-    assert reuse["status"] == "finding", reuse
-    assert reuse["completeness"] == {"complete": True, "gaps": []}, reuse
-    # The exact rules DO read that scope, so the gap stays visible to them.
+    assert_exact_rules(payload, {
+        "QG54-DUPLICATE-BASELINE": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "incomplete",
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+    })
     baseline_rule = check_named(payload, "QG54-DUPLICATE-BASELINE")
-    assert baseline_rule["status"] == "incomplete", baseline_rule
     assert any("huge_helpers.py" in gap for gap in baseline_rule["gaps"]), baseline_rule
-    assert code == 2 and any("reimplement" in error for error in payload["errors"]), payload["errors"]
+    # Role separation shows in the gap sets: the unread test owner dirties the
+    # TEST rule while the production rule carries only the universal graph gap.
+    assert any("huge_helpers.py" in gap for gap in owner_rule_finding(payload, "QG54-OWNER-COMPETITION-TEST")["completeness"]["gaps"])
+    production_gaps = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["completeness"]["gaps"]
+    assert not any("huge_helpers.py" in gap for gap in production_gaps), production_gaps
+    # The exact retained copy is owner-competition evidence with no duplicate
+    # prerequisite, and every rule here stays warning-only.
+    assert owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"), payload["findings"]
+    assert code == 0, (code, payload["errors"])
 
 
 @with_repo
@@ -1180,8 +2022,8 @@ def test_separate_hunks_do_not_form_one_duplicate(repo: Path) -> None:
 
 # Every way scope can go missing: the affected rule reports incomplete and
 # names the gap, its projections drop to unknown, and error-class capture
-# failures fail the run outright. "*" sweeps all checks/hard rules except
-# gitnexus-context and consequenceCoverage, which evaluate caller input only
+# failures fail the run outright. "*" sweeps all checks and every hard rule
+# except the two not_evaluated policy keys, which evaluate caller input only
 # and are legitimately untouched by capture gaps.
 #
 # name, git config, baseline files, candidate files (bytes stay unmeasured
@@ -1194,19 +2036,18 @@ _SCOPE_ROWS = (
      {"code": 0, "growth": "src/base.py"}),
     ("skipped-oversized-baseline", None, {"src/huge.py": _OVERSIZED},
      {"src/dup.py": _UNREADABLE_OWNER}, False, (),
-     {"code": 0, "reuse": "huge.py",
-      "warning": "QG54-ANALYSIS-INCOMPLETE for QG-LEGACY-REUSE-ADVISORY",
-      "checks": ("reuse-existing-helpers",), "hardRules": ("noDuplication",)}),
+     {"code": 0, "owner": "huge.py",
+      "warning": "QG54-ANALYSIS-INCOMPLETE for QG54-OWNER-COMPETITION-PRODUCTION",
+      "checks": ("QG54-OWNER-COMPETITION-PRODUCTION",)}),
     ("unmeasured-production-file", None, {}, {"src/base.py": _BINARY}, False, ("--base-ref", "HEAD"),
-     {"code": 0, "growth": "src/base.py", "reuse": "src/base.py",
-      "checks": ("reuse-existing-helpers", "no-quality-escapes",
-                 "QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK"),
-      "hardRules": ("noDuplication",)}),
+     {"code": 0, "growth": "src/base.py", "owner": "src/base.py",
+      "checks": ("QG54-OWNER-COMPETITION-PRODUCTION", "no-quality-escapes",
+                 "QG54-DUPLICATE-ADDED-SYMBOL", "QG54-DUPLICATE-ADDED-BLOCK")}),
     ("unbased-run", None, {}, {"src/app.py": "VALUE = 1\n"}, False, (),
      {"code": 0, "growth": "no caller-supplied base", "warning": "QG54-GROWTH-CUMULATIVE",
       "evalGap": "no caller-supplied base"}),
     ("missing-base-ref", None, {}, {"src/app.py": "VALUE = 1\n"}, False, ("--base-ref", "deadbeef"),
-     {"code": 2, "error": "base-ref not found", "growth": "", "reuse": "", "checks": "*", "hardRules": "*"}),
+     {"code": 2, "error": "base-ref not found", "growth": "", "checks": "*", "hardRules": "*"}),
     # A clean filter that emits different bytes on every read stages different
     # content per capture pass: the gate must report drift, never evaluate a
     # state that never existed.
@@ -1252,7 +2093,10 @@ def _scope_row(repo, config, baseline, candidate, staged, args, expect, name: st
         assert any(expect["error"] in item for item in payload["errors"]), (name, payload["errors"])
     if "warning" in expect:
         assert any(expect["warning"] in item for item in payload["warnings"]), (name, payload["warnings"])
-    for rule, finding_of in (("growth", growth_finding), ("reuse", reuse_finding)):
+    for rule, finding_of in (
+        ("growth", growth_finding),
+        ("owner", lambda p: owner_rule_finding(p, "QG54-OWNER-COMPETITION-PRODUCTION")),
+    ):
         if rule in expect:
             finding = finding_of(payload)
             assert finding["status"] == "incomplete", (name, rule, finding)
@@ -1260,20 +2104,19 @@ def _scope_row(repo, config, baseline, candidate, staged, args, expect, name: st
             assert any(expect[rule] in gap for gap in finding["completeness"]["gaps"]), (name, rule, finding)
     checks = expect.get("checks", ())
     if checks == "*":
-        checks = [item["name"] for item in payload["checks"] if item["name"] != "gitnexus-context"]
+        checks = [item["name"] for item in payload["checks"]]
     for check_name in checks:
         item = check_named(payload, check_name)
         assert item["passed"] is None and item["status"] == "incomplete", (name, item)
     hard_rules = expect.get("hardRules", ())
     if hard_rules == "*":
-        hard_rules = [key for key in payload["hardRules"] if key != "consequenceCoverage"]
+        hard_rules = [key for key in payload["hardRules"] if key not in ("consequenceCoverage", "noDuplication")]
     for rule_name in hard_rules:
         rule = payload["hardRules"][rule_name]
         assert rule["status"] == "incomplete" and rule["passed"] is None, (name, rule_name, rule)
     if expect.get("checksNotTrue"):
         for item in payload["checks"]:
-            if item["name"] != "gitnexus-context":
-                assert item["passed"] is not True, (name, item)
+            assert item["passed"] is not True, (name, item)
     if "evalGap" in expect:
         assert payload["evaluation"]["complete"] is False, (name, payload["evaluation"])
         assert any(expect["evalGap"] in gap for gap in payload["evaluation"]["gaps"]), (name, payload["evaluation"]["gaps"])
@@ -1339,8 +2182,9 @@ def _decoder_row(repo: Path, config, baseline: dict, candidate: dict, growth, er
         assert code == 0, (name, code, stderr)
     if growth is not None:
         assert growth_totals(payload)["production"] == growth, (name, growth_totals(payload))
-        # The odd name is unusual, not unmeasurable: it contributes no gap.
-        assert payload["evaluation"]["complete"] is True, (name, payload["evaluation"]["gaps"])
+        # The odd name is unusual, not unmeasurable: it contributes no gap of
+        # its own — only the universal graph-evidence gap may remain.
+        assert all("graph evidence" in gap for gap in payload["evaluation"]["gaps"]), (name, payload["evaluation"]["gaps"])
     if sample is not None:
         encoded = [item.encode("utf-8", "surrogateescape") for item in payload["changedFilesSample"]]
         assert sample in encoded, (name, payload["changedFilesSample"])
@@ -1417,32 +2261,34 @@ def _growth_row(repo, baseline, ops, candidate, based, buckets, clean_check, nam
     assert code == 0, (name, code, payload["errors"])
 
 
-def replay_round_six_corpus() -> dict[str, object]:
-    """Run the gate over the pinned corpus in a throwaway detached worktree.
+def replay_pinned_range(base: str, candidate: str, *args: str,
+                        records: list[dict[str, object]] | None = None) -> dict[str, object]:
+    """Run the gate over one pinned historical range in a throwaway detached
+    worktree. Every corpus replay owns this one add/run/remove lifecycle.
 
-    Both corpus replays need the same add/run/remove lifecycle; owning it once
-    keeps their cleanup from drifting apart.
+    Cleanup runs only after a successful worktree add: removing a worktree
+    that never registered raises its own error and would mask the setup
+    failure it is cleaning up after. Registered-worktree leaks into the
+    shared source repository must still surface, so that removal is unguarded.
     """
     repo = source_repo()
-    replay = Path(tempfile.mkdtemp(prefix="round-six-corpus-")) / "candidate"
+    replay = Path(tempfile.mkdtemp(prefix="pinned-corpus-")) / "candidate"
+    added = False
     try:
-        git(repo, "worktree", "add", "-q", "--detach", str(replay), CORPUS_CANDIDATE)
-        return run_gate(replay, "--base-ref", CORPUS_BASE)[1]
+        git(repo, "worktree", "add", "-q", "--detach", str(replay), candidate)
+        added = True
+        if records is not None:
+            write_disposition(replay, records)
+        return run_gate(replay, "--base-ref", base, *args)[1]
     finally:
-        # Cleanup failures must surface, not silently leak a registered
-        # worktree into the shared source repository.
-        git(repo, "worktree", "remove", "--force", str(replay))
+        if added:
+            git(repo, "worktree", "remove", "--force", str(replay))
         shutil.rmtree(replay.parent, ignore_errors=True)
 
 
-def test_captured_round_six_corpus_reports_pinned_totals() -> None:
-    # The diff options are part of the fixture identity pinned by the target
-    # architecture; changing one requires a parent re-pin.
-    base, candidate = CORPUS_BASE, CORPUS_CANDIDATE
-    repo = source_repo()
-    for sha in (base, candidate):
-        present = run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], repo)
-        assert present.returncode == 0, f"corpus commit {sha} missing from local history"
+def canonical_diff_sha256(repo: Path, base: str, candidate: str) -> str:
+    """The pinned-fixture identity hash: the canonical diff options are part
+    of each corpus identity, and changing one requires a parent re-pin."""
     diff = run(
         [
             "git",
@@ -1472,10 +2318,21 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
         repo,
     )
     assert diff.returncode == 0, diff.stderr
-    digest = hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()
+    return hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()
+
+
+def test_captured_round_six_corpus_reports_pinned_totals() -> None:
+    base, candidate = CORPUS_BASE, CORPUS_CANDIDATE
+    repo = source_repo()
+    for sha in (base, candidate):
+        present = run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], repo)
+        assert present.returncode == 0, f"corpus commit {sha} missing from local history"
+    digest = canonical_diff_sha256(repo, base, candidate)
     assert digest == CORPUS_DIFF_SHA256, digest
 
-    payload = replay_round_six_corpus()
+    payload = replay_pinned_range(
+        CORPUS_BASE, CORPUS_CANDIDATE,
+        "--gitnexus-context-json", str(range_graph_evidence(repo, CORPUS_BASE, CORPUS_CANDIDATE)))
     growth = growth_totals(payload)
     assert growth["production"] == {"added": 481, "deleted": 8, "net": 473}, growth
     assert growth["test"] == {"added": 648, "deleted": 0, "net": 648}, growth
@@ -1484,7 +2341,9 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
     assert growth_finding(payload)["completeness"] == {"complete": True, "gaps": []}
     # The corpus adds new committed files; their absent baselines are not
     # discovery failures, so every rule must still read complete.
-    assert reuse_finding(payload)["completeness"] == {"complete": True, "gaps": []}, reuse_finding(payload)
+    for rule in ("QG54-OWNER-COMPETITION-PRODUCTION", "QG54-OWNER-COMPETITION-TEST"):
+        owner_rule = owner_rule_finding(payload, rule)
+        assert owner_rule["completeness"] == {"complete": True, "gaps": []}, owner_rule
     # The exact rules carry their own corpus verdict in the calibration
     # replay below, including the shell scope no tokenizer can read.
     assert all(
@@ -1492,6 +2351,163 @@ def test_captured_round_six_corpus_reports_pinned_totals() -> None:
         for item in payload["checks"]
         if not item["name"].startswith("QG54-DUPLICATE-")
     ), payload["checks"]
+
+
+_MANIFEST_R = ("02ebe4c3a9163497f81d05364f2d1b5624477bd6", "29e355ea3d73e5631914a1376c7ba68a64e5711e",
+               "40b6f27617e593a8b89e5b722982c834f348ed9e3eaf876ff9e47876814db830")
+_MANIFEST_G = ("65f14318cb94d995dcfe961a09eb1e4dbe374dd1", "08074c7e727d26ce62b0a3f80899de76e34818ef",
+               "854db8efcb9c9ffaf8efc26bb42475cf7bfde155567a3cbfca5a0e23919c5c0b")
+_MANIFEST_TESTFILE = "skills/production-code/scripts/test_code_quality_gate.py"
+_MANIFEST_KEY = "quality-gate:cleanup-verdict-scenario-lifecycle"
+_MANIFEST_FIVE = (
+    "test_bare_noqa_is_still_a_quality_escape", "test_js_ts_escapes_fail", "test_python_escapes_fail",
+    "test_test_any_annotations_do_not_fail_cleanup", "test_test_fake_green_escapes_still_fail",
+)
+_MANIFEST_PARENT = "future3OOO/claude-skills#54 comment 5251048442"
+# The parent decision of 2026-08-12 binds every state-changing disposition
+# record by its canonical content digest; a record cannot mint its own root.
+_PINNED_RECORD_DIGESTS = {
+    "R": "08f61bed0d5df8b9435a38b1fb1712530bebb063d7c9b457dbe85770f97a016e",
+    "P1": "d7bda52e9bff988face173e92467cc2db78d159c1564f2817075b4cd1c195de8",
+    "P2": "3e96fd97af71111fc5e724f457ca5b3f32ef79fdd4d0a7a25e635ce600a0b39c",
+    "G": "6c2fdd01db924618efc9df048884b2ef64082d5d254657e6fae4d47c92d15575",
+}
+
+
+def assert_pinned_digest(stamped: list[dict[str, object]], case: str, index: int = 0) -> None:
+    """The replayed record must be byte-identical to the parent-pinned one."""
+    root = stamped[index]["validationRoot"]
+    assert root["digest"] == _PINNED_RECORD_DIGESTS[case], (case, root)
+_P1_SHELL_ANCHOR = 'state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/_advisor-sessions"'
+
+
+def range_graph_evidence(repo: Path, base: str, candidate: str) -> Path:
+    changed = run(["git", "diff", "--name-only", base, candidate], repo).stdout.splitlines()
+    return graph_evidence(base, candidate, tuple(
+        item for item in changed if item.endswith((".py", ".sh", ".js", ".ts"))
+    ))
+
+
+def _lifecycle_record(base: str, candidate: str, survivor: dict[str, str] | None = None) -> dict[str, object]:
+    return {
+        "ruleId": "QG54-OWNER-COMPETITION-TEST", "responsibilityKey": _MANIFEST_KEY,
+        "disposition": "same-responsibility", "repair": "consolidate",
+        "base": base, "candidate": candidate,
+        "owners": [{"path": _MANIFEST_TESTFILE, "symbol": name} for name in _MANIFEST_FIVE],
+        **({"survivor": survivor} if survivor else {}),
+        "parentRecord": _MANIFEST_PARENT,
+    }
+
+
+def _active_states(payload: dict[str, object], rule: str) -> list[str]:
+    return [item["state"] for item in owner_findings(payload, rule)]
+
+
+def test_owner_manifest_calibration_is_reproducible() -> None:
+    # The parent-pinned owner manifest (#54 comment 5251048442), verbatim:
+    # cases R, P1, P2, and G over three canonical historical diffs. Every
+    # pinned anchor is adjudicated here and every additional mechanical
+    # candidate is counted as outside-pinned-scope for parent #54 — never
+    # silently adjudicated, added to the corpus, or read as a failure.
+    published = (SCRIPT_DIR.parent / "references" / "owner-calibration.md").read_text(encoding="utf-8")
+    repo = source_repo()
+    for base, candidate, digest in (_MANIFEST_R, (CORPUS_BASE, CORPUS_CANDIDATE, CORPUS_DIFF_SHA256), _MANIFEST_G):
+        for sha in (base, candidate):
+            assert run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], repo).returncode == 0, sha
+        assert canonical_diff_sha256(repo, base, candidate) == digest, (base, candidate)
+        for pinned in (base, candidate, digest):
+            assert pinned in published, pinned
+    assert "unexaminedCount = 0" in published
+
+    # Case R without records: candidate generation is independent of both
+    # duplicate detection and dispositions, and the pinned five-group appears
+    # exactly, in region order, among the counted candidates.
+    payload = replay_pinned_range(*_MANIFEST_R[:2])
+    test_candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+    five_groups = [
+        item for item in test_candidates
+        if [region["owner"] for region in item["region"]["regions"]] == list(_MANIFEST_FIVE)
+    ]
+    assert len(five_groups) == 1, [item["evidence"]["owners"] for item in test_candidates]
+    assert five_groups[0]["region"]["evidenceClass"] == "fixture-lifecycle", five_groups[0]
+    assert len(test_candidates) == 4 and not owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION"), (
+        [item["evidence"]["owners"] for item in test_candidates])
+
+    # Case R with the record: repeated-scaffolding RED confirms and stays
+    # active; the bare five-candidate retires into the confirmed finding.
+    r_records = [_lifecycle_record(*_MANIFEST_R[:2])]
+    assert_pinned_digest(stamp_records(r_records), "R")
+    payload = replay_pinned_range(*_MANIFEST_R[:2], records=r_records)
+    states = _active_states(payload, "QG54-OWNER-COMPETITION-TEST")
+    assert sorted(states) == ["candidate"] * 3 + ["confirmed-unresolved"], states
+    confirmed = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+                 if item["state"] == "confirmed-unresolved"]
+    assert [region["owner"] for region in confirmed[0]["region"]["regions"]] == list(_MANIFEST_FIVE), confirmed
+    assert confirmed[0]["evidence"]["responsibilityKey"] == _MANIFEST_KEY, confirmed
+    assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+
+    # Cases P1 and P2 over the captured round-six corpus: partial
+    # consolidation stays confirmed-unresolved while distinct authority over
+    # the same marker data transitions directly to resolved telemetry.
+    corpus_records = [
+        {"ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
+         "responsibilityKey": "workflow-state-root-location",
+         "disposition": "same-responsibility", "repair": "consolidate",
+         "base": CORPUS_BASE, "candidate": CORPUS_CANDIDATE,
+         "owners": [{"path": "hooks/lib/state_store.py", "symbol": "state_root"},
+                    {"path": "skills/codex-advisor/scripts/ask-codex-advisor.sh", "content": _P1_SHELL_ANCHOR}],
+         "parentRecord": _MANIFEST_PARENT},
+        {"ruleId": "QG54-OWNER-COMPETITION-PRODUCTION",
+         "responsibilityKey": "session-association-marker-consumption",
+         "disposition": "distinct-authority",
+         "base": CORPUS_BASE, "candidate": CORPUS_CANDIDATE,
+         "owners": [{"path": "hooks/lib/state_store.py", "symbol": "session_associations"},
+                    {"path": "hooks/lib/state_prune.py", "symbol": "_retire_associations"}],
+         "parentRecord": _MANIFEST_PARENT},
+    ]
+    assert_pinned_digest(stamp_records(corpus_records), "P1", 0)
+    assert_pinned_digest(stamp_records(corpus_records), "P2", 1)
+    payload = replay_pinned_range(
+        CORPUS_BASE, CORPUS_CANDIDATE,
+        "--gitnexus-context-json", str(range_graph_evidence(source_repo(), CORPUS_BASE, CORPUS_CANDIDATE)),
+        records=corpus_records)
+    for rule in ("QG54-OWNER-COMPETITION-PRODUCTION", "QG54-OWNER-COMPETITION-TEST"):
+        assert owner_rule_finding(payload, rule)["completeness"] == {"complete": True, "gaps": []}, rule
+    production = _active_states(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert sorted(production) == ["candidate"] * 5 + ["confirmed-unresolved"], production
+    confirmed = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+                 if item["state"] == "confirmed-unresolved"]
+    assert confirmed[0]["evidence"]["responsibilityKey"] == "workflow-state-root-location", confirmed
+    assert {region["path"] for region in confirmed[0]["region"]["regions"]} == {
+        "hooks/lib/state_store.py", "skills/codex-advisor/scripts/ask-codex-advisor.sh"}, confirmed
+    assert [(item["evidence"]["responsibilityKey"], item["state"]) for item in payload["resolvedFindings"]] == [
+        ("session-association-marker-consumption", "resolved")], payload["resolvedFindings"]
+    assert _active_states(payload, "QG54-OWNER-COMPETITION-TEST") == ["candidate"] * 8, (
+        [item["evidence"]["owners"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")])
+
+    # Case G: consolidate-and-delete resolves. The repo-context packet names
+    # the whole base tree so owner discovery is complete — the widening
+    # direction the incompleteness action prescribes, through an existing
+    # input, never an exclusion knob.
+    listing = run(["git", "ls-tree", "-r", "--name-only", _MANIFEST_G[0]], repo).stdout
+    packet = Path(tempfile.mkdtemp(prefix="owner-packet-")) / "packet.txt"
+    packet.write_text(listing, encoding="utf-8")
+    g_records = [
+        _lifecycle_record(*_MANIFEST_G[:2], survivor={"path": _MANIFEST_TESTFILE, "symbol": "_escape_row"}),
+    ]
+    assert_pinned_digest(stamp_records(g_records), "G")
+    payload = replay_pinned_range(*_MANIFEST_G[:2],
+                                  "--repo-context-packet", str(packet),
+                                  "--gitnexus-context-json", str(range_graph_evidence(source_repo(), *_MANIFEST_G[:2])),
+                                  records=g_records)
+    assert [(item["evidence"]["responsibilityKey"], item["state"]) for item in payload["resolvedFindings"]] == [
+        (_MANIFEST_KEY, "resolved")], payload["resolvedFindings"]
+    assert _active_states(payload, "QG54-OWNER-COMPETITION-TEST") == ["candidate"] * 4, (
+        [item["evidence"]["owners"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")])
+    assert not any(_MANIFEST_KEY in warning for warning in payload["warnings"]), payload["warnings"]
+    # The published outside-pinned-scope counts are these measured volumes.
+    for count in ("| R | 3 |", "| P1/P2 | 13 |", "| G | 4 |"):
+        assert count in published, count
 
 
 def test_captured_corpus_duplicate_calibration_is_reproducible() -> None:
@@ -1509,7 +2525,7 @@ def test_captured_corpus_duplicate_calibration_is_reproducible() -> None:
     assert threshold.replace(" ", "") == "MIN_REGION_LINES=6", threshold
     assert "`MIN_REGION_LINES = 6`" in published, "the document must name the shipped threshold"
 
-    payload = replay_round_six_corpus()
+    payload = replay_pinned_range(CORPUS_BASE, CORPUS_CANDIDATE)
 
     fires: dict[str, list[list[tuple[str, int]]]] = {
         rule: [] for rule in
@@ -1696,7 +2712,7 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
     # detector reads run after the snapshot freezes, and the CLI captures and
     # evaluates in one process, so the public Interface offers no window in
     # which to observe such a read, and none was added solely for testing.
-    detectors = ("checks.py", "reuse.py", "symbols.py", "findings.py")
+    detectors = ("checks.py", "redundancy.py", "symbols.py", "findings.py")
     banned_calls = {"run_git", "git_text", "git_read", "read_git_file", "open", "read_text", "read_bytes"}
     for name in detectors:
         tree = ast.parse((SCRIPT_DIR / "_quality_gate" / name).read_text(encoding="utf-8"))
@@ -1827,48 +2843,9 @@ def test_growth_finding_carries_stable_identity_and_evidence(repo: Path) -> None
     assert growth_finding(run_gate(repo)[1])["findingId"] != first["findingId"]
 
 
-def test_promotion_requires_an_active_intrinsically_passed_warning() -> None:
-    # --fail-on-warnings promotes an eligible ACTIVE warning. Three states of
-    # the same eligible rule, each an independently falsifiable row:
-    #   found-nothing-and-blind  intrinsic result unknown; promoting would
-    #                            make missing scope itself the failure.
-    #   clean                    promoting would fail every clean run.
-    #   found-and-blind          both facts survive: the incompleteness is
-    #                            reported AND it promotes.
-    orders = "def resolve_order(value: str) -> str:\n    return value.strip()\n"
-    rows = (
-        ("found-nothing-and-blind", {"huge.py": _OVERSIZED}, "def unrelated_widget_label():\n    return 0\n", False, 0),
-        ("clean", {"ids.py": _OWNER}, "from src import ids\n\ndef call_it(v):\n    return ids.normalize_user_id(v)\n", False, 0),
-        ("found-and-blind", {"orders.py": orders, "huge.py": _OVERSIZED},
-         "def resolve_order_record(value: str) -> str:\n    return value.strip()\n", True, 2),
-    )
-    for name, baseline, candidate, expect_promoted, expect_code in rows:
-        in_repo(lambda scratch, b=baseline, c=candidate, n=name, p=expect_promoted, e=expect_code: _promotion_row(scratch, b, c, n, p, e))
-
-
-def _promotion_row(repo: Path, baseline: dict, candidate: str, name: str, expect_promoted: bool, expect_code: int) -> None:
-    for filename, text in baseline.items():
-        write(repo / "src" / filename, text)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "baseline")
-    write(repo / "src" / "candidate.py", candidate)
-    code, payload, _ = run_gate(repo, "--fail-on-warnings")
-    finding = next((item for item in payload["findings"] if item["ruleId"] == REUSE_RULE), None)
-    assert finding is not None, (name, payload["findings"])
-    promoted = [error for error in payload["errors"] if REUSE_RULE in error]
-    assert bool(promoted) is expect_promoted, (name, payload["errors"], finding)
-    assert code == expect_code, (name, code, payload["errors"])
-    # Promotion never retypes the finding or its intrinsic check.
-    assert finding["severity"] == "warning", (name, finding)
-    if expect_promoted:
-        assert finding["passed"] is True, (name, finding)
-    else:
-        assert finding["passed"] is not False, (name, finding)
-
-
 def test_promotion_follows_exact_rule_id_metadata_only() -> None:
-    # QG54 rules start promotion-ineligible: a growth warning cannot fail the
-    # gate even under --fail-on-warnings.
+    # Every QG54 rule starts promotion-ineligible: no warning can fail the
+    # gate even under --fail-on-warnings until #54 approves an exact ID.
     def growth_body(repo: Path) -> None:
         write(repo / "src" / "huge.py", "\n".join(f"VALUE_{i} = {i}" for i in range(801)) + "\n")
         code, payload, _ = run_gate(repo, "--base-ref", "HEAD", "--fail-on-warnings")
@@ -1879,158 +2856,29 @@ def test_promotion_follows_exact_rule_id_metadata_only() -> None:
 
     in_repo(growth_body)
 
-    # The transitional QG-LEGACY-GITNEXUS-CONTEXT ID stays eligible: promotion
-    # adds an exact-ID error and flips ok while the finding stays a warning
-    # with its intrinsic check untouched.
-    def legacy_body(repo: Path) -> None:
+    # Malformed graph input is unread evidence for the rules that consume
+    # graph boosts, not a rule of its own: each affected owner rule reports
+    # QG54-ANALYSIS-INCOMPLETE, and nothing promotes.
+    def graph_input_body(repo: Path) -> None:
         context = repo / "broken-context.json"
         context.write_text("not json", encoding="utf-8")
+        write(repo / "src" / "app.py", "def resolver(value):\n    return value\n")
         code, payload, _ = run_gate(
             repo, "--base-ref", "HEAD", "--fail-on-warnings", "--gitnexus-context-json", str(context)
         )
-        finding = next(item for item in payload["findings"] if item["ruleId"] == "QG-LEGACY-GITNEXUS-CONTEXT")
-        assert finding["severity"] == "warning", finding
-        assert finding["status"] == "finding", finding
-        context_check = check_named(payload, "gitnexus-context")
-        assert context_check["status"] == "finding" and context_check["passed"] is True, context_check
-        assert context_check["warnings"], context_check
-        assert any("QG-LEGACY-GITNEXUS-CONTEXT" in error for error in payload["errors"]), payload["errors"]
-        assert payload["ok"] is False
-        assert code == 2
-        without_flag = run_gate(repo, "--base-ref", "HEAD", "--gitnexus-context-json", str(context))[1]
-        assert without_flag["ok"] is True, without_flag["errors"]
+        assert_exact_rules(payload, {
+            "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+            "QG54-OWNER-COMPETITION-TEST": "incomplete",
+        })
+        assert any(
+            "QG54-ANALYSIS-INCOMPLETE for QG54-OWNER-COMPETITION-PRODUCTION" in warning
+            and "gitnexus context JSON ignored" in warning
+            for warning in payload["warnings"]
+        ), payload["warnings"]
+        assert payload["errors"] == [], payload["errors"]
+        assert payload["ok"] is True and code == 0, (code, payload["errors"])
 
-    in_repo(legacy_body)
-
-
-@with_repo
-def test_reuse_finding_identity_is_content_anchored_not_positional(repo: Path) -> None:
-    # Distinct implementations of the same-named symbol need distinct content
-    # anchors. Content edits move the finding ID; unrelated edits and path-only
-    # moves do not because paths and lines are display provenance.
-    write(repo / "src" / "ids.py", _OWNER)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "owner")
-    write(repo / "src" / "copy_a.py", _OWNER.replace("lower()", "casefold()"))
-    write(repo / "src" / "copy_b.py", _OWNER.replace("value.strip()", "value.replace(' ', '')"))
-    _, before, _ = run_gate(repo, "--base-ref", "HEAD")
-
-    first = reuse_finding(before)
-    matches = {match["newFile"]: match for match in first["evidence"]["matches"]}
-    assert matches["src/copy_a.py"]["findingId"] != matches["src/copy_b.py"]["findingId"], matches
-    assert matches["src/copy_a.py"]["newContentAnchor"] != matches["src/copy_b.py"]["newContentAnchor"], matches
-    candidates = {
-        region["path"]: region for region in first["region"]["regions"]
-        if region["evidenceRole"] == "candidate"
-    }
-    assert set(candidates) == {"src/copy_a.py", "src/copy_b.py"}, candidates
-    assert candidates["src/copy_a.py"]["contentAnchor"] != candidates["src/copy_b.py"]["contentAnchor"], candidates
-
-    write(repo / "src" / "copy_a.py", _OWNER.replace("normalize_user_id", "normalizeUserId").replace("lower()", "casefold()"))
-    _, renamed, _ = run_gate(repo, "--base-ref", "HEAD")
-    renamed_finding = reuse_finding(renamed)
-    assert renamed_finding["findingId"] != first["findingId"]
-    renamed_matches = {match["newFile"]: match for match in renamed_finding["evidence"]["matches"]}
-    assert renamed_matches["src/copy_a.py"]["findingId"] != matches["src/copy_a.py"]["findingId"]
-    assert renamed_matches["src/copy_b.py"]["findingId"] == matches["src/copy_b.py"]["findingId"]
-
-    write(repo / "src" / "copy_a.py", _OWNER.replace("return value.strip().lower()", "return '-'.join(value.split()).lower()"))
-    _, edited, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert reuse_finding(edited)["findingId"] not in {first["findingId"], renamed_finding["findingId"]}
-    edited_matches = {match["newFile"]: match for match in reuse_finding(edited)["evidence"]["matches"]}
-    assert edited_matches["src/copy_a.py"]["findingId"] != renamed_matches["src/copy_a.py"]["findingId"]
-    assert edited_matches["src/copy_b.py"]["findingId"] == matches["src/copy_b.py"]["findingId"]
-    assert edited_matches["src/copy_a.py"]["newContentAnchor"] != matches["src/copy_a.py"]["newContentAnchor"]
-    assert edited_matches["src/copy_b.py"]["newContentAnchor"] == matches["src/copy_b.py"]["newContentAnchor"]
-
-    write(repo / "src" / "copy_b.py", "# unrelated leading comment\n" + _OWNER.replace("value.strip()", "value.replace(' ', '')"))
-    _, unrelated, _ = run_gate(repo, "--base-ref", "HEAD")
-    assert reuse_finding(unrelated)["findingId"] == reuse_finding(edited)["findingId"]
-
-    (repo / "src" / "copy_a.py").unlink()
-    write(repo / "src" / "moved" / "copy_a.py", _OWNER.replace("return value.strip().lower()", "return '-'.join(value.split()).lower()"))
-    _, moved_payload, _ = run_gate(repo, "--base-ref", "HEAD")
-    moved_finding = reuse_finding(moved_payload)
-    assert moved_finding["findingId"] == reuse_finding(unrelated)["findingId"]
-    assert "src/moved/copy_a.py" in {region["path"] for region in moved_finding["region"]["regions"]}
-
-    # Regions carry the full contract and are canonically ordered, so the
-    # serialized order is a property of the finding, not of match order.
-    regions = first["region"]["regions"]
-    assert regions, first["region"]
-    for region in regions:
-        assert set(region) == {"path", "role", "language", "displayLine", "contentAnchor", "evidenceRole"}, region
-        assert region["role"] == "production" and region["language"] == "python", region
-    assert {region["evidenceRole"] for region in regions} == {"candidate", "existing-owner"}, regions
-    ordered = sorted(regions, key=lambda r: (r["contentAnchor"], r["evidenceRole"], r["path"], r["displayLine"]))
-    assert regions == ordered, regions
-
-    # The pass condition is discriminated and names what a rerun needs, so a
-    # consumer can switch on the kind instead of parsing prose.
-    condition = first["passCondition"]
-    assert condition["kind"] == "duplicate-absent", condition
-    assert condition["requires"] and all(isinstance(item, str) for item in condition["requires"]), condition
-    assert condition["statement"], condition
-
-
-def test_reuse_identity_uses_complete_language_definition_extent() -> None:
-    rows = (
-        ("python", "py",
-         "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.strip().lower()\n",
-         "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.strip().casefold()\n",
-         "def normalize_user_id(\n    value: str,\n) -> str:\n    return value.replace(' ', '').lower()\n",
-         "def normalize_user_id(\n    value: str,\n) -> str:\n    return '-'.join(value.split()).lower()\n"),
-        ("javascript", "js",
-         "function normalizeUserId(value) {\nreturn value.trim().toLowerCase();\n}\n",
-         "function normalizeUserId(value) {\nreturn value.trim().toLocaleLowerCase();\n}\n",
-         "function normalizeUserId(value) {\nreturn value.replaceAll(' ', '').toLowerCase();\n}\n",
-         "function normalizeUserId(value) {\nreturn value.split(' ').join('-').toLowerCase();\n}\n"),
-        ("ruby", "rb",
-         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.downcase\nend # done\n",
-         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.downcase(:fold)\nend # done\n",
-         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.delete(' ').downcase\nend # done\n",
-         "def normalize_user_id(value)\nif value\nvalue = value.strip\nend\nvalue.split.join('-').downcase\nend # done\n"),
-    )
-    collisions = []
-
-    def verify(repo: Path, name: str, extension: str, owner: str, first: str, second: str, edited: str) -> None:
-        write(repo / "src" / f"owner.{extension}", owner)
-        git(repo, "add", ".")
-        git(repo, "commit", "-q", "-m", "owner")
-        write(repo / "src" / f"copy_a.{extension}", first)
-        write(repo / "src" / f"copy_b.{extension}", second)
-        initial = {match["newFile"]: match for match in reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])}
-        if len({match["findingId"] for match in initial.values()}) != 2:
-            collisions.append((name, initial))
-            return
-        write(repo / "src" / f"copy_a.{extension}", edited)
-        changed = {match["newFile"]: match for match in reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])}
-        assert changed[f"src/copy_a.{extension}"]["findingId"] != initial[f"src/copy_a.{extension}"]["findingId"]
-        assert changed[f"src/copy_b.{extension}"]["findingId"] == initial[f"src/copy_b.{extension}"]["findingId"]
-        if name == "ruby":
-            with (repo / "src" / f"copy_a.{extension}").open("a", encoding="utf-8") as handle:
-                handle.write("UNRELATED = {enabled: true}\n")
-            unrelated = {match["newFile"]: match for match in reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])}
-            assert unrelated[f"src/copy_a.{extension}"]["findingId"] == changed[f"src/copy_a.{extension}"]["findingId"]
-
-    for row in rows:
-        in_repo(lambda repo, values=row: verify(repo, *values))
-
-    def verify_braceless_arrow(repo: Path) -> None:
-        arrow = "const normalizeUserId = value => value.trim().toLowerCase();\n"
-        write(repo / "src" / "owner.js", arrow)
-        git(repo, "add", ".")
-        git(repo, "commit", "-q", "-m", "owner")
-        write(repo / "src" / "copy.js", arrow.replace("toLowerCase", "toLocaleLowerCase"))
-        before = reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])[0]["findingId"]
-        with (repo / "src" / "copy.js").open("a", encoding="utf-8") as handle:
-            handle.write("const UNRELATED = {enabled: true};\n")
-        after = reuse_matches(run_gate(repo, "--base-ref", "HEAD")[1])[0]["findingId"]
-        if after != before:
-            collisions.append(("javascript-unrelated", before, after))
-
-    in_repo(verify_braceless_arrow)
-    assert not collisions, collisions
+    in_repo(graph_input_body)
 
 
 @with_repo
@@ -2062,7 +2910,7 @@ def test_incompleteness_finding_identity_survives_a_path_rename(repo: Path) -> N
         found = [
             item for item in payload["findings"]
             if item["ruleId"] == "QG54-ANALYSIS-INCOMPLETE"
-            and item["evidence"]["affectedRuleId"] == "QG-LEGACY-REUSE-ADVISORY"
+            and item["evidence"]["affectedRuleId"] == "QG54-OWNER-COMPETITION-PRODUCTION"
             and item["evidence"]["scopeKind"] == "baseline-discovery"
         ]
         assert len(found) == 1, payload["findings"]
@@ -2114,20 +2962,21 @@ def test_a_non_utf8_path_reaches_a_stable_finding(repo: Path) -> None:
     # A path whose bytes are not valid UTF-8 survives the whole pipeline: it
     # is matched, its real bytes are serialized back out, and the finding
     # hashes to the same ID on a repeat run instead of raising.
-    write(repo / "src" / "ids.py", _OWNER)
+    write(repo / "src" / "ids.py", DUPLICATE_HELPER + "\n")
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "owner")
-    (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes(_OWNER.encode("utf-8").replace(b"    return", b"    # \xff\n    return"))
+    (repo / "src" / os.fsdecode(b"caf\xe9.py")).write_bytes((DUPLICATE_HELPER + "\n").encode("utf-8"))
     code, payload, stderr = run_gate(repo, "--base-ref", "HEAD")
-    assert code == 2, stderr
-    matches = reuse_matches(payload)
-    # There must actually be a match, or this proves nothing: a finding with no
-    # matches hashes to a stable id too.
-    assert len(matches) == 1, matches
-    assert matches[0]["newFile"].encode("utf-8", "surrogateescape") == b"src/caf\xe9.py", matches
-    finding = reuse_finding(payload)
-    assert len(finding["findingId"]) == 16, finding
-    assert reuse_finding(run_gate(repo, "--base-ref", "HEAD")[1])["findingId"] == finding["findingId"]
+    assert code == 0, stderr
+    copies = duplicate_findings(payload, "QG54-DUPLICATE-BASELINE")
+    # There must actually be a finding, or this proves nothing: an empty
+    # region list hashes to a stable id too.
+    assert len(copies) == 1, payload["findings"]
+    paths = {region["path"].encode("utf-8", "surrogateescape") for region in copies[0]["region"]["regions"]}
+    assert b"src/caf\xe9.py" in paths, copies
+    assert len(copies[0]["findingId"]) == 16, copies
+    repeated = duplicate_findings(run_gate(repo, "--base-ref", "HEAD")[1], "QG54-DUPLICATE-BASELINE")
+    assert repeated[0]["findingId"] == copies[0]["findingId"], (repeated, copies)
 
 
 def test_gate_implementation_budget() -> None:
@@ -2135,16 +2984,13 @@ def test_gate_implementation_budget() -> None:
         "wrapper_lines": 150,
         "module_lines": 1200,
         "function_lines": 180,
-        # Raised from 1800 by explicit operator approval on PR #90
-        # (2026-08-08), then from 1950 by explicit operator approval on PR B
-        # (#76, 2026-08-10), then to 2350 on the same PR after independent
-        # review forced three correctness fixes: decorator-aware symbol
-        # extents, the schema-v2 incomplete projection, and baseline
-        # precedence for repeated blocks. Measured 2,320 at that head, with
-        # the mandatory three-line-window, cross-hunk, collapse, and
-        # duplicate-blocker deletions already applied. The operator directed
-        # raising the ceiling over cutting scope or weakening proof.
-        "total_lines": 2350,
+        # Every raise is an explicit operator approval against a measured
+        # total: 1800 -> 1950 (PR #90, 2026-08-08) -> 2300 -> 2350 (PR B #76,
+        # 2026-08-10) -> 2650 -> 2734 -> 2761 -> 2802 (PR C #77 scope, final-
+        # review contract work, parent 1b/carrier/pin rulings, 2026-08-11/12)
+        # -> 2825 (PR #102 reviewer-fix round, 2026-08-12). The operator
+        # directed raising the ceiling over cutting scope or weakening proof.
+        "total_lines": 2825,
     }
     review_triggers = {
         "module_lines": 700,
@@ -2152,7 +2998,8 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "complete #75 canonical evaluation plus #76 exact duplication: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, and the three warning-only QG54-DUPLICATE-* rules over one redundancy owner; 2350 ceiling operator-approved 2026-08-10",
+        "TOTAL": "complete #75 canonical evaluation, #76 exact duplication, and #77 responsibility ownership: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, three QG54-DUPLICATE-* rules and two QG54-OWNER-COMPETITION-* rules over one redundancy owner with disposition records, with the lexical reuse scorer deleted; 2825 ceiling operator-approved 2026-08-12",
+        "_quality_gate/redundancy.py": "the one redundancy owner the architecture mandates: exact-duplicate phases plus the responsibility phases (eight evidence classes, three finding states, disposition validation, one-owner resolution) behind runner.check",
         "_quality_gate/runner.py:check": "the one evaluation walk the architecture mandates: every check, warning, error, and hard rule derives from a single typed outcome column",
     }
     production_files = [SCRIPT, *sorted((SCRIPT_DIR / "_quality_gate").glob("*.py"))]

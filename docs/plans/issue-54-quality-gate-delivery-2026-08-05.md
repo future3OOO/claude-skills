@@ -5,7 +5,7 @@
 - current state: child issues published; governing plan merged in PR #78;
   target architecture under review in PR #79
 - governing artifact: this document
-- last updated: 2026-08-08
+- last updated: 2026-08-12
 
 ## Objective
 
@@ -37,11 +37,10 @@ warning evidence until the parent explicitly authorizes a named promotion.
   `885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a`
 - captured human-authored code: `+1129/-8`, net `1121`; these are not the
   merged PR's final-head totals
-- responsibility-owner calibration corpus: not yet pinned. Before PR C is
-  dispatched, parent #54 must record a human-approved manifest whose every
-  entry names exact base and candidate commits, diff SHA-256, intended
-  positive/negative role, and adjudication. An implementation agent must not
-  choose or broaden this corpus.
+- responsibility-owner calibration corpus: pinned at parent #54 comment
+  5251048442 (cases R, P1, P2, and G, each naming exact base and candidate
+  commits, diff SHA-256, role, and adjudication). An implementation agent
+  consumes those entries verbatim and must not broaden this corpus.
 
 If a child brief and the parent conflict, the parent controls scope and the
 child controls its approved delivery slice. Any ambiguity or rule promotion
@@ -269,16 +268,20 @@ Required proof includes:
 - [x] Governing plan reviewed and merged in PR #78.
 - [x] PR A (#90) merged with its checklist and reviewer loop complete,
   completing #75 and superseding PR #80 (closed unmerged, reference only).
-- [ ] PR B merged with its checklist and reviewer loop complete. Implemented on
-  `feat/issue-76-exact-duplicates` from `origin/main`: the three warning-only
-  `QG54-DUPLICATE-*` rules in the new `redundancy.py` owner, per-role baseline
-  capture, and the superseded three-line-window/collapse/duplicate-blocker path
-  deleted. The gate-package ceiling was raised 1,950 to 2,300 and then to 2,350
-  by explicit operator approval on 2026-08-10, after the complete slice measured
-  2,255 and then 2,320 with every mandatory deletion already applied; the second
-  raise carries three correctness fixes the independent review forced.
-- [ ] Parent #54 must pin the exact responsibility-owner calibration manifest
-  before PR C is dispatched.
+- [x] PR B merged with its checklist and reviewer loop complete (PR #101,
+  merged into `main` as `b391d30` on 2026-08-11, completing #76). Implemented
+  on `feat/issue-76-exact-duplicates` from `origin/main`: the three
+  warning-only `QG54-DUPLICATE-*` rules in the new `redundancy.py` owner,
+  per-role baseline capture, and the superseded
+  three-line-window/collapse/duplicate-blocker path deleted. The gate-package
+  ceiling was raised 1,950 to 2,300 and then to 2,350 by explicit operator
+  approval on 2026-08-10, after the complete slice measured 2,255 and then
+  2,320 with every mandatory deletion already applied; the second raise
+  carries three correctness fixes the independent review forced.
+- [x] Parent #54 pinned the exact responsibility-owner calibration manifest
+  before PR C was dispatched (#54 comment 5251048442, 2026-08-11: cases R,
+  P1, P2, and G with exact bases, candidates, diff SHA-256s, roles, and
+  adjudications).
 - [ ] PR C merged with its checklist and reviewer loop complete.
 - [ ] Parent #54 calibration evidence reviewed by a human.
 - [x] Operator recorded the exact-rule schema-v2 `fail_on_warnings` meaning
@@ -316,3 +319,13 @@ Required proof includes:
   the measured net (+1,414 human-authored, +653 production). Fleet and cubic
   reviewer rounds on the delivery heads were dispositioned with premise and
   occurrence measurements.
+- 2026-08-11: ticked PR B (merged as PR #101) and the parent-pinned owner
+  manifest gate (#54 comment 5251048442); PR C dispatched on
+  `feat/issue-54-responsibility-owners` from `b391d30`, delivering the two
+  warning-only owner-competition rules, disposition records, the pinned
+  manifest calibration, and the mandatory lexical-reuse deletion.
+- 2026-08-12: PR #102 reviewer-fix round: five behavior fixes driven by the
+  fleet/CodeRabbit/cubic loop (compound-statement signature headers and
+  handler bodies, list-typed graph relationship values, closure-ambiguity
+  gaps, pairwise state-writer anchors with single-binding dedup, and
+  non-string ruleId rejection), each with its own real-CLI RED/GREEN cycle.
