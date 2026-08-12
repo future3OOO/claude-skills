@@ -1638,6 +1638,26 @@ def test_an_undecodable_carrier_is_reported_not_a_crash(repo: Path) -> None:
 
 
 @with_repo
+def test_an_unreadable_carrier_is_reported_not_absent(repo: Path) -> None:
+    # Only a missing carrier is absent: a carrier that exists but cannot be
+    # read is a capture failure the owner rules must surface, never a silent
+    # no-records run that drops real dispositions.
+    base, head = two_resolvers(repo)
+    write_disposition(repo, [state_root_record(base=base, candidate=head)])
+    located = run(["git", "rev-parse", "--git-path", "qg54-dispositions.json"], repo).stdout.strip()
+    carrier = Path(located) if os.path.isabs(located) else repo / located
+    carrier.chmod(0o000)
+    try:
+        code, payload, _ = run_gate(repo, "--base-ref", base)
+    finally:
+        carrier.chmod(0o644)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("dispositions carrier ignored" in note for note in notes), notes
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
 def test_a_duplicate_record_reference_binds_nothing(repo: Path) -> None:
     # The v1 contract rejects duplicate references: the same stamped record
     # twice on the carrier yields exactly one confirmed transition and a

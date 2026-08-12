@@ -67,9 +67,9 @@ def _disposition_records(repo: Path) -> tuple[dict[str, object], ...]:
     carrier = carrier if carrier.is_absolute() else repo / carrier
     try:
         text = carrier.read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         return ()
-    except UnicodeDecodeError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         return ({"invalidDocument": f"dispositions carrier ignored: {exc}"},)
     try:
         payload = json.loads(text)
