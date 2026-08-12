@@ -722,6 +722,45 @@ def test_repeated_inline_scaffolds_are_one_owner_candidate(repo: Path) -> None:
     assert code == 0 and payload["ok"] is True, (code, payload["errors"])
 
 
+@with_repo
+def test_partition_boundaries_discriminate_lifecycles(repo: Path) -> None:
+    # An order-preserving transfer across the try/else boundary changes the
+    # exception scope, so the two scaffolds are different lifecycles and
+    # never one fixture-lifecycle candidate.
+    write(repo / "tests" / "test_partitions.py", (
+        "def test_finalize_guarded():\n"
+        "    write_marker('r', 'armed')\n"
+        "    stage = prepare('cfg')\n"
+        "    try:\n"
+        "        apply(stage)\n"
+        "        finalize(stage)\n"
+        "    except OSError:\n"
+        "        rollback(stage)\n\n\n"
+        "def test_finalize_unguarded():\n"
+        "    write_marker('r', 'armed')\n"
+        "    stage = prepare('cfg')\n"
+        "    try:\n"
+        "        apply(stage)\n"
+        "    except OSError:\n"
+        "        rollback(stage)\n"
+        "    else:\n"
+        "        finalize(stage)\n"
+    ))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "partition scaffolds")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("tests/test_partitions.py",))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    lifecycle = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+                 if item["region"]["evidenceClass"] == "fixture-lifecycle"]
+    regions = [[(region["path"], region["displayLine"]) for region in item["region"]["regions"]]
+               for item in lifecycle]
+    assert regions == [], regions
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
 _RESOLVER_A = (
     "import os\n\n\ndef resolve_state_root():\n"
     "    override = os.environ.get('APP_STATE_ROOT')\n"

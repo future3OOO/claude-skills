@@ -466,8 +466,8 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
             headers += [item.context_expr for item in getattr(stmt, "items", ())]
             headers += [handler.type for handler in handlers if handler.type]
             calls = tuple(name for node in headers for name in _called_names(node))
-            inner = tuple(item for block in [*blocks, *[handler.body for handler in handlers]]
-                          for item in _operation_signature(block))
+            inner = tuple(("part", (), _operation_signature(block))
+                          for block in [*blocks, *[handler.body for handler in handlers]])
             ops.append((type(stmt).__name__, calls, inner))
             continue
         calls = _called_names(stmt)
