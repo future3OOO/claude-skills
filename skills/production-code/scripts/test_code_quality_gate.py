@@ -842,6 +842,30 @@ def test_a_changed_file_without_units_still_needs_coverage(repo: Path) -> None:
     assert code == 0, (code, payload["errors"])
 
 
+@with_repo
+def test_partition_roles_discriminate_bare_except_and_finally(repo: Path) -> None:
+    # Partition role is lifecycle identity: rollback on error only (bare
+    # except) and rollback always (finally) never group, even with matching
+    # operation sequences and empty headers.
+    scaffold = (
+        "def test_{n}_cleanup():\n"
+        "    write_marker('r', 'armed')\n"
+        "    stage = prepare('cfg')\n"
+        "    try:\n"
+        "        apply(stage)\n"
+        "    {clause}:\n"
+        "        rollback(stage)\n"
+    )
+    write(repo / "tests" / "test_left.py", scaffold.format(n="guarded", clause="except"))
+    write(repo / "tests" / "test_right.py", scaffold.format(n="always", clause="finally"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "cleanups")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("tests/test_left.py", "tests/test_right.py"))
+    assert_no_lifecycle_candidates(repo, base, bound)
+
+
 _RESOLVER_A = (
     "import os\n\n\ndef resolve_state_root():\n"
     "    override = os.environ.get('APP_STATE_ROOT')\n"

@@ -472,7 +472,7 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
             used = any(isinstance(sub, ast.Name) and sub.id == stmt.name for other in body if other is not stmt for sub in ast.walk(other))
             ops.append(("def", (), _operation_signature(stmt.body) if used else ()))
             continue
-        blocks = [part for name in ("body", "orelse", "finalbody")
+        blocks = [(name, part) for name in ("body", "orelse", "finalbody")
                   for part in [getattr(stmt, name, None)] if part]
         if blocks:
             handlers = getattr(stmt, "handlers", ())
@@ -480,8 +480,8 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
             headers += [item.context_expr for item in getattr(stmt, "items", ())]
             headers += [handler.type for handler in handlers if handler.type]
             calls = tuple(name for node in headers for name in _called_names(node))
-            inner = tuple(("part", (), _operation_signature(block))
-                          for block in [*blocks, *[handler.body for handler in handlers]])
+            inner = tuple((name, (), _operation_signature(block))
+                          for name, block in [*blocks, *[("handler", handler.body) for handler in handlers]])
             ops.append((type(stmt).__name__, calls, inner))
             continue
         calls = _called_names(stmt)
@@ -494,7 +494,7 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
 
 
 def _signature_weight(signature: tuple) -> int:
-    return sum((0 if op[0] == "part" else 1) + _signature_weight(op[2]) for op in signature)
+    return sum((0 if op[0] in ("body", "orelse", "finalbody", "handler") else 1) + _signature_weight(op[2]) for op in signature)
 
 
 def _owner_functions(text: str) -> list[dict[str, object]] | None:
