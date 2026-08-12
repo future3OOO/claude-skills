@@ -38,7 +38,7 @@ an implementation failure.
 | R | TEST | 4 | one `confirmed-unresolved` for `quality-gate:cleanup-verdict-scenario-lifecycle` naming exactly the five pinned tests |
 | P1/P2 | PRODUCTION | 6 | P1 `confirmed-unresolved` for `workflow-state-root-location` (`state_root` + the advisor shell resolver line); P2 `resolved` telemetry for `session-association-marker-consumption` |
 | P1/P2 | TEST | 8 | none pinned; all eight are outside-pinned-scope scaffolding candidates in the corpus's own tests |
-| G | TEST | 4 | one `resolved` telemetry entry: the five superseded scenario tests are absent and unreferenced, `_escape_row` is the one surviving lifecycle owner, and no active warning remains |
+| G | TEST | 4 | one `resolved` telemetry entry: the five superseded scenario tests are absent and unreferenced, `_escape_row` is the one surviving lifecycle owner, and no active warning remains for the pinned responsibility key |
 
 Outside-pinned-scope candidate counts by case, for parent #54:
 

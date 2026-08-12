@@ -430,10 +430,23 @@ _BARE_TOKEN = re.compile(r"^[a-z][a-z0-9_-]{1,15}$")
 _COMMAND_CALLEES = frozenset({"check_call", "check_output", "exec", "git", "popen", "run", "sh"})
 
 
+def _own_nodes(root: ast.AST) -> list[ast.AST]:
+    """The scope's behavior nodes: a nested definition joins only when referenced by name."""
+    own, nested, stack = [], [], [root]
+    while stack:
+        node = stack.pop()
+        own.append(node)
+        for child in ast.iter_child_nodes(node):
+            (nested if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else stack).append(child)
+    names = {node.id for node in own if isinstance(node, ast.Name)}
+    own += [item for child in nested if getattr(child, "name", "") in names for item in _own_nodes(child)]
+    return own
+
+
 def _called_names(node: ast.AST) -> tuple[str, ...]:
-    """Callee anchors with command-token discriminators, in walk order."""
+    """Callee anchors with command-token discriminators, in scope order."""
     names = []
-    for sub in ast.walk(node):
+    for sub in _own_nodes(node):
         if isinstance(sub, ast.Call):
             target = sub.func
             name = target.attr if isinstance(target, ast.Attribute) else target.id if isinstance(target, ast.Name) else ""
@@ -456,7 +469,8 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
     ops: list[tuple] = []
     for stmt in body:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            ops.append(("def", (), _operation_signature(stmt.body)))
+            used = any(isinstance(sub, ast.Name) and sub.id == stmt.name for other in body if other is not stmt for sub in ast.walk(other))
+            ops.append(("def", (), _operation_signature(stmt.body) if used else ()))
             continue
         blocks = [part for name in ("body", "orelse", "finalbody")
                   for part in [getattr(stmt, name, None)] if part]
@@ -498,7 +512,19 @@ def _owner_functions(text: str) -> list[dict[str, object]] | None:
         envs: set[str] = set()
         segments: set[str] = set()
         mutates = False
-        for sub in ast.walk(node):
+        decides, compare_keys = False, set()
+        for sub in _own_nodes(node):
+            if isinstance(sub, (ast.Return, ast.Raise)):
+                decides = decides or isinstance(sub, ast.Raise) or isinstance(sub.value, (ast.Compare, ast.BoolOp))
+            elif isinstance(sub, ast.Compare) and len(sub.comparators) == 1 \
+                    and isinstance(sub.comparators[0], ast.Constant):
+                subject, parts = sub.left, []
+                while isinstance(subject, ast.Attribute):
+                    parts.append(subject.attr)
+                    subject = subject.value
+                parts += [subject.id] if isinstance(subject, ast.Name) else []
+                if parts:
+                    compare_keys.add((".".join(reversed(parts)), repr(sub.comparators[0].value)))
             if isinstance(sub, ast.Call):
                 target = sub.func
                 name = target.attr if isinstance(target, ast.Attribute) else target.id if isinstance(target, ast.Name) else ""
@@ -534,34 +560,9 @@ def _owner_functions(text: str) -> list[dict[str, object]] | None:
             "public": not node.name.startswith("_"), "calls": _called_names(node),
             "signature": signature, "weight": _signature_weight(signature),
             "envs": envs, "segments": segments, "mutates": mutates, "forwards": forwards,
-            "compares": _compare_keys(node),
+            "compares": frozenset(compare_keys) if decides else frozenset(),
         })
     return functions
-
-
-def _compare_keys(node: ast.AST) -> frozenset[tuple[str, str]]:
-    """Each comparison's dotted subject and literal, when predicate-shaped:
-    the mechanical shape of an invariant check."""
-    decides = any(
-        isinstance(sub, ast.Return) and isinstance(sub.value, (ast.Compare, ast.BoolOp))
-        for sub in ast.walk(node)
-    ) or any(isinstance(sub, ast.Raise) for sub in ast.walk(node))
-    if not decides:
-        return frozenset()
-    keys = set()
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Compare) and len(sub.comparators) == 1 \
-                and isinstance(sub.comparators[0], ast.Constant):
-            subject = sub.left
-            parts = []
-            while isinstance(subject, ast.Attribute):
-                parts.append(subject.attr)
-                subject = subject.value
-            if isinstance(subject, ast.Name):
-                parts.append(subject.id)
-            if parts:
-                keys.add((".".join(reversed(parts)), repr(sub.comparators[0].value)))
-    return frozenset(keys)
 
 
 def _owner_units(snapshot: EvaluationSnapshot, roles: tuple[str, ...]) -> tuple[list[dict[str, object]], int, list[str]]:
@@ -715,8 +716,8 @@ def find_owner_competition(
         # discovery matters once a changed-side unit could pair against it.
         # Decision 1b: bound graph evidence must also carry symbol results
         # for the changed owner surface; a bare declaration is not evidence.
-        uncovered = sorted({unit["path"] for unit in units if unit["changed"]} - set(snapshot.graph_files)) \
-            if not snapshot.graph_gap else []
+        uncovered = sorted({entry.path for entry in snapshot.role_entries(*roles)}
+                           - set(snapshot.graph_files)) if not snapshot.graph_gap else []
         coverage_gap = (
             f"external graph evidence carries no symbol results for {len(uncovered)} changed file(s): "
             + ", ".join(uncovered[:5]) if uncovered else ""
@@ -913,9 +914,8 @@ def _rewired_to_survivor(snapshot: EvaluationSnapshot, ref: dict[str, object], p
 
 def _anchored_ref(ref: object) -> bool:
     """An owner/survivor reference: a path plus a symbol or exact content anchor."""
-    return isinstance(ref, dict) and isinstance(ref.get("path"), str) and bool(ref["path"]) \
-        and bool(isinstance(ref.get("symbol"), str) and ref["symbol"]
-                 or isinstance(ref.get("content"), str) and ref["content"].strip())
+    return isinstance(ref, dict) and isinstance(ref.get("path"), str) and bool(ref["path"]) and bool(
+        isinstance(ref.get("symbol"), str) and ref["symbol"] or isinstance(ref.get("content"), str) and ref["content"].strip())
 
 
 def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> str | None:

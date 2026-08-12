@@ -722,6 +722,18 @@ def test_repeated_inline_scaffolds_are_one_owner_candidate(repo: Path) -> None:
     assert code == 0 and payload["ok"] is True, (code, payload["errors"])
 
 
+def assert_no_lifecycle_candidates(repo: Path, base: str, bound: Path) -> None:
+    """The shared negative tail: zero fixture-lifecycle candidates, exact rule state."""
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    lifecycle = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
+                 if item["region"]["evidenceClass"] == "fixture-lifecycle"]
+    regions = [[(region["path"], region["displayLine"]) for region in item["region"]["regions"]]
+               for item in lifecycle]
+    assert regions == [], regions
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
 @with_repo
 def test_partition_boundaries_discriminate_lifecycles(repo: Path) -> None:
     # An order-preserving transfer across the try/else boundary changes the
@@ -751,14 +763,7 @@ def test_partition_boundaries_discriminate_lifecycles(repo: Path) -> None:
     base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     bound = graph_evidence(base, head, ("tests/test_partitions.py",))
-    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
-    lifecycle = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
-                 if item["region"]["evidenceClass"] == "fixture-lifecycle"]
-    regions = [[(region["path"], region["displayLine"]) for region in item["region"]["regions"]]
-               for item in lifecycle]
-    assert regions == [], regions
-    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
-    assert code == 0, (code, payload["errors"])
+    assert_no_lifecycle_candidates(repo, base, bound)
 
 
 @with_repo
@@ -780,13 +785,60 @@ def test_partition_wrappers_do_not_satisfy_operation_floor(repo: Path) -> None:
     base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
     head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     bound = graph_evidence(base, head, ("tests/test_left.py", "tests/test_right.py"))
+    assert_no_lifecycle_candidates(repo, base, bound)
+
+
+@with_repo
+def test_unreferenced_nested_helpers_stay_with_their_owner(repo: Path) -> None:
+    # Facts and weight belong to the scope that owns them: two unrelated
+    # outer functions containing similar never-referenced nested helpers
+    # share no owner evidence. The referenced with_repo(body) scaffold shape
+    # stays a lifecycle candidate and is pinned by the scaffold tests above.
+    outer = (
+        "def {name}(config):\n"
+        "    def resolve_defaults():\n"
+        "        root = os.environ.get('APP_STATE_ROOT')\n"
+        "        home = os.environ.get('APP_HOME')\n"
+        "        return root or home\n"
+        "    return {result}\n"
+    )
+    write(repo / "src" / "exporter.py", "import os\n\n\n" + outer.format(name="export_report", result="config['report']"))
+    write(repo / "src" / "importer.py", "import os\n\n\n" + outer.format(name="import_report", result="config['import']"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "unrelated outers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/exporter.py", "src/importer.py"))
     code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
-    lifecycle = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-TEST")
-                 if item["region"]["evidenceClass"] == "fixture-lifecycle"]
-    regions = [[(region["path"], region["displayLine"]) for region in item["region"]["regions"]]
-               for item in lifecycle]
-    assert regions == [], regions
-    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-TEST": "passed"})
+    candidates = [(item["region"]["evidenceClass"],
+                   [(region["path"], region["displayLine"]) for region in item["region"]["regions"]])
+                  for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert candidates == [], candidates
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_changed_file_without_units_still_needs_coverage(repo: Path) -> None:
+    # Changed-surface completeness comes from the changed role entries, not
+    # from what the extractor could decompose: a changed module with only
+    # module-level boundary reads still needs graph coverage.
+    write(repo / "src" / "settings.py",
+          "import os\n\nSTATE_ROOT = os.environ.get('APP_STATE_ROOT')\nHOME = os.environ.get('APP_HOME')\n")
+    write(repo / "src" / "other.py", "import os\n\n\ndef untouched():\n    return os.environ.get('APP_CACHE')\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "settings")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    partial = graph_evidence(base, head, ("src/other.py",))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(partial))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("src/settings.py" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+
+    full = graph_evidence(base, head, ("src/other.py", "src/settings.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(full))
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
     assert code == 0, (code, payload["errors"])
 
 
@@ -858,18 +910,23 @@ def graph_evidence(base: str, candidate: str, files: tuple = ()) -> Path:
     return document
 
 
+def two_resolvers(repo: Path) -> tuple[str, str]:
+    """The committed two-file competing-resolver fixture; returns (base, head)."""
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    return (run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip(),
+            run(["git", "rev-parse", "HEAD"], repo).stdout.strip())
+
+
 @with_repo
 def test_absent_graph_evidence_leaves_caller_callee_scope_unestablished(repo: Path) -> None:
     # Parent #54 decision (2026-08-12): an absent graph input cannot establish
     # complete caller/callee scope, and the snapshot index is not a
     # substitute. Bound evidence restores completeness; unbound or stale
     # evidence does not.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
 
     code, payload, _ = run_gate(repo, "--base-ref", base)
     assert_exact_rules(payload, {
@@ -900,12 +957,7 @@ def test_scalar_relationship_values_are_not_graph_coverage(repo: Path) -> None:
     # A relationship key must hold the provider's list-shaped result: a null
     # or scalar value is malformed input, not caller/callee coverage. The
     # empty-list validity half lives in the bound-evidence cases above.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     malformed = Path(tempfile.mkdtemp(prefix="graph-evidence-")) / "graph.json"
     malformed.write_text(json.dumps({
         "base": base, "candidate": head,
@@ -1114,12 +1166,7 @@ def test_stale_or_inapplicable_records_never_clear_a_candidate(repo: Path) -> No
     # A record naming commits the evaluation did not evaluate, and a record
     # whose repair is meaningless for its disposition, are reported and
     # applied to nothing; the mechanical candidate stays active.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     write_disposition(repo, [
         state_root_record(base=base, candidate=base),
         state_root_record(disposition="distinct-authority", base=base, candidate=head),
@@ -1139,12 +1186,7 @@ def test_candidate_tree_disposition_files_are_never_read(repo: Path) -> None:
     # Candidate-authored provenance is not trust: the gate reads records only
     # from the fixed out-of-tree carrier, so a records-shaped file inside the
     # evaluated tree — even one named like the carrier — has no effect.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     smuggled = {"records": stamp_records([state_root_record(
         disposition="distinct-authority", repair=None, base=base, candidate=head)])}
     smuggled["records"][0].pop("repair")
@@ -1305,12 +1347,7 @@ def test_temporary_coexistence_is_v2_territory_and_stays_active(repo: Path) -> N
     # pinned field set and the tracked follow-up/expiry slice is v2
     # territory, so a temporary-coexistence claim leaves the candidate
     # active -- bare, or carrying the wider fields.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     record = state_root_record(disposition="temporary-coexistence", base=base, candidate=head)
     write_disposition(repo, [record])
     code, payload, _ = run_gate(repo, "--base-ref", base)
@@ -1472,12 +1509,7 @@ def test_disposition_trust_negatives_leave_the_rule_incomplete(repo: Path) -> No
     # Unknown schema versions, broken digests, and path-only wildcard owner
     # references cannot bind; each is reported and the rule reads incomplete,
     # never clean, with the candidate untouched.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     record = state_root_record(base=base, candidate=head)
     write_disposition(repo, [
         {**record, "schemaVersion": 2},
@@ -1503,12 +1535,7 @@ def test_a_non_string_rule_id_is_rejected_not_a_crash(repo: Path) -> None:
     # A record whose ruleId is not a string is malformed input the gate must
     # survive: the record reads rejected, the candidate stays untouched, and
     # the gate still emits its verdict.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     record = state_root_record(base=base, candidate=head)
     write_disposition(repo, [{**record, "ruleId": ["QG54-OWNER-COMPETITION-PRODUCTION"]}])
     code, payload, _ = run_gate(repo, "--base-ref", base)
@@ -1524,12 +1551,7 @@ def test_a_shapeless_survivor_is_rejected_not_a_crash(repo: Path) -> None:
     # A survivor without the owner-reference shape is malformed input the
     # gate must survive: the record reads rejected, the candidate stays
     # untouched, and the gate still emits its verdict.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     write_disposition(repo, [state_root_record(base=base, candidate=head, survivor={})])
     code, payload, _ = run_gate(repo, "--base-ref", base)
     notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
@@ -1564,12 +1586,7 @@ def test_a_duplicate_record_reference_binds_nothing(repo: Path) -> None:
     # The v1 contract rejects duplicate references: the same stamped record
     # twice on the carrier yields exactly one confirmed transition and a
     # duplicate-reference note for the second copy.
-    write(repo / "src" / "state.py", _RESOLVER_A)
-    write(repo / "src" / "advisor.py", _RESOLVER_B)
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "two resolvers")
-    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
-    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    base, head = two_resolvers(repo)
     record = state_root_record(base=base, candidate=head)
     write_disposition(repo, [record, record])
     code, payload, _ = run_gate(repo, "--base-ref", base)
