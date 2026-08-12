@@ -39,7 +39,10 @@ python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
 ```
 
 Stop on packet blockers. The packet fixes the initial target and coverage
-surface.
+surface. When the packet resolves a real base, the adapter also records its
+fork-point commit as the pass's immutable base OID (`baseOid` in the status
+projection); the per-edit gate hook passes it as `--base-ref` so growth reads
+branch-cumulative throughout implementation.
 
 ### 2. Task contract and diagnosis
 
@@ -134,7 +137,12 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 ```
 
 The recorder refuses anything but the gate's parseable `ok: true` verdict, and
-only after the TDD decision. Begin
+only after the TDD decision. This run passes no base ref on purpose: it proves
+the pre-implementation tree is a clean baseline (worktree against `HEAD` — no
+branch delta yet), so its cumulative-growth claim is intentionally incomplete.
+Branch-cumulative growth against the review budget is measured per edit by the
+PostToolUse gate hook using the base OID recorded at bootstrap, and again at
+typed verification. Begin
 production, configuration, and runtime implementation edits only once both TDD
 and production-code are ready. The `production-code` skill owns the standards
 themselves; this step owns only its place in the order.

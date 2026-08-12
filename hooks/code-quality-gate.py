@@ -46,15 +46,24 @@ def main() -> int:
     # association is the only thing an anonymous payload withholds — invalidation
     # above and the quality gate below still run for it.
     session = session_key(payload)
-    if invalidate_after_edit(identity, relative) is not None and session is not None:
+    state = invalidate_after_edit(identity, relative)
+    if state is not None and session is not None:
         record_session_association(session, identity)
     if not is_code_path(relative):
         return 0
 
+    command = [sys.executable, str(GATE), "check", "--repo", str(identity.root), "--json"]
+    # The base recorded at Repo Context Forge bootstrap is the only base this
+    # hook ever passes: with it the gate measures branch-cumulative growth per
+    # edit; without it the gate keeps reporting the honest base-binding gap.
+    # The hook derives nothing itself.
+    base = state.get("baseOid") if state is not None else None
+    if isinstance(base, str) and base:
+        command += ["--base-ref", base]
     # stderr stays separate so a diagnostic on a passing run can never make
     # the verdict unparseable and block a clean edit.
     result = subprocess.run(
-        [sys.executable, str(GATE), "check", "--repo", str(identity.root), "--json"],
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

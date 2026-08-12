@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.tests.support import build_document, record_context_forge  # noqa: E402
-from hooks.lib.workflow_state import set_phase  # noqa: E402
+from hooks.lib.workflow_state import record_base_oid, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
@@ -401,6 +401,43 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(feedback["hookSpecificOutput"]["hookEventName"], "PostToolUse")
         self.assertIn("QG54-GROWTH-CUMULATIVE", context)
         self.assertIn("QG54-ANALYSIS-INCOMPLETE", context)
+
+    def test_a_pass_without_a_recorded_base_keeps_the_honest_growth_gap(self) -> None:
+        # Falsification for the recorded-base wiring: a governed pass that never
+        # recorded a base gets no derived one — the hook passes nothing and the
+        # gate keeps naming the base-binding gap.
+        begun = self.state("begin", "--slug", "no-base")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        (self.repo / "app.py").write_text("value = 5\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("no caller-supplied base", context)
+
+    def test_a_recorded_base_reaches_the_per_edit_gate_and_stays_first_wins(self) -> None:
+        # The recorder is the one production writer of the pass base (the
+        # bootstrap Interface is proven in test_repoforge_workflow): it demands
+        # a commit OID, keeps the first record, and the hook then measures the
+        # edit against that base instead of reporting the base-binding gap.
+        begun = self.state("begin", "--slug", "with-base")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        identity = resolve_repo_identity(self.repo)
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        ).stdout.strip()
+        with self.assertRaises(ValueError):
+            record_base_oid(identity, "with-base", wid, "base-main")
+        self.assertEqual(record_base_oid(identity, "with-base", wid, base).get("baseOid"), base)
+        self.assertEqual(record_base_oid(identity, "with-base", wid, "f" * 40).get("baseOid"), base)
+
+        (self.repo / "app.py").write_text("value = 6\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if result.stdout:
+            context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertNotIn("no caller-supplied base", context)
 
     def test_failed_gate_feedback_renders_the_verdict_errors_concisely(self) -> None:
         escape = "TO" + "DO"

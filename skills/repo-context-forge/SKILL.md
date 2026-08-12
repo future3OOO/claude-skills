@@ -23,6 +23,12 @@ python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
 intent; the adapter records the Repo Context Forge step on that workflow and
 refuses a mismatched slug. Shell-quote the `--intent` text and any slug
 placeholder — intents contain spaces and punctuation that split unquoted.
+When the packet resolves a real base (its base ref is not the head-ref
+sentinel), the adapter also records the packet's fork-point commit as the
+pass's immutable base OID (`baseOid` in the status projection): the first
+recorded OID survives reruns, a rerun resolving a different commit is
+reported on stderr, and the per-edit quality-gate hook passes the recorded
+OID as `--base-ref` so growth warnings read branch-cumulative.
 
 Standalone planned work with no governed pass — `intent` mode needs `--intent`
 and must not pass `--workflow-slug`, which would be refused with no active

@@ -458,6 +458,27 @@ def commit_evidence_phase(
         ), write.evidence_id
 
 
+def record_base_oid(identity: RepoIdentity, slug: str, workflow_id: str | None, oid: str) -> JsonObject:
+    """Record the pass's base commit OID, immutable for the life of the pass.
+
+    The Repo Context Forge packet owns base resolution; this recorder only
+    stores its resolved commit so every later per-edit measurement reads one
+    coherent base. The first recorded OID wins: a rerun that resolves the same
+    commit is idempotent, and a differing rerun keeps the original — the
+    caller reports that conflict, because a moving base would make successive
+    per-edit growth measurements incoherent.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", oid):
+        raise ValueError("base OID must be a 40-hex commit OID")
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
+        existing = state.get("baseOid")
+        if isinstance(existing, str) and existing:
+            return state
+        state["baseOid"] = oid
+        return _commit(transaction, state, "record-base-oid")
+
+
 def commit_verification(
     identity: RepoIdentity,
     slug: str,
