@@ -282,7 +282,9 @@ Required proof includes:
   before PR C was dispatched (#54 comment 5251048442, 2026-08-11: cases R,
   P1, P2, and G with exact bases, candidates, diff SHA-256s, roles, and
   adjudications).
-- [ ] PR C merged with its checklist and reviewer loop complete.
+- [x] PR C merged with its checklist and reviewer loop complete (PR #102,
+  merge 9ac844c, 2026-08-12: eight reviewer-fix rounds, zero unresolved
+  threads, final advisor commit-ready on the merged head).
 - [ ] Parent #54 calibration evidence reviewed by a human.
 - [x] Operator recorded the exact-rule schema-v2 `fail_on_warnings` meaning
   before #75 finalizes warning projection.
@@ -324,6 +326,11 @@ Required proof includes:
   `feat/issue-54-responsibility-owners` from `b391d30`, delivering the two
   warning-only owner-competition rules, disposition records, the pinned
   manifest calibration, and the mandatory lexical-reuse deletion.
+- 2026-08-12: PR #102 merged as 9ac844c after eight reviewer-fix rounds
+  (fleet/CodeRabbit/cubic loops: signature partitions and roles, graph
+  relationship typing and coverage, schema-v1 exactness, survivor and
+  carrier trust boundaries, scope-owned facts, gate-driven dedup), every
+  round independently reviewed commit-ready; issue #77 closed.
 - 2026-08-12: PR #102 reviewer-fix round: five behavior fixes driven by the
   fleet/CodeRabbit/cubic loop (compound-statement signature headers and
   handler bodies, list-typed graph relationship values, closure-ambiguity
