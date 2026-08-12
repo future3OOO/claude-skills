@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     NO_INSTANCE_ID,
@@ -20,6 +21,7 @@ from hooks.lib.workflow_state import (  # noqa: E402
     commit_evidence_phase,
     instance_id,
     read_workflow,
+    record_base_oid,
     safe_slug,
 )
 
@@ -55,6 +57,33 @@ def _remove_option(argv: list[str], name: str) -> tuple[list[str], str | None]:
         output.append(arg)
         index += 1
     return output, value
+
+
+def _record_pass_base(identity: RepoIdentity, slug: str, workflow_id: str, packet: Path) -> None:
+    """Record the packet's already-resolved base as the pass's immutable OID.
+
+    The producer owns base resolution, and its no-base sentinel is the head
+    ref itself: with no resolvable base it substitutes the head ref for the
+    base, so a packet whose base_ref equals head_ref carries no base and
+    nothing is recorded — the gate keeps reporting the honest base-binding
+    gap. With a real base, `git.merge_base` is its resolved fork-point commit.
+    The first recorded OID survives reruns; a rerun that resolves a different
+    commit is reported, never silently absorbed.
+    """
+    payload = json.loads(packet.read_text(encoding="utf-8"))
+    target = payload.get("target_state")
+    git_facts = payload.get("git")
+    base_ref = target.get("base_ref") if isinstance(target, dict) else None
+    head_ref = target.get("head_ref") if isinstance(target, dict) else None
+    merge_base = git_facts.get("merge_base") if isinstance(git_facts, dict) else None
+    if not base_ref or base_ref == head_ref or not isinstance(merge_base, str) or not merge_base:
+        return
+    recorded = record_base_oid(identity, slug, workflow_id, merge_base).get("baseOid")
+    if recorded != merge_base:
+        sys.stderr.write(
+            f"note: pass base already recorded as {recorded}; this bootstrap resolved "
+            f"{merge_base}; keeping the immutable recorded base\n"
+        )
 
 
 def _run_producer(args: list[str]) -> int:
@@ -117,6 +146,7 @@ def main(argv: list[str]) -> int:
                     source_root=str(identity.root),
                 ),
             )
+            _record_pass_base(identity, slug, captured_workflow_id, packet)
         except (WorkflowError, RepoIdentityError, ValueError) as exc:
             sys.stderr.write(
                 f"<blocker>cannot record Repo Context Forge graph evidence: {exc}; "

@@ -21,7 +21,11 @@ Before editing, use the standards below to choose the smallest production-safe i
 PYTHONDONTWRITEBYTECODE=1 python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" check --repo "$PWD"
 ```
 
-Use `--base-ref <ref>` when a review base is known. Existing Repo Context Forge
+Use `--base-ref <ref>` when a review base is known; without it the gate
+measures the worktree against `HEAD` only and reports its cumulative-growth
+claim as incomplete. In a governed pass the PostToolUse gate hook supplies the
+base OID recorded at Repo Context Forge bootstrap automatically, so per-edit
+warnings already read branch-cumulative. Existing Repo Context Forge
 or GitNexus evidence can be supplied with `--repo-context-packet <path-or->`
 and `--gitnexus-context-json <path-or->`. Load
 [references/gate-policy.md](references/gate-policy.md) when interpreting the
