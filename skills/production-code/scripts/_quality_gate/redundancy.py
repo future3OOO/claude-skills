@@ -439,8 +439,7 @@ def _own_nodes(root: ast.AST) -> list[ast.AST]:
         for child in ast.iter_child_nodes(node):
             (nested if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else stack).append(child)
     names = {node.id for node in own if isinstance(node, ast.Name)}
-    own += [item for child in nested if getattr(child, "name", "") in names for item in _own_nodes(child)]
-    return own
+    return own + [item for child in nested if getattr(child, "name", "") in names for item in _own_nodes(child)]
 
 
 def _called_names(node: ast.AST) -> tuple[str, ...]:
@@ -469,7 +468,8 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
     ops: list[tuple] = []
     for stmt in body:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            used = any(isinstance(sub, ast.Name) and sub.id == stmt.name for other in body if other is not stmt for sub in ast.walk(other))
+            used = any(isinstance(sub, ast.Name) and sub.id == stmt.name for other in body
+                       if not isinstance(other, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for sub in _own_nodes(other))
             ops.append(("def", (), _operation_signature(stmt.body) if used else ()))
             continue
         blocks = [(name, part) for name in ("body", "orelse", "finalbody")

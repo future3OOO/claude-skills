@@ -866,6 +866,38 @@ def test_partition_roles_discriminate_bare_except_and_finally(repo: Path) -> Non
     assert_no_lifecycle_candidates(repo, base, bound)
 
 
+@with_repo
+def test_a_dead_helper_chain_activates_nothing(repo: Path) -> None:
+    # Activation flows through nesting recursion into referenced defs, never
+    # through references living only inside sibling definitions: a helper
+    # referenced solely from an unreferenced sibling helper stays dead, so
+    # unrelated outers carrying the same dead chain share no lifecycle.
+    outer = (
+        "def {name}(config):\n"
+        "    def resolve_defaults():\n"
+        "        root = os.environ.get('APP_STATE_ROOT')\n"
+        "        home = os.environ.get('APP_HOME')\n"
+        "        return root or home\n"
+        "    def probe_state():\n"
+        "        return resolve_defaults()\n"
+        "    return {result}\n"
+    )
+    write(repo / "src" / "exporter.py", "import os\n\n\n" + outer.format(name="export_report", result="config['report']"))
+    write(repo / "src" / "importer.py", "import os\n\n\n" + outer.format(name="import_report", result="config['import']"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "dead chains")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/exporter.py", "src/importer.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    candidates = [(item["region"]["evidenceClass"],
+                   [(region["path"], region["displayLine"]) for region in item["region"]["regions"]])
+                  for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert candidates == [], candidates
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "passed"})
+    assert code == 0, (code, payload["errors"])
+
+
 _RESOLVER_A = (
     "import os\n\n\ndef resolve_state_root():\n"
     "    override = os.environ.get('APP_STATE_ROOT')\n"
