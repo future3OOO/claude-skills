@@ -2984,12 +2984,13 @@ def test_gate_implementation_budget() -> None:
         "wrapper_lines": 150,
         "module_lines": 1200,
         "function_lines": 180,
-        # Every raise is an explicit operator approval against a measured
-        # total: 1800 -> 1950 (PR #90, 2026-08-08) -> 2300 -> 2350 (PR B #76,
-        # 2026-08-10) -> 2650 -> 2734 -> 2761 -> 2802 (PR C #77 scope, final-
-        # review contract work, parent 1b/carrier/pin rulings, 2026-08-11/12)
-        # -> 2825 (PR #102 reviewer-fix round, 2026-08-12). The operator
-        # directed raising the ceiling over cutting scope or weakening proof.
+        # Every raise requires a recorded operator approval against a measured
+        # total; a comment here is never an approval. Recorded: 1800 -> 1950
+        # (PR #90, 2026-08-08), -> 2300 -> 2350 (PR #101 for #76, 2026-08-10),
+        # -> 2825 for the complete #77 slice (#54 issuecomment-5265202971,
+        # 2026-08-12 — the only recorded approval for the 2350..2825 interval;
+        # intermediate figures during PR #102's review rounds were working
+        # measurements, not approvals).
         "total_lines": 2825,
     }
     review_triggers = {
