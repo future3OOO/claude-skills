@@ -22,8 +22,7 @@ def parse_repo_context_packet(text: str) -> set[str]:
 
 
 def _list_valued(item: dict) -> list[str]:
-    """Relationship keys holding the provider's list-shaped result; null or
-    scalar values are malformed and never count as graph evidence."""
+    """Relationship keys holding the provider's list-shaped result; null/scalar values are malformed."""
     return [key for key in ("callers", "calleeOf", "references") if isinstance(item.get(key), list)]
 
 
@@ -70,6 +69,8 @@ def _disposition_records(repo: Path) -> tuple[dict[str, object], ...]:
         text = carrier.read_text(encoding="utf-8")
     except OSError:
         return ()
+    except UnicodeDecodeError as exc:
+        return ({"invalidDocument": f"dispositions carrier ignored: {exc}"},)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:

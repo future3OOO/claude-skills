@@ -594,10 +594,8 @@ def _owner_units(snapshot: EvaluationSnapshot, roles: tuple[str, ...]) -> tuple[
             gaps.append(f"{path}: owner evidence could not parse this python")
             continue
         ambiguous = {name for name, count in Counter(fn["name"] for fn in functions).items() if count > 1}
-        referenced = {called for fn in functions for called in fn["calls"]} & ambiguous
-        if referenced:
-            gaps.append(f"{path}: ambiguous same-named definitions referenced in closure: "
-                        + ", ".join(sorted(referenced)[:3]))
+        if referenced := {called for fn in functions for called in fn["calls"]} & ambiguous:
+            gaps.append(f"{path}: ambiguous same-named definitions referenced in closure: " + ", ".join(sorted(referenced)[:3]))
         by_name = {fn["name"]: fn for fn in functions if fn["name"] not in ambiguous}
         for fn in functions:
             closed = [fn] + [by_name[called] for called in fn["calls"]
@@ -639,8 +637,7 @@ def _owner_groups(units: list[dict[str, object]]) -> dict[str, list[list[dict[st
     defined = {unit["name"] for unit in units}
 
     return {
-        # Two resolvers sharing one pair of environment anchors across files;
-        # pairwise keys so a superset resolver still competes.
+        # Resolvers sharing one env-anchor pair across files; pairwise keys so a superset still competes.
         "state-writers": grouped(collect(
             lambda unit: [frozenset(pair) for pair in combinations(sorted(unit["envs"]), 2)]))
         # One state segment in two files, at least one mutating it.
@@ -796,8 +793,8 @@ def _owner_candidate(
 _SEMANTIC_DISPOSITIONS = ("same-responsibility", "distinct-authority", "temporary-coexistence")
 # The parent-pinned v1 field set (#54 issuecomment-5259793024): anything wider is v2 territory.
 _V1_FIELDS = frozenset((
-    "schemaVersion", "ruleId", "responsibilityKey", "disposition", "repair", "base", "candidate",
-    "owners", "survivor", "parentRecord", "validationRoot", "resolvedBase", "resolvedCandidateTree"))
+    "schemaVersion", "ruleId", "responsibilityKey", "disposition", "repair", "base", "candidate", "owners",
+    "survivor", "parentRecord", "validationRoot", "resolvedBase", "resolvedCandidateTree"))
 _REPAIRS = ("deepen", "replace", "consolidate")
 
 # Parent #54 decision (2026-08-12): resolution silences a warning, so it
@@ -914,6 +911,13 @@ def _rewired_to_survivor(snapshot: EvaluationSnapshot, ref: dict[str, object], p
     return True
 
 
+def _anchored_ref(ref: object) -> bool:
+    """An owner/survivor reference: a path plus a symbol or exact content anchor."""
+    return isinstance(ref, dict) and isinstance(ref.get("path"), str) and bool(ref["path"]) \
+        and bool(isinstance(ref.get("symbol"), str) and ref["symbol"]
+                 or isinstance(ref.get("content"), str) and ref["content"].strip())
+
+
 def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> str | None:
     """The reason this record cannot bind, or None. Every check is
     structural and snapshot-bound; nothing here trusts prose."""
@@ -926,13 +930,10 @@ def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> 
         return f"record rejected: unknown disposition schema version {record.get('schemaVersion')!r}"
     if not isinstance(key, str) or not key or disposition not in _SEMANTIC_DISPOSITIONS:
         return f"record rejected: responsibilityKey and a semantic disposition from {_SEMANTIC_DISPOSITIONS} are required"
-    if not isinstance(owners, list) or len(owners) < 2 or not all(
-        isinstance(ref, dict) and isinstance(ref.get("path"), str) and ref["path"]
-        and (isinstance(ref.get("symbol"), str) and ref["symbol"]
-             or isinstance(ref.get("content"), str) and ref["content"].strip())
-        for ref in owners
-    ):
+    if not isinstance(owners, list) or len(owners) < 2 or not all(_anchored_ref(ref) for ref in owners):
         return f"{key}: record rejected: at least two owner references, each a path with a symbol or exact content anchor, are required"
+    if (survivor := record.get("survivor")) is not None and not _anchored_ref(survivor):
+        return f"{key}: record rejected: the survivor requires a path with a symbol or exact content anchor"
     if extra := sorted(set(record) - _V1_FIELDS):
         return f"{key}: record rejected: fields outside the pinned schema-v1 set: {', '.join(extra)}"
     # The record names its validation root and carries a digest over its

@@ -1452,6 +1452,46 @@ def test_a_non_string_rule_id_is_rejected_not_a_crash(repo: Path) -> None:
 
 
 @with_repo
+def test_a_shapeless_survivor_is_rejected_not_a_crash(repo: Path) -> None:
+    # A survivor without the owner-reference shape is malformed input the
+    # gate must survive: the record reads rejected, the candidate stays
+    # untouched, and the gate still emits its verdict.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    write_disposition(repo, [state_root_record(base=base, candidate=head, survivor={})])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("survivor" in note for note in notes), notes
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_an_undecodable_carrier_is_reported_not_a_crash(repo: Path) -> None:
+    # A carrier that exists but does not decode is damaged input, not an
+    # absent one: the gate reports the ignored carrier, the rule reads
+    # incomplete, and the verdict is still emitted.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    located = run(["git", "rev-parse", "--git-path", "qg54-dispositions.json"], repo).stdout.strip()
+    carrier = Path(located) if os.path.isabs(located) else repo / located
+    carrier.write_bytes(bytes([255, 254]) + b'{"records": []}')
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("dispositions carrier ignored" in note for note in notes), notes
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "incomplete"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
 def test_a_duplicate_record_reference_binds_nothing(repo: Path) -> None:
     # The v1 contract rejects duplicate references: the same stamped record
     # twice on the carrier yields exactly one confirmed transition and a
