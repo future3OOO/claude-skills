@@ -1232,10 +1232,11 @@ def test_two_validators_deciding_one_invariant_are_a_candidate(repo: Path) -> No
 
 
 @with_repo
-def test_temporary_coexistence_stays_visible_confirmed_debt(repo: Path) -> None:
-    # temporary-coexistence never resolves: it stays confirmed-unresolved
-    # visible debt, and a record without its tracked follow-up and expiry is
-    # rejected rather than applied.
+def test_temporary_coexistence_is_v2_territory_and_stays_active(repo: Path) -> None:
+    # Parent amendment (#54 issuecomment-5259793024): v1 is exactly the
+    # pinned field set and the tracked follow-up/expiry slice is v2
+    # territory, so a temporary-coexistence claim leaves the candidate
+    # active -- bare, or carrying the wider fields.
     write(repo / "src" / "state.py", _RESOLVER_A)
     write(repo / "src" / "advisor.py", _RESOLVER_B)
     git(repo, "add", ".")
@@ -1246,18 +1247,15 @@ def test_temporary_coexistence_stays_visible_confirmed_debt(repo: Path) -> None:
     write_disposition(repo, [record])
     code, payload, _ = run_gate(repo, "--base-ref", base)
     notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
-    assert any("followUp" in note and "expiry" in note for note in notes), notes
+    assert any("not expressible in schema v1" in note for note in notes), notes
     assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["candidate"]
 
     write_disposition(repo, [{**record, "followUp": "future3OOO/claude-skills#88", "expiry": "one slice"}])
     code, payload, _ = run_gate(repo, "--base-ref", base)
-    debt = [item for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
-            if item["state"] == "confirmed-unresolved"]
-    assert len(debt) == 1, payload["findings"]
-    assert debt[0]["evidence"]["followUp"] == "future3OOO/claude-skills#88", debt
-    assert debt[0]["evidence"]["expiry"] == "one slice", debt
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("outside the pinned schema-v1 set: expiry, followUp" in note for note in notes), notes
+    assert [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")] == ["candidate"]
     assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
-    assert any("app-state-root-location" in warning for warning in payload["warnings"]), payload["warnings"]
     assert code == 0, (code, payload["errors"])
 
 

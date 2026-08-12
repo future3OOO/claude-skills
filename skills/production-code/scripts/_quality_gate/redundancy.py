@@ -794,6 +794,10 @@ def _owner_candidate(
 
 
 _SEMANTIC_DISPOSITIONS = ("same-responsibility", "distinct-authority", "temporary-coexistence")
+# The parent-pinned v1 field set (#54 issuecomment-5259793024): anything wider is v2 territory.
+_V1_FIELDS = frozenset((
+    "schemaVersion", "ruleId", "responsibilityKey", "disposition", "repair", "base", "candidate",
+    "owners", "survivor", "parentRecord", "validationRoot", "resolvedBase", "resolvedCandidateTree"))
 _REPAIRS = ("deepen", "replace", "consolidate")
 
 # Parent #54 decision (2026-08-12): resolution silences a warning, so it
@@ -929,6 +933,8 @@ def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> 
         for ref in owners
     ):
         return f"{key}: record rejected: at least two owner references, each a path with a symbol or exact content anchor, are required"
+    if extra := sorted(set(record) - _V1_FIELDS):
+        return f"{key}: record rejected: fields outside the pinned schema-v1 set: {', '.join(extra)}"
     # The record names its validation root and carries a digest over its
     # canonical content, so a candidate-side edit breaks the binding.
     root = record.get("validationRoot")
@@ -948,10 +954,8 @@ def _record_problem(snapshot: EvaluationSnapshot, record: dict[str, object]) -> 
             return f"{key}: record rejected: a repair strategy is meaningless for distinct-authority"
     elif repair not in _REPAIRS:
         return f"{key}: record rejected: repair must be one of {_REPAIRS}"
-    if disposition == "temporary-coexistence" and not all(
-        isinstance(record.get(field), str) and record[field] for field in ("followUp", "expiry")
-    ):
-        return f"{key}: record rejected: temporary-coexistence requires a tracked followUp and an expiry"
+    if disposition == "temporary-coexistence":
+        return f"{key}: record rejected: the tracked follow-up/expiry slice is not expressible in schema v1; the finding stays active"
     if record.get("resolvedBase") != snapshot.base_identity or record.get("resolvedCandidateTree") != snapshot.candidate_tree:
         return f"{key}: record is stale: its base/candidate do not name the evaluated snapshot"
     # Unread capture bound: unverifiable, not absent; an unrecorded path
@@ -982,8 +986,8 @@ def _apply_dispositions(
     """Validated records drive the state machine; everything else is a
     note. same-responsibility confirms and resolves only via the one-owner
     predicate plus the parent-pinned table; distinct-authority resolves from
-    candidate with complete scope and a pinned record; coexistence stays
-    visible debt; everything unresolved or unpinned stays active."""
+    candidate with complete scope and a pinned record; coexistence is v2
+    territory; everything unresolved or unpinned stays active."""
     applied: list[Finding] = []
     resolved: list[Finding] = []
     consumed: set[str] = set()
@@ -1025,10 +1029,6 @@ def _apply_dispositions(
                 notes.append(f"{key}: resolution requires a parent-pinned validation record")
             else:
                 notes.append(f"{key}: distinct-authority record left the candidate active: unresolved anchors or incomplete scope")
-            continue
-        if disposition == "temporary-coexistence":
-            applied.append(_record_finding(snapshot, rule_id, record, present, "confirmed-unresolved"))
-            consumed |= _consumed(rule_candidates, present)
             continue
         gone = [ref for ref in owners if _anchor_line(_captured_text(snapshot, str(ref["path"]), "candidate"), ref) is None]
         deletion_proven = all(
@@ -1104,9 +1104,7 @@ def _record_finding(
         evidence={"responsibilityKey": key, "disposition": record["disposition"],
                   "repair": record.get("repair"), "parentRecord": record["parentRecord"],
                   **(extra or {}),
-                  "owners": [f"{region['path']}:{region['displayLine']}" for region in regions],
-                  **({"followUp": record.get("followUp"), "expiry": record.get("expiry")}
-                     if record["disposition"] == "temporary-coexistence" else {})},
+                  "owners": [f"{region['path']}:{region['displayLine']}" for region in regions]},
         action=OWNER_ACTION,
         pass_condition=OWNER_PASS_CONDITION,
         gaps=(),
