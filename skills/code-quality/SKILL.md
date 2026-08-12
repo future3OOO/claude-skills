@@ -36,6 +36,15 @@ and concrete proof. The hard invariants remain owned by `CLAUDE.md`.
 - Does every claimed proof satisfy the canonical mock ban?
 - Did the change suppress, swallow, disable, or bypass a real failure?
 - Are failures corrected at their source rather than muted?
+- Did the change weaken a failing measurement instead of the candidate —
+  raising a budget or ceiling, widening an exclusion, subtracting planned
+  future deletions, or repinning an expected value to observed growth?
+  A budget failure has two implementation outcomes: reduce the candidate,
+  or stop and surface the external approval requirement. A separate,
+  explicit parent-approved contract change authorizes a new pin;
+  agent-authored explanation never does, and approval is never inferred
+  from candidate prose. [references/budget-fixtures.md](references/budget-fixtures.md)
+  calibrates the classification.
 
 ### 5. Cleanup discipline
 
