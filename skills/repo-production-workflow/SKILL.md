@@ -145,7 +145,10 @@ PostToolUse gate hook using the base OID recorded at bootstrap, and again at
 typed verification. Begin
 production, configuration, and runtime implementation edits only once both TDD
 and production-code are ready. The `production-code` skill owns the standards
-themselves; this step owns only its place in the order.
+themselves; this step owns only its place in the order. This bare baseline run
+carries no graph evidence, so the `QG54-OWNER-COMPETITION-*` rules report their
+incomplete gap here by design; their evidenced evaluation happens at the typed
+verification run in step 9.
 
 ### 8. Implementation
 
@@ -176,6 +179,14 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 ```
 
 Which generic commands constitute sufficient verification stays lead judgment; that they ran does not. Completion additionally requires the typed `quality-gate` run over the current reviewable tree.
+
+Before the typed run, rerun the Repo Context Forge bootstrap with the same slug
+so the recorded graph evidence is snapshot-bound to the edited candidate tree.
+The typed runner reads that recorded evidence and hands its gate-shaped context
+to the gate's `--gitnexus-context-json` input; the gate's own binding check
+adjudicates match, stale, or absent. Without the post-edit re-run — or after any
+further edit — the `QG54-OWNER-COMPETITION-*` rules honestly report the stale or
+absent gap instead of evaluating.
 
 ### 10. Lead structured code review
 

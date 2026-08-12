@@ -86,27 +86,76 @@ def _resolved_graph(value: object) -> JsonObject:
     return value
 
 
+def _gate_symbols(graph: JsonObject) -> list[JsonObject]:
+    """Gate-shaped symbol results carrying only genuine incoming-relationship
+    data: context-check callers and file-context references, merged per
+    (file, target). Impact entries hold path-only impacted files; relabeling
+    those as relationship evidence would overstate the caller/callee coverage
+    the owner rules establish scope from."""
+    symbols: dict[tuple[str, str], dict[str, object]] = {}
+    for entry in graph["entries"]:  # entries already validated by _resolved_graph
+        for key in ("callers", "references"):
+            found = entry.get(key)
+            if not isinstance(found, list):
+                continue
+            symbol = symbols.setdefault(
+                (str(entry["file"]), str(entry["target"])),
+                {"name": str(entry["target"]), "file": str(entry["file"])},
+            )
+            symbol.setdefault(key, []).extend(
+                str(item["identity"]) for item in found
+                if isinstance(item, dict) and _text(item.get("identity"))
+            )
+    return [symbols[key] for key in sorted(symbols)]
+
+
 def graph_evidence_document(
     path: str,
     *,
     slug: str,
     workflow_id: str,
     source_root: str,
+    snapshot: JsonObject | None = None,
+    snapshot_gap: str | None = None,
 ) -> JsonObject:
-    """The repo-context-forge evidence document built from the producer's machine packet."""
+    """The repo-context-forge evidence document built from the producer's machine packet.
+
+    `snapshot` is the adapter's measured claim that the analysis covered exactly
+    one base commit and candidate tree; when it holds, the document additionally
+    carries the gate-shaped context the typed quality-gate run hands to
+    `--gitnexus-context-json`. `snapshot_gap` records the measured reason no such
+    claim could be made, so an unbound pass names its gap instead of implying one
+    was never measured. The gate alone adjudicates match, stale, or absent.
+    """
+    if snapshot is not None and snapshot_gap is not None:
+        raise ValueError("a snapshot binding and a snapshot gap are mutually exclusive")
     packet = load_json(path, label="packet")
     target = packet.get("target_state")
     reported = target.get("source_repo") if isinstance(target, dict) else None
     if not _text(reported) or os.path.realpath(str(reported)) != os.path.realpath(source_root):
         raise ValueError(f"the packet was produced for {reported!r}, not {source_root}")
     gitnexus = packet.get("gitnexus")
-    return {
+    graph = _resolved_graph(gitnexus.get("analysis") if isinstance(gitnexus, dict) else None)
+    document: JsonObject = {
         "schemaVersion": 1,
         "slug": slug,
         "workflowId": workflow_id,
-        "graph": _resolved_graph(gitnexus.get("analysis") if isinstance(gitnexus, dict) else None),
+        "graph": graph,
         "recordedAt": utc_timestamp(),
     }
+    if snapshot is not None:
+        if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):
+            raise ValueError("a snapshot binding requires its base commit and candidate tree")
+        document["gateContext"] = {
+            "base": str(snapshot["base"]).strip(),
+            "candidate": str(snapshot["candidate"]).strip(),
+            "symbols": _gate_symbols(graph),
+        }
+    elif snapshot_gap is not None:
+        if not _text(snapshot_gap):
+            raise ValueError("a snapshot gap requires its measured reason")
+        document["gateContextGap"] = snapshot_gap.strip()
+    return document
 
 
 def _arrays(value: JsonObject, label: str) -> tuple[list[object], list[object]]:
