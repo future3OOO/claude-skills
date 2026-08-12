@@ -5,7 +5,7 @@
 - current state: child issues published; governing plan merged in PR #78;
   target architecture under review in PR #79
 - governing artifact: this document
-- last updated: 2026-08-08
+- last updated: 2026-08-12
 
 ## Objective
 
@@ -37,11 +37,10 @@ warning evidence until the parent explicitly authorizes a named promotion.
   `885cd0f024eedcbb3c32e80ec6a41441cb0c82e2d227335c5d43e74105973d4a`
 - captured human-authored code: `+1129/-8`, net `1121`; these are not the
   merged PR's final-head totals
-- responsibility-owner calibration corpus: not yet pinned. Before PR C is
-  dispatched, parent #54 must record a human-approved manifest whose every
-  entry names exact base and candidate commits, diff SHA-256, intended
-  positive/negative role, and adjudication. An implementation agent must not
-  choose or broaden this corpus.
+- responsibility-owner calibration corpus: pinned at parent #54 comment
+  5251048442 (cases R, P1, P2, and G, each naming exact base and candidate
+  commits, diff SHA-256, role, and adjudication). An implementation agent
+  consumes those entries verbatim and must not broaden this corpus.
 
 If a child brief and the parent conflict, the parent controls scope and the
 child controls its approved delivery slice. Any ambiguity or rule promotion
@@ -325,3 +324,8 @@ Required proof includes:
   `feat/issue-54-responsibility-owners` from `b391d30`, delivering the two
   warning-only owner-competition rules, disposition records, the pinned
   manifest calibration, and the mandatory lexical-reuse deletion.
+- 2026-08-12: PR #102 reviewer-fix round: five behavior fixes driven by the
+  fleet/CodeRabbit/cubic loop (compound-statement signature headers and
+  handler bodies, list-typed graph relationship values, closure-ambiguity
+  gaps, pairwise state-writer anchors with single-binding dedup, and
+  non-string ruleId rejection), each with its own real-CLI RED/GREEN cycle.

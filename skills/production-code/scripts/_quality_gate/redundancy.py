@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from collections import Counter
+from itertools import combinations
 
 from .findings import (
     Finding, RULE_DUPLICATE_BASELINE, RULE_DUPLICATE_BLOCK, RULE_DUPLICATE_SYMBOL,
@@ -460,8 +461,14 @@ def _operation_signature(body: list[ast.stmt]) -> tuple:
         blocks = [part for name in ("body", "orelse", "finalbody")
                   for part in [getattr(stmt, name, None)] if part]
         if blocks:
-            inner = tuple(item for block in blocks for item in _operation_signature(block))
-            ops.append((type(stmt).__name__, (), inner))
+            handlers = getattr(stmt, "handlers", ())
+            headers = [value for name in ("test", "iter") for value in [getattr(stmt, name, None)] if value]
+            headers += [item.context_expr for item in getattr(stmt, "items", ())]
+            headers += [handler.type for handler in handlers if handler.type]
+            calls = tuple(name for node in headers for name in _called_names(node))
+            inner = tuple(item for block in [*blocks, *[handler.body for handler in handlers]]
+                          for item in _operation_signature(block))
+            ops.append((type(stmt).__name__, calls, inner))
             continue
         calls = _called_names(stmt)
         if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and not calls:
@@ -586,7 +593,12 @@ def _owner_units(snapshot: EvaluationSnapshot, roles: tuple[str, ...]) -> tuple[
         if functions is None:
             gaps.append(f"{path}: owner evidence could not parse this python")
             continue
-        by_name = {fn["name"]: fn for fn in functions}
+        ambiguous = {name for name, count in Counter(fn["name"] for fn in functions).items() if count > 1}
+        referenced = {called for fn in functions for called in fn["calls"]} & ambiguous
+        if referenced:
+            gaps.append(f"{path}: ambiguous same-named definitions referenced in closure: "
+                        + ", ".join(sorted(referenced)[:3]))
+        by_name = {fn["name"]: fn for fn in functions if fn["name"] not in ambiguous}
         for fn in functions:
             closed = [fn] + [by_name[called] for called in fn["calls"]
                              if called in by_name and by_name[called] is not fn]
@@ -601,11 +613,14 @@ def _owner_groups(units: list[dict[str, object]]) -> dict[str, list[list[dict[st
     """Candidate groups per evidence class: every group spans two files,
     touches the changed surface, and keys on the shared evidence itself."""
     def grouped(keyed: dict[object, list[dict[str, object]]], accept=lambda members: True) -> list[list[dict[str, object]]]:
-        found = []
+        found, seen = [], set()
         for members in keyed.values():
+            ordered = sorted(members, key=lambda member: (member["path"], member["line"]))
+            identity = tuple((member["path"], member["line"]) for member in ordered)
             files = {member["path"] for member in members}
-            if len(files) >= 2 and any(member["changed"] for member in members) and accept(members):
-                found.append(sorted(members, key=lambda member: (member["path"], member["line"])))
+            if len(files) >= 2 and identity not in seen and any(member["changed"] for member in members) and accept(members):
+                seen.add(identity)
+                found.append(ordered)
         return found
 
     def collect(key_of) -> dict[object, list[dict[str, object]]]:
@@ -624,9 +639,10 @@ def _owner_groups(units: list[dict[str, object]]) -> dict[str, list[list[dict[st
     defined = {unit["name"] for unit in units}
 
     return {
-        # Two resolvers sharing one pair of environment anchors across files.
+        # Two resolvers sharing one pair of environment anchors across files;
+        # pairwise keys so a superset resolver still competes.
         "state-writers": grouped(collect(
-            lambda unit: [unit["envs"]] if len(unit["envs"]) >= 2 else []))
+            lambda unit: [frozenset(pair) for pair in combinations(sorted(unit["envs"]), 2)]))
         # One state segment in two files, at least one mutating it.
         + grouped(collect(lambda unit: sorted(unit["segments"])),
                   lambda members: any(member["mutates"] for member in members)),
@@ -974,7 +990,8 @@ def _apply_dispositions(
     notes: list[str] = []
     seen_digests: set[str] = set()
     for record in records:
-        if record.get("ruleId") != rule_id and record.get("ruleId") in _OWNER_ROLES:
+        rule_ref = record.get("ruleId")
+        if isinstance(rule_ref, str) and rule_ref != rule_id and rule_ref in _OWNER_ROLES:
             continue
         # A duplicate reference cannot bind twice; the second copy is a note.
         root = record.get("validationRoot")
@@ -987,8 +1004,8 @@ def _apply_dispositions(
         if problem is not None:
             notes.append(problem)
             continue
-        if record.get("ruleId") not in _OWNER_ROLES:
-            notes.append(f"{record['responsibilityKey']}: record rejected: unknown ruleId {record.get('ruleId')!r}")
+        if not isinstance(rule_ref, str) or rule_ref not in _OWNER_ROLES:
+            notes.append(f"{record['responsibilityKey']}: record rejected: unknown ruleId {rule_ref!r}")
             continue
         owners = [dict(ref) for ref in record["owners"]]
         survivor = record.get("survivor")

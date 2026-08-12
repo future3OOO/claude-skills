@@ -828,6 +828,99 @@ def test_absent_graph_evidence_leaves_caller_callee_scope_unestablished(repo: Pa
 
 
 @with_repo
+def test_scalar_relationship_values_are_not_graph_coverage(repo: Path) -> None:
+    # A relationship key must hold the provider's list-shaped result: a null
+    # or scalar value is malformed input, not caller/callee coverage. The
+    # empty-list validity half lives in the bound-evidence cases above.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    malformed = Path(tempfile.mkdtemp(prefix="graph-evidence-")) / "graph.json"
+    malformed.write_text(json.dumps({
+        "base": base, "candidate": head,
+        "symbols": [{"name": Path(item).stem, "file": item, "references": "invalid"}
+                    for item in _RESOLVER_FILES],
+    }), encoding="utf-8")
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(malformed))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("no caller/callee symbol results" in gap for gap in rule["completeness"]["gaps"]), rule
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "incomplete",
+    })
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_ambiguous_same_named_definitions_are_a_gap_not_a_binding(repo: Path) -> None:
+    # Two classes define resolve_root and a caller references the name, so
+    # closure evidence cannot bind one definition silently: the owner
+    # evidence names the ambiguity and the rule reads incomplete.
+    write(repo / "src" / "state.py", (
+        "import os\n\n\n"
+        "class DiskState:\n"
+        "    def resolve_root(self):\n"
+        "        return os.environ.get('APP_STATE_ROOT')\n\n\n"
+        "class MemoryState:\n"
+        "    def resolve_root(self):\n"
+        "        return '/tmp/memory-state'\n\n\n"
+        "def open_state(state):\n"
+        "    return state.resolve_root()\n"
+    ))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "ambiguous resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/state.py",))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    rule = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert any("ambiguous same-named definitions referenced in closure: resolve_root" in gap
+               for gap in rule["completeness"]["gaps"]), rule
+    assert_exact_rules(payload, {
+        "QG54-OWNER-COMPETITION-PRODUCTION": "incomplete",
+        "QG54-OWNER-COMPETITION-TEST": "passed",
+    })
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_superset_state_writer_still_competes_and_binds_once(repo: Path) -> None:
+    # Pairwise environment anchors: a resolver reading a superset of another
+    # resolver's keys still shares a pair and competes, and three shared
+    # pairs yield exactly one finding, never one per pair.
+    write(repo / "src" / "sweeper.py", (
+        "import os\n\n\ndef sweep_state():\n"
+        "    root = os.environ.get('APP_STATE_ROOT')\n"
+        "    home = os.environ.get('APP_HOME')\n"
+        "    cache = os.environ.get('APP_CACHE')\n"
+        "    return root or home or cache\n"
+    ))
+    write(repo / "src" / "pruner.py", (
+        "import os\n\n\ndef prune_state():\n"
+        "    root = os.environ.get('APP_STATE_ROOT')\n"
+        "    home = os.environ.get('APP_HOME')\n"
+        "    cache = os.environ.get('APP_CACHE')\n"
+        "    keep = os.environ.get('APP_TMP')\n"
+        "    return root or home or cache or keep\n"
+    ))
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two writers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    bound = graph_evidence(base, head, ("src/sweeper.py", "src/pruner.py"))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json", str(bound))
+    candidates = owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")
+    assert [item["state"] for item in candidates] == ["candidate"], candidates
+    regions = [(region["path"], region["displayLine"]) for region in candidates[0]["region"]["regions"]]
+    assert regions == [("src/pruner.py", 4), ("src/sweeper.py", 4)], regions
+    assert_exact_rules(payload, {"QG54-OWNER-COMPETITION-PRODUCTION": "finding"})
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
 def test_same_responsibility_disposition_confirms_the_candidate(repo: Path) -> None:
     # A parent-bound same-responsibility record turns the mechanical candidate
     # into confirmed-unresolved while both owners remain; the record itself
@@ -916,10 +1009,10 @@ def test_one_owner_repair_needs_a_parent_pinned_record_to_resolve(repo: Path) ->
 
 
 @with_repo
-def test_distinct_authority_resolves_directly_from_candidate(repo: Path) -> None:
-    # Mechanically related owners with genuinely different authority stay a
-    # negative case: the accepted record moves candidate -> resolved telemetry
-    # with complete scope, and no confirmed-unresolved state is entered.
+def test_an_unpinned_distinct_authority_record_never_resolves(repo: Path) -> None:
+    # Resolution trust is the shipped identifier+digest table: a
+    # distinct-authority record whose digest is not parent-pinned is rejected
+    # with a named note and the mechanical candidate stays active.
     write(repo / "src" / "reader.py", _RESOLVER_A)
     write(repo / "src" / "pruner.py", _RESOLVER_B)
     git(repo, "add", ".")
@@ -938,8 +1031,8 @@ def test_distinct_authority_resolves_directly_from_candidate(repo: Path) -> None
         ],
         "parentRecord": "future3OOO/claude-skills#54 comment 5251048442",
     }])
-    code, payload, _ = run_gate(repo, "--base-ref", base,
-                                "--gitnexus-context-json", str(graph_evidence(base, head, _RESOLVER_FILES)))
+    code, payload, _ = run_gate(repo, "--base-ref", base, "--gitnexus-context-json",
+                                str(graph_evidence(base, head, ("src/reader.py", "src/pruner.py"))))
     assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
     states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
     assert states == ["candidate"], states
@@ -1261,6 +1354,38 @@ def test_signature_preserves_command_discriminators(repo: Path) -> None:
         "    assert code == 0",
         "    assert payload == {}",
         "",
+        "",
+        "def test_guarded_cleanup():",
+        "    write_marker('r', 'armed')",
+        "    try:",
+        "        code, payload = run_gate('r')",
+        "    except OSError:",
+        "        rollback('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_guarded_report():",
+        "    write_marker('r', 'armed')",
+        "    try:",
+        "        code, payload = run_gate('r')",
+        "    except OSError:",
+        "        report('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_waits_ready():",
+        "    write_marker('r', 'armed')",
+        "    while probe('r'):",
+        "        code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
+        "",
+        "def test_waits_settled():",
+        "    write_marker('r', 'armed')",
+        "    while settled('r'):",
+        "        code, payload = run_gate('r')",
+        "    assert code == 0",
+        "",
     ))
     write(repo / "tests" / "test_modes.py", scaffolds)
     code, payload, _ = run_gate(repo)
@@ -1304,6 +1429,27 @@ def test_disposition_trust_negatives_leave_the_rule_incomplete(repo: Path) -> No
     states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
     assert states == ["candidate"], states
     assert payload["resolvedFindings"] == [], payload["resolvedFindings"]
+    assert code == 0, (code, payload["errors"])
+
+
+@with_repo
+def test_a_non_string_rule_id_is_rejected_not_a_crash(repo: Path) -> None:
+    # A record whose ruleId is not a string is malformed input the gate must
+    # survive: the record reads rejected, the candidate stays untouched, and
+    # the gate still emits its verdict.
+    write(repo / "src" / "state.py", _RESOLVER_A)
+    write(repo / "src" / "advisor.py", _RESOLVER_B)
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "two resolvers")
+    base = run(["git", "rev-parse", "HEAD~1"], repo).stdout.strip()
+    head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    record = state_root_record(base=base, candidate=head)
+    write_disposition(repo, [{**record, "ruleId": ["QG54-OWNER-COMPETITION-PRODUCTION"]}])
+    code, payload, _ = run_gate(repo, "--base-ref", base)
+    notes = owner_rule_finding(payload, "QG54-OWNER-COMPETITION-PRODUCTION")["evidence"]["records"]
+    assert any("unknown ruleId" in note for note in notes), notes
+    states = [item["state"] for item in owner_findings(payload, "QG54-OWNER-COMPETITION-PRODUCTION")]
+    assert states == ["candidate"], states
     assert code == 0, (code, payload["errors"])
 
 
@@ -1702,7 +1848,7 @@ _SCOPE_ROWS = (
      {"code": 0, "growth": "no caller-supplied base", "warning": "QG54-GROWTH-CUMULATIVE",
       "evalGap": "no caller-supplied base"}),
     ("missing-base-ref", None, {}, {"src/app.py": "VALUE = 1\n"}, False, ("--base-ref", "deadbeef"),
-     {"code": 2, "error": "base-ref not found", "growth": "", "reuse": "", "checks": "*", "hardRules": "*"}),
+     {"code": 2, "error": "base-ref not found", "growth": "", "checks": "*", "hardRules": "*"}),
     # A clean filter that emits different bytes on every read stages different
     # content per capture pass: the gate must report drift, never evaluate a
     # state that never existed.
@@ -2639,26 +2785,13 @@ def test_gate_implementation_budget() -> None:
         "wrapper_lines": 150,
         "module_lines": 1200,
         "function_lines": 180,
-        # Raised from 1800 by explicit operator approval on PR #90
-        # (2026-08-08), then from 1950 by explicit operator approval on PR B
-        # (#76, 2026-08-10), then to 2350 on the same PR after independent
-        # review forced three correctness fixes, then to 2650 and finally
-        # 2734, 2761, and finally 2802 by explicit operator approvals on
-        # PR C (#77, 2026-08-11 and 2026-08-12):
-        # first for the complete slice with the mandatory lexical-reuse
-        # deletions applied — the owner-competition rules' eight evidence
-        # classes, three-state machine, and snapshot-bound disposition
-        # records cost more than the deleted scorer freed — then for the
-        # independent final review's forced contract work: versioned records
-        # with digest binding, the rewiring-to-survivor predicate, and
-        # command-token/control-flow signature discriminators; then for the
-        # parent 1b decision's graph-evidence binding machinery; last for the
-        # parent carrier/pin rulings: the fixed out-of-tree disposition
-        # carrier captured onto the snapshot, the shipped parent-pinned
-        # digest table gating resolution, and graph-evidence symbol coverage.
-        # The operator directed raising the ceiling over cutting scope or
-        # weakening proof.
-        "total_lines": 2802,
+        # Every raise is an explicit operator approval against a measured
+        # total: 1800 -> 1950 (PR #90, 2026-08-08) -> 2300 -> 2350 (PR B #76,
+        # 2026-08-10) -> 2650 -> 2734 -> 2761 -> 2802 (PR C #77 scope, final-
+        # review contract work, parent 1b/carrier/pin rulings, 2026-08-11/12)
+        # -> 2825 (PR #102 reviewer-fix round, 2026-08-12). The operator
+        # directed raising the ceiling over cutting scope or weakening proof.
+        "total_lines": 2825,
     }
     review_triggers = {
         "module_lines": 700,
@@ -2666,7 +2799,7 @@ def test_gate_implementation_budget() -> None:
         "total_lines": 1200,
     }
     justified: dict[str, str] = {
-        "TOTAL": "complete #75 canonical evaluation, #76 exact duplication, and #77 responsibility ownership: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, three QG54-DUPLICATE-* rules and two QG54-OWNER-COMPETITION-* rules over one redundancy owner with disposition records, with the lexical reuse scorer deleted; 2802 ceiling operator-approved 2026-08-12",
+        "TOTAL": "complete #75 canonical evaluation, #76 exact duplication, and #77 responsibility ownership: captured base-to-candidate snapshot, typed schema-v2 findings, warning-only cumulative growth, three QG54-DUPLICATE-* rules and two QG54-OWNER-COMPETITION-* rules over one redundancy owner with disposition records, with the lexical reuse scorer deleted; 2825 ceiling operator-approved 2026-08-12",
         "_quality_gate/redundancy.py": "the one redundancy owner the architecture mandates: exact-duplicate phases plus the responsibility phases (eight evidence classes, three finding states, disposition validation, one-owner resolution) behind runner.check",
         "_quality_gate/runner.py:check": "the one evaluation walk the architecture mandates: every check, warning, error, and hard rule derives from a single typed outcome column",
     }

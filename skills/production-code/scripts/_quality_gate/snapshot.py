@@ -21,6 +21,12 @@ def parse_repo_context_packet(text: str) -> set[str]:
     return {path for path in paths if path}
 
 
+def _list_valued(item: dict) -> list[str]:
+    """Relationship keys holding the provider's list-shaped result; null or
+    scalar values are malformed and never count as graph evidence."""
+    return [key for key in ("callers", "calleeOf", "references") if isinstance(item.get(key), list)]
+
+
 def parse_gitnexus_context_json(text: str) -> tuple[dict[str, int], list[str]]:
     if not text.strip():
         return {}, []
@@ -39,7 +45,7 @@ def parse_gitnexus_context_json(text: str) -> tuple[dict[str, int], list[str]]:
         path = normalize_path(str(item.get("file") or item.get("path") or "").strip())
         if not name or not path:
             continue
-        boost = (8 if item.get("callers") or item.get("calleeOf") or item.get("references") else 0) + (
+        boost = (8 if any(item[key] for key in _list_valued(item)) else 0) + (
             7 if item.get("processes") or item.get("flows") or item.get("workflows") else 0
         )
         if boost:
@@ -99,7 +105,7 @@ def _graph_binding(repo: Path, gitnexus_context_json: str, base: str, tree: str)
     files = frozenset(
         normalize_path(str(item.get("file") or item.get("path") or ""))
         for item in (symbols if isinstance(symbols, list) else [])
-        if isinstance(item, dict) and any(key in item for key in ("callers", "calleeOf", "references"))
+        if isinstance(item, dict) and _list_valued(item)
     ) - {""}
     if not files:
         return "external graph evidence carries no caller/callee symbol results: a bare declaration is not evidence", frozenset()
