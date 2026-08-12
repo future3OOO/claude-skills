@@ -47,11 +47,13 @@ tests, build, or domain-specific gates.
   read during capture and frozen on the snapshot — a git-dir path is never
   part of any candidate tree, so records-shaped files inside the evaluated
   tree are never read. Each record is structurally validated against the
-  exact evaluated snapshot, and resolution requires the one-owner predicate —
-  superseded surfaces absent and unreferenced, every affected function
-  rewired to the survivor, one surviving owner, complete owner discovery —
-  so partial deepening, renames, facades, and discovery-shrinking never
-  resolve. The trust asymmetry is deliberate (parent #54 decision,
+  exact evaluated snapshot. Every resolution requires a parent-pinned record
+  and complete owner discovery; same-responsibility resolution additionally
+  requires the one-owner predicate — superseded surfaces absent and
+  unreferenced, every affected function rewired to the survivor, one
+  surviving owner — so partial deepening, renames, facades, and
+  discovery-shrinking never resolve, while a distinct-authority record
+  resolves with both anchored owners present. The trust asymmetry is deliberate (parent #54 decision,
   2026-08-12): **resolution** silences a warning, so it additionally requires
   a record whose validation-root identifier and digest match the shipped
   parent-pinned table (extending that table is a parent-approved code change,
