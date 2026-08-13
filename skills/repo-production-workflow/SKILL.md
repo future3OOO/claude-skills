@@ -15,9 +15,17 @@ maps the remaining owners.
 Choose one short slug for the whole pass and begin state before bootstrap:
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" begin \
-  --repo "$PWD" --slug "<task>" --intent "<user request>"
+printf '%s' "$request_text" | python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" begin \
+  --repo "$PWD" --slug "<task>" --intent -
+# or, when the caller already has the request in a file:
+#   ... begin --repo "$PWD" --slug "<task>" --intent-file "<path>"
 ```
+
+Pass the request text, not a summary. The recorded intent is the contract the
+rest of the pass is answerable to, so it is stored exactly as given and read back
+at the plan-commit gate and in every advisor consult; a paraphrase written here is
+the paraphrase those steps will enforce. `--intent "<text>"` still takes a literal
+argument, and `--intent`/`--intent-file` are mutually exclusive.
 
 The repository-scoped SQLite event ledger remembers accepted transitions, logical evidence, phase, and next action across process restarts. Its disposable active projection is repaired from that history. It is agent-writable workflow continuity, not an attestation, approval, audit credential, or Git boundary.
 

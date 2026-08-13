@@ -92,7 +92,12 @@ def parser() -> argparse.ArgumentParser:
     command = commands.add_parser("begin", help="start and activate a workflow pass")
     _repo(command)
     command.add_argument("--slug", required=True)
-    command.add_argument("--intent", default="")
+    # Multi-KB request text does not survive being a shell argument, which is why
+    # callers reach for a summary. The group refuses both at once rather than
+    # inventing precedence between two sources of the same field.
+    source = command.add_mutually_exclusive_group()
+    source.add_argument("--intent", default="")
+    source.add_argument("--intent-file")
 
     for name in ("status", "summary"):
         command = commands.add_parser(name)
@@ -186,6 +191,26 @@ def _emit_json(value: object) -> None:
         # The command's mutation, when any, is already committed. A reporting
         # failure cannot be re-labelled as a refused transition.
         _mute_stdout()
+
+
+def _intent(args: argparse.Namespace) -> str:
+    """The task text exactly as the caller sent it: no stripping, no truncation.
+
+    Both file and stdin intake decode raw bytes as UTF-8 rather than reading text:
+    the locale's codec would make the record depend on the environment that started
+    the pass, and text mode would translate CRLF and lone CR to LF, so a request
+    pasted from a Windows editor would be recorded as something it never said.
+    U+0000 is refused rather than recorded: the advisor payload carries this text
+    through a shell variable, which cannot hold that character, so accepting it
+    would promise a custody the rest of the chain silently breaks.
+    """
+    if args.intent_file is not None:
+        text = Path(args.intent_file).read_bytes().decode("utf-8")
+    else:
+        text = sys.stdin.buffer.read().decode("utf-8") if args.intent == "-" else args.intent
+    if "\0" in text:
+        raise ValueError("intent text cannot contain U+0000; the consult payload cannot carry it")
+    return text
 
 
 def _emit_state(value: dict[str, object]) -> None:
@@ -583,8 +608,13 @@ def _record_phase(args: argparse.Namespace, identity: RepoIdentity, phase: str, 
         key: value,
         "recordedAt": utc_timestamp(),
     }
-    _, evidence_id = commit_evidence_phase(identity, slug, args.workflow_id, phase, document)
-    _emit_json({"evidenceId": evidence_id, "status": "passed"})
+    state, evidence_id = commit_evidence_phase(identity, slug, args.workflow_id, phase, document)
+    recorded = {"evidenceId": evidence_id, "status": "passed"}
+    if phase == "preflight":
+        # The plan-commit gate re-presents the contract: the builder reads the recorded
+        # task text back here instead of building the rest of the pass from recall.
+        recorded["intent"] = state.get("intent")
+    _emit_json(recorded)
     return 0
 
 
@@ -595,7 +625,7 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     identity = resolve_repo_identity(args.repo)
     if args.command == "begin":
-        _emit_state(begin(identity, args.slug, args.intent))
+        _emit_state(begin(identity, args.slug, _intent(args)))
     elif args.command == "status":
         _emit_state(_state(identity))
     elif args.command == "summary":
