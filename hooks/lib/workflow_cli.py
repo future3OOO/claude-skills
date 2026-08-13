@@ -389,6 +389,7 @@ def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:
             },
             action,
             expected_evidence_id=existing_id,
+            opens_cycle=new_cycle,
         )
 
     _print_output(raw)

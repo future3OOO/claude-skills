@@ -271,14 +271,48 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(state["repoContextForge"], "pending")
         self.assertNotIn("repoContextForgeEvidence", state)
 
-    def advance_to_typed_verification(self) -> None:
-        """The real recorders between recorded context evidence and typed verification."""
+    def advance_to_tdd(self) -> None:
+        """The real recorders between recorded context evidence and the TDD gate."""
         state = self.status()
         slug, wid = str(state["slug"]), str(state["workflowId"])
         preflight = self.tmp / "preflight.json"
         preflight.write_text(
             json.dumps(build_document("issue-106 typed verification fixture")), encoding="utf-8"
         )
+        for step in (
+            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+             "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+             "--stage", "preflight", "--findings", "none"),
+            ("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(preflight)),
+        ):
+            result = self.pass_state(*step)
+            self.assertEqual(result.returncode, 0, " ".join(step) + "\n" + result.stdout + result.stderr)
+
+    def tdd(self, phase: str, behavior: str, result_value: int,
+            *, expected: str | None = None) -> subprocess.CompletedProcess[str]:
+        """One real RED or GREEN through the recorder CLI, over the fixture's own Seam."""
+        args = [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(self.repo), "--slug", self.slug,
+                "--phase", phase, "--behavior", behavior, "--seam", "app.compute import Interface"]
+        if expected:
+            args += ["--expected-failure", expected]
+        args += ["--", sys.executable, "-c",
+                 f"import app; assert app.compute(1) == {result_value}, 'AssertionError: {behavior}'"]
+        return subprocess.run(
+            args, cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    def compute_returns(self, offset: int) -> None:
+        self.repo.joinpath("app.py").write_text(
+            f"def compute(value):\n    return value + {offset}\n", encoding="utf-8"
+        )
+
+    def advance_to_typed_verification(self) -> None:
+        """The real recorders between recorded context evidence and typed verification."""
+        self.advance_to_tdd()
+        state = self.status()
+        slug, wid = str(state["slug"]), str(state["workflowId"])
         gate = subprocess.run(
             [sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
             cwd=self.repo, env=self.env, text=True,
@@ -288,11 +322,6 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         baseline = self.tmp / "baseline-gate.json"
         baseline.write_text(gate.stdout, encoding="utf-8")
         for step in (
-            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
-             "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", slug, "--workflow-id", wid,
-             "--stage", "preflight", "--findings", "none"),
-            ("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(preflight)),
             ("tdd", "--slug", slug, "--not-required",
              "fixture pass proves evidence wiring, not a fixture behavior change"),
             ("record-production-code", "--slug", slug, "--workflow-id", wid, "--input", str(baseline)),
@@ -490,6 +519,149 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertNotIn("baseOid", self.status())
         (self.repo / "app.py").write_text("def compute(value):\n    return value + 3\n", encoding="utf-8")
         self.assertIn("no caller-supplied base", self.post_edit("app.py"))
+
+    def bulk_production_growth(self) -> None:
+        """Uncommitted production growth past both the per-cycle budget and the
+        gate's own review budget, so the measurement itself stays visible."""
+        (self.repo / "feature.py").write_text(
+            "".join(f"A_{index:04d} = {index}\n" for index in range(600)), encoding="utf-8"
+        )
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_pass_without_a_recorded_base_reports_no_growth_per_cycle(self) -> None:
+        """Honest gap: a cycle was recorded and the growth is past the budget,
+        but without a base the number is a working delta rather than the
+        branch-cumulative growth the ratio claims, so nothing is said."""
+        self.git("branch", "-m", "feature-work")
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertNotIn("baseOid", self.status())
+        self.advance_to_tdd()
+        red = self.tdd("red", "compute adds two", 3, expected="AssertionError")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        self.assertEqual(self.status().get("tddCycleCount"), 1)
+
+        self.bulk_production_growth()
+        feedback = self.post_edit("feature.py")
+        self.assertIn("no caller-supplied base", feedback)
+        self.assertNotIn("lines per cycle", feedback)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_not_required_pass_reports_no_growth_per_cycle(self) -> None:
+        """Honest gap: a pass that recorded no cycle has no denominator. The
+        growth is measured and reported all the same - only the ratio is absent."""
+        self.git("branch", "base-main")
+        forged = self.graph_bootstrap(base="base-main")
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.advance_to_tdd()
+        decided = self.pass_state(
+            "tdd", "--slug", self.slug, "--not-required", "fixture proves the honest gap, not a behavior",
+        )
+        self.assertEqual(decided.returncode, 0, decided.stdout + decided.stderr)
+        self.assertNotIn("tddCycleCount", self.status(), "a not-required decision counted a cycle")
+
+        self.bulk_production_growth()
+        feedback = self.post_edit("feature.py")
+        self.assertIn("human-authored net growth 600", feedback)
+        self.assertNotIn("lines per cycle", feedback)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_growth_per_recorded_cycle_warns_at_the_crossing_and_a_new_cycle_clears_it(self) -> None:
+        """Feature breadth per proof cycle, on the per-edit channel.
+
+        The measured number is the gate's branch-cumulative PRODUCTION growth,
+        not its human-authored total: the fixture carries 400 net test lines so
+        the two readings differ by three times the budget, and the tracer-bullet
+        signal must never charge a pass for the tests that prove it.
+        """
+        fork = self.git_out("rev-parse", "HEAD")
+        self.git("branch", "base-main")
+        forged = self.graph_bootstrap(base="base-main")
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(self.status().get("baseOid"), fork, "bootstrap recorded no pass base OID")
+        self.advance_to_tdd()
+        first = self.tdd("red", "compute adds two", 3, expected="AssertionError")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests" / "test_bulk.py").write_text(
+            "".join(f"def test_{index:04d}():\n    assert True\n" for index in range(200)), encoding="utf-8"
+        )
+        (self.repo / "feature.py").write_text(
+            "".join(f"A_{index:04d} = {index}\n" for index in range(200)), encoding="utf-8"
+        )
+        at_budget = self.post_edit("feature.py")
+        self.assertIn("human-authored net growth 600 exceeds the 500-line review budget", at_budget)
+        self.assertNotIn("lines per cycle", at_budget, "exactly at the budget is not exceeding it")
+
+        with (self.repo / "feature.py").open("a", encoding="utf-8") as extra:
+            extra.write("".join(f"B_{index:04d} = {index}\n" for index in range(10)))
+        crossed = self.post_edit("feature.py")
+        self.assertIn(
+            "210 net production lines across 1 TDD cycles exceeds ~200 lines per cycle", crossed,
+        )
+
+        self.compute_returns(2)
+        green = self.tdd("green", "compute adds two", 3)
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        self.assertIn(
+            "210 net production lines across 1 TDD cycles", self.post_edit("app.py"),
+            "closing a cycle changed the denominator",
+        )
+
+        second = self.tdd("red", "compute adds three", 4, expected="AssertionError")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        cleared = self.post_edit("app.py")
+        self.assertNotIn("lines per cycle", cleared, "a second recorded cycle did not clear the warning")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_the_recorder_counts_cycle_openings_and_nothing_else(self) -> None:
+        """`tddCycleCount` is the recorder's own count of cycle-opening REDs.
+
+        Every other outcome leaves it alone: a rerun of the active candidate, the
+        GREEN that closes a cycle, the reopen a GREEN regression records under the
+        same ambiguous `tdd-reopen` action, and a RED that no longer fails.
+        """
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.advance_to_tdd()
+        self.assertNotIn("tddCycleCount", self.status(), "a pass with no cycle already counted one")
+
+        first = self.tdd("red", "compute adds two", 3, expected="AssertionError")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(self.status().get("tddCycleCount"), 1, "the first valid RED opened no cycle")
+
+        rerun = self.tdd("red", "compute adds two", 3, expected="AssertionError")
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(self.status().get("tddCycleCount"), 1, "a rerun of the active candidate counted again")
+
+        self.compute_returns(2)
+        green = self.tdd("green", "compute adds two", 3)
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        self.assertEqual(self.status().get("tddCycleCount"), 1, "GREEN counted as a cycle opening")
+
+        second = self.tdd("red", "compute adds three", 4, expected="AssertionError")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(self.status().get("tddCycleCount"), 2, "the next tracer RED opened no cycle")
+
+        self.compute_returns(3)
+        second_green = self.tdd("green", "compute adds three", 4)
+        self.assertEqual(second_green.returncode, 0, second_green.stdout + second_green.stderr)
+
+        # A GREEN that regresses reopens the cycle through the same recorder
+        # action a cycle-opening RED uses, which is exactly why the count cannot
+        # be reconstructed from the ledger.
+        self.compute_returns(2)
+        regressed = self.tdd("green", "compute adds three", 4)
+        self.assertEqual(regressed.returncode, 2, regressed.stdout + regressed.stderr)
+        self.assertEqual(self.status()["tdd"], "in-progress", "the regression did not reopen the cycle")
+        self.assertEqual(self.status().get("tddCycleCount"), 2, "a regression reopen counted as a cycle opening")
+
+        # A RED that no longer fails is not a cycle: it proves nothing.
+        self.compute_returns(3)
+        passing_red = self.tdd("red", "compute adds three", 4, expected="AssertionError")
+        self.assertEqual(passing_red.returncode, 2, passing_red.stdout + passing_red.stderr)
+        self.assertEqual(self.status().get("tddCycleCount"), 2, "an invalid RED counted as a cycle opening")
 
 
 class GraphEvidenceContractTests(unittest.TestCase):
