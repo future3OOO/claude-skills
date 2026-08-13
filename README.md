@@ -61,7 +61,9 @@ The `ruff` install is part of the contract, not an optional extra: the per-edit
 quality hook lints every Python edit inside a repository checkout with `ruff check --isolated --select E9,F`
 (the same pinned scope CI enforces) and, on a machine without the binary, names
 the gap — `ruff not installed: python lint skipped` — on every Python edit until
-it is installed.
+it is installed. `uv tool install` warns when its bin directory is not on
+`PATH`; run `uv tool update-shell` (then reopen the shell) if the notice
+persists after an install, because the hook resolves `ruff` through `PATH`.
 
 The two removed files are obsolete PR #2 commit gates. Their deletion is
 intentional. Do not use `--delete` for the directory copies: HerdR and other

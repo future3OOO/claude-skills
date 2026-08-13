@@ -415,6 +415,17 @@ class WorkflowHookTests(unittest.TestCase):
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("F821", context)
 
+    def test_uppercase_python_suffix_still_gets_lint_feedback(self) -> None:
+        # is_code_path lowercases the suffix, so module.PY is a code path; the
+        # lint guard must classify it the same way or the file gets a gate run
+        # with silently missing lint.
+        (self.repo / "module.PY").write_text("value = undefined_name\n", encoding="utf-8")
+        result = self.post_edit("module.PY")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.strip(), "hook emitted no feedback for the .PY edit")
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("F821", context)
+
     def test_gate_excluded_python_paths_still_get_lint_feedback(self) -> None:
         # Gate path policy exempts docs and scratch; lint policy does not — a
         # Python edit there still surfaces its findings without a gate run.

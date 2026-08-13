@@ -35,7 +35,7 @@ def _ruff_lines(path: Path) -> list[str]:
     file. --isolated with a pinned select on purpose: the hook fires in every
     repository the session edits, so neither repo config discovery nor ruff
     default drift may change what it reports; absence is named, not skipped."""
-    if path.suffix != ".py":
+    if path.suffix.lower() != ".py":
         return []
     try:
         result = subprocess.run(
