@@ -348,6 +348,39 @@ def _escape_row(repo: Path, path: str, content: str, fails: bool, name: str) -> 
         assert code == 0 and payload["ok"] is True, (name, code, payload["errors"])
 
 
+# One merge-conflict payload per row. A conflict is evidenced by either outer
+# marker alone, each carrying a trailing space and a label that markup never
+# produces; a bare separator line is legitimate reStructuredText and is not
+# evidence of anything.
+# name, path, content, expected conflict failure.
+_CONFLICT_ROWS = (
+    ("rst-section-underline", "docs/cli-reference.rst", "Options\n=======\n\nRun a query.\n", False),
+    # Half-resolved files: each outer marker is evidence on its own, so both are
+    # asserted separately — the full-triad fixtures cannot catch the loss of
+    # either alternation, because the surviving one still fails the file.
+    ("open-marker-alone", "src/half.py", "<" * 7 + " HEAD\nA = 1\n", True),
+    ("close-marker-alone", "src/half.py", ">" * 7 + " theirs\nA = 1\n", True),
+)
+
+
+def test_conflict_verdict_holds_for_every_marker_shape() -> None:
+    for name, path, content, fails in _CONFLICT_ROWS:
+        in_repo(lambda repo, p=path, c=content, f=fails, label=name: _conflict_row(repo, p, c, f, label))
+
+
+def _conflict_row(repo: Path, path: str, content: str, fails: bool, name: str) -> None:
+    write(repo / path, content)
+    code, payload, _ = run_gate(repo)
+    rule = payload["hardRules"]["noMergeConflictMarkers"]
+    if fails:
+        assert code == 2, (name, code, payload["errors"])
+        assert rule["passed"] is False, (name, rule)
+        assert any("merge conflict markers" in item for item in payload["errors"]), (name, payload["errors"])
+    else:
+        assert code == 0 and payload["ok"] is True, (name, code, payload["errors"])
+        assert rule["passed"] is True, (name, rule)
+
+
 @with_repo
 def test_distant_edits_do_not_fabricate_an_empty_catch(repo: Path) -> None:
     # Added lines from separate hunks are not adjacent in the candidate: an
