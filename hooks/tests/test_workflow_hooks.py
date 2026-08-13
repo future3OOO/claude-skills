@@ -450,6 +450,23 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("merge conflict markers", result.stderr)
         self.assertIn("invalid-syntax", result.stderr)
 
+    def test_unrunnable_ruff_names_the_gap_and_keeps_the_refusal_channel(self) -> None:
+        # A PATH-resolvable but non-executable ruff must not crash the hook:
+        # the lint gap is named and the gate's refusal channel still fires.
+        shim_dir = self.tmp / "noexec-bin"
+        shim_dir.mkdir()
+        (shim_dir / "ruff").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (shim_dir / "ruff").chmod(0o644)
+        ruff_dir = os.path.realpath(os.path.dirname(shutil.which("ruff") or self.fail("suite requires ruff")))
+        entries = [str(shim_dir)] + [p for p in self.env["PATH"].split(os.pathsep) if os.path.realpath(p) != ruff_dir]
+        (self.repo / "app.py").write_text(
+            "<<<<<<< HEAD\nx = 1\n=======\ny = 2\n>>>>>>> other\n", encoding="utf-8",
+        )
+        result = self.post_edit("app.py", env_extra={"PATH": os.pathsep.join(entries)})
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("production-code gate FAILED", result.stderr)
+        self.assertIn("ruff not installed: python lint skipped", result.stderr)
+
     def test_missing_ruff_is_named_not_silently_skipped(self) -> None:
         # Honest absence: without ruff on PATH the hook names the lint gap on
         # its feedback channel instead of faking coverage, and still exits zero.

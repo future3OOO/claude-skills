@@ -46,7 +46,7 @@ def _ruff_lines(path: Path) -> list[str]:
             text=True,
             check=False,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         return ["ruff not installed: python lint skipped"]
     return [line for line in result.stdout.splitlines() if line.strip()]
 
