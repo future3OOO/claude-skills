@@ -45,6 +45,10 @@ Test only at agreed Seams. Before writing a test, name the Seam under test and
 confirm it when the request leaves room for interpretation. Ask: "What is the
 public Interface, and which Seam should this test cross?"
 
+When a public contract is inferred from repository convention or an analogue
+rather than stated explicitly, the RED must exercise the decision boundary:
+include at least one input that distinguishes the plausible interpretations.
+
 ## Anti-Pattern: Horizontal Slices
 
 **DO NOT write all tests first, then all implementation.** This is "horizontal slicing" - treating RED as "write all tests" and GREEN as "write all code."
