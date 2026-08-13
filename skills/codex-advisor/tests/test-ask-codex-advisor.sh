@@ -376,17 +376,51 @@ printf '%s' "$intent_text" >"$intenttmp/intent.txt"
 intent_state="$intenttmp/state"
 intent_py() { CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 -c "$1" "$ROOT" "$intenttmp/repo"; }
 
-# The consult input itself. `claude` is deliberately absent from PATH, so nothing stands
-# in for the provider: the wrapper assembles the payload, the shell traces the real
-# statement that writes it to the provider's stdin, and the wrapper then takes its real
-# missing-provider path. Slicing the trace from that statement keeps the assertion on the
-# consult input rather than on an earlier variable. Crossing the provider itself stays
-# LIVE=1 work; these checks prove what is sent, not that sending succeeds.
+# What the wrapper composes, read from the bytes it actually writes to the provider's
+# stdin. A controlled provider goes FIRST on PATH and copies that stdin to a file, so the
+# offline guarantee is constructed rather than assumed: no `claude` reachable by PATH
+# lookup can be executed, and no run can attempt the network, retry, or hang. PATH
+# precedence is the whole of that guarantee - a shell function of the same name would
+# resolve earlier, which no supported invocation of this suite creates.
+#
+# This is a composition diagnostic, NOT proof of the provider transport. The controlled
+# executable satisfies the Interface of a production callee, so the mock ban bars it from
+# ever being RED/GREEN or production evidence, and nothing here claims otherwise. Proof
+# that the recorded intent crosses the real Seam is the live provider consult recorded on
+# the pass that shipped this behaviour, plus the LIVE=1 block below.
+mkdir -p "$intenttmp/bin"
+cat >"$intenttmp/bin/claude" <<'PROVIDER'
+#!/usr/bin/env bash
+# Reads the consult payload and exits at once: no network, no retry, no waiting.
+printf 'ran\n' >>"$CONSULT_PROVIDER_MARKER"
+cat >"$CONSULT_PROVIDER_CAPTURE"
+PROVIDER
+chmod +x "$intenttmp/bin/claude"
+provider_marker="$intenttmp/provider-ran"
+provider_capture="$intenttmp/consult-payload"
+: >"$provider_marker"
+
 consult_input() {
-  PATH=/usr/bin:/bin HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  local before after
+  # Truncated per call, so a capture can only ever hold this consult's bytes.
+  : >"$provider_capture"
+  before=$(wc -l <"$provider_marker")
+  PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
     CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-    bash -x "$WRAPPER" --cwd "$intenttmp/repo" "$@" 2>&1 >/dev/null |
-    sed -n "/^+ printf %s .Checkpoint Interface/,\$p"
+    CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+    "$WRAPPER" --cwd "$intenttmp/repo" "$@" >/dev/null 2>&1
+  after=$(wc -l <"$provider_marker")
+  # A bypassed or shadowed provider must fail loudly here rather than read as an empty
+  # payload that every content assertion below would then silently pass or fail against.
+  if [[ "$after" -le "$before" ]]; then
+    printf 'FATAL  the controlled provider never ran; the consult was not observed\n' >&2
+    exit 1
+  fi
+  if [[ ! -s "$provider_capture" ]]; then
+    printf 'FATAL  the controlled provider captured an empty consult payload\n' >&2
+    exit 1
+  fi
+  cat "$provider_capture"
 }
 
 CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
