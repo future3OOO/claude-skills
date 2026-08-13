@@ -17,14 +17,16 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
+QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 CANONICAL_BOOTSTRAP = Path("/home/prop_/projects/repo-context-forge/scripts/codex_context_bootstrap.py")
 GITNEXUS = shutil.which("gitnexus")
+OWNER_RULES = ("QG54-OWNER-COMPETITION-PRODUCTION", "QG54-OWNER-COMPETITION-TEST")
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
-from hooks.tests.support import graph_packet  # noqa: E402
+from hooks.tests.support import build_document, graph_packet  # noqa: E402
 
 
 @unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
@@ -269,6 +271,105 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(state["repoContextForge"], "pending")
         self.assertNotIn("repoContextForgeEvidence", state)
 
+    def advance_to_typed_verification(self) -> None:
+        """The real recorders between recorded context evidence and typed verification."""
+        state = self.status()
+        slug, wid = str(state["slug"]), str(state["workflowId"])
+        preflight = self.tmp / "preflight.json"
+        preflight.write_text(
+            json.dumps(build_document("issue-106 typed verification fixture")), encoding="utf-8"
+        )
+        gate = subprocess.run(
+            [sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
+            cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        baseline = self.tmp / "baseline-gate.json"
+        baseline.write_text(gate.stdout, encoding="utf-8")
+        for step in (
+            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+             "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+             "--stage", "preflight", "--findings", "none"),
+            ("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(preflight)),
+            ("tdd", "--slug", slug, "--not-required",
+             "fixture pass proves evidence wiring, not a fixture behavior change"),
+            ("record-production-code", "--slug", slug, "--workflow-id", wid, "--input", str(baseline)),
+            ("set-phase", "--phase", "implementation", "--status", "passed"),
+        ):
+            result = self.pass_state(*step)
+            self.assertEqual(result.returncode, 0, " ".join(step) + "\n" + result.stdout + result.stderr)
+
+    def typed_quality_gate_run(self, base_ref: str) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+        """One typed quality-gate verification and the run entry it recorded."""
+        verified = self.pass_state(
+            "verify", "--slug", self.slug, "--kind", "quality-gate", "--base-ref", base_ref,
+        )
+        state = self.status()
+        document = self.evidence(str(state["verificationLatestEvidence"]))["document"]
+        runs = document["runs"]
+        self.assertTrue(runs, "typed verification recorded no run")
+        return verified, runs[-1]
+
+    def owner_states(self, gate_payload: dict[str, object]) -> dict[str, dict[str, object]]:
+        """Each owner rule's per-evaluation state finding from the gate verdict."""
+        states = {
+            str(item["ruleId"]): item
+            for item in gate_payload["findings"]
+            if str(item["ruleId"]) in OWNER_RULES and item["region"]["scope"] == "evaluation"
+        }
+        self.assertEqual(sorted(states), sorted(OWNER_RULES), gate_payload["findings"])
+        return states
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_typed_verification_hands_recorded_graph_evidence_to_the_owner_rules(self) -> None:
+        """A governed pass with uncommitted edits reaches a complete owner-rule verdict.
+
+        The whole chain is real: the producer analyzes the dirty candidate, the
+        bootstrap records the evidence, and typed verification must hand that
+        recorded evidence to the gate so both owner-competition rules evaluate
+        instead of reporting the unestablished-scope gap.
+        """
+        self.git("branch", "-M", "main")
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.advance_to_typed_verification()
+
+        verified, run = self.typed_quality_gate_run("main")
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.assertIsNone(run["bindingError"], run["bindingError"])
+        for rule_id, finding in sorted(self.owner_states(run["gate"]).items()):
+            gaps = finding["completeness"]["gaps"]
+            self.assertNotEqual(finding["status"], "incomplete", f"{rule_id} could not evaluate: {gaps}")
+            self.assertTrue(finding["completeness"]["complete"], f"{rule_id} gaps: {gaps}")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_evidence_bound_to_a_different_snapshot_keeps_the_owner_rules_incomplete(self) -> None:
+        """Falsification: an edit after the recorded analysis is named as staleness.
+
+        The gate captures the moved tree, the recorded evidence still names the
+        analyzed one, and its own binding check must report the stale gap —
+        never silently accept, never rebind.
+        """
+        self.git("branch", "-M", "main")
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.advance_to_typed_verification()
+        (self.repo / "caller.py").write_text(
+            "from app import compute\n\n\ndef run():\n    return compute(3)\n", encoding="utf-8"
+        )
+
+        verified, run = self.typed_quality_gate_run("main")
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        for rule_id, finding in sorted(self.owner_states(run["gate"]).items()):
+            self.assertEqual(finding["status"], "incomplete", f"{rule_id}: {finding}")
+            self.assertIn(
+                "external graph evidence is stale: it does not name the evaluated snapshot",
+                finding["completeness"]["gaps"],
+                f"{rule_id} did not name the stale binding",
+            )
+
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_bootstrap_records_the_producer_graph_result_as_workflow_evidence(self) -> None:
         """One public bootstrap binds the producer's own resolved graph result to this pass."""
@@ -407,11 +508,11 @@ class GraphEvidenceContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def document_for(self, packet: dict[str, object]) -> dict[str, object]:
+    def document_for(self, packet: dict[str, object], **binding: object) -> dict[str, object]:
         path = self.tmp / "packet.json"
         path.write_text(json.dumps(packet), encoding="utf-8")
         return graph_evidence_document(
-            str(path), slug="contract", workflow_id="wid", source_root=str(self.root),
+            str(path), slug="contract", workflow_id="wid", source_root=str(self.root), **binding,
         )
 
     def test_a_packet_for_another_checkout_is_refused(self) -> None:
@@ -432,6 +533,43 @@ class GraphEvidenceContractTests(unittest.TestCase):
         document = self.document_for(graph_packet(str(self.root)))
         self.assertEqual(document["graph"]["status"], "resolved")
         self.assertEqual(document["workflowId"], "wid")
+        self.assertNotIn("gateContext", document)
+        self.assertNotIn("gateContextGap", document)
+
+    def test_a_snapshot_binding_records_the_gate_shaped_context(self) -> None:
+        document = self.document_for(
+            graph_packet(str(self.root)),
+            snapshot={"base": "b" * 40, "candidate": "c" * 40},
+        )
+        self.assertEqual(document["gateContext"], {
+            "base": "b" * 40,
+            "candidate": "c" * 40,
+            "symbols": [{
+                "name": "compute", "file": "app.py",
+                "callers": ["Function:caller.py:run"],
+            }],
+        })
+        self.assertNotIn("gateContextGap", document)
+
+    def test_an_unbound_run_records_its_measured_gap_instead(self) -> None:
+        document = self.document_for(
+            graph_packet(str(self.root)),
+            snapshot_gap="the worktree changed during the producer run (aaaaaaaaaaaa then bbbbbbbbbbbb)",
+        )
+        self.assertNotIn("gateContext", document)
+        self.assertIn("the worktree changed during the producer run", document["gateContextGap"])
+
+    def test_a_binding_and_a_gap_together_are_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.document_for(
+                graph_packet(str(self.root)),
+                snapshot={"base": "b" * 40, "candidate": "c" * 40},
+                snapshot_gap="also a gap",
+            )
+
+    def test_a_binding_without_base_or_candidate_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.document_for(graph_packet(str(self.root)), snapshot={"base": "b" * 40})
 
 
 if __name__ == "__main__":

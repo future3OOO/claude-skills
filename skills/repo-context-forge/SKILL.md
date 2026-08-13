@@ -200,6 +200,21 @@ Then call `mcp__gitnexus__detect_changes` with the source-checkout repo name
 `gitnexus analyze` mutates `.gitignore`, keep only an intentional `.gitnexus/`
 ignore rule and remove unrelated tool side effects before finalizing.
 
+On a governed pass, also rerun the bootstrap wrapper with the same
+`--workflow-slug` after the final production edits, before typed quality-gate
+verification. The re-run analyzes the dirty candidate and re-records the graph
+evidence with a gate-shaped context bound to the measured snapshot tree; the
+typed runner hands that context to the gate, whose binding check alone
+adjudicates match, stale, or absent. Evidence recorded before the last edit
+stays honestly stale, so the re-run is what lets the owner-competition rules
+evaluate.
+
+Measured producer limit: the producer's GitNexus freshness check is keyed on
+the committed head, so a same-head re-run whose overlay adds new symbols can
+block with those symbols unresolved. Remove the analysis worktree's
+`.gitnexus` index directory (a producer-owned cache artifact it rebuilds) and
+rerun the bootstrap; the rebuilt index then covers the overlay.
+
 ## Turn Refresh
 
 When the assistant materially changes context during a longer task, record it

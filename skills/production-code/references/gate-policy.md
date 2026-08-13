@@ -80,7 +80,12 @@ tests, build, or domain-specific gates.
   evaluated base and candidate establishes that scope, so an absent, unbound,
   stale, or malformed graph input leaves both owner rules incomplete as
   per-affected-rule `QG54-ANALYSIS-INCOMPLETE` evidence. The gate never
-  creates reports, caches, or repository artifacts itself.
+  creates reports, caches, or repository artifacts itself. In the governed
+  workflow this input is supplied by `workflow.py verify --kind quality-gate`,
+  which hands over the gate-shaped `{base, candidate, symbols}` context the
+  Repo Context Forge bootstrap recorded snapshot-bound for the active pass
+  (issue #106); the binding check here still adjudicates it, and a bare or
+  per-edit-hook gate run continues to receive no evidence.
 - The gate's evaluated hard-rule results are `cleanup` and
   `noMergeConflictMarkers`. `noDuplication` keeps its key and reports
   `not_evaluated`: every surviving duplication/owner rule is warning-only,

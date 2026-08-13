@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import tdd_surface
@@ -425,6 +426,8 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     quality_tree: dict[str, str] | None = None
     binding_error: str | None = None
     tree_before: dict[str, str] | None = None
+    graph_evidence_id: str | None = None
+    graph_context_path: str | None = None
 
     if args.kind == "quality-gate":
         if not args.base_ref:
@@ -445,6 +448,27 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
             args.base_ref,
             "--json",
         ]
+        # The pass's recorded Repo Context Forge evidence, handed to the gate
+        # unchanged when it carries the producer's snapshot-bound gate context.
+        # The gate's own binding check adjudicates match, stale, or absent; a
+        # document without that context simply attaches nothing, and the gate
+        # names the absence.
+        recorded = state.get("repoContextForgeEvidence")
+        graph_document = evidence_document(identity, recorded if isinstance(recorded, str) else None)
+        graph_context = (
+            graph_document.get("gateContext")
+            if isinstance(graph_document, dict) and graph_document.get("workflowId") == workflow_id
+            else None
+        )
+        if isinstance(graph_context, dict):
+            graph_evidence_id = str(recorded)
+            handle = tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", prefix="quality-gate-graph-", suffix=".json", delete=False,
+            )
+            with handle:
+                json.dump(graph_context, handle)
+            graph_context_path = handle.name
+            command += ["--gitnexus-context-json", graph_context_path]
     else:
         if args.base_ref:
             raise ValueError("--base-ref belongs to --kind quality-gate")
@@ -452,7 +476,11 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         if not command:
             raise ValueError("a command is required after --")
 
-    raw, exit_code, timed_out = _run(command, identity, args.timeout)
+    try:
+        raw, exit_code, timed_out = _run(command, identity, args.timeout)
+    finally:
+        if graph_context_path is not None:
+            os.unlink(graph_context_path)
     valid = not timed_out and exit_code == 0
     gate: dict[str, object] | None = None
     if args.kind == "quality-gate":
@@ -503,6 +531,7 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         run["baseRef"] = args.base_ref
         run["gate"] = gate
         run["bindingError"] = binding_error
+        run["graphEvidenceId"] = graph_evidence_id
     runs = [*prior_runs, run]
     latest: dict[str, bool] = {}
     for item in runs:

@@ -27,7 +27,11 @@ claim as incomplete. In a governed pass the PostToolUse gate hook supplies the
 base OID recorded at Repo Context Forge bootstrap automatically, so per-edit
 warnings already read branch-cumulative. Existing Repo Context Forge
 or GitNexus evidence can be supplied with `--repo-context-packet <path-or->`
-and `--gitnexus-context-json <path-or->`. Load
+and `--gitnexus-context-json <path-or->`. A bare run supplies no graph
+evidence, so the `QG54-OWNER-COMPETITION-*` rules report incomplete there; in
+the governed workflow the typed verification run
+(`workflow.py verify --kind quality-gate`) attaches the pass's recorded
+snapshot-bound Repo Context Forge evidence automatically. Load
 [references/gate-policy.md](references/gate-policy.md) when interpreting the
 gate's JSON contract.
 
