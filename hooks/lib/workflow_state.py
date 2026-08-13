@@ -368,8 +368,15 @@ def commit_tdd(
     action: str,
     *,
     expected_evidence_id: str | None = None,
+    opens_cycle: bool = False,
 ) -> tuple[JsonObject, str | None]:
-    """Commit a TDD transition and its logical evidence under one transaction."""
+    """Commit a TDD transition and its logical evidence under one transaction.
+
+    `opens_cycle` is the caller's answer to the one question the committed
+    action cannot carry: `reopen` is recorded both for a cycle-opening RED and
+    for a GREEN regression, so the count is kept forward here rather than
+    reconstructed from a history that cannot tell the two apart.
+    """
     if action not in TDD_ACTIONS:
         raise ValueError(f"unsupported tdd action: {action}")
     with mutation(identity) as transaction:
@@ -389,6 +396,8 @@ def commit_tdd(
             evidence_id = write.evidence_id
             state["tddEvidence"] = evidence_id
         state.pop("paused", None)
+        if opens_cycle:
+            state["tddCycleCount"] = state.get("tddCycleCount", 0) + 1
         if action == "reopen":
             state["tdd"] = "in-progress"
             state["phase"] = "implementation"

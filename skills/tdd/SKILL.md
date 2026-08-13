@@ -175,6 +175,12 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   --seam "<same real public Interface/Seam>" -- <targeted-command>
 ```
 
+The recorder also counts the cycles it opens, and on a pass with a recorded base
+the per-edit quality-gate hook divides branch-cumulative net production growth by
+that count and warns once past ~200 lines per recorded cycle, naming both numbers
+— a granularity smell that one dainty cycle is carrying a whole feature, never a
+block.
+
 GREEN must rerun the test surface that produced RED, not repeat its spelling.
 For a directly invoked stdlib unittest or pytest command the recorder compares a
 normalized surface — runner family, invocation, and the ordered arguments that

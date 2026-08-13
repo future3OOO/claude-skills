@@ -17,6 +17,9 @@ from hooks.lib.state_store import is_code_path, record_session_association  # no
 from hooks.lib.workflow_state import invalidate_after_edit  # noqa: E402
 
 GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+# Feature breadth per proof cycle. Hard-coded the way the gate's own 500-line
+# review budget is: policy, not an operator knob.
+CYCLE_GROWTH_BUDGET = 200
 
 
 def _failure_detail(stdout: str, stderr: str) -> str:
@@ -115,6 +118,18 @@ def main() -> int:
         print(f"production-code gate returned unparseable output for {path}\n{result.stdout}{result.stderr}{lint_detail}", file=sys.stderr, end="")
         return 2
     warnings = (verdict.get("warnings") or []) + lint
+    # Feature breadth per proof cycle, from two numbers already in hand: the
+    # growth the gate measured and the cycles the recorder counted. Production
+    # growth alone, so the tests that prove a change never inflate its ratio.
+    # A pass with no base (the growth would not be branch-cumulative) or no
+    # recorded cycle has no ratio to report, and says nothing.
+    cycles = state.get("tddCycleCount", 0) if state is not None else 0
+    net = verdict["evaluation"]["growth"]["production"]["net"]
+    if base and cycles and net > CYCLE_GROWTH_BUDGET * cycles:
+        warnings.append(
+            f"{net} net production lines across {cycles} TDD cycles "
+            f"exceeds ~{CYCLE_GROWTH_BUDGET} lines per cycle"
+        )
     if warnings:
         # Warning-only means non-blocking feedback, not discarded output: every
         # active warning reaches the model while the hook still returns zero.
