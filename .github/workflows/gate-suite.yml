@@ -25,6 +25,12 @@ jobs:
         run: |
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Gate Suite"
+      - name: Python lint (ruff E9,F)
+        # Pinned and isolated so the linted rule set never moves without an
+        # operator choice; the hook runs the same select per edit.
+        run: |
+          pip install ruff==0.16.2
+          ruff check --isolated --select E9,F .
       - name: Integrated package contracts
         run: bash hooks/tests/run.sh
       - name: Package gate against the pull-request delta

@@ -54,7 +54,14 @@ cp settings.json ~/.claude/settings.json
 chmod +x ~/.claude/hooks/*.py
 rm -f ~/.claude/hooks/codex-challenge-commit-gate.sh
 rm -f ~/.claude/hooks/repoforge-commit-gate.sh
+uv tool install ruff==0.16.2
 ```
+
+The `ruff` install is part of the contract, not an optional extra: the per-edit
+quality hook lints every Python edit inside a repository checkout with `ruff check --isolated --select E9,F`
+(the same pinned scope CI enforces) and, on a machine without the binary, names
+the gap — `ruff not installed: python lint skipped` — on every Python edit until
+it is installed.
 
 The two removed files are obsolete PR #2 commit gates. Their deletion is
 intentional. Do not use `--delete` for the directory copies: HerdR and other

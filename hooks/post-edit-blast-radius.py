@@ -236,7 +236,7 @@ def main() -> int:
         # fingerprint so the next incomplete pass latches fresh. Guarded on state
         # so the clean no-workflow path persists nothing, and classified by the
         # terminal predicate: an open revalidation window is pending, not done.
-        if state is not None and (previous_block := stop_session_swap(identity, feedback_session, "blockFingerprint", "")):
+        if state is not None and stop_session_swap(identity, feedback_session, "blockFingerprint", ""):
             how = "paused" if state.get("paused") else ("completed" if _terminal(state) else "other")
             append_stop_latch_event(identity, {
                 "event": "resolved", "how": how, "session": feedback_session, "repo": identity.key,

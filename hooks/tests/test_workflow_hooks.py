@@ -91,7 +91,8 @@ class WorkflowHookTests(unittest.TestCase):
         )
 
     def post_edit(self, relative: str, *, repo: Path | None = None,
-                  session: str | None = SESSION) -> subprocess.CompletedProcess[str]:
+                  session: str | None = SESSION,
+                  env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         target = repo or self.repo
         # session=None omits the field entirely rather than blanking it: an
         # anonymous payload is one that never carried the key.
@@ -99,7 +100,8 @@ class WorkflowHookTests(unittest.TestCase):
         if session is not None:
             payload["session_id"] = session
         return subprocess.run(
-            [str(POST_EDIT)], cwd=target, env=self.env, text=True, input=json.dumps(payload),
+            [str(POST_EDIT)], cwd=target, env={**self.env, **(env_extra or {})}, text=True,
+            input=json.dumps(payload),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
@@ -401,6 +403,52 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(feedback["hookSpecificOutput"]["hookEventName"], "PostToolUse")
         self.assertIn("QG54-GROWTH-CUMULATIVE", context)
         self.assertIn("QG54-ANALYSIS-INCOMPLETE", context)
+
+    def test_python_edit_surfaces_ruff_findings_in_the_feedback(self) -> None:
+        # Real-time lint: a Python edit whose content pyflakes rejects must
+        # surface the ruff finding line on the hook's feedback channel, beside
+        # the gate warnings, while the hook still exits zero.
+        (self.repo / "app.py").write_text("value = undefined_name\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.strip(), "hook emitted no feedback at all")
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("F821", context)
+
+    def test_gate_excluded_python_paths_still_get_lint_feedback(self) -> None:
+        # Gate path policy exempts docs and scratch; lint policy does not — a
+        # Python edit there still surfaces its findings without a gate run.
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "snippet.py").write_text("value = undefined_name\n", encoding="utf-8")
+        result = self.post_edit("docs/snippet.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.strip(), "hook emitted no feedback for the excluded python path")
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("F821", context)
+        self.assertNotIn("production quality gate warnings", context)
+
+    def test_gate_failure_feedback_still_carries_the_ruff_findings(self) -> None:
+        # "Always" includes refused edits: when the gate fails the edit, the
+        # stderr detail the model reads still carries the lint findings.
+        (self.repo / "app.py").write_text(
+            "<<<<<<< HEAD\nx = undefined_thing\n=======\ny = 2\n>>>>>>> other\n",
+            encoding="utf-8",
+        )
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("merge conflict markers", result.stderr)
+        self.assertIn("invalid-syntax", result.stderr)
+
+    def test_missing_ruff_is_named_not_silently_skipped(self) -> None:
+        # Honest absence: without ruff on PATH the hook names the lint gap on
+        # its feedback channel instead of faking coverage, and still exits zero.
+        ruff_dir = os.path.realpath(os.path.dirname(shutil.which("ruff") or self.fail("suite requires ruff")))
+        entries = [p for p in self.env["PATH"].split(os.pathsep) if os.path.realpath(p) != ruff_dir]
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        result = self.post_edit("app.py", env_extra={"PATH": os.pathsep.join(entries)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("ruff not installed: python lint skipped", context)
 
     def test_a_pass_without_a_recorded_base_keeps_the_honest_growth_gap(self) -> None:
         # Falsification for the recorded-base wiring: a governed pass that never
