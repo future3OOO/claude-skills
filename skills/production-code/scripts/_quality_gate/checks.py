@@ -52,7 +52,7 @@ def changed_file_failures(snapshot: EvaluationSnapshot) -> tuple[list[str], list
         text = entry.current_text
         if is_temp_artifact(entry.path) and text is not None:
             temp_files.append(entry.path)
-        if not is_binary_path(entry.path) and text and re.search(r"^<{7} |^={7}$|^>{7} ", text, re.M):
+        if not is_binary_path(entry.path) and text and re.search(r"^<{7} |^>{7} ", text, re.M):
             conflict_files.append(entry.path)
     return conflict_files, temp_files
 
