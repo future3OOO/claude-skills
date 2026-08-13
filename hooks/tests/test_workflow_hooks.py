@@ -450,22 +450,37 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("merge conflict markers", result.stderr)
         self.assertIn("invalid-syntax", result.stderr)
 
-    def test_unrunnable_ruff_names_the_gap_and_keeps_the_refusal_channel(self) -> None:
-        # A PATH-resolvable but non-executable ruff must not crash the hook:
-        # the lint gap is named and the gate's refusal channel still fires.
-        shim_dir = self.tmp / "noexec-bin"
+    def broken_ruff_edit(self, name: str, shim: bytes, mode: int) -> subprocess.CompletedProcess[str]:
+        """A gate-failing Python edit in an environment whose only PATH ruff
+        is the given broken shim — the shared seam for every launch-failure
+        cause."""
+        shim_dir = self.tmp / name
         shim_dir.mkdir()
-        (shim_dir / "ruff").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        (shim_dir / "ruff").chmod(0o644)
+        (shim_dir / "ruff").write_bytes(shim)
+        (shim_dir / "ruff").chmod(mode)
         ruff_dir = os.path.realpath(os.path.dirname(shutil.which("ruff") or self.fail("suite requires ruff")))
         entries = [str(shim_dir)] + [p for p in self.env["PATH"].split(os.pathsep) if os.path.realpath(p) != ruff_dir]
         (self.repo / "app.py").write_text(
             "<<<<<<< HEAD\nx = 1\n=======\ny = 2\n>>>>>>> other\n", encoding="utf-8",
         )
-        result = self.post_edit("app.py", env_extra={"PATH": os.pathsep.join(entries)})
+        return self.post_edit("app.py", env_extra={"PATH": os.pathsep.join(entries)})
+
+    def test_malformed_ruff_executable_names_the_gap_and_keeps_the_refusal_channel(self) -> None:
+        # A malformed +x ruff (exec format error) is the third measured
+        # launch-failure cause: the notice appears and the refusal channel
+        # still fires instead of the hook crashing.
+        result = self.broken_ruff_edit("malformed-bin", b"\x7fGARBAGE-not-a-binary\n", 0o755)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("production-code gate FAILED", result.stderr)
-        self.assertIn("ruff not installed: python lint skipped", result.stderr)
+        self.assertIn("ruff could not run: python lint skipped", result.stderr)
+
+    def test_unrunnable_ruff_names_the_gap_and_keeps_the_refusal_channel(self) -> None:
+        # A PATH-resolvable but non-executable ruff must not crash the hook:
+        # the lint gap is named and the gate's refusal channel still fires.
+        result = self.broken_ruff_edit("noexec-bin", b"#!/bin/sh\nexit 0\n", 0o644)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("production-code gate FAILED", result.stderr)
+        self.assertIn("ruff could not run: python lint skipped", result.stderr)
 
     def test_missing_ruff_is_named_not_silently_skipped(self) -> None:
         # Honest absence: without ruff on PATH the hook names the lint gap on
@@ -476,7 +491,7 @@ class WorkflowHookTests(unittest.TestCase):
         result = self.post_edit("app.py", env_extra={"PATH": os.pathsep.join(entries)})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("ruff not installed: python lint skipped", context)
+        self.assertIn("ruff could not run: python lint skipped", context)
 
     def test_a_pass_without_a_recorded_base_keeps_the_honest_growth_gap(self) -> None:
         # Falsification for the recorded-base wiring: a governed pass that never

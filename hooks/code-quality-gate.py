@@ -46,8 +46,11 @@ def _ruff_lines(path: Path) -> list[str]:
             text=True,
             check=False,
         )
-    except (FileNotFoundError, PermissionError):
-        return ["ruff not installed: python lint skipped"]
+    except OSError:
+        # Three measured launch-failure causes (absent, non-executable,
+        # malformed) prove the class; ruff's own nonzero exits stay ordinary
+        # results under check=False and are never caught here.
+        return ["ruff could not run: python lint skipped"]
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
