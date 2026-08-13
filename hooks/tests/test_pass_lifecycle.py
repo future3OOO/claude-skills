@@ -272,6 +272,99 @@ class PassLifecycleTests(unittest.TestCase):
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--findings", "none"),
         )
 
+    # The task text a caller actually has: pipes, newlines, and padding a summary
+    # would quietly lose. Multi-KB text is why callers reach for stdin or a file
+    # instead of a shell argument.
+    VERBATIM_INTENT = "  line one | pipe\nline two\n\ttabbed\t\n"
+
+    def recorded_intent(self) -> str:
+        status = self.cli("status")
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        return json.loads(status.stdout)["intent"]
+
+    def test_begin_records_the_task_text_verbatim_from_a_file_or_stdin(self) -> None:
+        source = self.tmp / "intent.txt"
+        source.write_text(self.VERBATIM_INTENT, encoding="utf-8")
+        from_file = self.cli("begin", "--slug", "verbatim-file", "--intent-file", str(source))
+        self.assertEqual(from_file.returncode, 0, from_file.stdout + from_file.stderr)
+        self.assertEqual(self.recorded_intent(), self.VERBATIM_INTENT,
+                         "the recorded intent was normalized or truncated")
+
+        from_stdin = subprocess.run(
+            [sys.executable, str(WORKFLOW), "begin", "--slug", "verbatim-stdin",
+             "--intent", "-", "--repo", str(self.repo)],
+            cwd=ROOT, env=self.env, text=True, input=self.VERBATIM_INTENT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(from_stdin.returncode, 0, from_stdin.stdout + from_stdin.stderr)
+        self.assertEqual(self.recorded_intent(), self.VERBATIM_INTENT,
+                         "stdin intake did not record the task text verbatim")
+
+        # A literal argument stays legal and is still recorded exactly as given.
+        literal = self.cli("begin", "--slug", "verbatim-literal", "--intent", " padded ")
+        self.assertEqual(literal.returncode, 0, literal.stdout + literal.stderr)
+        self.assertEqual(self.recorded_intent(), " padded ")
+
+        # Line endings are content, not formatting: a request pasted from a Windows
+        # editor must record the bytes it has, and both intakes must agree.
+        crlf = "line one | pipe\r\nline two\rold mac"
+        source.write_bytes(crlf.encode("utf-8"))
+        from_crlf_file = self.cli("begin", "--slug", "verbatim-crlf", "--intent-file", str(source))
+        self.assertEqual(from_crlf_file.returncode, 0, from_crlf_file.stdout + from_crlf_file.stderr)
+        self.assertEqual(self.recorded_intent(), crlf,
+                         "file intake translated line endings instead of recording them")
+
+        crlf_stdin = subprocess.run(
+            [sys.executable, str(WORKFLOW), "begin", "--slug", "verbatim-crlf-stdin",
+             "--intent", "-", "--repo", str(self.repo)],
+            cwd=ROOT, env=self.env, text=False, input=crlf.encode("utf-8"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(crlf_stdin.returncode, 0, crlf_stdin.stderr.decode())
+        self.assertEqual(self.recorded_intent(), crlf, "the two intakes disagree on line endings")
+
+    def test_begin_refuses_intent_text_the_consult_payload_cannot_carry(self) -> None:
+        # The payload reaches the advisor through a shell variable, which cannot hold
+        # U+0000. Accepting it would record text the chain then silently truncates.
+        source = self.tmp / "nul-intent.txt"
+        source.write_bytes(b"before\x00after")
+
+        refused = self.cli("begin", "--slug", "nul-intent", "--intent-file", str(source))
+        self.assertEqual(refused.returncode, 2,
+                         "begin accepted intent text the consult payload cannot carry: "
+                         + refused.stdout + refused.stderr)
+        self.assertIn("U+0000", refused.stderr, "the refusal did not name the rejected character")
+
+    def test_begin_refuses_both_intent_sources_and_keeps_the_active_pass(self) -> None:
+        self.begin_slug("single-source")
+        before = json.loads(self.cli("status").stdout)
+        source = self.tmp / "both.txt"
+        source.write_text(self.VERBATIM_INTENT, encoding="utf-8")
+
+        refused = self.cli("begin", "--slug", "both-sources", "--intent", "summary",
+                           "--intent-file", str(source))
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("--intent-file", refused.stderr, "the refusal did not name the conflicting source")
+        self.assertEqual(json.loads(self.cli("status").stdout), before,
+                         "a refused begin replaced the active workflow")
+
+    def test_record_preflight_echoes_the_recorded_intent(self) -> None:
+        begun = self.cli("begin", "--slug", "preflight-echo", "--intent", self.VERBATIM_INTENT)
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        self.advance_to_context_forge()
+        self.run_cli(
+            ("advisor-result", "--slug", "preflight-echo", "--workflow-id", wid,
+             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", "preflight-echo", "--workflow-id", wid,
+             "--stage", "preflight", "--findings", "none"),
+        )
+
+        recorded = self.record_preflight(wid, self.preflight_document())
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.assertEqual(json.loads(recorded.stdout).get("intent"), self.VERBATIM_INTENT,
+                         "record-preflight did not echo the recorded intent")
+
     def test_a_shell_mutation_after_review_refuses_the_final_recording(self) -> None:
         wid = self.begin_slug("review-to-final-window")
         self.advance_to_verification("review-to-final-window", wid)

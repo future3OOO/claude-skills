@@ -132,6 +132,7 @@ print(rendered)' "$GRAPH_EXCERPT_LIMIT"
 }
 
 active_wid=""; active_tdd=""; active_review=""; active_tdd_evidence=""; active_review_evidence=""
+active_intent=""
 graph_excerpt=""
 if [[ -n "$phase" ]]; then
   if ! checkpoint_json=$(python3 "$workflow_cli" checkpoint --repo "$repo_root" --phase "$phase" 2>&1); then
@@ -159,10 +160,19 @@ print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") o
     printf 'error: cannot read the active workflow after its checkpoint\n' >&2
     exit 2
   }
-  IFS='|' read -r active_tdd_evidence active_review_evidence active_graph_evidence < <(printf '%s' "$status_json" | python3 -c 'import json,sys
+  # These fields carry the recorded task text, which is arbitrary: a "|" in it would
+  # end its field early and a newline would shift every field after it. NUL cannot
+  # occur in the text bash is able to hold, so it is the delimiter, and each field is
+  # terminated rather than separated so the last read still succeeds under `set -e`.
+  # Same single reader process as before; nothing is appended to a "|" parse.
+  { IFS= read -r -d '' active_tdd_evidence
+    IFS= read -r -d '' active_review_evidence
+    IFS= read -r -d '' active_graph_evidence
+    IFS= read -r -d '' active_intent
+  } < <(printf '%s' "$status_json" | python3 -c 'import json,sys
 state = json.load(sys.stdin)
-print(state.get("tddEvidence") or "", state.get("codeReviewEvidence") or "",
-      state.get("repoContextForgeEvidence") or "", sep="|")')
+for field in ("tddEvidence", "codeReviewEvidence", "repoContextForgeEvidence", "intent"):
+    sys.stdout.write((state.get(field) or "") + "\0")')
   # The graph evidence is read from the pass, never supplied by the caller, and it is
   # resolved before the provider so a stale or foreign result costs no consultation.
   graph_excerpt=$(graph_excerpt_of "$active_graph_evidence" "$active_wid")
@@ -228,6 +238,8 @@ if [[ -n "$phase" ]]; then
   evidence="
 === Live repository evidence
 root: $repo_root  branch: $(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)  head: $(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)  base-ref: ${base_ref:-<none>}
+--- recorded workflow intent, verbatim: the task text this pass is answerable to ---
+${active_intent}
 --- unstaged diff ---
 ${dirty:-<empty>}
 --- staged diff ---

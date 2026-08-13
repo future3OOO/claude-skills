@@ -206,7 +206,7 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "repo": identity.as_dict(),
         "slug": normalized,
         "workflowId": uuid.uuid4().hex,
-        "intent": intent.strip(),
+        "intent": intent,
         "phase": "intake",
         "nextAction": "repo-context-forge",
         "repoContextForge": "pending",

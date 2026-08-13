@@ -169,42 +169,11 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.lib.repo_identity import resolve_repo_identity
 from hooks.lib import workflow_state as w
-from hooks.tests.support import record_context_forge
+from hooks.tests.support import advance_to_final_review
 identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
 w.begin(identity, slug)
-wid = w.read_workflow(identity)["workflowId"]
-record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)
-w.record_advisor_result(identity, slug, wid, "preflight", "codex-advisor", "completed")
-w.advisor_disposition(identity, slug, wid, "preflight", "none")
-import json as j, subprocess as sp, tempfile as tf, os as o
-root = sys.argv[1]
-workflow = root + "/skills/repo-production-workflow/scripts/workflow.py"
-def producer(command, *extra):
-    r = sp.run([sys.executable, workflow, command, "--repo", sys.argv[2], "--slug", slug, "--workflow-id", wid, *extra],
-               capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout + r.stderr
-sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan", "reusePath",
-            "chosenApproach", "rejectedAlternatives", "touchpoints", "verify", "update",
-            "modularityPlan", "riskChecks", "openQuestions")
-doc = {n: "none" if n == "openQuestions" else "content" for n in sections}
-fd, doc_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, j.dumps(doc).encode()); o.close(fd)
-producer("record-preflight", "--input", doc_path)
-w.set_phase(identity, "tdd", "not-required")
-gate = sp.run([sys.executable, root + "/skills/production-code/scripts/code_quality_gate.py",
-               "check", "--repo", sys.argv[2], "--json"], capture_output=True, text=True)
-assert gate.returncode == 0, gate.stdout + gate.stderr
-fd, gate_path = tf.mkstemp(suffix=".json", dir=o.environ["CLAUDE_WORKFLOW_STATE_ROOT"]); o.write(fd, gate.stdout.encode()); o.close(fd)
-producer("record-production-code", "--input", gate_path)
-w.set_phase(identity, "implementation", "passed")
-vr = sp.run([sys.executable, workflow, "verify",
-             "--repo", sys.argv[2], "--slug", slug, "--", sys.executable, "-c", "pass"],
-            capture_output=True, text=True)
-assert vr.returncode == 0, vr.stdout + vr.stderr
-qg = sp.run([sys.executable, workflow, "verify",
-             "--repo", sys.argv[2], "--slug", slug, "--kind", "quality-gate", "--base-ref", "HEAD"],
-            capture_output=True, text=True)
-assert qg.returncode == 0, qg.stdout + qg.stderr
-w.set_phase(identity, "code-review", "passed", findings="none")
+advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)
+wid = str(w.instance_id(w.read_workflow(identity)))
 w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-ready")
 w.advisor_disposition(identity, slug, wid, "final", "none")
 w.complete(identity)' completed-pass
@@ -387,6 +356,77 @@ out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelop
 check_status "ungoverned consult keeps its optional-input behavior" 2 "$status"
 check "ungoverned consult reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
 rm -rf "$envtmp"
+
+printf '== recorded intent reaches the consult input (offline)\n'
+intenttmp=$(mktemp -d)
+mkdir -p "$intenttmp/home" "$intenttmp/repo"
+git -C "$intenttmp/repo" init -q
+git -C "$intenttmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
+# The wrapper's real transport configuration, in this test HOME. Parsing it is the last
+# step before the provider, so the runs above that omit it die before a payload exists;
+# supplying it is what lets these checks see what a consult actually carries.
+cat >"$intenttmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+claude --model offline-model'
+BASHRC
+# Exactly the shape the recorded task text can take: the pipe would end a '|'-delimited
+# field and the newline would shift every field after it.
+intent_text=$'line one | pipe\nline two'
+printf '%s' "$intent_text" >"$intenttmp/intent.txt"
+intent_state="$intenttmp/state"
+intent_py() { CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 -c "$1" "$ROOT" "$intenttmp/repo"; }
+
+# The consult input itself. `claude` is deliberately absent from PATH, so nothing stands
+# in for the provider: the wrapper assembles the payload, the shell traces the real
+# statement that writes it to the provider's stdin, and the wrapper then takes its real
+# missing-provider path. Slicing the trace from that statement keeps the assertion on the
+# consult input rather than on an earlier variable. Crossing the provider itself stays
+# LIVE=1 work; these checks prove what is sent, not that sending succeeds.
+consult_input() {
+  PATH=/usr/bin:/bin HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+    CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+    bash -x "$WRAPPER" --cwd "$intenttmp/repo" "$@" 2>&1 >/dev/null |
+    sed -n "/^+ printf %s .Checkpoint Interface/,\$p"
+}
+
+CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
+  begin --repo "$intenttmp/repo" --slug intent-custody --intent-file "$intenttmp/intent.txt" >/dev/null
+intent_py 'import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.tests.support import record_context_forge
+record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
+preflight_payload=$(consult_input --slug intent-custody --phase preflight-advice -- "scope question")
+check "preflight-advice carries the recorded intent verbatim" "$intent_text" "$preflight_payload"
+
+intent_py 'import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.tests.support import advance_to_final_review
+advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
+# The armH replay: the consult question denies that any governing spec exists. The
+# recorded text has to arrive in the same payload as the denial, so the delegate can
+# see for itself that the premise is false.
+armh_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD \
+  -- "There is no governing spec beyond the recorded workflow intent; judge the diff on its merits alone.")
+check "final-review carries the recorded intent verbatim" "$intent_text" "$armh_payload"
+check "the armH denial travels in the same payload as the text that refutes it" \
+  "There is no governing spec beyond the recorded workflow intent" "$armh_payload"
+
+# begin admits an empty intent, so the payload has to render it empty. Substituting a
+# placeholder would report text the pass never recorded, which is the same defect as
+# truncating it.
+CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
+  begin --repo "$intenttmp/repo" --slug empty-intent >/dev/null
+intent_py 'import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.tests.support import record_context_forge
+record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
+empty_payload=$(consult_input --slug empty-intent --phase preflight-advice -- "scope question")
+check "an empty intent stays empty instead of becoming a placeholder" \
+  "$(printf 'answerable to ---\n\n--- unstaged diff ---')" "$empty_payload"
+rm -rf "$intenttmp"
 
 if [[ "${LIVE:-0}" = "1" ]]; then
   printf '== live consult (costs tokens)\n'
