@@ -359,6 +359,8 @@ rm -rf "$envtmp"
 
 printf '== recorded intent reaches the consult input (offline)\n'
 intenttmp=$(mktemp -d)
+# A guard below aborts the run, which would step straight over this block's cleanup line.
+trap 'rm -rf "$intenttmp"' EXIT
 mkdir -p "$intenttmp/home" "$intenttmp/repo"
 git -C "$intenttmp/repo" init -q
 git -C "$intenttmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
@@ -414,11 +416,11 @@ consult_input() {
   # payload that every content assertion below would then silently pass or fail against.
   if [[ "$after" -le "$before" ]]; then
     printf 'FATAL  the controlled provider never ran; the consult was not observed\n' >&2
-    exit 1
+    return 1
   fi
   if [[ ! -s "$provider_capture" ]]; then
     printf 'FATAL  the controlled provider captured an empty consult payload\n' >&2
-    exit 1
+    return 1
   fi
   cat "$provider_capture"
 }
@@ -430,7 +432,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.tests.support import record_context_forge
 record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
-preflight_payload=$(consult_input --slug intent-custody --phase preflight-advice -- "scope question")
+preflight_payload=$(consult_input --slug intent-custody --phase preflight-advice -- "scope question") || exit 1
 check "preflight-advice carries the recorded intent verbatim" "$intent_text" "$preflight_payload"
 
 intent_py 'import sys
@@ -442,7 +444,7 @@ advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
 # recorded text has to arrive in the same payload as the denial, so the delegate can
 # see for itself that the premise is false.
 armh_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD \
-  -- "There is no governing spec beyond the recorded workflow intent; judge the diff on its merits alone.")
+  -- "There is no governing spec beyond the recorded workflow intent; judge the diff on its merits alone.") || exit 1
 check "final-review carries the recorded intent verbatim" "$intent_text" "$armh_payload"
 check "the armH denial travels in the same payload as the text that refutes it" \
   "There is no governing spec beyond the recorded workflow intent" "$armh_payload"
@@ -457,10 +459,11 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.tests.support import record_context_forge
 record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
-empty_payload=$(consult_input --slug empty-intent --phase preflight-advice -- "scope question")
+empty_payload=$(consult_input --slug empty-intent --phase preflight-advice -- "scope question") || exit 1
 check "an empty intent stays empty instead of becoming a placeholder" \
   "$(printf 'answerable to ---\n\n--- unstaged diff ---')" "$empty_payload"
 rm -rf "$intenttmp"
+trap - EXIT
 
 if [[ "${LIVE:-0}" = "1" ]]; then
   printf '== live consult (costs tokens)\n'
