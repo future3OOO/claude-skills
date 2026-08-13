@@ -182,7 +182,8 @@ python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
 
 **Pass the request text, not a summary.** `--intent -` reads stdin, `--intent-file
 <path>` reads a file (supplying both refuses); plain `--intent "<text>"` stays legal
-for short text. The recorded intent is stored exactly as given and is the contract
+for short text. The recorded intent is stored exactly as given (valid UTF-8; U+0000
+refused) and is the contract
 every later step enforces — `record-preflight` echoes it back and both advisor
 consults carry it — so a paraphrase written here corrupts everything downstream.
 
