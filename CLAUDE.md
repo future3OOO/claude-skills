@@ -103,8 +103,8 @@ For PR merge quiet windows specifically:
 When spawning sub-agents via the `Agent` tool, default to:
 
 - `subagent_type`: choose the most specific agent type that matches the task (`Explore` for codebase searches, `Plan` for implementation planning, `general-purpose` otherwise).
-- `model`: inherit from the parent session unless the work is a cheap lookup or broad search, in which case pass `model: "haiku"` to keep cost down. Use `sonnet` or `opus` only when the parent is also using them or the task warrants it.
-- If `CLAUDE_CODE_SUBAGENT_MODEL` is set in the session environment (e.g. `claudehx` sessions route subagents to GPT-5.6 via CLIProxyAPI), it force-overrides the Agent tool's `model` parameter: every delegated agent runs on that model, the haiku-downgrade default is a no-op, and a "fresh Claude second opinion" is actually that model's opinion. When the delegated model matters, check `echo $CLAUDE_CODE_SUBAGENT_MODEL` before claiming which model ran.
+- `model`: omit it; delegates inherit the parent session's model — through a proxy/gateway, the gateway's model. Pass one only when the task clearly warrants a different tier, and never a model the session's auth route cannot serve.
+- If `CLAUDE_CODE_SUBAGENT_MODEL` is set in the session environment (e.g. `claudehx` sessions route subagents to GPT-5.6 via CLIProxyAPI), it force-overrides the Agent tool's `model` parameter: every delegated agent runs on that model, and a "fresh Claude second opinion" is actually that model's opinion. When the delegated model matters, check `echo $CLAUDE_CODE_SUBAGENT_MODEL` before claiming which model ran.
 
 Keep delegation bounded:
 
