@@ -194,9 +194,11 @@ gitnexus analyze --force --skip-agents-md .
 gitnexus status
 ```
 
-Then call `mcp__gitnexus__detect_changes` with `repo` set to the source checkout's
-absolute path (`git rev-parse --show-toplevel`) and `scope: "unstaged"`. Treat
-`.gitnexus/` as a local index artifact kept out of commits. Remove unintended
+For this post-edit call, the source checkout's absolute path overrides the packet
+`<gitnexus_status><repo>` value. Then call `mcp__gitnexus__detect_changes` with
+`repo` set to that path (`git rev-parse --show-toplevel`) and
+`scope: "unstaged"`. Treat `.gitnexus/` as a local index artifact kept out of
+commits. Remove unintended
 `.claude/skills/gitnexus/` and `.gitignore` changes before finalizing;
 `gitnexus clean --force` removes only the index and registry entry, not those
 changes.
