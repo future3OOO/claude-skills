@@ -124,6 +124,8 @@ resume at the first unsatisfied phase in the same ordered workflow. A
 governance-first pass therefore returns to TDD, while a completed
 implementation returns to verification.
 
+Findings from the lead's code review or final Codex Advisor against the current unpushed tree follow the return edge to implementation and retain the active `workflowId`. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
+
 ## Approval freshness
 
 A file written through the shell emits no editor event, so nothing invalidates
