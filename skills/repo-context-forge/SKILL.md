@@ -190,15 +190,16 @@ GitNexus repo. Re-analyze the edited source checkout before final change
 detection:
 
 ```bash
-gitnexus analyze --skip-agents-md .
+gitnexus analyze --force --skip-agents-md .
 gitnexus status
 ```
 
-Then call `mcp__gitnexus__detect_changes` with the source-checkout repo name
-(from `gitnexus status` or `gitnexus list`) and `scope: "unstaged"`. Treat
-`.gitnexus/` as a local index artifact kept out of commits; if
-`gitnexus analyze` mutates `.gitignore`, keep only an intentional `.gitnexus/`
-ignore rule and remove unrelated tool side effects before finalizing.
+Then call `mcp__gitnexus__detect_changes` with `repo` set to the source checkout's
+absolute path (`git rev-parse --show-toplevel`) and `scope: "unstaged"`. Treat
+`.gitnexus/` as a local index artifact kept out of commits. Remove unintended
+`.claude/skills/gitnexus/` and `.gitignore` changes before finalizing;
+`gitnexus clean --force` removes only the index and registry entry, not those
+changes.
 
 On a governed pass, also rerun the bootstrap wrapper with the same
 `--workflow-slug` after the final production edits, before typed quality-gate
