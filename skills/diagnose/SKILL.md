@@ -96,7 +96,12 @@ After the immediate bug is understood, escalate to
 
 ### Targeted GitNexus Check
 
-For repo-based bugs, use GitNexus when available only after source tracing has named a suspected owning module/interface/seam. Retarget it to the active checkout, branch, or PR head before relying on graph evidence: run `gitnexus status`, and if stale run `gitnexus analyze` from that checkout.
+For repo-based bugs, use GitNexus when available only after source tracing has named a suspected owning module/interface/seam. Retarget it to the active checkout, branch, or PR head before relying on graph evidence:
+
+```bash
+gitnexus analyze --force --skip-agents-md "$(git rev-parse --show-toplevel)"
+gitnexus status
+```
 
 Use `gitnexus context <suspect>` and `gitnexus impact <suspect> --direction upstream` to challenge the trace for missed callers, affected processes, and shallow-helper domino paths. GitNexus may widen the regression surface or change the hypothesis; it does not replace reproduction, source reads, or the testable hypothesis.
 
