@@ -233,7 +233,7 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
   higher-risk one.
 - Consuming an internal seam from a NEW file (tests, smokes, harnesses, scripts) requires `mcp__gitnexus__context` on that seam BEFORE writing the consumer — a new file has no indexed symbols, so the edit-time impact rule alone never fires for it. Import the existing tested owner of the behavior instead of writing a second parsing/lifecycle client.
 - Run the GitNexus detect-changes tool before committing, after the Repo Context Forge packet surface has already been fixed.
-- Reindex after structural changes or Git mutations when staleness is detected. Run `gitnexus analyze --force --skip-agents-md .` and verify with `gitnexus status`. Rerunning the Repo Context Forge bootstrap re-records the packet-scoped graph result; neither it nor `gitnexus status` certifies a HEAD or tree.
+- Reindex after structural changes or Git mutations when staleness is detected. Run `gitnexus analyze --force --skip-agents-md "$(git rev-parse --show-toplevel)"` and verify with `gitnexus status`. Rerunning the Repo Context Forge bootstrap re-records the packet-scoped graph result; neither it nor `gitnexus status` certifies a HEAD or tree.
 
 ### Hooks
 

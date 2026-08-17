@@ -190,7 +190,7 @@ GitNexus repo. Re-analyze the edited source checkout before final change
 detection:
 
 ```bash
-gitnexus analyze --force --skip-agents-md .
+gitnexus analyze --force --skip-agents-md "$(git rev-parse --show-toplevel)"
 gitnexus status
 ```
 
