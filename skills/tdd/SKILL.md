@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Test-driven development with red-green-refactor loop. Use when user wants to build features or fix bugs using TDD, mentions "red-green-refactor", wants integration tests, or asks for test-first development.
+description: TDD for production behavior changes through real Seams. Use when implementing or fixing code test-first, running red-green-refactor, or when another workflow requires TDD proof.
 ---
 
 # Test-Driven Development
@@ -9,201 +9,91 @@ description: Test-driven development with red-green-refactor loop. Use when user
 
 Production behavior changes require one failing behavior test before production code changes.
 
-The test must fail for the expected product/code reason. If it passes immediately, errors because of invalid setup, or only proves implementation shape, it is not a valid RED gate. Rewrite it at the public production Seam.
+The test must fail for the expected product/code reason. If it passes immediately, fails because setup is invalid, or proves only implementation shape, it is not a valid RED. Correct the test or record the behavior as already satisfied with real-Seam evidence.
 
 ## Canonical Proof Constraint
 
-The mock ban in `~/.claude/CLAUDE.md` is the single governing statement and applies without exception. This skill defines how to find and exercise a real production Seam; [mocking.md](mocking.md) lists honest boundary alternatives without creating a test-only proof path.
+The mock ban in `~/.claude/CLAUDE.md` is the single governing statement and applies without exception. This skill finds and exercises a real production Seam; it does not create a test-only proof path.
 
-## Over-Testing Rules
+Read [tests.md](tests.md) when choosing what a slice must prove. Read [mocking.md](mocking.md) whenever proof crosses a dependency or runtime boundary.
 
-- Tests may serve only the task's deliverables. No tests for unchanged code.
-- Rewriting an existing test or fixture requires the governing contract
-  (issue, PRD, or user instruction) to have explicitly declared the old
-  contract wrong, and every rewrite must be listed in the handoff.
-- When a test goes red after an edit, the edit is the suspect — not the test.
-- Never build the next deliverable on a red baseline.
+## Task Boundary
 
-## Philosophy
+Tests may serve only the task's behavior surface. Do not test unrelated unchanged behavior. When the implementation wraps, replaces, intercepts, or reroutes an existing production Seam, preserving its material observable contract through the new path is task behavior.
 
-**Core principle**: Tests should verify behavior through the public Interface,
-not Implementation details. Code can change entirely; tests shouldn't. Use the
-Module / Interface / Seam vocabulary from `/codebase-design`.
+- Rewrite an existing test or fixture only when the governing contract explicitly declares the old behavior wrong; list every rewrite in the handoff.
+- When an existing test goes RED after an edit, treat the edit as suspect rather than changing the test by default.
+- Never build the next behavior on a RED baseline.
 
-**Good tests** are integration-style: they exercise real code paths through public APIs. They describe _what_ the system does, not _how_ it does it. A good test reads like a specification - "user can checkout with valid cart" tells you exactly what capability exists. These tests survive refactors because they don't care about internal structure.
+## Seams
 
-**Bad tests** are coupled to Implementation. They test private methods, replace the production path with programmed answers, or verify through an interior side channel instead of the Interface. The warning sign: your test breaks when you refactor, but behavior has not changed.
+A **Seam** is the public Interface or externally observable product boundary where behavior is driven and observed without substituting an interior path. Name the Seam before writing the test.
 
-See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for honest boundary strategies under the canonical proof constraint.
-
-## Seams — where tests go
-
-A **Seam** is the public boundary you test at: the Interface where behavior is
-observed without reaching inside. Tests live at Seams, not internals.
-
-Test only at agreed Seams. Before writing a test, name the Seam under test and
-confirm it when the request leaves room for interpretation. Ask: "What is the
-public Interface, and which Seam should this test cross?"
-
-When a public contract is inferred from repository convention or an analogue
-rather than stated explicitly, the RED must exercise the decision boundary:
-include at least one input that distinguishes the plausible interpretations.
-
-## Anti-Pattern: Horizontal Slices
-
-**DO NOT write all tests first, then all implementation.** This is "horizontal slicing" - treating RED as "write all tests" and GREEN as "write all code."
-
-This produces **crap tests**:
-
-- Tests written in bulk test _imagined_ behavior, not _actual_ behavior
-- You end up testing the _shape_ of things (data structures, function signatures) rather than user-facing behavior
-- Tests become insensitive to real changes - they pass when behavior breaks, fail when behavior is fine
-- You outrun your headlights, committing to test structure before understanding the implementation
-
-**Correct approach**: Vertical slices via tracer bullets. One test → one implementation → repeat. Each test responds to what you learned from the previous cycle. Because you just wrote the code, you know exactly what behavior matters and how to verify it.
-
-```
-WRONG (horizontal):
-  RED:   test1, test2, test3, test4, test5
-  GREEN: impl1, impl2, impl3, impl4, impl5
-
-RIGHT (vertical):
-  RED→GREEN: test1→impl1
-  RED→GREEN: test2→impl2
-  RED→GREEN: test3→impl3
-  ...
-```
-
-## Workflow
-
-### 1. Planning
-
-When exploring the codebase, use the project's domain glossary so that test names and Interface vocabulary match the project's language, and respect ADRs in the area you're touching.
-
-Before production edits:
-
-- [ ] Inspect existing test style and test commands
-- [ ] State the proposed Interface change and behavior priorities as a visible checkpoint
-- [ ] Incorporate user corrections when available; otherwise proceed unless a concrete ambiguity blocks safe implementation
-- [ ] Identify the public Interface or observable workflow being changed
-- [ ] Identify whether the current Module/Interface is testable
-- [ ] Identify opportunities for deep Modules using `/codebase-design`
-- [ ] Design Interfaces for testability using `/codebase-design`
-- [ ] List the behaviors to test (not implementation steps)
-- [ ] Name the first behavior slice to prove
-- [ ] For non-trivial work, list remaining behavior slices
-- [ ] Show the plan before implementation; do not block on ceremonial approval when no material unknown remains
-
-Present the proposed public Interface, first behavior slice, and priorities. Pause only for a real blocker; otherwise proceed and leave the checkpoint available for correction.
-
-**You cannot test everything.** Focus on critical paths and complex logic, and record any deliberately omitted behavior surface.
+When a public contract is inferred from repository convention or an analogue rather than stated explicitly, the RED must exercise the decision boundary with an input that distinguishes the plausible interpretations.
 
 ### Architecture/Testability Gate
 
 If a behavior cannot be tested cleanly through a public Interface, would require a test-only replacement path, or coordinates several shallow Modules, do not force a bad test.
 
-Stop and use `/codebase-design` to inspect the Module, Interface, Seam, and
-deepening opportunity. Use `/improve-codebase-architecture` when the decision
-requires a repo scan or multiple candidate refactors. TDD should prove behavior
-through a good Interface; it should not normalize shallow Modules.
+Use `/codebase-design` to inspect the Module, Interface, Seam, and deepening opportunity. Use `/improve-codebase-architecture` when the decision requires a repo scan or multiple candidate refactors. When `/diagnose` already mapped the failing surface, consume that map rather than recreating it. If no real Seam exists, surface the proof gap.
 
-When `/diagnose` ran first, consume its surface map. The failing test should cross the mapped Interface at a real Seam; do not regenerate the diagnose map here. If no real Seam exists, surface the proof gap and escalate to `/improve-codebase-architecture`.
+## 1. Build the Behavior Map
 
-### 2. Tracer Bullet
+Build a provisional map from the authoritative governing text, not a paraphrase. When governed workflow state exists, use its recorded intent. Otherwise use the user request, issue, PRD, or equivalent contract.
 
-Write ONE test that confirms ONE thing about the system:
+A behavior slice is the smallest independently-failable observable outcome under one relevant precondition. Split outcomes when different preconditions, states, decision boundaries, or production defects could break them independently. “And” joining independently-failable outcomes is a smell, not a mechanical rule.
 
-```
-RED:   Write test for first behavior -> test fails for expected reason
-GREEN: Write minimal code to pass -> test passes
-```
+Map:
 
-This is your tracer bullet - proves the path works end-to-end.
+- each observable success outcome;
+- each contract-named error, exception, refusal, and non-success outcome;
+- for stateful Interfaces, each observable transition and distinct rejected transition; treat permitted nesting or re-entry separately;
+- material existing behavior at every production Seam the change wraps, replaces, intercepts, or reroutes;
+- interactions already visible between behaviors that share mutable state, lifecycle, ordering, or a touched Seam.
 
-### 3. Incremental Loop
+Each item is **pending**, **GREEN**, **already satisfied with real-Seam evidence**, or **omitted**. An omission names the reason and governing evidence or proof gap; silent absence is not a disposition. Choose the first pending slice and name its real Seam and expected product failure.
 
-For each remaining behavior:
+Completion: every named contract outcome is present or omitted, and either the first pending slice is ready to drive through the real Seam or no pending item remains.
 
-```
-RED:   Write next test -> fails for expected reason
-GREEN: Minimal code to pass -> passes
-```
+## 2. Run One Vertical Slice
 
-Rules:
+Do not write all tests first. The remaining map stays provisional.
 
-- One test at a time
-- Only enough code to pass current test
-- Don't anticipate future tests
-- Keep tests focused on observable behavior
+**RED**
 
-### 4. Refactor
+- Write one test for one atomic slice through the real Seam.
+- Require failure for the expected product reason, not setup, syntax, or shape.
+- If the behavior already passes before a production edit, mark it already satisfied with real-Seam evidence or correct the test. It is not a RED/GREEN cycle.
 
-After all tests pass, look for refactor candidates through `/codebase-design`:
+**GREEN**
 
-- [ ] Extract duplication
-- [ ] Deepen modules (move complexity behind simple interfaces)
-- [ ] Apply the deletion test to shallow pass-through Modules
-- [ ] Consider what new code reveals about existing code
-- [ ] Run tests after each refactor step
+- Write the smallest production change that passes the same test surface.
+- Do not anticipate later slices.
 
-**Never refactor while RED.** Get to GREEN first.
+Per cycle:
 
-## Checklist Per Cycle
-
-```
-[ ] Test describes behavior, not implementation
-[ ] Test uses public Interface only
-[ ] Test would survive internal refactor
-[ ] Code is minimal for this test
-[ ] No speculative features added
+```text
+[ ] Slice proves one independently-failable observable outcome
+[ ] Failure is produced by the real system at the real Seam
+[ ] State after success or failure matches the complete observable contract
+[ ] Code is minimal for this slice
+[ ] Behavior map was reassessed after GREEN
 ```
 
-## Bounded Workflow Summary
+## 3. Reassess After GREEN
 
-When a bounded continuity summary is useful, run RED and GREEN through the
-optional recorder. It keeps the command, exit status, bounded output, declared
-behavior, and real Seam. It records what the command observed; it is not an
-authorization credential or a substitute for inspecting the test:
+Update the behavior map from the architecture that now exists.
 
-```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --phase red \
-  --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
-  --seam "<real public Interface/Seam>" --expected-failure "<expected product failure>" \
-  -- <targeted-command>
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --phase green \
-  --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
-  --seam "<same real public Interface/Seam>" -- <targeted-command>
-```
+- Identify each load-bearing assumption or state boundary introduced by the GREEN. Drive the cheapest focused real-Seam probe that could falsify it. If the probe demonstrates a product defect, record that behavior as the next RED. If it passes, it is regression evidence rather than a RED cycle; retain it only when it protects a material load-bearing guarantee.
+- When two behaviors share mutable state, lifecycle, ordering, or a touched Seam, ask whether either can invalidate the other's guarantee. If so, add an interaction slice.
+- Any review-discovered behavior defect or later behavior-changing production edit reopens RED→GREEN before its fix. A genuinely non-behavioral edit records why.
 
-The recorder also counts the cycles it opens, and on a pass with a recorded base
-the per-edit quality-gate hook divides branch-cumulative net production growth by
-that count and warns once past ~200 lines per recorded cycle, naming both numbers
-— a granularity smell that one dainty cycle is carrying a whole feature, never a
-block.
+Completion: the map reflects the actual design and either names the next pending slice or has every item GREEN, already satisfied with real-Seam evidence, or omitted.
 
-GREEN must rerun the test surface that produced RED, not repeat its spelling.
-For a directly invoked stdlib unittest or pytest command the recorder compares a
-normalized surface — runner family, invocation, and the ordered arguments that
-select tests — so a rerun differing only by pytest `-x`/`--exitfirst`/`--maxfail=1`,
-unittest `-f`/`--failfast`, or a verbosity alias is the same candidate. Everything
-else stays load-bearing: a different target, `-k`/`-m` selector, config path,
-start or root directory, runner, behavior, or Seam refuses before the command
-runs and names each differing field with both normalized values. Any other
-command — including `bash -lc`, a pipeline, or an unknown runner — keeps exact
-identity and records why. A cycle whose RED predates this contract stays bound to
-its exact command; rerun RED to move it onto a surface.
+## 4. Refactor and Complete
 
-For a genuinely non-behavioral change, record the decision explicitly:
+Refactor only while GREEN and rerun the relevant tests after each step.
 
-```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" \
-  --slug "<task>" --not-required "<specific non-behavioral reason>"
-```
+TDD is complete only when every current behavior-map item is GREEN, already satisfied with real-Seam evidence, or omitted; the broader relevant suite passes; and no behavior-changing production edit occurred after the final GREEN.
 
-Before completion, report:
-
-- RED: targeted command and expected product failure observed
-- GREEN: the same behavior command passed after the smallest production change
-- REGRESSION: broader relevant suite passed, or strongest practical substitute with reason
-- REFACTOR: only performed while tests were green
-- LIMIT: chronology and intent remain claims to verify against the diff and review record
+When governed workflow continuity is active, follow [recorder.md](recorder.md). The recorder preserves bounded RED/GREEN observations; it is not proof or authorization.

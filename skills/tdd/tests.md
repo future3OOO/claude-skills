@@ -1,61 +1,43 @@
-# Good and Bad Tests
+# Behavior Test Reference
 
-## Good Tests
+A strong test proves one **independently-failable observable outcome** through the public Interface or externally observable state governed by that Interface.
 
-**Integration-style**: Test through real interfaces, not mocks of internal parts.
+Several assertions are valid when they jointly prove one behavior. One assertion can still hide an over-broad behavior.
 
-```typescript
-// GOOD: Tests observable behavior
-test("user can checkout with valid cart", async () => {
-  const cart = createCart();
-  cart.add(product);
-  const result = await checkout(cart, paymentMethod);
-  expect(result.status).toBe("confirmed");
-});
+## What a slice must prove
+
+| Slice | Proof shape |
+|---|---|
+| Atomic behavior | One outcome under one relevant precondition; split outcomes that different defects could break independently. |
+| Complete failure contract | Expected error or refusal, no partial observable state, and the correct outward result, exit status, or propagated exception. |
+| Touched-Seam preservation | An existing public operation rerouted through the new path retains its material observable contract. |
+| Architecture falsifier | A reachable semantic bypass challenges a load-bearing guard or state boundary, not merely its obvious spelling. If the probe passes, keep it only as material regression evidence; do not manufacture a RED. |
+| Interaction slice | Two individually GREEN behaviors sharing state, lifecycle, or ordering cannot invalidate one another's guarantee. |
+
+## Complete failure example
+
+```python
+def test_rejected_transfer_preserves_balances():
+    before = balances(account_a, account_b)
+
+    result = transfer(account_a, account_b, amount=-1)
+
+    assert result.error == "invalid amount"
+    assert balances(account_a, account_b) == before
+    assert result.committed is False
 ```
 
-Characteristics:
+The error, unchanged externally meaningful state, and outward result together prove one failure behavior.
 
-- Tests behavior users/callers care about
-- Uses public API only
-- Survives internal refactors
-- Describes WHAT, not HOW
-- One logical assertion per test
+## Observable state
 
-## Bad Tests
+Verify through the public Interface or the externally observable state governed by that Interface. Do not inspect an internal store merely because it is convenient. Direct state inspection is valid when the state itself is a public product artifact, or when the Interface explicitly promises its exact persisted state.
 
-**Implementation-detail tests**: Coupled to internal structure.
+Avoid tests that:
 
-```typescript
-// BAD: Tests implementation details
-test("checkout calls paymentService.process", async () => {
-  const mockPayment = jest.mock(paymentService);
-  await checkout(cart, payment);
-  expect(mockPayment.process).toHaveBeenCalledWith(cart.total);
-});
-```
-
-Red flags:
-
-- Mocking internal collaborators
-- Testing private methods
-- Asserting on call counts/order
-- Test breaks when refactoring without behavior change
-- Test name describes HOW not WHAT
-- Verifying through external means instead of interface
-
-```typescript
-// BAD: Bypasses interface to verify
-test("createUser saves to database", async () => {
-  await createUser({ name: "Alice" });
-  const row = await db.query("SELECT * FROM users WHERE name = ?", ["Alice"]);
-  expect(row).toBeDefined();
-});
-
-// GOOD: Verifies through interface
-test("createUser makes user retrievable", async () => {
-  const user = await createUser({ name: "Alice" });
-  const retrieved = await getUser(user.id);
-  expect(retrieved.name).toBe("Alice");
-});
-```
+- replace production collaborators with programmed answers;
+- assert private methods, call counts, or interior sequencing instead of behavior;
+- fail because setup, syntax, or fixture shape is wrong;
+- combine independently-failable outcomes under one broad name;
+- prove only the happy path while omitting the declared failure state;
+- inspect private persistence when the public contract does not expose or govern it.

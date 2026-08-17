@@ -1,8 +1,6 @@
 # Boundary strategies under the canonical mock ban
 
-The canonical mock-ban statement lives in `CLAUDE.md` and governs every
-claimed RED/GREEN or production proof. This reference does not restate or
-weaken it.
+The canonical mock-ban statement lives in `CLAUDE.md` and governs every claimed RED/GREEN or production proof. This reference does not restate or weaken it.
 
 Use the closest real production Interface available:
 
@@ -12,10 +10,10 @@ Use the closest real production Interface available:
 - **Third-party provider:** use its sandbox/test tenant or an owned end-to-end environment. Captured fixtures may support contract analysis but do not replace the live production Seam.
 - **Browser/device behavior:** use the authenticated staging flow or strongest real runtime harness available.
 
-A programmed stand-in may isolate a diagnostic hypothesis. Label it
-diagnostic-only, delete it after use, and never count it as RED/GREEN,
-regression, or production verification.
+When proving failure or adversarial behavior, drive a real reachable condition that causes the production dependency or runtime to fail naturally. Do not replace an internal function merely to make it raise when the real Seam can produce that condition.
 
-When no real Seam can be driven, record the proof gap and use
-`codebase-design` or `improve-codebase-architecture`; do not invent a second
-production path for the test.
+The dependency's relevant semantics are part of the Seam. When correctness depends on transaction, filesystem, process, protocol, concurrency, scheduling, timing, or serialization behavior, exercise those semantics in the real runtime using the strongest deterministic harness available rather than reproducing an approximation.
+
+A programmed stand-in may isolate a diagnostic hypothesis. Label it diagnostic-only, delete it after use, and never count it as RED/GREEN, regression, or production verification.
+
+When no real Seam can be driven safely or deterministically, record the proof gap and use `codebase-design` or `improve-codebase-architecture`; do not manufacture green evidence or invent a second production path for the test.
