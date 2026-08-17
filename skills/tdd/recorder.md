@@ -18,7 +18,9 @@ The recorder also counts the cycles it opens. On a pass with a recorded base, th
 
 GREEN must rerun the test surface that produced RED, not repeat its spelling. For a directly invoked stdlib unittest or pytest command, the recorder compares a normalized surface: runner family, invocation, and the ordered arguments that select tests. A rerun differing only by pytest `-x`/`--exitfirst`/`--maxfail=1`, unittest `-f`/`--failfast`, or a verbosity alias is the same candidate.
 
-Everything else stays load-bearing: a different target, `-k`/`-m` selector, config path, start or root directory, runner, behavior, or Seam refuses before the command runs and names each differing field with both normalized values. Any other command, including `bash -lc`, a pipeline, or an unknown runner, keeps exact identity and records why. A cycle whose RED predates this contract stays bound to its exact command; rerun RED to move it onto a surface.
+While a cycle is pending, a different target, `-k`/`-m` selector, config path, start or root directory, runner, behavior, or Seam refuses RED or GREEN before the command runs and names each differing field with both normalized values. GREEN remains bound after completion. A RED against completed `passed` or `not-required` evidence may run with a changed candidate; a valid changed RED opens the next cycle.
+
+Any other command, including `bash -lc`, a pipeline, or an unknown runner, keeps exact command identity and records why. A pending cycle whose RED predates normalized surfaces stays bound to its exact command; rerun that exact RED to move it onto a normalized surface.
 
 For a genuinely non-behavioral change, record the decision explicitly:
 
@@ -27,10 +29,14 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   --slug "<task>" --not-required "<specific non-behavioral reason>"
 ```
 
+The recorder has no phase for already-satisfied or omitted items; those are behavior-map dispositions reported in the handoff, not fabricated recorder events.
+
 Before completion, report:
 
-- **RED:** targeted command and expected product failure observed;
+- **RED:** targeted command and expected product failure observed for each implemented slice;
 - **GREEN:** the same behavior surface passed after the smallest production change;
+- **ALREADY SATISFIED:** the real-Seam command passed before a production edit, with evidence that no RED/GREEN cycle or production change was required;
+- **OMITTED:** each item removed by governing evidence, with that evidence; a proof gap is not an omission;
 - **REGRESSION:** broader relevant suite passed, or strongest practical substitute with reason;
 - **REFACTOR:** only performed while tests were GREEN;
 - **LIMIT:** chronology and intent remain claims to verify against the diff and review record.
