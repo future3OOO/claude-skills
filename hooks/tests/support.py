@@ -6,7 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hooks.lib.preflight_document import SECTIONS
+from hooks.lib.behavior_map import no_change_item
+from hooks.lib.preflight_document import BEHAVIOR_MAP_SECTION, SECTIONS
 from hooks.lib.repo_identity import RepoIdentity, resolve_repo_identity
 from hooks.lib.workflow_documents import graph_evidence_document
 from hooks.lib.workflow_state import (
@@ -22,9 +23,42 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 
 
-def build_document(fill: str) -> dict[str, str]:
-    """A structurally valid preflight document with uniform section text."""
-    return {name: "none" if name == "openQuestions" else f"{name}: {fill}" for name in SECTIONS}
+def pending_behavior(
+    identifier: str = "BM_TEST",
+    *,
+    behavior: str = "value becomes two",
+    seam: str = "public application behavior",
+    expected: str = "value is two",
+    red_failure: str = "VALUE_NOT_TWO",
+    basis: str = "test contract",
+) -> dict[str, object]:
+    return {
+        "id": identifier,
+        "basis": basis,
+        "behavior": behavior,
+        "seam": seam,
+        "expected": expected,
+        "redFailure": red_failure,
+        "status": "pending",
+    }
+
+
+def build_document(
+    fill: str,
+    *,
+    behavior_map: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """A structurally valid preflight document with explicit TDD scope."""
+    document: dict[str, object] = {
+        name: "none" if name == "openQuestions" else f"{name}: {fill}"
+        for name in SECTIONS
+    }
+    document[BEHAVIOR_MAP_SECTION] = (
+        behavior_map
+        if behavior_map is not None
+        else [no_change_item("test fixture declares no production behavior change")]
+    )
+    return document
 
 
 def graph_packet(root: str) -> dict[str, object]:
