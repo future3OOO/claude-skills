@@ -94,7 +94,7 @@ Completion: the map reflects the actual design and either names the next pending
 
 ## 4. Refactor and Complete
 
-Refactor only while GREEN and rerun the relevant tests after each step.
+Refactor only while GREEN and rerun the relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
 
 TDD is complete only when every behavior-changing item is GREEN; every other item is already satisfied with real-Seam evidence or omitted by governing evidence; no proof gap remains; the broader relevant suite passes; and no behavior-changing production edit occurred after the last applicable GREEN.
 

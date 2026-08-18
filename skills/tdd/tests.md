@@ -2,6 +2,8 @@
 
 A strong test proves one **independently-failable observable outcome** through the public Interface or externally observable state governed by that Interface.
 
+A behavior test survives internal refactoring: if observable behavior is unchanged but the test breaks, the test is coupled to implementation.
+
 Several assertions are valid when they jointly prove one behavior. One assertion can still hide an over-broad behavior.
 
 ## What a slice must prove
