@@ -22,23 +22,24 @@ While a cycle is pending, a different target, `-k`/`-m` selector, config path, s
 
 Any other command, including `bash -lc`, a pipeline, or an unknown runner, keeps exact command identity and records why. A pending cycle whose RED predates normalized surfaces stays bound to its exact command; rerun that exact RED to move it onto a normalized surface.
 
-When the pass requires no production behavior edit, record the existing no-change decision:
+When every scoped map item is already satisfied or omitted by governing evidence, record the existing no-change decision:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" \
   --slug "<task>" --not-required "<specific reason no production behavior edit is required>"
 ```
 
-This includes a map whose scoped items are all already satisfied or omitted by governing evidence. Do not use `--not-required` while a behavior-changing item remains pending or after valid RED/GREEN evidence; the CLI refuses to replace valid TDD evidence.
+Use `--not-required` only in that state. Do not use it while any item, including a proof gap, remains pending or after valid RED/GREEN evidence; the CLI refuses to replace valid TDD evidence.
 
 The recorder has no phase for individual already-satisfied or omitted items in a mixed pass; those remain behavior-map dispositions reported in the handoff.
 
-Before completion, report:
+Before completion, or when stopping on a proof gap, report the applicable items:
 
 - **RED:** targeted command and expected product failure observed for each implemented slice;
 - **GREEN:** the same behavior surface passed after the smallest production change;
 - **ALREADY SATISFIED:** the real-Seam command passed before a production edit, with evidence that no RED/GREEN cycle or production change was required;
-- **OMITTED:** each item removed by governing evidence, with that evidence; a proof gap is not an omission;
+- **OMITTED:** each item removed by governing evidence, with that evidence;
+- **PROOF GAP:** each unresolved gap, the real Seam or evidence required to close it, and that implementation and completion remain blocked;
 - **REGRESSION:** broader relevant suite passed, or strongest practical substitute with reason;
 - **REFACTOR:** only performed while tests were GREEN;
 - **LIMIT:** chronology and intent remain claims to verify against the diff and review record.
