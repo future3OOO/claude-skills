@@ -8,6 +8,7 @@ from typing import Iterable
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
 RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green"}
+DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 REQUIRED_FIELDS = frozenset({
     "id", "basis", "behavior", "seam", "expected", "redFailure", "status",
 })
@@ -90,7 +91,7 @@ def validate_items(
             "status": status,
         }
         evidence = _text(raw.get("evidence"))
-        if status in {"already-satisfied", "omitted"}:
+        if status in DISPOSITION_STATUSES:
             if evidence is None:
                 raise ValueError(f"behavior {identifier} status {status} requires evidence")
             item["evidence"] = evidence
@@ -134,14 +135,47 @@ def item(items: list[JsonObject], identifier: str) -> JsonObject:
         raise ValueError(f"behavior id is not in the recorded map: {identifier}") from exc
 
 
+def apply_dispositions(items: list[JsonObject], value: object) -> None:
+    """Apply explicit no-edit dispositions to pending items in place."""
+    if not isinstance(value, list):
+        raise ValueError("TDD map dispositions must be an array")
+    seen: set[str] = set()
+    for position, raw in enumerate(value, 1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"TDD map disposition {position} must be an object")
+        unknown = sorted(set(raw) - {"id", "status", "evidence"})
+        if unknown:
+            raise ValueError(
+                f"TDD map disposition {position} has unknown fields: {', '.join(unknown)}"
+            )
+        identifier = _text(raw.get("id"))
+        status = _text(raw.get("status"))
+        evidence = _text(raw.get("evidence"))
+        if identifier is None or identifier in seen:
+            raise ValueError("TDD map dispositions require unique behavior ids")
+        seen.add(identifier)
+        if status not in DISPOSITION_STATUSES:
+            raise ValueError(
+                f"behavior {identifier} disposition must be one of: "
+                + ", ".join(sorted(DISPOSITION_STATUSES))
+            )
+        if evidence is None:
+            raise ValueError(f"behavior {identifier} disposition requires evidence")
+        mapped = item(items, identifier)
+        if mapped.get("status") != "pending":
+            raise ValueError(
+                f"behavior {identifier} is {mapped.get('status')}; only pending items can be dispositioned"
+            )
+        mapped["status"] = status
+        mapped["evidence"] = evidence
+
+
 def unresolved(items: list[JsonObject]) -> list[str]:
     return [str(entry["id"]) for entry in items if entry.get("status") in {"pending", "red"}]
 
 
 def all_disposition_only(items: list[JsonObject]) -> bool:
-    return bool(items) and all(
-        entry.get("status") in {"already-satisfied", "omitted"} for entry in items
-    )
+    return bool(items) and all(entry.get("status") in DISPOSITION_STATUSES for entry in items)
 
 
 def no_change_item(evidence: str) -> JsonObject:
