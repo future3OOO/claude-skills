@@ -12,8 +12,9 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib.hook_input import edited_path, read_hook_payload  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import is_reviewable_path  # noqa: E402
-from hooks.lib.workflow_state import ready_for_edit  # noqa: E402
+from hooks.lib.state_store import is_reviewable_path, is_test_path  # noqa: E402
+from hooks.lib.tdd_workflow import edit_blockers  # noqa: E402
+from hooks.lib.workflow_state import read_workflow, ready_for_edit  # noqa: E402
 
 
 def deny(reason: str) -> None:
@@ -44,10 +45,17 @@ def main() -> int:
         return 0
 
     ready, missing = ready_for_edit(identity, relative)
+    if ready and not is_test_path(relative):
+        state = read_workflow(identity)
+        if state is not None:
+            missing.extend(edit_blockers(identity, state))
+            ready = not missing
     if not ready:
         deny(
-            "BLOCKED by workflow intake: production edits require an active workflow "
-            "through production preflight. Missing: " + ", ".join(missing) + "."
+            "BLOCKED by workflow intake: production edits require recorded preflight, "
+            "a valid mapped RED, and post-GREEN reassessment. Missing: "
+            + ", ".join(missing)
+            + "."
         )
     return 0
 
