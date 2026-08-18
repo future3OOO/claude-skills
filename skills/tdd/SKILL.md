@@ -48,6 +48,7 @@ Do not write all tests first. Select one pending map ID.
 - Write one test for that atomic behavior through its recorded Seam.
 - Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
 - Run it through `workflow.py tdd --phase red --behavior-id <ID>`.
+- If the real-Seam test already passes before a production edit, disposition the item through `tdd-map` as `already-satisfied` with that evidence; do not manufacture RED or edit production code for it.
 - Production edits remain blocked until this RED is valid.
 
 **GREEN**
@@ -67,7 +68,7 @@ GREEN creates architecture, so it also creates new proof obligations. Before ano
 - retain a passing falsifier only as material regression evidence;
 - if review finds a behavioral defect, add it to the map and drive a fresh RED before the fix.
 
-A reassessment with no new item records why. A reassessment that adds items returns TDD to pending; the next production edit requires a valid RED for one of them. Cycle count is not a quality target.
+A reassessment with no new item records why. A reassessment that adds items reopens TDD; the next production edit requires a valid RED for one of them. Cycle count is not a quality target.
 
 ## 4. Refactor and Complete
 
