@@ -10,11 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from hooks.lib._workflow_db import LedgerError  # noqa: E402
 from hooks.lib.hook_input import edited_path, read_hook_payload  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import is_reviewable_path, is_test_path  # noqa: E402
 from hooks.lib.tdd_workflow import edit_blockers  # noqa: E402
-from hooks.lib.workflow_state import read_workflow, ready_for_edit  # noqa: E402
+from hooks.lib.workflow_state import (  # noqa: E402
+    WorkflowError,
+    read_workflow,
+    ready_for_edit,
+)
 
 
 def deny(reason: str) -> None:
@@ -44,12 +49,16 @@ def main() -> int:
     if not is_reviewable_path(relative):
         return 0
 
-    ready, missing = ready_for_edit(identity, relative)
-    if ready and not is_test_path(relative):
-        state = read_workflow(identity)
-        if state is not None:
-            missing.extend(edit_blockers(identity, state))
-            ready = not missing
+    try:
+        ready, missing = ready_for_edit(identity, relative)
+        if ready and not is_test_path(relative):
+            state = read_workflow(identity)
+            if state is not None:
+                missing.extend(edit_blockers(identity, state))
+                ready = not missing
+    except (WorkflowError, LedgerError) as exc:
+        deny(f"BLOCKED by workflow intake: workflow evidence is unreadable: {exc}.")
+        return 0
     if not ready:
         deny(
             "BLOCKED by workflow intake: production edits require recorded preflight, "
