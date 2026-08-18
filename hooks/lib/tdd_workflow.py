@@ -192,18 +192,35 @@ def _run_tdd(values: list[str]) -> int:
         return legacy_main(["tdd", *values])
 
     if args.not_required is not None:
+        reason = args.not_required.strip()
+        if not reason:
+            raise ValueError("--not-required requires a non-empty reason")
+        if args.runner_command:
+            raise ValueError("--not-required does not accept a command")
         if not behavior_map.all_disposition_only(items):
             raise WorkflowError(
                 "--not-required requires every mapped item to be already-satisfied "
                 "or omitted by governing evidence"
             )
-        result = legacy_main(["tdd", *values])
-        if result:
-            return result
-        state = bound_state(identity, safe_slug(args.slug))
-        evidence_id = _augment_tdd_evidence(
-            identity, state, items, behavior_id=None, phase=None,
-            reason=args.not_required.strip(),
+        existing_id = state.get("tddEvidence") if isinstance(state.get("tddEvidence"), str) else None
+        existing = evidence_document(identity, existing_id)
+        runs = existing.get("runs") if isinstance(existing, dict) else None
+        if isinstance(runs, list) and any(
+            isinstance(run, dict) and run.get("valid") is True for run in runs
+        ):
+            raise WorkflowError("--not-required cannot replace valid TDD evidence")
+        document = _map_doc(
+            slug=str(state["slug"]),
+            workflow_id=str(state["workflowId"]),
+            items=items,
+            status="not-required",
+            kind="map",
+            reassessment=reason,
+            reason=reason,
+        )
+        _, evidence_id = commit_tdd(
+            identity, str(state["slug"]), str(state["workflowId"]), document,
+            "not-required", expected_evidence_id=existing_id,
         )
         _emit_json({"summaryId": evidence_id, "status": "not-required"})
         return 0
