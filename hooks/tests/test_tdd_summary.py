@@ -602,10 +602,7 @@ class TddSummaryTests(unittest.TestCase):
 
         identity = resolve_repo_identity(self.repo)
         wid = read_workflow(identity)["workflowId"]
-        sections = ("affectedSurface", "authoritativeContract", "invariants", "proofPlan",
-                    "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
-                    "verify", "update", "modularityPlan", "riskChecks", "openQuestions")
-        doc = {name: "none" if name == "openQuestions" else "concrete content" for name in sections}
+        doc = build_document("terminal workflow rerun")
         doc_path = self.tmp / "preflight-doc.json"
         doc_path.write_text(json.dumps(doc), encoding="utf-8")
         recorded = self.run_script(WORKFLOW, "record-preflight", "--repo", str(self.repo), "--slug", "tdd-summary",
