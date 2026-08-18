@@ -11,7 +11,7 @@ Several assertions are valid when they jointly prove one behavior. One assertion
 | Slice | Proof shape |
 |---|---|
 | Atomic behavior | One outcome under one relevant precondition; split outcomes that different defects could break independently. |
-| Complete failure contract | Expected error or refusal, no partial observable state, and the correct outward result, exit status, or propagated exception. |
+| Complete failure contract | Expected error or refusal, the observable state required by the contract, and the correct outward result, exit status, or propagated exception. |
 | Touched-Seam preservation | An existing public operation rerouted through the new path retains its material observable contract. |
 | Architecture falsifier | A reachable semantic bypass challenges a load-bearing guard or state boundary, not merely its obvious spelling. If the probe passes, keep it only as material regression evidence; do not manufacture a RED. |
 | Interaction slice | Two individually GREEN behaviors sharing state, lifecycle, or ordering cannot invalidate one another's guarantee. |
@@ -29,7 +29,7 @@ def test_rejected_transfer_preserves_balances():
     assert result.committed is False
 ```
 
-The error, unchanged externally meaningful state, and outward result together prove one failure behavior.
+The error, contract-required balance preservation, and outward result together prove one failure behavior.
 
 ## Observable state
 
