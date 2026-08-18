@@ -22,14 +22,16 @@ While a cycle is pending, a different target, `-k`/`-m` selector, config path, s
 
 Any other command, including `bash -lc`, a pipeline, or an unknown runner, keeps exact command identity and records why. A pending cycle whose RED predates normalized surfaces stays bound to its exact command; rerun that exact RED to move it onto a normalized surface.
 
-For a genuinely non-behavioral change, record the decision explicitly:
+When the pass requires no production behavior edit, record the existing no-change decision:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" \
-  --slug "<task>" --not-required "<specific non-behavioral reason>"
+  --slug "<task>" --not-required "<specific reason no production behavior edit is required>"
 ```
 
-The recorder has no phase for already-satisfied or omitted items; those are behavior-map dispositions reported in the handoff, not fabricated recorder events.
+This includes a map whose scoped items are all already satisfied or omitted by governing evidence. Do not use `--not-required` while a behavior-changing item remains pending or after valid RED/GREEN evidence; the CLI refuses to replace valid TDD evidence.
+
+The recorder has no phase for individual already-satisfied or omitted items in a mixed pass; those remain behavior-map dispositions reported in the handoff.
 
 Before completion, report:
 
