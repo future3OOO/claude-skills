@@ -29,7 +29,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   --slug "<task>" --not-required "<specific reason no production behavior edit is required>"
 ```
 
-Use `--not-required` only in that state. Do not use it while any item, including a proof gap, remains pending or after valid RED/GREEN evidence; the CLI refuses to replace valid TDD evidence.
+Use `--not-required` only in that state. Governance forbids it while any item, including a proof gap, remains pending. The CLI separately refuses to replace existing valid RED/GREEN evidence.
 
 The recorder has no phase for individual already-satisfied or omitted items in a mixed pass; those remain behavior-map dispositions reported in the handoff.
 
