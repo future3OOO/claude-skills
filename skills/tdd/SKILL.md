@@ -7,95 +7,72 @@ description: TDD for production behavior changes through real Seams. Use when im
 
 ## Core Rule
 
-Production behavior changes require one failing behavior test before production code changes.
+Production behavior changes require one **behavior-specific RED** before production code changes.
 
-The test must fail for the expected product/code reason. If it passes immediately, fails because setup is invalid, or proves only implementation shape, it is not a valid RED. Correct the test or record the behavior as already satisfied with real-Seam evidence; an already-satisfied item requires no production edit.
+A RED proves the mapped behavior is absent. It must reach the real Seam and fail at the product assertion named by the map. A missing method/import, invalid setup, collection error, syntax error, or test that fails before reaching the claimed behavior is not RED evidence, even when the eventual test is broad and impressive-looking.
 
-## Canonical Proof Constraint
+The canonical mock ban in `~/.claude/CLAUDE.md` applies without exception. This skill never creates a test-only proof path.
 
-The mock ban in `~/.claude/CLAUDE.md` is the single governing statement and applies without exception. This skill finds and exercises a real production Seam; it does not create a test-only proof path.
+Before selecting the first slice, read [tests.md](tests.md). Before naming a RED whose correctness depends on transaction, filesystem, process, protocol, concurrency, timing, or serialization semantics, read [mocking.md](mocking.md).
 
-Read [tests.md](tests.md) when choosing what a slice must prove. Read [mocking.md](mocking.md) whenever proof crosses a dependency or runtime boundary.
+## Task Boundary and Seams
 
-## Task Boundary
+Tests serve the task's behavior surface. Do not test unrelated unchanged behavior. When the change wraps, replaces, intercepts, or reroutes an existing production Seam, preserving every material success, failure, input-form, state, and atomicity guarantee the new path can alter is task behavior.
 
-Tests may serve only the task's behavior surface. Do not test unrelated unchanged behavior. When the implementation wraps, replaces, intercepts, or reroutes an existing production Seam, preserving its material observable contract through the new path is task behavior.
+A **Seam** is the public Interface or externally observable product boundary where behavior is driven and observed without substituting an interior path. Name it before writing the test. When the contract is inferred from repository convention or an analogue, the RED must exercise an input that distinguishes the plausible interpretations.
 
-- Rewrite an existing test or fixture only when the governing contract explicitly declares the old behavior wrong; list every rewrite in the handoff.
-- When an existing test goes RED after an edit, treat the edit as suspect rather than changing the test by default.
-- Never build the next behavior on a RED baseline.
+If a required behavior has no clean real Seam, record the proof gap and stop the behavior-changing edit. Use `/codebase-design` or `/improve-codebase-architecture`; the gap stays pending and blocks completion.
 
-## Seams
+## 1. Record the Behavior Map in Preflight
 
-A **Seam** is the public Interface or externally observable product boundary where behavior is driven and observed without substituting an interior path. Name the Seam before writing the test.
+The recorded production preflight owns the initial Behavior Map. A plan may reference it but is not authoritative.
 
-When a public contract is inferred from repository convention or an analogue rather than stated explicitly, the RED must exercise the decision boundary with an input that distinguishes the plausible interpretations.
-
-### Architecture/Testability Gate
-
-If a behavior cannot be tested cleanly through a public Interface, would require a test-only replacement path, or coordinates several shallow Modules, do not force a bad test.
-
-Use `/codebase-design` to inspect the Module, Interface, Seam, and deepening opportunity. Use `/improve-codebase-architecture` when the decision requires a repo scan or multiple candidate refactors. When `/diagnose` already mapped the failing surface, consume that map rather than recreating it. If no real Seam exists, record the proof gap and stop the behavior-changing edit; the gap remains pending and blocks TDD completion until this gate is resolved.
-
-## 1. Build the Behavior Map
-
-Build a provisional map from the active pass contract and applicable governing constraints, not a paraphrase. When governed workflow state exists, its recorded intent defines the active pass contract; otherwise use the user request, issue, PRD, or equivalent contract. Surface and reconcile any conflict or material ambiguity before selecting a slice. Record any assumption, ambiguity, tradeoff, or simpler alternative that changes the map.
-
-A behavior slice is the smallest independently-failable observable outcome under one relevant precondition. Split outcomes when different preconditions, states, decision boundaries, or production defects could break them independently. “And” joining independently-failable outcomes is a smell, not a mechanical rule.
+A behavior slice is the smallest independently-failable observable outcome under one relevant precondition. Split outcomes when different defects could break them independently. “And” joining independent outcomes is a smell, not a mechanical rule.
 
 Map:
 
-- each observable success outcome;
-- each contract-named error, exception, refusal, and non-success outcome;
-- for stateful Interfaces, each observable transition and distinct rejected transition; treat permitted nesting or re-entry separately;
-- material existing behavior at every production Seam the change wraps, replaces, intercepts, or reroutes;
-- interactions already visible between behaviors that share mutable state, lifecycle, ordering, or a touched Seam.
+- every contract-declared success, error, refusal, exception, and non-success outcome;
+- every meaningful state transition and rejected transition, including permitted nesting or re-entry;
+- at every wrapped or rerouted Seam, each material success, failure, input-form, state, and atomicity guarantee the new path can alter;
+- interactions where one behavior can mutate state or invalidate a guarantee owned by another;
+- known load-bearing assumptions that need semantic falsification.
 
-Each item is **pending**, **GREEN**, **already satisfied with real-Seam evidence**, or **omitted by governing evidence**. Omit an item only when governing evidence removes it from the task contract. A proof gap remains pending and blocks completion until the Architecture/Testability Gate is resolved. Silent absence is not a disposition.
+Each item has a stable ID and is `pending`, `already-satisfied` with real-Seam evidence, or `omitted` by governing evidence. Proof gaps remain pending. Every applicable category above must be accounted for before the first RED.
 
-Choose the first pending slice and name its real Seam and expected product failure.
+## 2. Drive One Mapped Vertical Slice
 
-Completion: every named contract outcome is mapped, no contract conflict or proof gap remains unresolved, and either the first pending slice is ready to drive through the real Seam or no pending item remains.
-
-## 2. Run One Vertical Slice
-
-Do not write all tests first. The remaining map stays provisional.
+Do not write all tests first. Select one pending map ID.
 
 **RED**
 
-- Write one test for one atomic slice through the real Seam.
-- Require failure for the expected product reason, not setup, syntax, or shape.
-- If the behavior already passes before a production edit, mark it already satisfied with real-Seam evidence or correct the test. It is not a RED/GREEN cycle, and it authorizes no production edit.
+- Write one test for that atomic behavior through its recorded Seam.
+- Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
+- Run it through `workflow.py tdd --phase red --behavior-id <ID>`.
+- Production edits remain blocked until this RED is valid.
 
 **GREEN**
 
 - Write the smallest production change that passes the same test surface.
+- Run `workflow.py tdd --phase green --behavior-id <ID>`.
 - Do not anticipate later slices.
 
-Per cycle:
+Several assertions may jointly prove one behavior. State after success or failure must match the complete observable contract.
 
-```text
-[ ] Slice proves one independently-failable observable outcome
-[ ] RED is produced by the real system at the real Seam
-[ ] State after success or failure matches the complete observable contract
-[ ] Code is minimal for this slice
-[ ] Behavior map was reassessed after GREEN
-```
+## 3. Reassess After Every GREEN
 
-## 3. Reassess After GREEN
+GREEN creates architecture, so it also creates new proof obligations. Before another production edit, record a `tdd-map` reassessment:
 
-Update the behavior map from the architecture that now exists.
+- identify each load-bearing mechanism or state boundary introduced by the GREEN and drive the cheapest real-Seam probe that could falsify it;
+- add any newly exposed touched-Seam preservation or interaction behavior;
+- retain a passing falsifier only as material regression evidence;
+- if review finds a behavioral defect, add it to the map and drive a fresh RED before the fix.
 
-- Identify each load-bearing assumption or state boundary introduced by the GREEN. Drive the cheapest focused real-Seam probe that could falsify it. If the probe demonstrates a product defect, record that behavior as the next RED. If it passes, it is regression evidence rather than a RED cycle; retain it only when it protects a material load-bearing guarantee.
-- When two behaviors share mutable state, lifecycle, ordering, or a touched Seam, ask whether either can invalidate the other's guarantee. If so, add an interaction slice.
-- Any review-discovered behavior defect or later behavior-changing production edit reopens RED→GREEN before its fix. A genuinely non-behavioral edit records why.
-
-Completion: the map reflects the actual design and either names the next pending slice or has every item GREEN, already satisfied with real-Seam evidence, or omitted by governing evidence; no proof gap remains unresolved.
+A reassessment with no new item records why. A reassessment that adds items returns TDD to pending; the next production edit requires a valid RED for one of them. Cycle count is not a quality target.
 
 ## 4. Refactor and Complete
 
-Refactor only while GREEN and rerun the relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
+Refactor only while GREEN and rerun relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
 
-TDD is complete only when every behavior-changing item is GREEN; every other item is already satisfied with real-Seam evidence or omitted by governing evidence; no proof gap remains; the broader relevant suite passes; and no behavior-changing production edit occurred after the last applicable GREEN.
+TDD is complete only when every behavior-changing item is GREEN, every other item is already satisfied or omitted with evidence, no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
 
-When governed workflow continuity is active, follow [recorder.md](recorder.md). The recorder preserves bounded RED/GREEN observations; it is not proof or authorization.
+When governed workflow continuity is active, follow [recorder.md](recorder.md). It records bounded map/RED/GREEN evidence; it is not authorization.
