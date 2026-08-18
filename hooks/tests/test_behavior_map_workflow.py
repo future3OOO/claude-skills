@@ -159,14 +159,15 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         )
         slug, _ = self.begin_to_preflight([behavior])
 
-        bullshit = self.tdd(
+        missing_api = self.tdd(
             slug,
             "red",
             "BM_ROLLBACK",
             "import app; app.enable_safe_import()",
         )
-        self.assertEqual(bullshit.returncode, 2, bullshit.stdout + bullshit.stderr)
-        self.assertIn("DATABASE_STATE_NOT_RESTORED", bullshit.stderr)
+        self.assertEqual(missing_api.returncode, 2, missing_api.stdout + missing_api.stderr)
+        self.assertIn("AttributeError", missing_api.stdout)
+        self.assertIn("RED must fail for the expected reason", missing_api.stderr)
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertEqual(state["tdd"], "pending")
         self.assertNotIn("tddCycleCount", state)
