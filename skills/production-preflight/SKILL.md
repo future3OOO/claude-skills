@@ -1,6 +1,6 @@
 ---
 name: production-preflight
-description: Produce the required before-edit proof for production code changes — reuse path, chosen approach, touchpoints, verify vs update surfaces, module shape, risks, and honest openQuestions. Use before writing code on implementation, refactor, bug-fix, or review-comment passes.
+description: Produce the required before-edit proof for production code changes — reuse path, chosen approach, touchpoints, verify vs update surfaces, module shape, risks, Behavior Map, and honest openQuestions. Use before writing code on implementation, refactor, bug-fix, or review-comment passes.
 ---
 
 # Production Preflight
@@ -110,8 +110,9 @@ Produce a short preflight with these exact sections:
 - `modularityPlan`
 - `riskChecks`
 - `openQuestions`
+- `behaviorMap`
 
-Keep each section concrete and repo-specific. No filler.
+The first thirteen sections are concise text. `behaviorMap` is the structured, authoritative list of behavior obligations that TDD must reconcile. A plan may reference this map but does not own another copy.
 
 For ordinary local work, keep `affectedSurface`, `authoritativeContract`, `invariants`, and `proofPlan` short.
 For transaction-sensitive work, these sections must be explicit enough to govern the full surrounding surface.
@@ -214,6 +215,29 @@ Use a three-way decision for every material unknown:
 
 Do not pause for ceremonial approval after evidence has resolved the decision.
 
+### `behaviorMap`
+
+Record a non-empty JSON array. Every item uses exactly:
+
+```json
+{
+  "id": "BM_ATOMICITY",
+  "basis": "touched-Seam preservation",
+  "behavior": "a caught inner failure remains atomic under the new transaction path",
+  "seam": "the public operation through that path",
+  "expected": "no partial inner write survives",
+  "redFailure": "PARTIAL_INNER_WRITE_SURVIVED",
+  "status": "pending"
+}
+```
+
+- IDs are stable uppercase identifiers used by RED/GREEN evidence.
+- `redFailure` names the product failure. Do not use `AttributeError`, import/setup, syntax, fixture, or collection failures.
+- Initial status is `pending`, `already-satisfied`, or `omitted`. The latter two require `evidence`.
+- Map every declared success/failure, meaningful state transition, material guarantee at a wrapped or rerouted Seam, visible interaction, and known architecture assumption needing falsification.
+- Split independently-failable outcomes. A broad test that fails at the first missing API is not evidence for later rollback, persistence, or lifecycle behavior.
+- Proof gaps stay in `openQuestions`; they are not omissions.
+
 ## Execution Gate
 
 - Preflight must happen before the first tracked edit on the governed pass.
@@ -225,30 +249,17 @@ Do not pause for ceremonial approval after evidence has resolved the decision.
 ## Recording
 
 In the governed workflow this preflight records only through
-`python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-preflight --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input "/path/to/preflight.json"`, which demands the full thirteen-section document
-as JSON (every section non-empty, `openQuestions` exactly `none`) and refuses
+`python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-preflight --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input "/path/to/preflight.json"`, which demands the full thirteen text sections plus `behaviorMap`
+as JSON (every text section non-empty, `openQuestions` exactly `none`) and refuses
 without mutating state. Write the document to a file and pass it with
 `--input`; response prose is not evidence.
 
 ## Output Shape
 
-Use this compact structure:
+Use the exact JSON section names above. For a visible summary, keep the existing compact text shape and add:
 
 ```md
-**Preflight**
-`affectedSurface`: ...
-`authoritativeContract`: ...
-`invariants`: ...
-`proofPlan`: ...
-`reusePath`: ...
-`chosenApproach`: ...
-`rejectedAlternatives`: ...
-`touchpoints`: ...
-`verify`: ...
-`update`: ...
-`modularityPlan`: ...
-`riskChecks`: ...
-`openQuestions`: none | ...
+`behaviorMap`: BM_... pending | already-satisfied | omitted (with evidence)
 ```
 
 If blocked, say so explicitly and keep the block reason inside `openQuestions`.
