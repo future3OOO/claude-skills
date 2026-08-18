@@ -152,6 +152,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 ### `chosenApproach`
 
 - State the intended implementation in direct terms.
+- State each material implementation assumption and its evidence. Move any unverified assumption to `openQuestions`; it blocks recording until resolved.
 - Explain why it is the shortest correct path.
 - Keep the approach aligned with fail-closed behavior, boundary validation, and minimal diff size.
 - If a governing plan or review artifact exists, state how this pass fits its current owner slice and checklist progression.
