@@ -19,7 +19,7 @@ A valid RED unlocks production edits for that active item. GREEN must rerun the 
 
 The recorder counts valid cycle-opening REDs only as a coarse granularity smell. Cycle count is never a coverage target.
 
-## Post-GREEN reassessment
+## Map updates and post-GREEN reassessment
 
 GREEN blocks the next production edit until the architecture it introduced is reassessed:
 
@@ -27,7 +27,8 @@ GREEN blocks the next production edit until the architecture it introduced is re
 {
   "sourceBehaviorId": "BM_...",
   "reassessment": "What the GREEN introduced and which preservation, interaction, or falsification obligations follow.",
-  "items": []
+  "items": [],
+  "dispositions": []
 }
 ```
 
@@ -37,7 +38,9 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-
   --input "/path/to/tdd-map-update.json"
 ```
 
-Use an empty `items` array only when the recorded reassessment found no new obligation. New items use the same schema as preflight and return TDD to pending. A review-discovered behavioral defect is added with `tdd-map` before its fix; outside post-GREEN reassessment omit `sourceBehaviorId` and add at least one item.
+Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. If a pending behavior already passes before a production edit, use `dispositions` with its ID, `already-satisfied`, and the real-Seam evidence; `omitted` requires governing evidence that removes it from scope. Only pending items can be dispositioned.
+
+A review-discovered behavioral defect is added with `tdd-map` before its fix. Outside post-GREEN reassessment, omit `sourceBehaviorId` and add or disposition at least one item.
 
 While a cycle is pending, a changed candidate refuses before execution. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 
