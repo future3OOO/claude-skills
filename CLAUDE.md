@@ -193,6 +193,8 @@ permission object, or Git authorization boundary.
 
 The output must begin with `REPO_CONTEXT_FORGE_REQUIRED_INTAKE`. Treat that intake and the following packet as the initial repository context. If the packet emits a blocker, stop normal repo analysis and surface the blocker; do not continue with empty target context.
 
+Delegated agents inherit the packet: spawn any sub-agent for repository exploration, planning, review, or implementation only after the intake completes, and pass the packet's targets, coverage plan, and GitNexus repo into the delegate's brief.
+
 The `repo-context-forge` skill owns everything downstream of the intake: surface selection per mode, the consolidated-specialist delegation contract, surface reconciliation, packet-scoped GitNexus validation, and post-edit revalidation. For review-only tasks, do not edit code unless the user explicitly asks for a fix; report valid defects first and wait for an edit instruction.
 
 The source checkout is input: Repo Context Forge must not leave `.soulforge`, `.codex`, `.claude`, or incidental `.gitignore` mutations in the user's checkout; an intentional `.gitnexus/` ignore rule is allowed when GitNexus indexes the source checkout.
