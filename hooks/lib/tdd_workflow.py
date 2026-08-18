@@ -277,7 +277,7 @@ def _map_update(values: list[str]) -> int:
         raise WorkflowError("finish the active RED/GREEN cycle before reassessing the map")
 
     value = load_json(args.input, label="TDD map update")
-    unknown = sorted(set(value) - {"sourceBehaviorId", "reassessment", "items"})
+    unknown = sorted(set(value) - {"sourceBehaviorId", "reassessment", "items", "dispositions"})
     if unknown:
         raise ValueError("TDD map update has unknown fields: " + ", ".join(unknown))
     reassessment = value.get("reassessment")
@@ -286,6 +286,9 @@ def _map_update(values: list[str]) -> int:
     additions = value.get("items", [])
     if not isinstance(additions, list):
         raise ValueError("TDD map update items must be an array")
+    dispositions = value.get("dispositions", [])
+    if not isinstance(dispositions, list):
+        raise ValueError("TDD map update dispositions must be an array")
     pending_source = current.get("reassessmentPending") if isinstance(current, dict) else None
     source = value.get("sourceBehaviorId")
     if pending_source:
@@ -295,10 +298,14 @@ def _map_update(values: list[str]) -> int:
             )
     elif source is not None:
         raise ValueError("sourceBehaviorId is valid only for a pending post-GREEN reassessment")
-    elif not additions:
-        raise ValueError("a map update outside post-GREEN reassessment must add an item")
+    elif not additions and not dispositions:
+        raise ValueError(
+            "a map update outside post-GREEN reassessment must add or disposition an item"
+        )
 
     updated = behavior_map.clone(items)
+    if dispositions:
+        behavior_map.apply_dispositions(updated, dispositions)
     if additions:
         updated.extend(behavior_map.added_items(additions, updated))
     unresolved = behavior_map.unresolved(updated)
