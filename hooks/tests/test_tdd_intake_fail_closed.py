@@ -77,7 +77,14 @@ class MappedIntakeFailureTests(unittest.TestCase):
 
     def command(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(WORKFLOW), *args, "--repo", str(self.repo)],
+            [
+                sys.executable,
+                str(WORKFLOW),
+                args[0],
+                "--repo",
+                str(self.repo),
+                *args[1:],
+            ],
             cwd=self.repo,
             env=self.env,
             text=True,
