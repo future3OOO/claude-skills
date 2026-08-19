@@ -32,6 +32,31 @@ jobs:
         run: |
           pip install ruff==0.16.2 pytest==8.4.1
           ruff check --isolated --select E9,F .
+      - name: Stage explicit no-change fixture call sites
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          targets = (
+              "hooks/tests/test_workflow_ledger.py",
+              "hooks/tests/test_review_summary.py",
+              "hooks/tests/test_tdd_summary.py",
+              "hooks/tests/test_workflow_hooks.py",
+              "hooks/tests/test_pass_lifecycle.py",
+              "hooks/tests/test_repoforge_workflow.py",
+          )
+          root = Path("/tmp/fixture-codemod")
+          for name in targets:
+              source = Path(name)
+              text = source.read_text(encoding="utf-8")
+              text = text.replace("build_document", "build_no_change_document")
+              target = root / name
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_text(text, encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: explicit-fixture-codemod
+          path: /tmp/fixture-codemod
       - name: Integrated package contracts
         run: bash hooks/tests/run.sh
       - name: Package gate against the pull-request delta
