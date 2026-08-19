@@ -1,10 +1,8 @@
 name: gate suite
 
-# Temporary self-application step for the explicit fixture codemod. Removed in
-# the next commit after the branch contains the generated source changes.
-permissions:
-  contents: write
-
+# The offline suite must be enforced by the repository, not asserted in a
+# document. This first delivery slice owns the shared state primitives and
+# quality gate; later slices extend the contract suite as their interfaces land.
 on:
   pull_request:
   push:
@@ -16,9 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/tdd-behavior-map-evidence
+          # Full history so the gate can diff against the PR base; a shallow
+          # checkout leaves the changed set empty and the gate self-passes.
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -26,32 +25,10 @@ jobs:
         run: |
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Gate Suite"
-      - name: Apply explicit no-change fixture call sites
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          targets = (
-              "hooks/tests/test_workflow_ledger.py",
-              "hooks/tests/test_review_summary.py",
-              "hooks/tests/test_tdd_summary.py",
-              "hooks/tests/test_workflow_hooks.py",
-              "hooks/tests/test_pass_lifecycle.py",
-              "hooks/tests/test_repoforge_workflow.py",
-          )
-          for name in targets:
-              path = Path(name)
-              text = path.read_text(encoding="utf-8")
-              path.write_text(
-                  text.replace("build_document", "build_no_change_document"),
-                  encoding="utf-8",
-              )
-          PY
-          if ! git diff --quiet -- hooks/tests; then
-            git add hooks/tests
-            git commit -m "test(workflow): make no-change fixture scope explicit"
-            git push origin HEAD:fix/tdd-behavior-map-evidence
-          fi
       - name: Python lint (ruff E9,F)
+        # Pinned and isolated so the linted rule set never moves without an
+        # operator choice; pytest is installed only to exercise the public
+        # pytest RED-reach contract through the real runner.
         run: |
           pip install ruff==0.16.2 pytest==8.4.1
           ruff check --isolated --select E9,F .
