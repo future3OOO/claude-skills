@@ -133,6 +133,9 @@ check "final-review base-ref requirement named" "--base-ref is required" "$out"
 
 out=$("$WRAPPER" --slug t --packet /definitely/not/a/file --cwd "$PWD" -- "q" 2>&1); status=$?
 check_status "unreadable bounded input rejected" 2 "$status"
+out=$("$WRAPPER" --slug t --packet /dev/zero --cwd "$PWD" -- "q" 2>&1); status=$?
+check_status "non-regular bounded input rejected" 2 "$status"
+check "non-regular packet refusal names the cause" "not a readable regular file" "$out"
 
 printf '== governing-design transport (offline)\n'
 # The design gate is argument-level: it must fire in a stateless scratch repo,
@@ -728,7 +731,7 @@ result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-
     "record-preflight", "--repo", str(repo), "--slug", str(state["slug"]),
     "--workflow-id", str(w.instance_id(state)), "--input", str(path)],
     capture_output=True, text=True)
-assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$intenttmp/repo"
+assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$intenttmp/repo" || exit 1
 deep_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD \
   --design-absent "deep preflight custody check" -- "completion question") || exit 1
 check "a deep preflight section arrives whole" "DEEP-PREFLIGHT-MARKER-BEYOND-4000" "$deep_payload"
@@ -828,7 +831,7 @@ result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-
     "record-preflight", "--repo", str(repo), "--slug", str(state["slug"]),
     "--workflow-id", str(w.instance_id(state)), "--input", str(path)],
     capture_output=True, text=True)
-assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$finaltmp/repo" "$final_nonce"
+assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$finaltmp/repo" "$final_nonce" || exit 1
   live_final_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" "$WRAPPER" \
     --slug live-final-probe --phase final-review --base-ref HEAD --cwd "$finaltmp/repo" \
     --design-absent "live final probe" --budget 60 --fresh \

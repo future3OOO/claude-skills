@@ -72,8 +72,8 @@ elif [[ -n "$design_file" || -n "$design_absent" ]]; then
   printf 'error: --design-file/--design-absent requires --phase\n' >&2
   exit 2
 fi
-if [[ -n "$packet_file" && ! -r "$packet_file" ]]; then
-  printf 'error: bounded input is not readable: %s\n' "$packet_file" >&2
+if [[ -n "$packet_file" && ! ( -f "$packet_file" && -r "$packet_file" ) ]]; then
+  printf 'error: bounded input is not a readable regular file: %s\n' "$packet_file" >&2
   exit 2
 fi
 [[ -n "$question" ]] || question="$(cat)"
@@ -122,18 +122,65 @@ if record.get("workflowId") == sys.argv[1]:
 # read as complete evidence. The section is assigned into the caller-named
 # destination with printf -v - no command substitution, so an artifact's
 # trailing newlines stay excerpt bytes and delivered equals advertised.
-bounded_section() { # destination-variable name title content limit
-  local __out="$1" name="$2" title="$3" content="$4" limit="$5"
+bounded_section() { # destination-variable name title source limit [file]
+  local __out="$1" name="$2" title="$3" content="$4" limit="$5" mode="${6:-content}"
   local total shown sha excerpt truncated=no
-  total=$(printf '%s' "$content" | wc -c)
-  sha=$(printf '%s' "$content" | sha256sum | cut -d' ' -f1)
-  # The producer printf dies of SIGPIPE when head closes early on an artifact
-  # beyond pipe capacity; under startup-inherited errexit (POSIXLY_CORRECT=1)
-  # that would abort assembly before the sentinel. The pipeline-level guard is
-  # deliberate: a producer-scoped || : cannot run in a subshell the signal has
-  # killed (measured), and any masked consumer failure still surfaces as
-  # disclosed shown/total in the header, never as advertised-complete evidence.
-  excerpt=$(printf '%s' "$content" | head -c "$limit" || :; printf x); excerpt=${excerpt%x}
+  if [[ "$mode" == file ]]; then
+    # One open, one sequential pass: sha, total, and the kept prefix all
+    # describe the same observed stream, so no concurrent replacement can
+    # make them diverge, and memory stays bounded by the excerpt limit.
+    local stats_tmp
+    stats_tmp=$(mktemp)
+    # Type safety binds to the descriptor actually read: the non-blocking open
+    # cannot hang on a substituted FIFO, and fstat on that descriptor - not a
+    # second path lookup - requires a regular file, so a symlink swapped after
+    # the argument gate lands on a named refusal, never an unbounded read.
+    if ! read -r sha total < <(python3 - "$content" "$limit" "$stats_tmp" <<'FILESTATS'
+import hashlib, os, stat, sys
+path, limit, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+status = os.fstat(fd)
+if not stat.S_ISREG(status.st_mode):
+    os.close(fd)
+    print(f"bounded input is not a regular file at open: {path}", file=sys.stderr)
+    raise SystemExit(1)
+os.set_blocking(fd, True)
+# Snapshot semantics: consume at most the extent the descriptor had at open,
+# so a concurrently growing file can neither extend the hash nor prevent
+# termination; sha and total describe exactly the observed prefix.
+extent = status.st_size
+digest, total, kept = hashlib.sha256(), 0, b""
+with os.fdopen(fd, "rb") as handle:
+    while total < extent:
+        chunk = handle.read(min(65536, extent - total))
+        if not chunk:
+            break
+        if len(kept) < limit:
+            kept += chunk[: limit - len(kept)]
+        digest.update(chunk)
+        total += len(chunk)
+with open(out, "wb") as sink:
+    sink.write(kept)
+print(digest.hexdigest(), total)
+FILESTATS
+    ); then
+      rm -f "$stats_tmp"
+      printf 'error: bounded input is not a readable regular file at open time: %s\n' "$content" >&2
+      exit 2
+    fi
+    excerpt=$(cat -- "$stats_tmp"; printf x); excerpt=${excerpt%x}
+    rm -f "$stats_tmp"
+  else
+    total=$(printf '%s' "$content" | wc -c)
+    sha=$(printf '%s' "$content" | sha256sum | cut -d' ' -f1)
+    # The producer printf dies of SIGPIPE when head closes early on an artifact
+    # beyond pipe capacity; under startup-inherited errexit (POSIXLY_CORRECT=1)
+    # that would abort assembly before the sentinel. The pipeline-level guard is
+    # deliberate: a producer-scoped || : cannot run in a subshell the signal has
+    # killed (measured), and any masked consumer failure still surfaces as
+    # disclosed shown/total in the header, never as advertised-complete evidence.
+    excerpt=$(printf '%s' "$content" | head -c "$limit" || :; printf x); excerpt=${excerpt%x}
+  fi
   shown=$(printf '%s' "$excerpt" | wc -c)
   [[ "$total" -gt "$shown" ]] && truncated=yes
   printf 'codex_advisor_evidence name=%s shown=%s total=%s truncated=%s sha256=%s\n' \
@@ -298,8 +345,7 @@ if [[ -n "$phase" ]]; then
   branch_diff=""
   [[ -n "$base_ref" ]] && branch_diff=$(git -C "$repo_root" diff "$base_ref"...HEAD)
   if [[ -n "$design_file" ]]; then
-    design_content=$(cat -- "$design_file"; printf x); design_content=${design_content%x}
-    bounded_section design_section design "governing design artifact" "$design_content" 20000
+    bounded_section design_section design "governing design artifact" "$design_file" 20000 file
   else
     bounded_section design_section design "governing design artifact, declared absent" "$design_absent" 2000
   fi
@@ -313,8 +359,7 @@ if [[ -n "$phase" ]]; then
   fi
   packet_section=""
   if [[ -n "$packet_file" ]]; then
-    packet_content=$(cat -- "$packet_file"; printf x); packet_content=${packet_content%x}
-    bounded_section packet_section packet "repo context packet" "$packet_content" 20000
+    bounded_section packet_section packet "repo context packet" "$packet_file" 20000 file
   fi
   [[ -z "$packet_section" ]] && packet_section="--- repo context packet ---
 <none>"
