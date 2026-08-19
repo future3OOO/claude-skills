@@ -183,7 +183,14 @@ def _pytest_red(
         return None, "pytest did not print its terminal summary line"
     if counts["no_tests"] or counts["errors"] or counts["failed"] < 1:
         return None, "pytest failed during collection/setup or executed no tests"
-    if not _pytest_marker_in_failure(output, marker):
+    lines = output.splitlines()
+    failed_names = _summary_failed_names(lines)
+    if not failed_names:
+        return None, (
+            "pytest printed no short-test-summary FAILED records to corroborate "
+            "its failure blocks; rerun without summary suppression (-rN/-r without f)"
+        )
+    if not _pytest_marker_in_failure(lines, marker, failed_names):
         return None, "mapped marker was not emitted by an executed pytest assertion"
     return {
         "quality": "assertion-reached",
@@ -279,23 +286,28 @@ def _corroborated_name(line: str, failed_names: dict[str, int]) -> str | None:
     return None
 
 
-def _pytest_marker_in_failure(output: str, marker: str) -> bool:
-    lines = output.splitlines()
-    failed_names = _summary_failed_names(lines)
-    if failed_names:
-        # Fail closed on ambiguous boundaries: each summary FAILED record owns
-        # exactly one genuine block header, so header occurrences beyond the
-        # summary's multiplicity mean caller-printed text is indistinguishable
-        # from the framework record, and no marker from this output can be
-        # trusted.
-        seen: dict[str, int] = {}
-        for line in lines:
-            if PYTEST_FAILURE_HEADER.match(line):
-                name = _corroborated_name(line, failed_names)
-                if name is not None:
-                    seen[name] = seen.get(name, 0) + 1
-        if any(count > failed_names[name] for name, count in seen.items()):
-            return False
+def _pytest_marker_in_failure(
+    lines: list[str], marker: str, failed_names: dict[str, int]
+) -> bool:
+    """Marker acceptance over summary-corroborated failure blocks.
+
+    The caller guarantees non-empty ``failed_names``: without parsable summary
+    FAILED records there is no corroboration channel, and `_pytest_red` fails
+    closed instead of walking uncorroborated headers.
+    """
+    # Fail closed on ambiguous boundaries: each summary FAILED record owns
+    # exactly one genuine block header, so header occurrences beyond the
+    # summary's multiplicity mean caller-printed text is indistinguishable
+    # from the framework record, and no marker from this output can be
+    # trusted.
+    seen: dict[str, int] = {}
+    for line in lines:
+        if PYTEST_FAILURE_HEADER.match(line):
+            name = _corroborated_name(line, failed_names)
+            if name is not None:
+                seen[name] = seen.get(name, 0) + 1
+    if any(count > failed_names[name] for name, count in seen.items()):
+        return False
     in_failure = False
     in_captured_output = False
     for line in lines:
@@ -303,9 +315,7 @@ def _pytest_marker_in_failure(output: str, marker: str) -> bool:
             not in_captured_output
             # Inside a captured section, printed header-shaped text stays
             # captured text; only a header naming a summary-FAILED test opens
-            # the next genuine block. With no parsed summary, every header
-            # stays a boundary (the pre-summary fallback).
-            or not failed_names
+            # the next genuine block.
             or _corroborated_name(line, failed_names) is not None
         ):
             in_failure = True

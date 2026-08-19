@@ -515,6 +515,33 @@ class MappedTddRepairTests(unittest.TestCase):
             run["redProof"]["testsExecuted"], 1, "TERMINAL_SHAPE_IMPERSONATED"
         )
 
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_suppressed_summary_fails_closed_not_fallback(self) -> None:
+        marker = "PYTEST_NO_SUMMARY_MARKER"
+        item = pending_behavior("BM_PYTEST_NO_SUMMARY", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-no-summary")
+        (self.repo / "test_nosummary_pytest.py").write_text(
+            "def test_value():\n"
+            "    print('_' * 25 + ' test_value ' + '_' * 25)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'UNRELATED_REAL_FAILURE'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_PYTEST_NO_SUMMARY",
+            ("pytest", "-rN", "test_nosummary_pytest.py"),
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "NO_SUMMARY_FALLBACK_ACCEPTED: " + result.stdout + result.stderr,
+        )
+        self.assertIn(
+            "summary suppression", result.stderr, "NO_SUMMARY_FALLBACK_ACCEPTED"
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "NO_SUMMARY_FALLBACK_ACCEPTED")
+
     def test_map_rejects_normalized_infra_collection_variants(self) -> None:
         for marker in (
             "ERROR collecting",
