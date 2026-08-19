@@ -60,6 +60,40 @@ class MappedTddDispatchTests(unittest.TestCase):
         self.assertEqual(state["tdd"], "pending")
         self.assertNotIn("tddEvidence", state)
 
+    def test_legacy_candidate_flags_cannot_bypass_a_recorded_map(self) -> None:
+        marker = "LEGACY_FLAGS_MUST_NOT_OPEN_MAPPED_RED"
+        item = pending_behavior("BM_MAPPED", red_failure=marker)
+        slug, _ = self.harness.begin_with_map([item], "legacy-flags")
+        command = self.harness.write_unittest(2, marker)
+        runs = self.harness.repo / "runs.log"
+        before = runs.read_text(encoding="utf-8").count("run") if runs.exists() else 0
+
+        result = self.harness.cli(
+            "tdd",
+            "--repo",
+            str(self.harness.repo),
+            "--slug",
+            slug,
+            "--phase",
+            "red",
+            "--behavior",
+            "legacy free-form candidate",
+            "--seam",
+            "legacy seam",
+            "--expected-failure",
+            marker,
+            "--",
+            *command,
+        )
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--behavior-id", result.stderr)
+        after = runs.read_text(encoding="utf-8").count("run") if runs.exists() else 0
+        self.assertEqual(after, before, "a legacy candidate ran against a mapped pass")
+        state = read_workflow(resolve_repo_identity(self.harness.repo))
+        self.assertEqual(state["tdd"], "pending")
+        self.assertNotIn("tddEvidence", state)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
