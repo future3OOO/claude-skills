@@ -46,6 +46,23 @@ def _tdd_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _tdd_route_parser() -> argparse.ArgumentParser:
+    """Read only pass identity before choosing mapped or legacy semantics."""
+    parser = argparse.ArgumentParser(prog="workflow tdd", add_help=False)
+    parser.add_argument("--repo", "--cwd", dest="repo", default=".")
+    parser.add_argument("--slug")
+    return parser
+
+
+def _option_present(values: list[str], name: str) -> bool:
+    for value in values:
+        if value == "--":
+            return False
+        if value == name or value.startswith(name + "="):
+            return True
+    return False
+
+
 def _map_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="workflow tdd-map")
     parser.add_argument("--repo", "--cwd", dest="repo", default=".")
@@ -132,11 +149,16 @@ def edit_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
     ):
         return []
     pending = behavior_map.unresolved(items)
-    return (
-        ["valid behavior-specific RED for mapped item(s): " + ", ".join(pending)]
-        if pending
-        else []
-    )
+    if pending:
+        return [
+            "valid behavior-specific RED for mapped item(s): " + ", ".join(pending)
+        ]
+    if state.get("tdd") == "not-required" and behavior_map.all_disposition_only(items):
+        return []
+    return [
+        "new pending Behavior Map item and valid behavior-specific RED before "
+        "another production edit"
+    ]
 
 
 def completion_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
@@ -247,9 +269,7 @@ def _run_mapped_cycle(
         "behavior": str(mapped["behavior"]),
         "seam": str(mapped["seam"]),
     }
-    same_instance = (
-        isinstance(cycle, dict) and cycle.get("workflowId") == workflow_id
-    )
+    same_instance = isinstance(cycle, dict) and cycle.get("workflowId") == workflow_id
     drift, guidance = (
         _candidate_drift(cycle, contract, surface, command_text)
         if same_instance
@@ -379,12 +399,23 @@ def _run_mapped_cycle(
 
 
 def _run_tdd(values: list[str]) -> int:
-    args = _tdd_parser().parse_args(values)
-    identity = resolve_repo_identity(args.repo)
-    state, slug, workflow_id = _active_candidate(identity, args.slug)
+    route, _ = _tdd_route_parser().parse_known_args(values)
+    if not route.slug:
+        raise ValueError("--slug is required")
+    identity = resolve_repo_identity(route.repo)
+    state, slug, workflow_id = _active_candidate(identity, route.slug)
     items, current = current_map(identity, state)
     if items is None:
         return legacy_main(["tdd", *values])
+    if not (
+        _option_present(values, "--behavior-id")
+        or _option_present(values, "--not-required")
+    ):
+        raise WorkflowError(
+            "recorded Behavior Map requires --behavior-id or --not-required; "
+            "legacy free-form --behavior/--seam candidates cannot satisfy it"
+        )
+    args = _tdd_parser().parse_args(values)
     if args.not_required is not None:
         return _not_required(args, identity, state, items)
     return _run_mapped_cycle(
@@ -440,8 +471,10 @@ def _map_update(values: list[str]) -> int:
     updated = behavior_map.clone(items)
     if dispositions:
         behavior_map.apply_dispositions(updated, dispositions)
+    added_items: list[JsonObject] = []
     if additions:
-        updated.extend(behavior_map.added_items(additions, updated))
+        added_items = behavior_map.added_items(additions, updated)
+        updated.extend(added_items)
     unresolved = behavior_map.unresolved(updated)
     status = "pending" if unresolved else "passed"
     document = _map_doc(
@@ -478,11 +511,7 @@ def _map_update(values: list[str]) -> int:
             "summaryId": evidence_id,
             "status": status,
             "pending": unresolved,
-            "added": [
-                entry["id"] for entry in updated[-len(additions) :]
-            ]
-            if additions
-            else [],
+            "added": [entry["id"] for entry in added_items],
         }
     )
     return 0
@@ -504,9 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if values and values[0] == "tdd-map":
             return _map_update(values[1:])
-        if values and values[0] == "tdd" and (
-            "--behavior-id" in values or "--not-required" in values
-        ):
+        if values and values[0] == "tdd":
             return _run_tdd(values[1:])
         if values and values[0] == "complete":
             return _complete(values[1:])
