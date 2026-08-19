@@ -54,12 +54,18 @@ def main() -> int:
         return 0
 
     try:
+        # Base readiness and mapped-TDD policy live in separate Modules. Bracket
+        # both reads and accept only when no workflow event committed between
+        # them, so their combined decision describes one logical state version.
+        state_before = read_workflow(identity)
         ready, missing = ready_for_edit(identity, relative)
-        if ready and not is_test_path(relative):
-            state = read_workflow(identity)
-            if state is not None:
-                missing.extend(edit_blockers(identity, state))
-                ready = not missing
+        state_after = read_workflow(identity)
+        if state_before != state_after:
+            ready = False
+            missing = ["stable workflow state (changed during edit-readiness check; retry)"]
+        elif ready and not is_test_path(relative) and state_after is not None:
+            missing.extend(edit_blockers(identity, state_after))
+            ready = not missing
     except (WorkflowError, LedgerError, ValueError) as exc:
         deny(f"BLOCKED by workflow intake: workflow evidence is unreadable: {exc}.")
         return 0
