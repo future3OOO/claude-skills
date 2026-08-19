@@ -126,7 +126,7 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         )
         advisor_disposition(identity, state["slug"], state["workflowId"], "preflight", "none")
 
-        missing = build_document("missing map")
+        missing = build_document("missing map", behavior_map=[pending_behavior()])
         missing.pop("behaviorMap")
         payload = self.tmp / "preflight.json"
         payload.write_text(json.dumps(missing), encoding="utf-8")
