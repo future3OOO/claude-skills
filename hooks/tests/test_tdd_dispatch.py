@@ -2,12 +2,18 @@
 """Option-spelling contracts for the mapped public TDD entrypoint."""
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.lib.workflow_state import read_workflow
-from hooks.tests.support import pending_behavior
-from hooks.tests.test_tdd_repairs import MappedTddRepairTests
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_state import read_workflow  # noqa: E402
+from hooks.tests.support import pending_behavior  # noqa: E402
+from hooks.tests.test_tdd_repairs import MappedTddRepairTests  # noqa: E402
 
 
 class MappedTddDispatchTests(unittest.TestCase):
