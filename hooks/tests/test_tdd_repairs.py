@@ -333,10 +333,15 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(run["redProof"]["runner"], "exact")
 
     def test_map_rejects_normalized_generic_failure_and_malformed_evidence(self) -> None:
-        with self.assertRaisesRegex(ValueError, "product behavior"):
-            behavior_map.initial_items(
-                [pending_behavior("BM_GENERIC", red_failure="MISSING_API")]
-            )
+        for marker in (
+            "MISSING_API",
+            "AttributeError: enable_safe_import is missing",
+        ):
+            with self.subTest(marker=marker):
+                with self.assertRaisesRegex(ValueError, "product behavior"):
+                    behavior_map.initial_items(
+                        [pending_behavior("BM_GENERIC", red_failure=marker)]
+                    )
         malformed = pending_behavior("BM_EVIDENCE")
         malformed["evidence"] = 42
         with self.assertRaisesRegex(ValueError, "evidence must be text"):
