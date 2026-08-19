@@ -27,9 +27,10 @@ jobs:
           git config --global user.name "Gate Suite"
       - name: Python lint (ruff E9,F)
         # Pinned and isolated so the linted rule set never moves without an
-        # operator choice; the hook runs the same select per edit.
+        # operator choice; pytest is installed only to exercise the public
+        # pytest RED-reach contract through the real runner.
         run: |
-          pip install ruff==0.16.2
+          pip install ruff==0.16.2 pytest==8.4.1
           ruff check --isolated --select E9,F .
       - name: Integrated package contracts
         run: bash hooks/tests/run.sh
