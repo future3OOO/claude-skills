@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.tests.support import build_document, record_context_forge  # noqa: E402
+from hooks.tests.support import build_no_change_document, record_context_forge  # noqa: E402
 from hooks.lib.workflow_state import record_base_oid, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
@@ -147,7 +147,7 @@ class WorkflowHookTests(unittest.TestCase):
             connection.close()
 
     def record_preflight_evidence(self, slug: str, wid: str) -> None:
-        document = build_document("hook-suite setup")
+        document = build_no_change_document("hook-suite setup")
         doc_path = self.tmp / "preflight-doc.json"
         doc_path.write_text(json.dumps(document), encoding="utf-8")
         recorded = subprocess.run(

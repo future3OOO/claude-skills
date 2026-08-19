@@ -21,7 +21,7 @@ REARM = ROOT / "hooks" / "skill-discipline-rearm.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
-from hooks.tests.support import build_document, record_context_forge  # noqa: E402
+from hooks.tests.support import build_no_change_document, record_context_forge  # noqa: E402
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
@@ -699,7 +699,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def preflight_document(self) -> dict[str, str]:
-        return build_document("concrete content for this pass")
+        return build_no_change_document("concrete content for this pass")
 
     def record_preflight(self, wid: str, document: dict[str, str]) -> subprocess.CompletedProcess[str]:
         payload = self.tmp / "preflight-input.json"

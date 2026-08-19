@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
-from hooks.tests.support import build_document, graph_packet  # noqa: E402
+from hooks.tests.support import build_no_change_document, graph_packet  # noqa: E402
 
 
 @unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
@@ -277,7 +277,7 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         slug, wid = str(state["slug"]), str(state["workflowId"])
         preflight = self.tmp / "preflight.json"
         preflight.write_text(
-            json.dumps(build_document("issue-106 typed verification fixture")), encoding="utf-8"
+            json.dumps(build_no_change_document("issue-106 typed verification fixture")), encoding="utf-8"
         )
         for step in (
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
