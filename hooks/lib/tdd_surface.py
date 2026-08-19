@@ -34,6 +34,7 @@ IGNORED_BY_RUNNER = {
 }
 EXACT_BOUND = "unrecognised runner; identity stays bound to the exact command"
 EVIDENCE_ONLY = frozenset({"ignored"})
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 PYTEST_FAILED = re.compile(r"(?<!\d)(\d+) failed(?:,|\s|$)")
@@ -89,9 +90,11 @@ def evaluate_red(
     those facts, so a matching non-zero run is labelled marker-only rather than
     assertion-reached.
     """
+    runner = surface.get("runner")
+    if runner in {"unittest", "pytest"}:
+        output = ANSI_ESCAPE.sub("", output)
     if marker not in output:
         return None, f"output did not contain the mapped redFailure marker {marker!r}"
-    runner = surface.get("runner")
     if runner == "unittest":
         return _unittest_red(output, marker)
     if runner == "pytest":
