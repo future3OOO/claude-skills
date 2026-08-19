@@ -40,7 +40,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-
 
 Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. If a pending behavior already passes before a production edit, use `dispositions` with its ID, `already-satisfied`, and the real-Seam evidence; `omitted` requires governing evidence that removes it from scope. Only pending items can be dispositioned.
 
-A review-discovered behavioral defect is added with `tdd-map` before its fix. Outside post-GREEN reassessment, omit `sourceBehaviorId` and add or disposition at least one item.
+A review-discovered behavioral defect is added with `tdd-map` before its fix. Outside post-GREEN reassessment, omit `sourceBehaviorId` and add or disposition at least one item — except after a post-resolution production edit has flagged the map (`postEditReassessment`): there a reassessment-only update is accepted, recording why the edit was non-behavioral, and completion demands that record.
 
 While a cycle is pending, a changed candidate refuses before execution. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 

@@ -133,7 +133,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --not-required "<specific non-behavioral reason>"
 ```
 
-After production preflight, test-like edits are admitted while TDD is pending. Production edits require the production-code baseline in step 7 plus either a valid mapped RED for the active item or a recorded `--not-required` decision (reachable only once every map item is already-satisfied or omitted). TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
+After production preflight, test-like edits are admitted while TDD is pending. Production edits require the production-code baseline in step 7 plus either a valid mapped RED for the active item or a recorded `--not-required` decision (reachable only once every map item is already-satisfied or omitted). Once every mapped item is resolved and reassessed, further production edits (refactoring while GREEN) stay admitted with TDD `passed`; each such edit flags the map, and completion then demands one recorded `tdd-map` reassessment - the behavioral item, or the recorded why-non-behavioral. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
 
 ### 7. Production code
 
