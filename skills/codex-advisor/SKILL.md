@@ -22,13 +22,58 @@ for you, carrying the caller and upstream-impact halves; it holds no callee fact
 so callee context stays yours to supply. The advisor challenges scope and design; it does not create
 the preflight artifact or approve implementation.
 
+Every phased consult carries a governing-design declaration: `--design-file`
+with the durable design artifact, or `--design-absent` with the specific
+reason none exists. The wrapper refuses a phased consult without exactly one
+of them, before any workflow lookup or provider cost. Do not manufacture a
+design document for a trivial pass — declare its absence; the declaration
+travels verbatim to the delegate (reasons over 2000 bytes are refused, never
+truncated), and for work proposing a new Module, public
+Seam, or an architecture-family choice, the phase prompt makes an absent
+design a top-ranked finding. The prompt frames the artifact as the decided
+design under falsification: the advisor may recommend a different
+architecture family, and the decision is settled by measurement, not by the
+consult.
+
+A design artifact carries: the chosen architecture and rationale; every
+architecture family exploration or planning produced, with the technical
+rejection reason for each rejected family; the verified exploration findings that constrain the design
+and how each was measured; stable `PRES-n` preservation-obligation labels;
+stable `ASSUMP-n` load-bearing-assumption labels; and every unverified
+falsifiable prediction explicitly marked unresolved. The labels and the
+behavioral/non-behavioral classification below are the handoff surface
+downstream proof machinery references (PR #138's Behavior Map `sourceRefs`);
+they are prose contract only — this skill machine-enforces the declaration's
+presence, never the artifact's content or any disposition.
+
+The canonical imaginary-risk ban and the premise/occurrence checks in the
+repo's `CLAUDE.md` govern architecture-family decisions; this checkpoint adds
+procedure, not new doctrine. A family selection or rejection resting on a
+falsifiable prediction about existing behavior, tests, compatibility, or
+runtime semantics stays unresolved — whoever made the prediction: planning,
+advisor, or lead — until the smallest practical real-Seam measurement
+resolves it. A preflight finding of that shape is dispositioned `fixed` only
+with that measurement in its `evidence`, and each finding's disposition says
+whether it is behavioral or non-behavioral.
+
 ### `final-review`
 
 Run after implementation, verification, and the lead's structured code-review
 pass when required. This is the workflow's independent review checkpoint: it
 challenges the lead's review rather than trusting it, loading the live diff plus
 the recorded TDD and review summaries.
-The wrapper attaches the live diff. The advisor reconciles the governed slice,
+The wrapper attaches the live diff, the same governing-design declaration
+(carry the identical `--design-file` or `--design-absent` on both
+checkpoints), and the pass's recorded production preflight. The phase prompt
+states precedence once — the design says why this was proposed, the recorded
+preflight is the reconciled before-edit contract, the Behavior Map names the
+authoritative proof obligations, and recorded TDD evidence is its bounded
+observation, never proof — and makes unreconciled design/preflight
+divergence a finding. It requires each `PRES-n` obligation rechecked against
+the diff, each `ASSUMP-n` assumption falsified against the implementation,
+the contradictory-contract gate applied to the changed Interface, and at most
+one additional material reachable failure class beyond the design and
+recorded proof. The advisor reconciles the governed slice,
 real-seam proof, module shape, minimality, and regression coverage, ending with
 exactly one terminal line:
 
@@ -63,13 +108,31 @@ wait for the process rather than polling with repeated sleeps.
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase preflight-advice \
   --cwd "$PWD" --packet "<packet-file>" \
+  --design-file "<design-artifact>" \
   --budget 350 -- "<focused scope question>"
 
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase final-review \
   --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" \
-  --budget 350 -- "<focused completion question>"
+  --design-file "<design-artifact>" \
+  --budget 450 -- "<focused completion question>"
 ```
+
+Substitute `--design-absent "<specific reason>"` when the pass genuinely has
+no design artifact. The final-review budget is 450, not 350: the precedence
+and falsification obligations added to that phase prompt displace answer
+budget at 350.
+
+Every bounded evidence channel — design, recorded preflight, packet, TDD and
+review summaries — wears a delegate-visible header with shown/total bytes,
+truncation, and sha256, and reports the same on stderr as
+`codex_advisor_evidence`; the assembled prompt reports
+`codex_advisor_prompt bytes_total`. Graph evidence keeps its whole-check
+omission accounting. The claudex window knobs
+(`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) pass through to the delegate exactly when
+the alias block configures them, so a proxy model the CLI does not recognize
+stops compacting against a guessed window.
 
 Carry `--packet` on **both** checkpoints. The delegate is isolated: it sees the
 diff and the repository, but not the packet you read, so evidence you gathered

@@ -156,12 +156,14 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 - Explain why it is the shortest correct path.
 - Keep the approach aligned with fail-closed behavior, boundary validation, and minimal diff size.
 - If a governing plan or review artifact exists, state how this pass fits its current owner slice and checklist progression.
+- Carry forward the governing design artifact's `PRES-n`/`ASSUMP-n` labels that constrain this pass, so the reconciled contract and later proof reference the same obligations.
 
 ### `rejectedAlternatives`
 
 - List the realistic alternatives considered.
 - Reject them with technical reasons, not taste.
 - Prefer 1 to 3 rejected options, not a brainstorm dump.
+- Name every architecture family this pass's exploration or planning produced. A family rejected on a falsifiable prediction about existing behavior, tests, compatibility, or runtime semantics carries the resolving real-Seam measurement, or the rejection is unresolved and belongs in `openQuestions` — the canonical imaginary-risk ban in the repo's `CLAUDE.md` governs; the `codex-advisor` skill owns the consult-time procedure.
 
 ### `touchpoints`
 
