@@ -3,8 +3,8 @@
 RED and GREEN must run the same tests, not the same spelling. This module owns
 that distinction for directly invoked stdlib unittest and pytest. For those
 runners it also distinguishes an executed product assertion from collection,
-loader, or setup failure. Unknown runners remain exact-command bound and can
-provide only explicitly weaker marker-only RED evidence.
+loader, setup, or unrelated captured output. Unknown runners remain
+exact-command bound and can provide only explicitly weaker marker-only evidence.
 """
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 PYTEST_FAILED = re.compile(r"(?<!\d)(\d+) failed(?:,|\s|$)")
 PYTEST_ERRORS = re.compile(r"(?<!\d)(\d+) errors?(?:,|\s|$)")
+PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
 
 
 def identify(command: Sequence[str]) -> dict[str, object]:
@@ -81,9 +82,10 @@ def evaluate_red(
     """Return evidence that RED reached its assertion, or a named refusal.
 
     Pytest and unittest are parsed conservatively: collection/loading/setup must
-    complete, at least one test must execute, and the marker must occur on an
-    assertion-failure line. An exact-bound runner cannot prove those facts, so a
-    matching non-zero run is labelled marker-only rather than assertion-reached.
+    complete, at least one test must execute, and the marker must occur in the
+    framework's assertion-failure record. An exact-bound runner cannot prove
+    those facts, so a matching non-zero run is labelled marker-only rather than
+    assertion-reached.
     """
     if marker not in output:
         return None, f"output did not contain the mapped redFailure marker {marker!r}"
@@ -114,7 +116,7 @@ def _unittest_red(
     }
     if fields.get("errors", 0) or fields.get("failures", 0) < 1:
         return None, "unittest ended in loader/setup error rather than assertion failure"
-    if not _marker_on_assertion_line(output, marker, ("AssertionError:",)):
+    if not _unittest_marker_in_failure(output, marker):
         return None, "mapped marker was not emitted by an executed unittest assertion"
     return {
         "quality": "assertion-reached",
@@ -143,7 +145,7 @@ def _pytest_red(
     errors = [int(value) for value in PYTEST_ERRORS.findall(lowered)]
     if not failed or max(failed) < 1 or (errors and max(errors) > 0):
         return None, "pytest did not report a cleanly executed failing test"
-    if not _marker_on_assertion_line(output, marker, ("AssertionError:", "Failed:")):
+    if not _pytest_marker_in_failure(output, marker):
         return None, "mapped marker was not emitted by an executed pytest assertion"
     return {
         "quality": "assertion-reached",
@@ -152,10 +154,62 @@ def _pytest_red(
     }, ""
 
 
-def _marker_on_assertion_line(
-    output: str, marker: str, labels: Sequence[str]
-) -> bool:
-    return any(marker in line and any(label in line for label in labels) for line in output.splitlines())
+def _unittest_marker_in_failure(output: str, marker: str) -> bool:
+    for block in _unittest_failure_blocks(output):
+        in_traceback = False
+        for line in block:
+            stripped = line.strip()
+            if stripped == "Traceback (most recent call last):":
+                in_traceback = True
+                continue
+            if in_traceback and stripped in {"Stdout:", "Stderr:"}:
+                break
+            if (
+                in_traceback
+                and stripped.startswith("AssertionError:")
+                and marker in stripped
+            ):
+                return True
+    return False
+
+
+def _unittest_failure_blocks(output: str) -> list[list[str]]:
+    """Only traceback bodies belonging to unittest ``FAIL`` records."""
+    lines = output.splitlines()
+    blocks: list[list[str]] = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].startswith("FAIL: "):
+            index += 1
+            continue
+        start = index + 1
+        while start < len(lines) and not _rule(lines[start], "-"):
+            start += 1
+        if start == len(lines):
+            break
+        start += 1
+        end = start
+        while end < len(lines):
+            next_line = lines[end + 1] if end + 1 < len(lines) else ""
+            if _rule(lines[end], "=") and next_line.startswith(("FAIL: ", "ERROR: ")):
+                break
+            if _rule(lines[end], "-") and next_line.startswith("Ran "):
+                break
+            end += 1
+        blocks.append(lines[start:end])
+        index = end
+    return blocks
+
+
+def _pytest_marker_in_failure(output: str, marker: str) -> bool:
+    return any(
+        marker in line and PYTEST_ASSERTION.match(line)
+        for line in output.splitlines()
+    )
+
+
+def _rule(line: str, character: str) -> bool:
+    return len(line) >= 20 and set(line) == {character}
 
 
 def _recognise(command: Sequence[str]) -> tuple[str | None, Sequence[str]]:
