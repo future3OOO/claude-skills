@@ -112,7 +112,7 @@ Produce a short preflight with these exact sections:
 - `openQuestions`
 - `behaviorMap`
 
-The first thirteen sections are concise text. `behaviorMap` is the structured, authoritative list of behavior obligations that TDD must reconcile. A plan may reference this map but does not own another copy.
+The first thirteen sections are concise text. `behaviorMap` is authoritative for the behavior obligations TDD must reconcile, not for choosing the architecture. A plan may reference the map but does not own another copy.
 
 For ordinary local work, keep `affectedSurface`, `authoritativeContract`, `invariants`, and `proofPlan` short.
 For transaction-sensitive work, these sections must be explicit enough to govern the full surrounding surface.
@@ -218,23 +218,25 @@ Do not pause for ceremonial approval after evidence has resolved the decision.
 
 ### `behaviorMap`
 
-Record a non-empty JSON array. Every item uses exactly:
+Record a non-empty JSON array. Every item has these seven required fields:
 
 ```json
-{
-  "id": "BM_ATOMICITY",
-  "basis": "touched-Seam preservation",
-  "behavior": "a caught inner failure remains atomic under the new transaction path",
-  "seam": "the public operation through that path",
-  "expected": "no partial inner write survives",
-  "redFailure": "PARTIAL_INNER_WRITE_SURVIVED",
-  "status": "pending"
-}
+[
+  {
+    "id": "BM_ATOMICITY",
+    "basis": "touched-Seam preservation",
+    "behavior": "a caught inner failure remains atomic under the new transaction path",
+    "seam": "the public operation through that path",
+    "expected": "no partial inner write survives",
+    "redFailure": "PARTIAL_INNER_WRITE_SURVIVED",
+    "status": "pending"
+  }
+]
 ```
 
 - IDs are stable uppercase identifiers used by RED/GREEN evidence.
-- `redFailure` names the product failure. Do not use `AttributeError`, import/setup, syntax, fixture, or collection failures.
-- Initial status is `pending`, `already-satisfied`, or `omitted`. The latter two require `evidence`.
+- `redFailure` names the product failure. Do not use missing-API/import, setup, syntax, fixture, collection, or no-test failures.
+- Initial status is `pending`, `already-satisfied`, or `omitted`. `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
 - Map every declared success/failure, meaningful state transition, material guarantee at a wrapped or rerouted Seam, visible interaction, and known architecture assumption needing falsification.
 - Split independently-failable outcomes. A broad test that fails at the first missing API is not evidence for later rollback, persistence, or lifecycle behavior.
 - Proof gaps stay in `openQuestions`; they are not omissions.

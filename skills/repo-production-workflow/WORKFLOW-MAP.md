@@ -11,16 +11,17 @@ flowchart LR
     D -->|no| A1[advisor preflight]
     DG --> A1
     A1 --> P[production preflight records the Behavior Map]
-    P --> T[mapped TDD RED/GREEN]
-    T --> TM[post-GREEN map reassessment]
-    TM -->|new obligation| T
-    TM -->|map resolved| PC[production-code]
+    P --> TR[mapped TDD RED]
+    TR --> PC[production-code]
     PC --> I[implementation]
-    I --> V[verification]
+    I --> TG[mapped GREEN]
+    TG --> TM[post-GREEN map reassessment]
+    TM -->|new obligation| TR
+    TM -->|map resolved| V[verification]
     V --> CR[lead structured code review when non-trivial]
     CR --> A2[independent final Codex Advisor review]
     A2 --> C{commit-ready and findings addressed?}
-    C -->|behavioral finding| T
+    C -->|behavioral finding| TR
     C -->|non-behavioral finding| I
     C -->|yes| WC[workflow complete]
     WC --> DL[delivery]
@@ -139,7 +140,7 @@ resume at the first unsatisfied phase in the same ordered workflow. A
 governance-first pass therefore returns to TDD, while a completed
 implementation returns to verification.
 
-Findings from the lead's code review or final Codex Advisor against the current unpushed tree follow the return edge to implementation and retain the active `workflowId`. A behavioral finding first becomes a new Behavior Map item and a behavior-specific RED; a genuinely non-behavioral correction records why. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
+Behavioral findings from the lead's code review or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
 
 ## Approval freshness
 

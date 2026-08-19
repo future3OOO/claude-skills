@@ -99,7 +99,7 @@ packet, graph, advisor findings, and governing artifact. Resolve, interview, or
 block on every material unknown. For transaction-sensitive work, load the
 [transaction doctrine](../production-code/references/transaction-doctrine.md).
 
-The recorded preflight owns the initial Behavior Map: stable, atomic proof obligations for the contract, state transitions, every material guarantee at a wrapped or rerouted Seam, visible interactions, and known architecture assumptions needing falsification. A plan may reference that map but is not authoritative.
+The recorded preflight owns the initial Behavior Map: stable, atomic proof obligations for the contract, state transitions, every material guarantee at a wrapped or rerouted Seam, visible interactions, and known architecture assumptions needing falsification. It is authoritative for proof obligations, not architecture selection; a plan may reference it but is not a second proof owner.
 
 Record a completed preflight only through its recorder, which demands the
 skill's structured document (thirteen non-empty text sections plus a non-empty
@@ -111,7 +111,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --workflow-id "<active-workflowId>" --input <preflight.json>
 ```
 
-### 6. Mapped TDD RED/GREEN or not-required
+### 6. Mapped TDD RED or not-required
 
 For behavior changes invoke `tdd` and select one pending Behavior Map ID. The RED must reach its recorded real Seam and emit that item's behavior-specific `redFailure` marker. A missing API/import, setup, syntax, fixture, or collection failure is not RED for a later product behavior and does not unlock production edits.
 
@@ -119,12 +119,9 @@ For behavior changes invoke `tdd` and select one pending Behavior Map ID. The RE
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
   --repo "$PWD" --slug "<task>" --phase red --behavior-id "BM_..." \
   -- <targeted-command>
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
-  --repo "$PWD" --slug "<task>" --phase green --behavior-id "BM_..." \
-  -- <same test surface>
 ```
 
-After every GREEN, record `workflow.py tdd-map` reassessment before another production edit. Add any newly exposed touched-Seam preservation, interaction, semantic falsification, or review-discovered behavior; an empty addition records why the GREEN created no further obligation. A passing pre-edit behavior is dispositioned through `tdd-map` as `already-satisfied` with real-Seam evidence rather than manufacturing a RED.
+A passing pre-edit behavior is dispositioned through `tdd-map` as `already-satisfied` with real-Seam evidence rather than manufacturing a RED.
 
 In this governed workflow the public TDD producers are required; `set-phase` does not accept the `tdd` phase. They keep bounded evidence and advance state but are not proof by themselves. For genuinely non-behavioral work, `--not-required` is available only after every map item is already satisfied or omitted by governing evidence:
 
@@ -134,7 +131,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --not-required "<specific non-behavioral reason>"
 ```
 
-After production preflight, test-like edits are admitted while TDD is pending. Production edits require a valid mapped RED for the active item. GREEN blocks the next production edit until map reassessment. `implementation` cannot be recorded `passed` until TDD is `passed` or `not-required`. Cycle count remains a coarse granularity smell, never a coverage target.
+After production preflight, test-like edits are admitted while TDD is pending. Production edits require a valid mapped RED for the active item and the production-code baseline in step 7. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
 
 ### 7. Production code
 
@@ -169,8 +166,21 @@ verification run in step 9.
 Implement the smallest direct change and remove obsolete code created by the
 change. PostToolUse marks implementation in-progress and resets downstream
 readiness after every production edit; governance edits reset the downstream
-review steps without reopening production editing. When implementation is ready
-for verification:
+review steps without reopening production editing.
+
+After the smallest production edit, run GREEN on the same mapped surface:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
+  --repo "$PWD" --slug "<task>" --phase green --behavior-id "BM_..." \
+  -- <same test surface>
+```
+
+After every GREEN, record `workflow.py tdd-map` reassessment before another
+production edit. Add newly exposed touched-Seam preservation, interaction,
+semantic falsification, or review-discovered behavior; an empty addition records
+why the GREEN created no further obligation. Only after GREEN and reassessment
+leave TDD `passed` or `not-required` may implementation be recorded passed:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
