@@ -63,6 +63,17 @@ def _option_present(values: list[str], name: str) -> bool:
     return False
 
 
+def _option_value(values: list[str], name: str) -> str | None:
+    for index, value in enumerate(values):
+        if value == "--":
+            return None
+        if value == name:
+            return values[index + 1] if index + 1 < len(values) else None
+        if value.startswith(name + "="):
+            return value.split("=", 1)[1]
+    return None
+
+
 def _map_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="workflow tdd-map")
     parser.add_argument("--repo", "--cwd", dest="repo", default=".")
@@ -95,7 +106,7 @@ def _preflight_items(
 def current_map(
     identity: RepoIdentity, state: JsonObject
 ) -> tuple[list[JsonObject] | None, JsonObject | None]:
-    """The latest map-bearing TDD document, falling back to preflight."""
+    """The current map and current TDD evidence, falling back to preflight."""
     evidence_id = state.get("tddEvidence")
     recorded = evidence_document(
         identity, evidence_id if isinstance(evidence_id, str) else None
@@ -103,7 +114,41 @@ def current_map(
     value = recorded.get("behaviorMap") if isinstance(recorded, dict) else None
     if value is not None:
         return behavior_map.runtime_items(value), recorded
-    return _preflight_items(identity, state), None
+    return _preflight_items(identity, state), recorded if isinstance(recorded, dict) else None
+
+
+def _legacy_green_candidate(
+    current: JsonObject | None,
+    workflow_id: str,
+    values: list[str],
+) -> bool:
+    """Only an imported, already-open legacy RED may finish free-form."""
+    if not isinstance(current, dict) or current.get("behaviorMap") is not None:
+        return False
+    if _option_present(values, "--behavior-id") or _option_present(
+        values, "--not-required"
+    ):
+        return False
+    if _option_value(values, "--phase") != "green":
+        return False
+    if not all(
+        (
+            current.get("schemaVersion") == 1,
+            current.get("workflowId") == workflow_id,
+            current.get("status") == "pending",
+            isinstance(current.get("behavior"), str),
+            isinstance(current.get("seam"), str),
+            isinstance(current.get("command"), str),
+        )
+    ):
+        return False
+    runs = current.get("runs")
+    return isinstance(runs, list) and any(
+        isinstance(run, dict)
+        and run.get("phase") == "red"
+        and run.get("valid") is True
+        for run in runs
+    )
 
 
 def _map_doc(
@@ -405,7 +450,7 @@ def _run_tdd(values: list[str]) -> int:
     identity = resolve_repo_identity(route.repo)
     state, slug, workflow_id = _active_candidate(identity, route.slug)
     items, current = current_map(identity, state)
-    if items is None:
+    if items is None or _legacy_green_candidate(current, workflow_id, values):
         return legacy_main(["tdd", *values])
     if not (
         _option_present(values, "--behavior-id")
