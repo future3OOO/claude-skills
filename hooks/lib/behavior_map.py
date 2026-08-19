@@ -14,31 +14,61 @@ REQUIRED_FIELDS = frozenset({
 })
 OPTIONAL_FIELDS = frozenset({"evidence"})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
-GENERIC_RED_FAILURES = (
+GENERIC_RED_FAILURES = frozenset({
     "attributeerror",
     "importerror",
     "modulenotfounderror",
     "nameerror",
     "syntaxerror",
     "indentationerror",
-    "error collecting",
-    "fixture not found",
-)
+    "missingapi",
+    "apimissing",
+    "missingmethod",
+    "missingfunction",
+    "missingmodule",
+    "notestsran",
+    "zerotestsran",
+    "notestscollected",
+    "zerotestscollected",
+    "setupfailed",
+    "setuperror",
+    "collectionfailed",
+    "collectionerror",
+    "fixturenotfound",
+    "missingfixture",
+})
 
 
 def _text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _normalized(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
 def _validate_red_failure(value: object, identifier: str) -> str:
     marker = _text(value)
     if marker is None:
         raise ValueError(f"behavior {identifier} requires redFailure")
-    lowered = marker.lower()
-    if any(generic in lowered for generic in GENERIC_RED_FAILURES):
+    normalized = _normalized(marker)
+    if normalized in GENERIC_RED_FAILURES or any(
+        normalized.startswith(prefix)
+        for prefix in (
+            "missingapi",
+            "missingmethod",
+            "missingfunction",
+            "missingmodule",
+            "notestsran",
+            "notestscollected",
+            "setupfailed",
+            "collectionfailed",
+            "fixturenotfound",
+        )
+    ):
         raise ValueError(
             f"behavior {identifier} redFailure must name the product behavior, "
-            "not a missing API, import, fixture, syntax, or collection failure"
+            "not a missing API, import, fixture, syntax, collection, setup, or no-test failure"
         )
     return marker
 
@@ -90,13 +120,17 @@ def validate_items(
             "redFailure": _validate_red_failure(raw.get("redFailure"), identifier),
             "status": status,
         }
+        if "evidence" in raw and not isinstance(raw.get("evidence"), str):
+            raise ValueError(f"behavior {identifier} evidence must be text")
         evidence = _text(raw.get("evidence"))
         if status in DISPOSITION_STATUSES:
             if evidence is None:
                 raise ValueError(f"behavior {identifier} status {status} requires evidence")
             item["evidence"] = evidence
-        elif evidence is not None:
-            raise ValueError(f"behavior {identifier} status {status} cannot carry disposition evidence")
+        elif "evidence" in raw:
+            raise ValueError(
+                f"behavior {identifier} status {status} cannot carry disposition evidence"
+            )
         result.append(item)
     return result
 
@@ -171,11 +205,17 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:
-    return [str(entry["id"]) for entry in items if entry.get("status") in {"pending", "red"}]
+    return [
+        str(entry["id"])
+        for entry in items
+        if entry.get("status") in {"pending", "red"}
+    ]
 
 
 def all_disposition_only(items: list[JsonObject]) -> bool:
-    return bool(items) and all(entry.get("status") in DISPOSITION_STATUSES for entry in items)
+    return bool(items) and all(
+        entry.get("status") in DISPOSITION_STATUSES for entry in items
+    )
 
 
 def no_change_item(evidence: str) -> JsonObject:
