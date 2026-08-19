@@ -109,7 +109,7 @@ readiness for the advisor phases without mutating anything.
   unavailable with a measured reason;
 - production preflight completed with a non-empty Behavior Map;
 - every behavior-changing map item GREEN, or validly dispositioned `already-satisfied` on real-Seam evidence when it passed before any edit;
-- every other map item already satisfied or omitted with evidence;
+- every other map item already satisfied or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check);
 - no pending proof gap or post-GREEN map reassessment;
 - TDD passed or not required;
 - production-code recorded;

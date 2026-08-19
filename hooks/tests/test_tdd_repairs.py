@@ -49,6 +49,10 @@ class MappedTddRepairTests(unittest.TestCase):
             "GIT_CONFIG_SYSTEM": os.devnull,
             "PYTHONDONTWRITEBYTECODE": "1",
         })
+        # Ambient pytest configuration must not alter the real-runner proofs
+        # (PYTEST_ADDOPTS=--maxfail=1 would break the two-failure case).
+        for var in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+            self.env.pop(var, None)
         os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env[
             "CLAUDE_WORKFLOW_STATE_ROOT"
         ]

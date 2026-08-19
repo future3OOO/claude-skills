@@ -57,6 +57,81 @@ class MappedTddPolicyGateTests(unittest.TestCase):
         self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
         return slug, workflow_id
 
+
+    def test_not_required_cannot_erase_a_pending_post_edit_reassessment(self) -> None:
+        # The bypass: a disposition-only map plus the hook's flag evidence
+        # (which carries no runs) passed both --not-required guards, so the
+        # overwrite erased postEditReassessment and its completion demand.
+        item = pending_behavior("BM_DISPOSED")
+        item["status"] = "already-satisfied"
+        item["evidence"] = "real-Seam proof recorded before this pass"
+        slug, _ = self.harness.begin_with_map([item], "not-required-flag")
+        identity = resolve_repo_identity(self.harness.repo)
+        first = self.harness.cli(
+            "tdd", "--repo", str(self.harness.repo), "--slug", slug,
+            "--not-required", "all items already satisfied",
+        )
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        hook = subprocess.run(
+            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
+            env=self.harness.env, text=True,
+            input=json.dumps({"session_id": "policy-gate",
+                              "tool_input": {"file_path": str(self.harness.repo / "app.py")}}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(hook.returncode, 0, hook.stdout + hook.stderr)
+        state = read_workflow(identity)
+        evidence_before = state.get("tddEvidence")
+        self.assertTrue(
+            any("post-production-edit" in b for b in completion_blockers(identity, state))
+        )
+        result = self.harness.cli(
+            "tdd", "--repo", str(self.harness.repo), "--slug", slug,
+            "--not-required", "cleanup only",
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "NOT_REQUIRED_ERASED_FLAG: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(identity)
+        self.assertEqual(
+            state.get("tddEvidence"), evidence_before, "NOT_REQUIRED_ERASED_FLAG"
+        )
+        self.assertTrue(
+            any("post-production-edit" in b for b in completion_blockers(identity, state)),
+            "NOT_REQUIRED_ERASED_FLAG",
+        )
+
+
+    def test_not_required_names_the_reassessment_after_green(self) -> None:
+        # After GREEN, reassessmentPending is set on a map that is NOT
+        # disposition-only, so the refusal must come from the flag guard with
+        # its reassessment diagnostic - not the generic disposition message.
+        item = pending_behavior("BM_GREENED")
+        slug, _ = self.harness.begin_with_map([item], "not-required-pending")
+        command = self.harness.write_unittest(2, "VALUE_NOT_TWO")
+        red = self.harness.tdd(slug, "red", "BM_GREENED", command)
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.harness.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.harness.tdd(slug, "green", "BM_GREENED", command)
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        identity = resolve_repo_identity(self.harness.repo)
+        evidence_before = read_workflow(identity).get("tddEvidence")
+        result = self.harness.cli(
+            "tdd", "--repo", str(self.harness.repo), "--slug", slug,
+            "--not-required", "cleanup only",
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "PENDING_GUARD_DIAGNOSTIC_LOST: " + result.stdout + result.stderr,
+        )
+        self.assertIn(
+            "pending reassessment", result.stderr, "PENDING_GUARD_DIAGNOSTIC_LOST"
+        )
+        self.assertEqual(
+            read_workflow(identity).get("tddEvidence"), evidence_before,
+            "PENDING_GUARD_DIAGNOSTIC_LOST",
+        )
+
     def test_post_resolution_edit_requires_recorded_reassessment_to_complete(self) -> None:
         # Post-resolution production edits are admitted without per-edit
         # ceremony, but the real PostToolUse hook flags the map so COMPLETION

@@ -256,17 +256,24 @@ def _not_required(
         raise ValueError("--not-required requires a non-empty reason")
     if args.runner_command:
         raise ValueError("--not-required does not accept a command")
-    if items is not None and not behavior_map.all_disposition_only(items):
-        raise WorkflowError(
-            "--not-required requires every mapped item to be already-satisfied "
-            "or omitted by governing evidence"
-        )
     existing_id = (
         state.get("tddEvidence")
         if isinstance(state.get("tddEvidence"), str)
         else None
     )
     existing = evidence_document(identity, existing_id)
+    if isinstance(existing, dict) and (
+        existing.get("postEditReassessment") or existing.get("reassessmentPending")
+    ):
+        raise WorkflowError(
+            "--not-required cannot replace a pending reassessment; record the "
+            "workflow tdd-map reassessment first"
+        )
+    if items is not None and not behavior_map.all_disposition_only(items):
+        raise WorkflowError(
+            "--not-required requires every mapped item to be already-satisfied "
+            "or omitted by governing evidence"
+        )
     runs = existing.get("runs") if isinstance(existing, dict) else None
     if isinstance(runs, list) and any(
         isinstance(run, dict) and run.get("valid") is True for run in runs
