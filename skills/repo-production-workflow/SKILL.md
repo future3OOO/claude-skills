@@ -115,6 +115,8 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 For behavior changes invoke `tdd` and select one pending Behavior Map ID. The RED must reach its recorded real Seam and emit that item's behavior-specific `redFailure` marker. A missing API/import, setup, syntax, fixture, or collection failure is not RED for a later product behavior and does not unlock production edits.
 
+For directly invoked pytest and unittest commands, the recorder verifies that a test ran and that the marker came from a test assertion. An unrecognized exact-bound runner can record only `marker-only-opaque` evidence; that weaker record does not independently prove Seam reach and must be inspected by the lead before it is relied on.
+
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
   --repo "$PWD" --slug "<task>" --phase red --behavior-id "BM_..." \
