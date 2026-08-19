@@ -1,10 +1,8 @@
 name: gate suite
 
-# Temporary self-application step for exact documentation corrections. Removed
-# in the next commit after the branch contains the generated source changes.
-permissions:
-  contents: write
-
+# The offline suite must be enforced by the repository, not asserted in a
+# document. This first delivery slice owns the shared state primitives and
+# quality gate; later slices extend the contract suite as their interfaces land.
 on:
   pull_request:
   push:
@@ -16,9 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/tdd-behavior-map-evidence
+          # Full history so the gate can diff against the PR base; a shallow
+          # checkout leaves the changed set empty and the gate self-passes.
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -26,188 +25,10 @@ jobs:
         run: |
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Gate Suite"
-      - name: Apply mapped workflow documentation corrections
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace(path_name, old, new):
-              path = Path(path_name)
-              text = path.read_text(encoding="utf-8")
-              if text.count(old) != 1:
-                  raise SystemExit(f"expected one match in {path_name}: {old[:80]!r}")
-              path.write_text(text.replace(old, new), encoding="utf-8")
-
-          workflow = "skills/repo-production-workflow/SKILL.md"
-          replace(
-              workflow,
-              "The recorded preflight owns the initial Behavior Map: stable, atomic proof obligations for the contract, state transitions, every material guarantee at a wrapped or rerouted Seam, visible interactions, and known architecture assumptions needing falsification. A plan may reference that map but is not authoritative.",
-              "The recorded preflight owns the initial Behavior Map: stable, atomic proof obligations for the contract, state transitions, every material guarantee at a wrapped or rerouted Seam, visible interactions, and known architecture assumptions needing falsification. It is authoritative for proof obligations, not architecture selection; a plan may reference it but is not a second proof owner.",
-          )
-          replace(
-              workflow,
-              "### 6. Mapped TDD RED/GREEN or not-required",
-              "### 6. Mapped TDD RED or not-required",
-          )
-          replace(
-              workflow,
-              '''```bash
-          python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \\
-            --repo "$PWD" --slug "<task>" --phase red --behavior-id "BM_..." \\
-            -- <targeted-command>
-          python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \\
-            --repo "$PWD" --slug "<task>" --phase green --behavior-id "BM_..." \\
-            -- <same test surface>
-          ```
-
-          After every GREEN, record `workflow.py tdd-map` reassessment before another production edit. Add any newly exposed touched-Seam preservation, interaction, semantic falsification, or review-discovered behavior; an empty addition records why the GREEN created no further obligation. A passing pre-edit behavior is dispositioned through `tdd-map` as `already-satisfied` with real-Seam evidence rather than manufacturing a RED.
-          ''',
-              '''```bash
-          python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \\
-            --repo "$PWD" --slug "<task>" --phase red --behavior-id "BM_..." \\
-            -- <targeted-command>
-          ```
-
-          A passing pre-edit behavior is dispositioned through `tdd-map` as `already-satisfied` with real-Seam evidence rather than manufacturing a RED.
-          ''',
-          )
-          replace(
-              workflow,
-              "After production preflight, test-like edits are admitted while TDD is pending. Production edits require a valid mapped RED for the active item. GREEN blocks the next production edit until map reassessment. `implementation` cannot be recorded `passed` until TDD is `passed` or `not-required`. Cycle count remains a coarse granularity smell, never a coverage target.",
-              "After production preflight, test-like edits are admitted while TDD is pending. Production edits require a valid mapped RED for the active item and the production-code baseline in step 7. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.",
-          )
-          replace(
-              workflow,
-              '''Implement the smallest direct change and remove obsolete code created by the
-          change. PostToolUse marks implementation in-progress and resets downstream
-          readiness after every production edit; governance edits reset the downstream
-          review steps without reopening production editing. When implementation is ready
-          for verification:
-          ''',
-              '''Implement the smallest direct change and remove obsolete code created by the
-          change. PostToolUse marks implementation in-progress and resets downstream
-          readiness after every production edit; governance edits reset the downstream
-          review steps without reopening production editing.
-
-          After the smallest production edit, run GREEN on the same mapped surface:
-
-          ```bash
-          python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \\
-            --repo "$PWD" --slug "<task>" --phase green --behavior-id "BM_..." \\
-            -- <same test surface>
-          ```
-
-          After every GREEN, record `workflow.py tdd-map` reassessment before another
-          production edit. Add newly exposed touched-Seam preservation, interaction,
-          semantic falsification, or review-discovered behavior; an empty addition records
-          why the GREEN created no further obligation. Only after GREEN and reassessment
-          leave TDD `passed` or `not-required` may implementation be recorded passed:
-          ''',
-          )
-
-          flow = "skills/repo-production-workflow/WORKFLOW-MAP.md"
-          replace(
-              flow,
-              '''    A1 --> P[production preflight records the Behavior Map]
-              P --> T[mapped TDD RED/GREEN]
-              T --> TM[post-GREEN map reassessment]
-              TM -->|new obligation| T
-              TM -->|map resolved| PC[production-code]
-              PC --> I[implementation]
-              I --> V[verification]
-              V --> CR[lead structured code review when non-trivial]
-              CR --> A2[independent final Codex Advisor review]
-              A2 --> C{commit-ready and findings addressed?}
-              C -->|behavioral finding| T
-          ''',
-              '''    A1 --> P[production preflight records the Behavior Map]
-              P --> TR[mapped TDD RED]
-              TR --> PC[production-code]
-              PC --> I[implementation]
-              I --> TG[mapped GREEN]
-              TG --> TM[post-GREEN map reassessment]
-              TM -->|new obligation| TR
-              TM -->|map resolved| V[verification]
-              V --> CR[lead structured code review when non-trivial]
-              CR --> A2[independent final Codex Advisor review]
-              A2 --> C{commit-ready and findings addressed?}
-              C -->|behavioral finding| TR
-          ''',
-          )
-          replace(
-              flow,
-              "Findings from the lead's code review or final Codex Advisor against the current unpushed tree follow the return edge to implementation and retain the active `workflowId`. A behavioral finding first becomes a new Behavior Map item and a behavior-specific RED; a genuinely non-behavioral correction records why. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.",
-              "Behavioral findings from the lead's code review or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.",
-          )
-
-          preflight = "skills/production-preflight/SKILL.md"
-          replace(
-              preflight,
-              "The first thirteen sections are concise text. `behaviorMap` is the structured, authoritative list of behavior obligations that TDD must reconcile. A plan may reference this map but does not own another copy.",
-              "The first thirteen sections are concise text. `behaviorMap` is authoritative for the behavior obligations TDD must reconcile, not for choosing the architecture. A plan may reference the map but does not own another copy.",
-          )
-          replace(
-              preflight,
-              '''Record a non-empty JSON array. Every item uses exactly:
-
-          ```json
-          {
-            "id": "BM_ATOMICITY",
-            "basis": "touched-Seam preservation",
-            "behavior": "a caught inner failure remains atomic under the new transaction path",
-            "seam": "the public operation through that path",
-            "expected": "no partial inner write survives",
-            "redFailure": "PARTIAL_INNER_WRITE_SURVIVED",
-            "status": "pending"
-          }
-          ```
-
-          - IDs are stable uppercase identifiers used by RED/GREEN evidence.
-          - `redFailure` names the product failure. Do not use `AttributeError`, import/setup, syntax, fixture, or collection failures.
-          - Initial status is `pending`, `already-satisfied`, or `omitted`. The latter two require `evidence`.
-          ''',
-              '''Record a non-empty JSON array. Every item has these seven required fields:
-
-          ```json
-          [
-            {
-              "id": "BM_ATOMICITY",
-              "basis": "touched-Seam preservation",
-              "behavior": "a caught inner failure remains atomic under the new transaction path",
-              "seam": "the public operation through that path",
-              "expected": "no partial inner write survives",
-              "redFailure": "PARTIAL_INNER_WRITE_SURVIVED",
-              "status": "pending"
-            }
-          ]
-          ```
-
-          - IDs are stable uppercase identifiers used by RED/GREEN evidence.
-          - `redFailure` names the product failure. Do not use missing-API/import, setup, syntax, fixture, collection, or no-test failures.
-          - Initial status is `pending`, `already-satisfied`, or `omitted`. `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
-          ''',
-          )
-
-          recorder = "skills/tdd/recorder.md"
-          replace(
-              recorder,
-              "The map owns the behavior, Seam, expected outcome, and behavior-specific `redFailure` marker. RED is valid only when the command fails and emits that marker. Missing APIs, imports, fixtures, syntax, or collection errors cannot satisfy a product-behavior marker and do not open a cycle.",
-              "The map owns the behavior, Seam, expected outcome, and behavior-specific `redFailure` marker. For directly invoked pytest and unittest, RED is valid only when collection/loading/setup reaches at least one executed test and the marker is emitted by its assertion failure. Missing APIs, imports, fixtures, syntax, collection/setup failures, and zero-test runs do not open a cycle. Unknown runners remain exact-command bound and their accepted RED is labelled `marker-only-opaque`, not assertion-reached proof.",
-          )
-
-          tests = "skills/tdd/tests.md"
-          replace(
-              tests,
-              "The RED must reach the mapped Seam and fail at the assertion for the claimed product behavior. Give that assertion a behavior-specific marker and record the same marker as `redFailure` in preflight.",
-              "The RED must reach the mapped Seam and fail at the assertion for the claimed product behavior. Give that assertion a behavior-specific marker and record the same marker as `redFailure` in preflight. For directly invoked pytest and unittest, the recorder also requires at least one executed test and refuses collection, setup, loader, or zero-test failures; opaque runners are exact-bound and recorded as weaker marker-only evidence.",
-          )
-          PY
-          if ! git diff --quiet -- skills; then
-            git add skills
-            git commit -m "docs(workflow): align mapped TDD order and proof semantics"
-            git push origin HEAD:fix/tdd-behavior-map-evidence
-          fi
       - name: Python lint (ruff E9,F)
+        # Pinned and isolated so the linted rule set never moves without an
+        # operator choice; pytest is installed only to exercise the public
+        # pytest RED-reach contract through the real runner.
         run: |
           pip install ruff==0.16.2 pytest==8.4.1
           ruff check --isolated --select E9,F .
