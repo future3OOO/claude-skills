@@ -17,7 +17,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib._workflow_db import database_path  # noqa: E402
-from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     advisor_disposition,
     read_workflow,
