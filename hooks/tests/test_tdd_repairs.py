@@ -630,6 +630,25 @@ class MappedTddRepairTests(unittest.TestCase):
             state.get("preflightEvidence"), str, "PRODUCT_MARKER_REFUSED"
         )
 
+
+    def test_runner_command_help_token_is_not_intercepted(self) -> None:
+        marker = "RUNNER_HELP_MARKER"
+        item = pending_behavior("BM_RUNNER_HELP", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "runner-help-token")
+        result = self.tdd(
+            slug, "red", "BM_RUNNER_HELP",
+            (sys.executable, "-c",
+             f"import sys; print(sys.argv[1]); raise AssertionError({marker!r})",
+             "--help"),
+        )
+        # The runner command owns tokens after --: the command must execute
+        # (marker-only-opaque RED), never be swallowed by CLI help.
+        self.assertEqual(
+            result.returncode, 0,
+            "RUNNER_HELP_INTERCEPTED: " + result.stdout + result.stderr,
+        )
+        self.assertNotIn("usage:", result.stdout, "RUNNER_HELP_INTERCEPTED")
+
     def test_map_rejects_normalized_infra_collection_variants(self) -> None:
         for marker in (
             "ERROR collecting",

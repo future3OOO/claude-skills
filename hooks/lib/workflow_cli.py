@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ._workflow_db import LedgerError, history
 from .preflight_document import validated_document
-from .command_runner import mute_stdout as _mute_stdout, print_output as _print_output, run as _run, run_entry as _run_entry
+from .command_runner import emit_json as _emit_json, print_output as _print_output, run as _run, run_entry as _run_entry
 from .repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity
 from .state_prune import prune
 from .state_store import tree_manifest, utc_timestamp
@@ -166,14 +166,6 @@ def parser() -> argparse.ArgumentParser:
 
 
 
-
-def _emit_json(value: object) -> None:
-    try:
-        print(json.dumps(value, sort_keys=True), flush=True)
-    except OSError:
-        # The command's mutation, when any, is already committed. A reporting
-        # failure cannot be re-labelled as a refused transition.
-        _mute_stdout()
 
 
 def _intent(args: argparse.Namespace) -> str:

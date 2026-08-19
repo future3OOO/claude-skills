@@ -1,7 +1,14 @@
 """Bounded command execution and output reporting shared by the TDD and
-verification recorders."""
+verification recorders.
+
+It is also the one owner of CLI reporting mechanics: JSON emission and the
+committed-mutation policy for reporting failures (a command's mutation, when
+any, is already committed - a reporting failure is never re-labelled as a
+refused transition).
+"""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -35,6 +42,15 @@ def run_entry(raw: bytes, exit_code: int, timed_out: bool, **fields: object) -> 
         "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
         "at": utc_timestamp(),
     }
+
+
+def emit_json(value: object) -> None:
+    try:
+        print(json.dumps(value, sort_keys=True), flush=True)
+    except OSError:
+        # The command's mutation, when any, is already committed. A reporting
+        # failure cannot be re-labelled as a refused transition.
+        mute_stdout()
 
 
 def mute_stdout() -> None:

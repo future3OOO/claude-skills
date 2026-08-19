@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shlex
 import sys
 
@@ -10,20 +9,11 @@ from . import behavior_map, tdd_surface
 from .repo_identity import RepoIdentity, resolve_repo_identity
 from .state_store import utc_timestamp
 from .command_runner import (
-    mute_stdout as _mute_stdout,
+    emit_json as _emit_json,
     print_output as _print_output,
     run as _run,
     run_entry as _run_entry,
 )
-
-
-def _emit_json(value: object) -> None:
-    try:
-        print(json.dumps(value, sort_keys=True), flush=True)
-    except OSError:
-        # The command's mutation, when any, is already committed. A reporting
-        # failure cannot be re-labelled as a refused transition.
-        _mute_stdout()
 from .workflow_documents import load_json
 from .workflow_state import (
     NO_INSTANCE_ID,
@@ -41,7 +31,13 @@ JsonObject = dict[str, object]
 
 
 def _tdd_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="workflow tdd")
+    parser = argparse.ArgumentParser(
+        prog="workflow tdd",
+        epilog=(
+            "imported pre-map workflows keep the legacy flags: "
+            "--behavior, --seam, --expected-failure"
+        ),
+    )
     parser.add_argument("--repo", "--cwd", dest="repo", default=".")
     parser.add_argument("--slug", required=True)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -392,6 +388,16 @@ def _run_tdd(values: list[str]) -> int:
     the items-None branch of the same implementation: it keeps run-then-decide
     validity order and preserved invalid reruns (PRES_LEGACY_RERUN), while the
     mapped branch refuses invalid candidates before execution."""
+    for value in values:
+        if value == "--":
+            break
+        if value in ("-h", "--help"):
+            # Help is identity-free and exact-token only: serve the primary
+            # mapped surface (the epilog names the imported-legacy flags)
+            # before any state requirement. Equals forms are malformed input
+            # and fall through to ordinary parsing; tokens after -- belong to
+            # the runner command.
+            _tdd_parser().parse_args(["--help"])
     route, _ = _tdd_route_parser().parse_known_args(values)
     if not route.slug:
         raise ValueError("--slug is required")
