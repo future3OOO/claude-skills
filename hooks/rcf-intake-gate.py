@@ -25,13 +25,17 @@ from hooks.lib.workflow_state import (  # noqa: E402
 def deny(reason: str) -> None:
     import json
 
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }))
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+        )
+    )
 
 
 def main() -> int:
@@ -56,7 +60,7 @@ def main() -> int:
             if state is not None:
                 missing.extend(edit_blockers(identity, state))
                 ready = not missing
-    except (WorkflowError, LedgerError) as exc:
+    except (WorkflowError, LedgerError, ValueError) as exc:
         deny(f"BLOCKED by workflow intake: workflow evidence is unreadable: {exc}.")
         return 0
     if not ready:
