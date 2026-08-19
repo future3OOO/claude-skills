@@ -133,6 +133,76 @@ check "final-review base-ref requirement named" "--base-ref is required" "$out"
 
 out=$("$WRAPPER" --slug t --packet /definitely/not/a/file --cwd "$PWD" -- "q" 2>&1); status=$?
 check_status "unreadable bounded input rejected" 2 "$status"
+out=$("$WRAPPER" --slug t --packet /dev/zero --cwd "$PWD" -- "q" 2>&1); status=$?
+check_status "non-regular bounded input rejected" 2 "$status"
+check "non-regular packet refusal names the cause" "not a readable regular file" "$out"
+
+printf '== governing-design transport (offline)\n'
+# The design gate is argument-level: it must fire in a stateless scratch repo,
+# BEFORE any workflow lookup, so a phased consult can never spend a checkpoint
+# query - let alone a provider call - without a design declaration.
+designtmp=$(mktemp -d)
+mkdir -p "$designtmp/repo"
+git -C "$designtmp/repo" init -q
+printf 'chosen architecture\n' >"$designtmp/design.md"
+
+out=$("$WRAPPER" --slug t --phase preflight-advice --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "phased consult without a design declaration refused" 2 "$status"
+check "design gate refuses before workflow checks" "--design-file or --design-absent" "$out"
+if [[ "$out" == *"requires an active workflow"* ]]; then
+  printf 'FAIL  design gate must fire before the workflow lookup\n'; fail=$((fail+1))
+else
+  printf 'PASS  design gate fires before the workflow lookup\n'; pass=$((pass+1))
+fi
+
+out=$("$WRAPPER" --slug t --phase final-review --base-ref HEAD --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "final-review without a design declaration refused" 2 "$status"
+check "final-review design refusal is the design gate, not base-ref resolution" "--design-file or --design-absent" "$out"
+
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/missing.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "missing design file refused" 2 "$status"
+check "missing design file named" "not a readable regular file" "$out"
+
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/repo" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "directory as design file refused" 2 "$status"
+
+# An empty file is not a design: accepting it would hand the delegate a blank
+# artifact without the declared reason --design-absent requires.
+: >"$designtmp/empty.md"
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/empty.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "empty design file refused" 2 "$status"
+check "empty design refusal names the cause" "empty" "$out"
+
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/design.md" --design-absent "reason" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "both design flags together refused" 2 "$status"
+check "exactly-one rule named" "exactly one" "$out"
+
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-absent "   " --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "whitespace-only absence reason refused" 2 "$status"
+
+# The declaration travels verbatim, so an over-limit reason is refused rather
+# than silently cut: everything accepted arrives whole.
+long_reason=$(printf 'r%.0s' $(seq 1 2001))
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-absent "$long_reason" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "over-limit absence reason refused" 2 "$status"
+check "over-limit refusal names the bound" "2000" "$out"
+
+# A valid declaration must clear the gate: in this stateless repo the next
+# refusal is the workflow lookup, which is the proof the gate stopped blocking.
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-absent "trivial pass, no plan artifact" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "declared absence clears the design gate" 2 "$status"
+check "declared absence proceeds to the workflow lookup" "requires an active workflow" "$out"
+
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/design.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "readable design file clears the design gate" 2 "$status"
+check "readable design file proceeds to the workflow lookup" "requires an active workflow" "$out"
+
+# Fail closed on a phase-less consult: there is no checkpoint to carry the
+# design to, so accepting the flag would silently drop caller-supplied evidence.
+out=$("$WRAPPER" --slug t --design-file "$designtmp/design.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "design file without --phase refused" 2 "$status"
+check "phase-less design refusal names the dependency" "requires --phase" "$out"
+rm -rf "$designtmp"
 
 grep -q 'from hooks.lib.workflow_state import safe_slug' "$WRAPPER" \
   && { printf 'PASS  evidence attach uses the producer safe_slug contract\n'; pass=$((pass+1)); } \
@@ -145,17 +215,17 @@ gatetmp=$(mktemp -d)
 mkdir -p "$gatetmp/home" "$gatetmp/repo"
 git -C "$gatetmp/repo" init -q
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug orphan --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug orphan --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "governed consult without an active workflow refused" 2 "$status"
 check "no-workflow refusal names the cause" "requires an active workflow" "$out"
 CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
   begin --repo "$gatetmp/repo" --slug real-pass >/dev/null 2>&1
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug wrong-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug wrong-pass --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "mismatched-slug governed consult refused" 2 "$status"
 check "slug-mismatch refusal names both slugs" "does not match the active workflow" "$out"
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug real-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug real-pass --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "not-ready checkpoint refused before the consult" 2 "$status"
 check "checkpoint refusal names the missing steps" "missing: repo-context-forge" "$out"
 
@@ -178,7 +248,7 @@ w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-r
 w.advisor_disposition(identity, slug, wid, "final", "none")
 w.complete(identity)' completed-pass
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug completed-pass --phase final-review --base-ref HEAD --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug completed-pass --phase final-review --base-ref HEAD --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "completed workflow refused before the final-review consult" 2 "$status"
 check "terminal refusal names the closed workflow" "open-workflow" "$out"
 
@@ -198,7 +268,7 @@ connection.execute("UPDATE workflow_events SET state_json = ? WHERE event_id = ?
                    (json.dumps(state, sort_keys=True, separators=(",", ":")), event_id))
 connection.commit(); connection.close()' legacy-pass
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug legacy-pass --phase preflight-advice --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug legacy-pass --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "workflow without an instance id refused before the consult" 2 "$status"
 check "instance-id refusal names the missing field" "workflowId" "$out"
 rm -rf "$gatetmp"
@@ -282,7 +352,7 @@ from hooks.tests.support import record_context_forge
 w.begin(resolve_repo_identity(sys.argv[2]), sys.argv[3])
 record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)' graph-pass
 out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
-  "$WRAPPER" --slug graph-pass --phase preflight-advice --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug graph-pass --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
 check_status "recorded graph evidence clears the consult gate" 2 "$status"
 check "automatic graph evidence reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
 
@@ -301,7 +371,7 @@ connection.execute("UPDATE workflow_events SET state_json = ? WHERE event_id = ?
                    (json.dumps(state, sort_keys=True, separators=(",", ":")), event_id))
 connection.commit(); connection.close()' graph-pass
 out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
-  "$WRAPPER" --slug graph-pass --phase preflight-advice --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug graph-pass --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
 check_status "unowned graph evidence refused before the consult" 2 "$status"
 check "unowned refusal instructs a bootstrap rerun" "rerun the Repo Context Forge bootstrap" "$out"
 
@@ -334,7 +404,7 @@ w.commit_evidence_phase(identity, slug, w.instance_id(state), "repo-context-forg
                         graph_evidence_document(str(packet_path), slug=slug,
                                                 workflow_id=str(w.instance_id(state)), source_root=root))' oversized-graph
 out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
-  "$WRAPPER" --slug oversized-graph --phase preflight-advice --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug oversized-graph --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
 check_status "an oversized graph result still reaches the consult gate" 2 "$status"
 measured=$(printf '%s' "$out" | sed -n 's/.*codex_advisor_graph_evidence //p')
 bytes=$(printf '%s' "$measured" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
@@ -395,6 +465,10 @@ cat >"$intenttmp/bin/claude" <<'PROVIDER'
 #!/usr/bin/env bash
 # Reads the consult payload and exits at once: no network, no retry, no waiting.
 printf 'ran\n' >>"$CONSULT_PROVIDER_MARKER"
+if [[ -n "${CONSULT_PROVIDER_ENV:-}" ]]; then
+  printf 'CLAUDE_CODE_MAX_CONTEXT_TOKENS=%s\nCLAUDE_CODE_AUTO_COMPACT_WINDOW=%s\nCLAUDE_AUTOCOMPACT_PCT_OVERRIDE=%s\n' \
+    "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-unset}" "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}" "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-unset}" >"$CONSULT_PROVIDER_ENV"
+fi
 cat >"$CONSULT_PROVIDER_CAPTURE"
 PROVIDER
 chmod +x "$intenttmp/bin/claude"
@@ -432,7 +506,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.tests.support import record_context_forge
 record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
-preflight_payload=$(consult_input --slug intent-custody --phase preflight-advice -- "scope question") || exit 1
+preflight_payload=$(consult_input --slug intent-custody --phase preflight-advice --design-absent "intent-custody rig: no plan artifact" -- "scope question") || exit 1
 check "preflight-advice carries the recorded intent verbatim" "$intent_text" "$preflight_payload"
 
 intent_py 'import sys
@@ -443,11 +517,245 @@ advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
 # The armH replay: the consult question denies that any governing spec exists. The
 # recorded text has to arrive in the same payload as the denial, so the delegate can
 # see for itself that the premise is false.
-armh_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD \
+armh_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD --design-absent "intent-custody rig: no plan artifact" \
   -- "There is no governing spec beyond the recorded workflow intent; judge the diff on its merits alone.") || exit 1
 check "final-review carries the recorded intent verbatim" "$intent_text" "$armh_payload"
 check "the armH denial travels in the same payload as the text that refutes it" \
   "There is no governing spec beyond the recorded workflow intent" "$armh_payload"
+
+# The governing design must reach the delegate as delegate-visible evidence with
+# its own provenance header: hash and byte accounting live in the payload, not
+# only on the lead's stderr, because silent truncation reads as complete design.
+printf 'PRES-1 preserve batching. ASSUMP-1 savepoints nest.\n' >"$intenttmp/design.md"
+design_sha=$(sha256sum -- "$intenttmp/design.md" | cut -d' ' -f1)
+design_payload=$(consult_input --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design.md" -- "scope question") || exit 1
+check "design section header present" "--- governing design artifact (bounded: shown=" "$design_payload"
+check "design content reaches the delegate" "PRES-1 preserve batching. ASSUMP-1 savepoints nest." "$design_payload"
+check "design header carries the file sha256" "$design_sha" "$design_payload"
+check "small design is not marked truncated" "truncated=no" "$design_payload"
+
+# Byte custody: an artifact's trailing newlines are excerpt bytes the header
+# counts, so they must reach the provider stdin intact - two preserved plus the
+# heredoc's two structural newlines before the next section line.
+printf 'TAILNL_X\n\n' >"$intenttmp/design-tail.md"
+tail_payload=$(consult_input --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design-tail.md" -- "scope question") || exit 1
+check "trailing newlines reach the provider byte-exact" \
+  "$(printf 'TAILNL_X\n\n\n\n--- unstaged diff ---')" "$tail_payload"
+check "the tail artifact advertises its full byte count" "shown=10/10 bytes" "$tail_payload"
+
+# An oversized design must be cut at its bound and say so in the same header the
+# delegate reads: shown/total bytes plus truncated=yes, with the tail absent.
+python3 - "$intenttmp/design-big.md" <<'BIGPY'
+import sys
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write("a" * 24990)
+    handle.write("TAIL_MARKER_BEYOND_BOUND")
+BIGPY
+big_payload=$(consult_input --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design-big.md" -- "scope question") || exit 1
+check "oversized design discloses its exact cut" "shown=20000/25014 bytes" "$big_payload"
+check "oversized design is marked truncated" "truncated=yes" "$big_payload"
+if [[ "$big_payload" == *"TAIL_MARKER_BEYOND_BOUND"* ]]; then
+  printf 'FAIL  bytes beyond the design bound must not reach the delegate\n'; fail=$((fail+1))
+else
+  printf 'PASS  bytes beyond the design bound do not reach the delegate\n'; pass=$((pass+1))
+fi
+
+# A declared absence is itself evidence: the delegate must see the declaration
+# verbatim so an unstated design on architecture-shaping work can be a finding.
+absent_payload=$(consult_input --slug intent-custody --phase preflight-advice \
+  --design-absent "trivial docs pass: no architecture decision was made" -- "scope question") || exit 1
+check "declared absence reaches the delegate" "--- governing design artifact, declared absent (bounded: shown=" "$absent_payload"
+
+# Startup-inherited errexit (POSIXLY_CORRECT=1) plus an artifact beyond pipe
+# capacity: producer-side SIGPIPE must not abort assembly - the excerpt arrives
+# bounded with its cut disclosed. Regression coverage; the production proof is
+# the recorded real-provider RED/GREEN on the pass that shipped the guard.
+python3 - "$intenttmp/design-huge.md" <<'HUGEPY'
+import sys
+open(sys.argv[1], "w").write("survive oversized artifacts " * 8000)
+HUGEPY
+huge_payload=$(POSIXLY_CORRECT=1 consult_input --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design-huge.md" -- "scope question") || exit 1
+check "POSIXLY_CORRECT oversized design still assembles" "shown=20000/224000 bytes, truncated=yes" "$huge_payload"
+
+# A NUL in the kept prefix cannot cross the Bash transport intact: the wrapper
+# refuses at assembly with a named cause, before the provider path starts -
+# asserted by the absence of the session marker on stderr.
+python3 - "$intenttmp/design-nul.md" <<'NULPY'
+import sys
+open(sys.argv[1], "wb").write(b"A\x00B\x00C")
+NULPY
+nul_err="$intenttmp/nul-stderr"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design-nul.md" -- "scope question" >/dev/null 2>"$nul_err"
+check_status "NUL-bearing excerpt refused" 2 "$?"
+check "NUL refusal names the transport rule" "cannot cross the Bash transport" "$(cat "$nul_err")"
+if grep -q "codex_advisor_session" "$nul_err"; then
+  printf 'FAIL  the provider path must never start for a refused excerpt\n'; fail=$((fail+1))
+else
+  printf 'PASS  the provider path never starts for a refused excerpt\n'; pass=$((pass+1))
+fi
+check "the absence reason travels verbatim" "trivial docs pass: no architecture decision was made" "$absent_payload"
+
+# Every caller-supplied bounded channel wears the same provenance header. The
+# packet is proven through the payload; TDD and review summaries route through
+# the one bounded_section owner (asserted structurally below, matching this
+# suite's existing grep checks), so one implementation carries all channels.
+packet_payload=$(consult_input --slug intent-custody --phase preflight-advice \
+  --design-absent "packet channel check" --packet "$intenttmp/design.md" -- "scope question") || exit 1
+check "packet channel wears the provenance header" "--- repo context packet (bounded: shown=" "$packet_payload"
+check "packet content still reaches the delegate" "PRES-1 preserve batching." "$packet_payload"
+
+grep -q 'bounded_section tdd_section tdd "recorded TDD summary"' "$WRAPPER" \
+  && { printf 'PASS  TDD summary routes through the bounded channel owner\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  TDD summary must route through bounded_section\n'; fail=$((fail+1)); }
+grep -q 'bounded_section review_section review "recorded code-review summary"' "$WRAPPER" \
+  && { printf 'PASS  code-review summary routes through the bounded channel owner\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  code-review summary must route through bounded_section\n'; fail=$((fail+1)); }
+
+# The payload goes to the provider, not the lead, so each bounded channel also
+# reports itself on stderr, and the assembled prompt reports its total size -
+# measured, not guessed.
+telemetry_file="$intenttmp/consult-stderr"
+: >"$provider_capture"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design.md" -- "scope question" >/dev/null 2>"$telemetry_file"
+check "design channel reports itself on stderr" "codex_advisor_evidence name=design" "$(cat "$telemetry_file")"
+check "assembled prompt reports its total bytes" "codex_advisor_prompt bytes_total=" "$(cat "$telemetry_file")"
+
+# The preflight prompt frames the consult as falsification of a decided design,
+# bounds the advisor's epistemics, and keeps the decision with measurement.
+check "preflight frames the design as the object under falsification" "the decided design under review: try to falsify it" "$design_payload"
+check "the advisor may recommend a family; measurement decides" "You may recommend a different architecture family; the decision is settled by measurement" "$design_payload"
+check "unobserved claims are labeled with their settling measurement" "inferred/unverified and name the smallest real-Seam measurement" "$design_payload"
+check "an unstated design on architecture-shaping work is a finding" "an absent design artifact is itself a top-ranked finding" "$design_payload"
+
+# Window knobs pass through from the resolved model configuration only when
+# configured: absent from the claudex block means absent from the provider env.
+env_file="$intenttmp/provider-env"
+: >"$provider_capture"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  CONSULT_PROVIDER_ENV="$env_file" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-absent "knob rig" -- "scope question" >/dev/null 2>&1
+check "unconfigured max-context knob stays unset" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
+check "unconfigured auto-compact window stays unset" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
+check "unconfigured autocompact percent stays unset" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
+
+cat >"$intenttmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 \
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 \
+claude --model offline-model'
+BASHRC
+: >"$provider_capture"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  CONSULT_PROVIDER_ENV="$env_file" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-absent "knob rig" -- "scope question" >/dev/null 2>&1
+check "configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
+check "configured auto-compact window reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
+check "configured autocompact percent reaches the provider" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80" "$(cat "$env_file")"
+
+# Isolation: a knob reaches the provider exactly when the alias block
+# configures it. A stale parent environment (claudex sessions export all
+# three) must not leak an alias-omitted knob to the provider.
+cat >"$intenttmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 \
+claude --model offline-model'
+BASHRC
+: >"$provider_capture"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW=999111 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  CONSULT_PROVIDER_ENV="$env_file" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-absent "knob isolation rig" -- "scope question" >/dev/null 2>&1
+check "the alias-configured knob still reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
+check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
+check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
+
+# Symmetric shape: the max-context knob itself alias-omitted while the parent
+# exports it - already-satisfied regression evidence that isolation is knob-agnostic.
+cat >"$intenttmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \
+claude --model offline-model'
+BASHRC
+: >"$provider_capture"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=888222 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  CONSULT_PROVIDER_ENV="$env_file" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-absent "knob isolation rig" -- "scope question" >/dev/null 2>&1
+check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
+check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
+
+# Final review reconciles three authorities. The recorded production preflight
+# must arrive as pass-owned evidence with the same provenance header, the
+# payload must state the precedence once, and the phase prompt must carry the
+# named falsification obligations. The armH payload above is a final-review
+# consult on a pass whose preflight was recorded through the real recorder.
+check "final-review attaches the recorded production preflight" "--- recorded production preflight (bounded: shown=" "$armh_payload"
+check "the attached preflight is the recorded document" "advance to final review" "$armh_payload"
+check "the preflight header carries sha256 provenance" "sha256=" "$armh_payload"
+check "final-review carries the governing-design section too" "governing design artifact, declared absent (bounded: shown=" "$armh_payload"
+check "precedence is stated to the delegate" "the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof" "$armh_payload"
+check "design/preflight divergence is a finding" "Unreconciled divergence between the design and the recorded preflight is a finding" "$armh_payload"
+check "PRES-n obligations are rechecked" "Recheck each PRES-n preservation obligation" "$armh_payload"
+check "ASSUMP-n assumptions are falsified" "falsify each ASSUMP-n load-bearing assumption" "$armh_payload"
+check "the contradictory-contract gate is applied" "may not also require callers to avoid particular operations" "$armh_payload"
+check "discovery is bounded to one additional failure class" "at most one additional material reachable failure class" "$armh_payload"
+if [[ "$preflight_payload" == *"--- recorded production preflight (bounded:"* ]]; then
+  printf 'FAIL  preflight-advice must not attach a preflight that does not exist yet\n'; fail=$((fail+1))
+else
+  printf 'PASS  preflight-advice carries no recorded-preflight section\n'; pass=$((pass+1))
+fi
+
+# The recorded preflight is the reconciled contract: a realistic thirteen-section
+# document runs well past 4000 bytes, and final review must receive it whole.
+# Re-record the rig preflight with content whose marker sits deep in the
+# document, then prove the marker crosses to the delegate.
+CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 -c 'import sys, json, subprocess
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.lib import workflow_state as w
+from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.tests.support import build_document
+repo = Path(sys.argv[2])
+identity = resolve_repo_identity(repo)
+state = w.read_workflow(identity)
+filler = "the reconciled contract governs this surface and must arrive whole " * 12
+document = build_document(filler)
+document["verify"] = filler + " DEEP-PREFLIGHT-MARKER-BEYOND-4000"
+path = repo.parent / "deep-preflight.json"
+path.write_text(json.dumps(document), encoding="utf-8")
+result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-workflow/scripts/workflow.py",
+    "record-preflight", "--repo", str(repo), "--slug", str(state["slug"]),
+    "--workflow-id", str(w.instance_id(state)), "--input", str(path)],
+    capture_output=True, text=True)
+assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$intenttmp/repo" || exit 1
+deep_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD \
+  --design-absent "deep preflight custody check" -- "completion question") || exit 1
+check "a deep preflight section arrives whole" "DEEP-PREFLIGHT-MARKER-BEYOND-4000" "$deep_payload"
 
 # begin admits an empty intent, so the payload has to render it empty. Substituting a
 # placeholder would report text the pass never recorded, which is the same defect as
@@ -459,9 +767,9 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.tests.support import record_context_forge
 record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
-empty_payload=$(consult_input --slug empty-intent --phase preflight-advice -- "scope question") || exit 1
+empty_payload=$(consult_input --slug empty-intent --phase preflight-advice --design-absent "intent-custody rig: no plan artifact" -- "scope question") || exit 1
 check "an empty intent stays empty instead of becoming a placeholder" \
-  "$(printf 'answerable to ---\n\n--- unstaged diff ---')" "$empty_payload"
+  "$(printf 'answerable to ---\n\n--- governing design artifact')" "$empty_payload"
 rm -rf "$intenttmp"
 trap - EXIT
 
@@ -475,6 +783,86 @@ if [[ "${LIVE:-0}" = "1" ]]; then
   check "session marker emitted" "codex_advisor_session" "$(cat /tmp/codex-advisor-test.err)"
   check "completion marker emitted" "codex_advisor_complete status=0 provider=codex" "$(cat /tmp/codex-advisor-test.err)"
   rm -f /tmp/codex-advisor-test.err
+
+  # Phased live probe: the governed design transport crossing the real provider.
+  # An isolated rig repo supplies real workflow state; the real claudex env
+  # supplies transport; the design section and its telemetry ride the payload.
+  printf '== live phased consult with design transport (costs tokens)\n'
+  livetmp=$(mktemp -d)
+  mkdir -p "$livetmp/repo"
+  git -C "$livetmp/repo" init -q
+  git -C "$livetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
+  printf 'Chosen architecture: probe. PRES-1 keep transport green. ASSUMP-1 flags reach the provider.\n' >"$livetmp/design.md"
+  CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
+    begin --repo "$livetmp/repo" --slug live-design-probe >/dev/null
+  CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" python3 -c 'import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.tests.support import record_context_forge
+record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)' "$ROOT" "$livetmp/repo"
+  live_design_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" "$WRAPPER" \
+    --slug live-design-probe --phase preflight-advice --cwd "$livetmp/repo" \
+    --design-file "$livetmp/design.md" --budget 40 --fresh \
+    -- "Question: Reply with exactly LIVE_DESIGN_OK and nothing else. Do not use tools." 2>"$livetmp/stderr")
+  status=$?
+  check_status "phased live consult exits 0" 0 "$status"
+  # A phased prompt instructs findings-first review of the attached design, so
+  # the delegate reviews rather than echoing a token; the wrapper itself
+  # enforces non-empty output, asserted here through the real transport.
+  if [[ -n "${live_design_out//[[:space:]]/}" ]]; then
+    printf 'PASS  phased live consult returns a non-empty review\n'; pass=$((pass+1))
+  else
+    printf 'FAIL  phased live consult returned empty output\n'; fail=$((fail+1))
+  fi
+  check "design channel telemetry on the live path" "codex_advisor_evidence name=design" "$(cat "$livetmp/stderr")"
+  check "prompt-size telemetry on the live path" "codex_advisor_prompt bytes_total=" "$(cat "$livetmp/stderr")"
+  check "phased live completion marker" "codex_advisor_complete status=0 provider=codex" "$(cat "$livetmp/stderr")"
+  if grep -q 'unrecognized_model' "$livetmp/stderr"; then
+    printf 'NOTE  unknown-model notice still present; window knobs did not suppress it on this CLI\n'
+  else
+    printf 'NOTE  no unknown-model notice: configured window knobs reached the live provider subprocess\n'
+  fi
+  rm -rf "$livetmp"
+
+  # Live final-review probe: the final-only Seam - recorded preflight
+  # attachment, final framing, exact terminal-verdict acceptance - crossing the
+  # real provider. A per-run nonce is planted in the recorded production
+  # preflight; only evidence that actually reached the delegate can echo it.
+  printf '== live final-review consult with nonce custody (costs tokens)\n'
+  finaltmp=$(mktemp -d)
+  mkdir -p "$finaltmp/repo"
+  git -C "$finaltmp/repo" init -q
+  git -C "$finaltmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
+  final_nonce="PROOF-NONCE-$RANDOM$RANDOM"
+  CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" python3 -c 'import sys, json, subprocess
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.lib import workflow_state as w
+from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.tests.support import advance_to_final_review, build_document
+repo = Path(sys.argv[2])
+identity = resolve_repo_identity(repo)
+w.begin(identity, "live-final-probe")
+advance_to_final_review(repo, repo.parent)
+state = w.read_workflow(identity)
+document = build_document("recorded preflight carries " + sys.argv[3] + " for the live probe")
+path = repo.parent / "nonce-preflight.json"
+path.write_text(json.dumps(document), encoding="utf-8")
+result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-workflow/scripts/workflow.py",
+    "record-preflight", "--repo", str(repo), "--slug", str(state["slug"]),
+    "--workflow-id", str(w.instance_id(state)), "--input", str(path)],
+    capture_output=True, text=True)
+assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$finaltmp/repo" "$final_nonce" || exit 1
+  live_final_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" "$WRAPPER" \
+    --slug live-final-probe --phase final-review --base-ref HEAD --cwd "$finaltmp/repo" \
+    --design-absent "live final probe" --budget 60 --fresh \
+    -- "Quote the exact PROOF-NONCE value that appears in the recorded production preflight evidence, then end with your verdict." 2>"$finaltmp/stderr")
+  status=$?
+  check_status "live final-review consult exits 0" 0 "$status"
+  check "the real delegate echoes the final-only nonce" "$final_nonce" "$live_final_out"
+  check "preflight channel telemetry on the live final path" "codex_advisor_evidence name=preflight" "$(cat "$finaltmp/stderr")"
+  check "live final completion marker" "codex_advisor_complete status=0 provider=codex" "$(cat "$finaltmp/stderr")"
+  rm -rf "$finaltmp"
 else
   printf 'SKIP  live consult (set LIVE=1 to run)\n'
 fi
