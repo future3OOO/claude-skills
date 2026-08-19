@@ -59,7 +59,7 @@ Do not write all tests first. Select one pending map ID.
 - Run `workflow.py tdd --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
 - Do not anticipate later slices.
 
-Several assertions may jointly prove one behavior. State after success or failure must match the complete observable contract.
+Several assertions may jointly prove one behavior; every assertion participating in that joint proof carries the same behavior-specific `redFailure` marker, so whichever guarantee breaks first still names the mapped failure. State after success or failure must match the complete observable contract.
 
 ## 3. Reassess After Every GREEN
 

@@ -14,50 +14,68 @@ REQUIRED_FIELDS = frozenset({
 })
 OPTIONAL_FIELDS = frozenset({"evidence"})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
-GENERIC_RED_FRAGMENTS = frozenset({
-    "attributeerror",
-    "importerror",
-    "modulenotfounderror",
-    "nameerror",
-    "syntaxerror",
-    "indentationerror",
-    "missingapi",
-    "apimissing",
-    "missingmethod",
-    "missingfunction",
-    "missingmodule",
-    "notestsran",
-    "zerotestsran",
-    "notestscollected",
-    "zerotestscollected",
-    "setupfailed",
-    "setuperror",
-    "collectionfailed",
-    "collectionerror",
-    "errorcollecting",
-    "errorduringcollection",
-    "errorsduringcollection",
-    "erroratsetup",
-    "collected0items",
-    "fixturenotfound",
-    "missingfixture",
-})
+# Infra-failure phrases, matched on word boundaries: a phrase is refused when
+# its words appear as an adjacent run in the marker, or its collapsed form is
+# itself one of the marker's words (AttributeError). Substring matching over
+# the collapsed marker was a demonstrated false-positive class - a product
+# marker like USERNAME_ERROR_VISIBLE must not trip "name error".
+GENERIC_RED_PHRASES = (
+    "attribute error",
+    "import error",
+    "module not found error",
+    "name error",
+    "syntax error",
+    "indentation error",
+    "missing api",
+    "api missing",
+    "missing method",
+    "missing function",
+    "missing module",
+    "no tests ran",
+    "zero tests ran",
+    "no tests collected",
+    "zero tests collected",
+    "setup failed",
+    "setup error",
+    "collection failed",
+    "collection error",
+    "error collecting",
+    "error during collection",
+    "errors during collection",
+    "error at setup",
+    "collected 0 items",
+    "fixture not found",
+    "missing fixture",
+)
 
 
 def _text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _normalized(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.casefold())
+def _words(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", value.casefold())
+
+
+def _names_generic_failure(marker: str) -> bool:
+    words = _words(marker)
+    for phrase in GENERIC_RED_PHRASES:
+        parts = phrase.split()
+        if "".join(parts) in words:
+            return True
+        if any(
+            words[i : i + len(parts)] == parts
+            for i in range(len(words) - len(parts) + 1)
+        ):
+            return True
+    return False
 
 
 def _validate_red_failure(value: object, identifier: str) -> str:
     marker = _text(value)
     if marker is None:
         raise ValueError(f"behavior {identifier} requires redFailure")
-    normalized = _normalized(marker)
-    if any(fragment in normalized for fragment in GENERIC_RED_FRAGMENTS):
+    if _names_generic_failure(marker):
         raise ValueError(
             f"behavior {identifier} redFailure must name the product behavior, "
             "not a missing API, import, fixture, syntax, collection, setup, or no-test failure"

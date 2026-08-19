@@ -21,7 +21,8 @@ flowchart LR
     V --> CR[lead structured code review when non-trivial]
     CR --> A2[independent final Codex Advisor review]
     A2 --> C{commit-ready and findings addressed?}
-    C -->|behavioral finding| TR
+    C -->|behavioral finding| TM2[tdd-map adds the item]
+    TM2 --> TR
     C -->|non-behavioral finding| I
     C -->|yes| WC[workflow complete]
     WC --> DL[delivery]

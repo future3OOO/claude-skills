@@ -542,6 +542,94 @@ class MappedTddRepairTests(unittest.TestCase):
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertNotIn("tddCycleCount", state, "NO_SUMMARY_FALLBACK_ACCEPTED")
 
+
+    def test_unittest_continuation_line_marker_is_red(self) -> None:
+        marker = "UNITTEST_CONT_MARKER"
+        item = pending_behavior("BM_UNI_CONT", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "unittest-cont-line")
+        (self.repo / "test_cont_unittest.py").write_text(
+            "import unittest\n"
+            "class ContTests(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            f"        self.assertEqual([1,2,3,4,5]*20, [9,2,3,4,5]*20, '{marker} observed')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_UNI_CONT",
+            (sys.executable, "-m", "unittest", "test_cont_unittest.ContTests.test_value"),
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "CONT_LINE_MARKER_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_continuation_line_marker_is_red(self) -> None:
+        marker = "PYTEST_CONT_MARKER"
+        item = pending_behavior("BM_PY_CONT", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-cont-line")
+        (self.repo / "test_cont_pytest.py").write_text(
+            "def test_value():\n"
+            f"    assert False, 'first explanatory line\\n{marker} observed on the second line'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_PY_CONT", ("pytest", "-q", "test_cont_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "CONT_LINE_MARKER_REFUSED_PY: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+    def test_word_boundary_denylist_admits_product_markers(self) -> None:
+        for marker in ("USERNAME_ERROR_VISIBLE", "MISSING_APIARY_RECORD"):
+            with self.subTest(marker=marker):
+                try:
+                    items = behavior_map.initial_items(
+                        [pending_behavior("BM_WORDS", red_failure=marker)]
+                    )
+                except ValueError as exc:
+                    self.fail(f"PRODUCT_MARKER_REFUSED: {marker}: {exc}")
+                self.assertEqual(items[0]["redFailure"], marker)
+
+
+    def test_unittest_structure_shaped_message_fails_closed(self) -> None:
+        marker = "STRUCT_SHAPED_MARKER"
+        item = pending_behavior("BM_STRUCT_SHAPE", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "unittest-struct-shape")
+        (self.repo / "test_struct_unittest.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            "        self.assertTrue(False, 'first line\\n"
+            '  File "fake.py", line 1\\n'
+            f"{marker} after a structure-shaped line')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_STRUCT_SHAPE",
+            (sys.executable, "-m", "unittest", "test_struct_unittest.T.test_value"),
+        )
+        # Deliberate fail-closed boundary: a message line shaped like traceback
+        # structure ends the marker window, so the RED refuses and the operator
+        # re-drives with a message that does not embed structure shapes.
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state)
+
+    def test_record_preflight_admits_word_boundary_product_markers(self) -> None:
+        item = pending_behavior("BM_SEAM_WORDS", red_failure="USERNAME_ERROR_VISIBLE")
+        slug, workflow_id = self.begin_with_map([item], "denylist-words-seam")
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertEqual(state.get("slug"), slug, "PRODUCT_MARKER_REFUSED")
+        self.assertIsInstance(
+            state.get("preflightEvidence"), str, "PRODUCT_MARKER_REFUSED"
+        )
+
     def test_map_rejects_normalized_infra_collection_variants(self) -> None:
         for marker in (
             "ERROR collecting",

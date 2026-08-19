@@ -202,18 +202,28 @@ def _pytest_red(
 def _unittest_marker_in_failure(output: str, marker: str) -> bool:
     for block in _unittest_failure_blocks(output):
         in_traceback = False
+        in_message = False
         for line in block:
             stripped = line.strip()
             if stripped == "Traceback (most recent call last):":
                 in_traceback = True
+                in_message = False
                 continue
-            if in_traceback and stripped in {"Stdout:", "Stderr:"}:
-                break
-            if (
-                in_traceback
-                and stripped.startswith("AssertionError:")
-                and marker in stripped
+            if stripped in {"Stdout:", "Stderr:"} or line.startswith(
+                ('  File "', "During handling of the above exception")
             ):
+                # Captured output, chained-exception bodies, and traceback
+                # structure end the assertion-message window.
+                in_traceback = stripped not in {"Stdout:", "Stderr:"}
+                in_message = False
+                if not in_traceback:
+                    break
+                continue
+            if in_traceback and stripped.startswith("AssertionError:"):
+                # The message may continue on following lines (assertEqual
+                # renders long diffs before the trailing ` : msg` text).
+                in_message = True
+            if in_message and marker in line:
                 return True
     return False
 
@@ -310,6 +320,7 @@ def _pytest_marker_in_failure(
         return False
     in_failure = False
     in_captured_output = False
+    in_assertion_message = False
     for line in lines:
         if PYTEST_FAILURE_HEADER.match(line) and (
             not in_captured_output
@@ -326,13 +337,16 @@ def _pytest_marker_in_failure(
         if in_failure and PYTEST_CAPTURED_HEADER.match(line):
             in_captured_output = True
             continue
-        if (
-            in_failure
-            and not in_captured_output
-            and marker in line
-            and PYTEST_ASSERTION.match(line)
-        ):
-            return True
+        if in_failure and not in_captured_output:
+            if PYTEST_ASSERTION.match(line):
+                in_assertion_message = True
+            elif not line.startswith("E "):
+                # A non-E line ends the rendered assertion message.
+                in_assertion_message = False
+            if in_assertion_message and line.startswith("E") and marker in line:
+                return True
+        else:
+            in_assertion_message = False
     return False
 
 
