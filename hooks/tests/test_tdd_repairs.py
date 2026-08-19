@@ -279,6 +279,33 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(run["redProof"]["runner"], "unittest")
         self.assertGreaterEqual(run["redProof"]["testsExecuted"], 1)
 
+    def test_unittest_printed_marker_before_unrelated_failure_is_not_red(self) -> None:
+        marker = "UNITTEST_PRINTED_MARKER"
+        item = pending_behavior("BM_UNITTEST_PRINT", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "unittest-printed")
+        (self.repo / "test_printed.py").write_text(
+            "import unittest\n"
+            "class PrintedTests(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            f"        print('AssertionError: {marker}')\n"
+            "        self.assertEqual(1, 2, 'UNRELATED_UNITTEST_FAILURE')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug,
+            "red",
+            "BM_UNITTEST_PRINT",
+            (
+                sys.executable,
+                "-m",
+                "unittest",
+                "test_printed.PrintedTests.test_value",
+            ),
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state)
+
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
     def test_pytest_collection_failure_with_marker_is_not_red(self) -> None:
         marker = "PYTEST_UNREACHED_ASSERTION"
@@ -316,6 +343,27 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(run["redProof"]["quality"], "assertion-reached")
         self.assertEqual(run["redProof"]["runner"], "pytest")
         self.assertGreaterEqual(run["redProof"]["testsExecuted"], 1)
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_printed_marker_before_unrelated_failure_is_not_red(self) -> None:
+        marker = "PYTEST_PRINTED_MARKER"
+        item = pending_behavior("BM_PYTEST_PRINT", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-printed")
+        (self.repo / "test_printed_pytest.py").write_text(
+            "def test_value():\n"
+            f"    print('AssertionError: {marker}')\n"
+            "    assert False, 'UNRELATED_PYTEST_FAILURE'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug,
+            "red",
+            "BM_PYTEST_PRINT",
+            ("pytest", "-q", "test_printed_pytest.py"),
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state)
 
     def test_opaque_red_is_recorded_as_marker_only(self) -> None:
         marker = "OPAQUE_PRODUCT_ASSERTION"
