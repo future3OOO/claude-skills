@@ -9,7 +9,9 @@ description: TDD for production behavior changes through real Seams. Use when im
 
 Production behavior changes require one **behavior-specific RED** before production code changes.
 
-A RED proves the mapped behavior is absent. It must reach the real Seam and fail at the product assertion named by the map. A missing method/import, invalid setup, collection error, syntax error, or test that fails before reaching the claimed behavior is not RED evidence, even when the eventual test is broad and impressive-looking.
+A RED proves the mapped behavior is absent. It must reach the real Seam and fail at the product assertion named by the map. A missing method/import, invalid setup, collection error, syntax error, or test that fails before reaching the claimed behavior is not RED evidence.
+
+For directly invoked pytest and unittest surfaces, the recorder verifies that at least one test ran and the mapped marker came from a test assertion, not collection, setup, loader, or zero-test output. An unrecognized exact-bound runner can record only `marker-only-opaque` evidence: it is explicitly weaker and does not independently prove Seam reach, so the lead must verify that command before relying on it.
 
 The canonical mock ban in `~/.claude/CLAUDE.md` applies without exception. This skill never creates a test-only proof path.
 
@@ -47,21 +49,28 @@ Do not write all tests first. Select one pending map ID.
 
 - Write one test for that atomic behavior through its recorded Seam.
 - Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
-- Run it through `workflow.py tdd --phase red --behavior-id <ID>`.
+- Run `workflow.py tdd --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
 - If the real-Seam test already passes before a production edit, disposition the item through `tdd-map` as `already-satisfied` with that evidence; do not manufacture RED or edit production code for it.
 - Production edits remain blocked until this RED is valid.
 
 **GREEN**
 
 - Write the smallest production change that passes the same test surface.
-- Run `workflow.py tdd --phase green --behavior-id <ID>`.
+- Run `workflow.py tdd --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
 - Do not anticipate later slices.
 
 Several assertions may jointly prove one behavior. State after success or failure must match the complete observable contract.
 
 ## 3. Reassess After Every GREEN
 
-GREEN creates architecture, so it also creates new proof obligations. Before another production edit, record a `tdd-map` reassessment:
+GREEN creates architecture, so it also creates new proof obligations. Before another production edit, record a reassessment:
+
+```bash
+workflow.py tdd-map --slug <task> --workflow-id <active-workflowId> \
+  --input <map-update.json>
+```
+
+The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only. During post-GREEN reassessment, `sourceBehaviorId` names the GREEN awaiting review.
 
 - identify each load-bearing mechanism or state boundary introduced by the GREEN and drive the cheapest real-Seam probe that could falsify it;
 - add any newly exposed touched-Seam preservation or interaction behavior;
