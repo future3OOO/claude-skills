@@ -27,13 +27,17 @@ jobs:
           git config --global user.name "Gate Suite"
       - name: Python lint (ruff E9,F)
         # Pinned and isolated so the linted rule set never moves without an
-        # operator choice; pytest is installed only to exercise the public
-        # pytest RED-reach contract through the real runner.
+        # operator choice.
         run: |
-          pip install ruff==0.16.2 pytest==8.4.1
+          pip install ruff==0.16.2
           ruff check --isolated --select E9,F .
       - name: Integrated package contracts
-        run: bash hooks/tests/run.sh
+        # pytest is pinned here, next to its consumer: the suite exercises the
+        # public pytest RED-reach contract through the real runner and would
+        # silently skip those checks if the dependency vanished.
+        run: |
+          pip install pytest==8.4.1
+          bash hooks/tests/run.sh
       - name: Package gate against the pull-request delta
         run: |
           base="${{ github.event.pull_request.base.sha }}"

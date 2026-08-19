@@ -34,6 +34,11 @@ GENERIC_RED_FRAGMENTS = frozenset({
     "setuperror",
     "collectionfailed",
     "collectionerror",
+    "errorcollecting",
+    "errorduringcollection",
+    "errorsduringcollection",
+    "erroratsetup",
+    "collected0items",
     "fixturenotfound",
     "missingfixture",
 })

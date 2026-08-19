@@ -5,6 +5,14 @@ that distinction for directly invoked stdlib unittest and pytest. For those
 runners it also distinguishes an executed product assertion from collection,
 loader, setup, or unrelated captured output. Unknown runners remain
 exact-command bound and can provide only explicitly weaker marker-only evidence.
+
+The discrimination is bounded evidence computed from the runner's report text.
+It refuses the accidental counterfeit shapes - infra failures, printed
+transcripts, captured failure-shaped output - but combined stdout carries no
+ownership signal, so output deliberately crafted to imitate framework records
+is out of scope by design: the evidence ledger beneath this module is
+agent-writable continuity, never attestation, and the lead verifies recorded
+evidence rather than trusting it.
 """
 from __future__ import annotations
 
@@ -37,8 +45,6 @@ EVIDENCE_ONLY = frozenset({"ignored"})
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
-PYTEST_FAILED = re.compile(r"(?<!\d)(\d+) failed(?:,|\s|$)")
-PYTEST_ERRORS = re.compile(r"(?<!\d)(\d+) errors?(?:,|\s|$)")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
 PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
 PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
@@ -109,10 +115,18 @@ def evaluate_red(
 def _unittest_red(
     output: str, marker: str
 ) -> tuple[dict[str, object] | None, str]:
-    ran = UNITTEST_RAN.search(output)
+    # The authoritative records are the FINAL Ran/FAILED pair: unittest prints
+    # its summary last, after any test- or import-time captured text, so a
+    # printed transcript earlier in the output cannot outrank it.
+    runs = list(UNITTEST_RAN.finditer(output))
+    ran = runs[-1] if runs else None
     if ran is None or int(ran.group(1)) < 1:
         return None, "unittest did not report an executed test"
-    summary = UNITTEST_FAILED.search(output)
+    summaries = [
+        match for match in UNITTEST_FAILED.finditer(output)
+        if match.start() > ran.start()
+    ]
+    summary = summaries[-1] if summaries else None
     if summary is None:
         return None, "unittest did not report a failed test"
     fields = {
@@ -130,32 +144,51 @@ def _unittest_red(
     }, ""
 
 
+def _pytest_terminal_counts(lines: list[str]) -> dict[str, int | bool] | None:
+    """Counts from pytest's terminal status line - the framework-owned last
+    line, printed after every captured section in both plain and -q forms."""
+    # Provenance is positional, not lexical: pytest prints the summary rule,
+    # its FAILED/ERROR records, and the terminal counts line consecutively, so
+    # the first terminal-shaped line after the LAST summary rule is
+    # framework-owned - caller output can only precede the rule (captured
+    # sections) or follow the counts line (atexit, measured), never sit
+    # between them. Without a summary rule, fall back to the last
+    # terminal-shaped line for the no-summary shapes.
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("=") and "short test summary info" in line:
+            start = index
+    search = lines[start + 1:] if start is not None else list(reversed(lines))
+    for line in search:
+        if start is not None and line.startswith(("FAILED ", "ERROR ")):
+            continue
+        text = line.strip().strip("=").strip()
+        if not text or not re.search(r" in \d+(?:\.\d+)?s$", text):
+            continue
+        lowered = text.lower()
+        return {
+            "failed": sum(int(v) for v in re.findall(r"(?<!\d)(\d+) failed\b", lowered)),
+            "passed": sum(int(v) for v in re.findall(r"(?<!\d)(\d+) passed\b", lowered)),
+            "errors": sum(int(v) for v in re.findall(r"(?<!\d)(\d+) errors?\b", lowered)),
+            "no_tests": "no tests ran" in lowered,
+        }
+    return None
+
+
 def _pytest_red(
     output: str, marker: str
 ) -> tuple[dict[str, object] | None, str]:
-    lowered = output.lower()
-    if any(
-        token in lowered
-        for token in (
-            "error collecting",
-            "errors during collection",
-            "error at setup",
-            "no tests ran",
-            "collected 0 items",
-            "interrupted: 1 error during collection",
-        )
-    ):
+    counts = _pytest_terminal_counts(output.splitlines())
+    if counts is None:
+        return None, "pytest did not print its terminal summary line"
+    if counts["no_tests"] or counts["errors"] or counts["failed"] < 1:
         return None, "pytest failed during collection/setup or executed no tests"
-    failed = [int(value) for value in PYTEST_FAILED.findall(lowered)]
-    errors = [int(value) for value in PYTEST_ERRORS.findall(lowered)]
-    if not failed or max(failed) < 1 or (errors and max(errors) > 0):
-        return None, "pytest did not report a cleanly executed failing test"
     if not _pytest_marker_in_failure(output, marker):
         return None, "mapped marker was not emitted by an executed pytest assertion"
     return {
         "quality": "assertion-reached",
         "runner": "pytest",
-        "testsExecuted": max(failed),
+        "testsExecuted": counts["failed"] + counts["passed"],
     }, ""
 
 
@@ -206,11 +239,75 @@ def _unittest_failure_blocks(output: str) -> list[list[str]]:
     return blocks
 
 
+def _summary_failed_names(lines: list[str]) -> dict[str, int]:
+    """Leaf-name multiplicity from the FAILED records after the last
+    short-test-summary rule.
+
+    The summary is framework-owned terminal output: captured test text always
+    precedes it, so its FAILED nodeids corroborate which failure headers are
+    genuine block boundaries. Multiplicity is retained because distinct files
+    or classes legitimately share a test leaf name - each summary record owns
+    exactly one genuine header.
+    """
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("=") and "short test summary info" in line:
+            start = index
+    if start is None:
+        return {}
+    names: dict[str, int] = {}
+    for line in lines[start + 1:]:
+        matched = re.match(r"FAILED (\S+)", line)
+        if matched:
+            name = matched.group(1).rsplit("::", 1)[-1]
+            names[name] = names.get(name, 0) + 1
+    return names
+
+
+def _corroborated_name(line: str, failed_names: dict[str, int]) -> str | None:
+    """The summary-FAILED test a header line names exactly, if any.
+
+    Genuine pytest headers wrap the failure identity in underscores: the bare
+    test name, ``Class.test_name``, or a parametrized id. Exact-identity
+    matching (never substring) is what keeps printed prefix/suffix variants
+    from reopening framework mode.
+    """
+    title = line.strip("_").strip()
+    for name in failed_names:
+        if title == name or title.endswith("." + name):
+            return name
+    return None
+
+
 def _pytest_marker_in_failure(output: str, marker: str) -> bool:
+    lines = output.splitlines()
+    failed_names = _summary_failed_names(lines)
+    if failed_names:
+        # Fail closed on ambiguous boundaries: each summary FAILED record owns
+        # exactly one genuine block header, so header occurrences beyond the
+        # summary's multiplicity mean caller-printed text is indistinguishable
+        # from the framework record, and no marker from this output can be
+        # trusted.
+        seen: dict[str, int] = {}
+        for line in lines:
+            if PYTEST_FAILURE_HEADER.match(line):
+                name = _corroborated_name(line, failed_names)
+                if name is not None:
+                    seen[name] = seen.get(name, 0) + 1
+        if any(count > failed_names[name] for name, count in seen.items()):
+            return False
     in_failure = False
     in_captured_output = False
-    for line in output.splitlines():
-        if PYTEST_FAILURE_HEADER.match(line):
+    for line in lines:
+        if PYTEST_FAILURE_HEADER.match(line) and (
+            not in_captured_output
+            # Inside a captured section, printed header-shaped text stays
+            # captured text; only a header naming a summary-FAILED test opens
+            # the next genuine block. With no parsed summary, every header
+            # stays a boundary (the pre-summary fallback).
+            or not failed_names
+            or _corroborated_name(line, failed_names) is not None
+        ):
             in_failure = True
             in_captured_output = False
             continue

@@ -26,12 +26,12 @@ def test_rejected_transfer_preserves_balances():
 
     result = transfer(account_a, account_b, amount=-1)
 
-    assert result.error == "invalid amount", "INVALID_AMOUNT_WAS_ACCEPTED"
-    assert balances(account_a, account_b) == before
-    assert result.committed is False
+    assert result.error == "invalid amount", "REJECTED_TRANSFER_CONTRACT_BROKEN"
+    assert balances(account_a, account_b) == before, "REJECTED_TRANSFER_CONTRACT_BROKEN"
+    assert result.committed is False, "REJECTED_TRANSFER_CONTRACT_BROKEN"
 ```
 
-The error, contract-required balance preservation, and outward result jointly prove one failure behavior.
+The error, contract-required balance preservation, and outward result jointly prove one failure behavior, so every assertion carries the same behavior-specific marker: whichever guarantee breaks first, the failure still names the mapped `redFailure`. A jointly-proving assertion without the marker would reach the Seam yet be refused by the recorder. When the guarantees can break independently and deserve independent proof, split them into separately mapped items instead.
 
 ## Observable state
 

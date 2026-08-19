@@ -133,7 +133,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --not-required "<specific non-behavioral reason>"
 ```
 
-After production preflight, test-like edits are admitted while TDD is pending. Production edits require a valid mapped RED for the active item and the production-code baseline in step 7. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
+After production preflight, test-like edits are admitted while TDD is pending. Production edits require the production-code baseline in step 7 plus either a valid mapped RED for the active item or a recorded `--not-required` decision (reachable only once every map item is already-satisfied or omitted). TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
 
 ### 7. Production code
 
@@ -178,8 +178,17 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <same test surface>
 ```
 
-After every GREEN, record `workflow.py tdd-map` reassessment before another
-production edit. Add newly exposed touched-Seam preservation, interaction,
+After every GREEN, record a `workflow.py tdd-map` reassessment before another
+production edit:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
+  --input <map-update.json>
+```
+
+The JSON document accepts `sourceBehaviorId` (the GREEN under review),
+`reassessment`, `items`, and `dispositions` only. Add newly exposed touched-Seam preservation, interaction,
 semantic falsification, or review-discovered behavior; an empty addition records
 why the GREEN created no further obligation. Only after GREEN and reassessment
 leave TDD `passed` or `not-required` may implementation be recorded passed:

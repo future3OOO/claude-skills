@@ -18,7 +18,9 @@ from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.tdd_workflow import completion_blockers, edit_blockers  # noqa: E402
 from hooks.lib.workflow_state import read_workflow  # noqa: E402
 from hooks.tests.support import pending_behavior  # noqa: E402
-from hooks.tests.test_tdd_repairs import MappedTddRepairTests  # noqa: E402
+# Module alias only: binding the TestCase name here would make unittest.main
+# rediscover and re-run the whole repair suite inside this file.
+from hooks.tests import test_tdd_repairs as tdd_repairs  # noqa: E402
 
 STOP_HOOK = ROOT / "hooks" / "post-edit-blast-radius.py"
 EDIT_HOOK = ROOT / "hooks" / "code-quality-gate.py"
@@ -28,7 +30,7 @@ PYTEST_COMMAND = (sys.executable, "-m", "pytest")
 
 class MappedTddPolicyGateTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.harness = MappedTddRepairTests(methodName="runTest")
+        self.harness = tdd_repairs.MappedTddRepairTests(methodName="runTest")
         self.harness.setUp()
 
     def tearDown(self) -> None:
