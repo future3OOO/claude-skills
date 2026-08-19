@@ -127,7 +127,13 @@ bounded_section() { # destination-variable name title content limit
   local total shown sha excerpt truncated=no
   total=$(printf '%s' "$content" | wc -c)
   sha=$(printf '%s' "$content" | sha256sum | cut -d' ' -f1)
-  excerpt=$(printf '%s' "$content" | head -c "$limit"; printf x); excerpt=${excerpt%x}
+  # The producer printf dies of SIGPIPE when head closes early on an artifact
+  # beyond pipe capacity; under startup-inherited errexit (POSIXLY_CORRECT=1)
+  # that would abort assembly before the sentinel. The pipeline-level guard is
+  # deliberate: a producer-scoped || : cannot run in a subshell the signal has
+  # killed (measured), and any masked consumer failure still surfaces as
+  # disclosed shown/total in the header, never as advertised-complete evidence.
+  excerpt=$(printf '%s' "$content" | head -c "$limit" || :; printf x); excerpt=${excerpt%x}
   shown=$(printf '%s' "$excerpt" | wc -c)
   [[ "$total" -gt "$shown" ]] && truncated=yes
   printf 'codex_advisor_evidence name=%s shown=%s total=%s truncated=%s sha256=%s\n' \

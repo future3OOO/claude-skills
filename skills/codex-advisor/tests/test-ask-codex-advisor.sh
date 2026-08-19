@@ -565,6 +565,18 @@ fi
 absent_payload=$(consult_input --slug intent-custody --phase preflight-advice \
   --design-absent "trivial docs pass: no architecture decision was made" -- "scope question") || exit 1
 check "declared absence reaches the delegate" "--- governing design artifact, declared absent (bounded: shown=" "$absent_payload"
+
+# Startup-inherited errexit (POSIXLY_CORRECT=1) plus an artifact beyond pipe
+# capacity: producer-side SIGPIPE must not abort assembly - the excerpt arrives
+# bounded with its cut disclosed. Regression coverage; the production proof is
+# the recorded real-provider RED/GREEN on the pass that shipped the guard.
+python3 - "$intenttmp/design-huge.md" <<'HUGEPY'
+import sys
+open(sys.argv[1], "w").write("survive oversized artifacts " * 8000)
+HUGEPY
+huge_payload=$(POSIXLY_CORRECT=1 consult_input --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design-huge.md" -- "scope question") || exit 1
+check "POSIXLY_CORRECT oversized design still assembles" "shown=20000/224000 bytes, truncated=yes" "$huge_payload"
 check "the absence reason travels verbatim" "trivial docs pass: no architecture decision was made" "$absent_payload"
 
 # Every caller-supplied bounded channel wears the same provenance header. The
