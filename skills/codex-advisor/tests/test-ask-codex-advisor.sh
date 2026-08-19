@@ -532,6 +532,16 @@ check "design content reaches the delegate" "PRES-1 preserve batching. ASSUMP-1 
 check "design header carries the file sha256" "$design_sha" "$design_payload"
 check "small design is not marked truncated" "truncated=no" "$design_payload"
 
+# Byte custody: an artifact's trailing newlines are excerpt bytes the header
+# counts, so they must reach the provider stdin intact - two preserved plus the
+# heredoc's two structural newlines before the next section line.
+printf 'TAILNL_X\n\n' >"$intenttmp/design-tail.md"
+tail_payload=$(consult_input --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design-tail.md" -- "scope question") || exit 1
+check "trailing newlines reach the provider byte-exact" \
+  "$(printf 'TAILNL_X\n\n\n\n--- unstaged diff ---')" "$tail_payload"
+check "the tail artifact advertises its full byte count" "shown=10/10 bytes" "$tail_payload"
+
 # An oversized design must be cut at its bound and say so in the same header the
 # delegate reads: shown/total bytes plus truncated=yes, with the tail absent.
 python3 - "$intenttmp/design-big.md" <<'BIGPY'
@@ -566,10 +576,10 @@ packet_payload=$(consult_input --slug intent-custody --phase preflight-advice \
 check "packet channel wears the provenance header" "--- repo context packet (bounded: shown=" "$packet_payload"
 check "packet content still reaches the delegate" "PRES-1 preserve batching." "$packet_payload"
 
-grep -q 'bounded_section tdd "recorded TDD summary"' "$WRAPPER" \
+grep -q 'bounded_section tdd_section tdd "recorded TDD summary"' "$WRAPPER" \
   && { printf 'PASS  TDD summary routes through the bounded channel owner\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  TDD summary must route through bounded_section\n'; fail=$((fail+1)); }
-grep -q 'bounded_section review "recorded code-review summary"' "$WRAPPER" \
+grep -q 'bounded_section review_section review "recorded code-review summary"' "$WRAPPER" \
   && { printf 'PASS  code-review summary routes through the bounded channel owner\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  code-review summary must route through bounded_section\n'; fail=$((fail+1)); }
 
@@ -603,7 +613,9 @@ PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claud
   CONSULT_PROVIDER_ENV="$env_file" \
   "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
   --design-absent "knob rig" -- "scope question" >/dev/null 2>&1
-check "unconfigured window knobs stay unset for the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
+check "unconfigured max-context knob stays unset" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
+check "unconfigured auto-compact window stays unset" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
+check "unconfigured autocompact percent stays unset" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
 
 cat >"$intenttmp/home/.bashrc" <<'BASHRC'
 alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
@@ -622,6 +634,44 @@ PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claud
 check "configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
 check "configured auto-compact window reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
 check "configured autocompact percent reaches the provider" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80" "$(cat "$env_file")"
+
+# Isolation: a knob reaches the provider exactly when the alias block
+# configures it. A stale parent environment (claudex sessions export all
+# three) must not leak an alias-omitted knob to the provider.
+cat >"$intenttmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 \
+claude --model offline-model'
+BASHRC
+: >"$provider_capture"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW=999111 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  CONSULT_PROVIDER_ENV="$env_file" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-absent "knob isolation rig" -- "scope question" >/dev/null 2>&1
+check "the alias-configured knob still reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
+check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
+check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
+
+# Symmetric shape: the max-context knob itself alias-omitted while the parent
+# exports it - already-satisfied regression evidence that isolation is knob-agnostic.
+cat >"$intenttmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \
+claude --model offline-model'
+BASHRC
+: >"$provider_capture"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=888222 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  CONSULT_PROVIDER_ENV="$env_file" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-absent "knob isolation rig" -- "scope question" >/dev/null 2>&1
+check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
+check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
 
 # Final review reconciles three authorities. The recorded production preflight
 # must arrive as pass-owned evidence with the same provenance header, the

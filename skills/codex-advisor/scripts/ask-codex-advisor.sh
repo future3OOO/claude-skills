@@ -119,10 +119,11 @@ if record.get("workflowId") == sys.argv[1]:
 
 # One bounded evidence channel: header carries shown/total bytes, truncation,
 # and sha256 in the payload the delegate reads, so a cut excerpt can never
-# read as complete evidence. The printf x preserves trailing newlines through
-# command substitution, keeping the byte accounting exact.
-bounded_section() { # name title content limit
-  local name="$1" title="$2" content="$3" limit="$4"
+# read as complete evidence. The section is assigned into the caller-named
+# destination with printf -v - no command substitution, so an artifact's
+# trailing newlines stay excerpt bytes and delivered equals advertised.
+bounded_section() { # destination-variable name title content limit
+  local __out="$1" name="$2" title="$3" content="$4" limit="$5"
   local total shown sha excerpt truncated=no
   total=$(printf '%s' "$content" | wc -c)
   sha=$(printf '%s' "$content" | sha256sum | cut -d' ' -f1)
@@ -131,7 +132,7 @@ bounded_section() { # name title content limit
   [[ "$total" -gt "$shown" ]] && truncated=yes
   printf 'codex_advisor_evidence name=%s shown=%s total=%s truncated=%s sha256=%s\n' \
     "$name" "$shown" "$total" "$truncated" "$sha" >&2
-  printf -- '--- %s (bounded: shown=%s/%s bytes, truncated=%s, sha256=%s) ---\n%s' \
+  printf -v "$__out" -- '--- %s (bounded: shown=%s/%s bytes, truncated=%s, sha256=%s) ---\n%s' \
     "$title" "$shown" "$total" "$truncated" "$sha" "$excerpt"
 }
 
@@ -256,10 +257,17 @@ fi
 # The CLI honours CLAUDE_CODE_MAX_CONTEXT_TOKENS only for model names outside
 # claude-*, exactly this delegate: without it, autocompact derives from an
 # unknown-model window guess. Nothing is hard-coded; absent stays absent.
+provider_unset=()
 provider_env=(CODEX_ADVISOR_ACTIVE=1 ADVISOR_ACTIVE=1 ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$token")
 for knob in CLAUDE_CODE_MAX_CONTEXT_TOKENS CLAUDE_CODE_AUTO_COMPACT_WINDOW CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; do
   knob_value=$(val "$knob")
-  [[ -n "$knob_value" ]] && provider_env+=("$knob=$knob_value")
+  if [[ -n "$knob_value" ]]; then
+    provider_env+=("$knob=$knob_value")
+  else
+    # An unconfigured knob is cleared, not inherited: a stale parent env
+    # (claudex sessions export all three) must not steer the provider.
+    provider_unset+=(-u "$knob")
+  fi
 done
 
 phase_prompt=""
@@ -285,9 +293,9 @@ if [[ -n "$phase" ]]; then
   [[ -n "$base_ref" ]] && branch_diff=$(git -C "$repo_root" diff "$base_ref"...HEAD)
   if [[ -n "$design_file" ]]; then
     design_content=$(cat -- "$design_file"; printf x); design_content=${design_content%x}
-    design_section=$(bounded_section design "governing design artifact" "$design_content" 20000)
+    bounded_section design_section design "governing design artifact" "$design_content" 20000
   else
-    design_section=$(bounded_section design "governing design artifact, declared absent" "$design_absent" 2000)
+    bounded_section design_section design "governing design artifact, declared absent" "$design_absent" 2000
   fi
   # Final review reconciles authorities, so it also receives the recorded
   # production preflight this pass owns; preflight-advice runs before that
@@ -295,12 +303,12 @@ if [[ -n "$phase" ]]; then
   preflight_section=""
   if [[ "$phase" == "final-review" && -n "$active_wid" && -n "$active_preflight_evidence" ]]; then
     preflight_doc=$(owned_record "$active_preflight_evidence" "$active_wid")
-    [[ -n "$preflight_doc" ]] && preflight_section=$(bounded_section preflight "recorded production preflight" "$preflight_doc" 20000)
+    [[ -n "$preflight_doc" ]] && bounded_section preflight_section preflight "recorded production preflight" "$preflight_doc" 20000
   fi
   packet_section=""
   if [[ -n "$packet_file" ]]; then
     packet_content=$(cat -- "$packet_file"; printf x); packet_content=${packet_content%x}
-    packet_section=$(bounded_section packet "repo context packet" "$packet_content" 20000)
+    bounded_section packet_section packet "repo context packet" "$packet_content" 20000
   fi
   [[ -z "$packet_section" ]] && packet_section="--- repo context packet ---
 <none>"
@@ -308,13 +316,13 @@ if [[ -n "$phase" ]]; then
   if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
     if [[ "$active_tdd" != "pending" && -n "$active_tdd_evidence" ]]; then
       tdd_doc=$(owned_record "$active_tdd_evidence" "$active_wid")
-      [[ -n "$tdd_doc" ]] && tdd_section=$(bounded_section tdd "recorded TDD summary" "$tdd_doc" 4000)
+      [[ -n "$tdd_doc" ]] && bounded_section tdd_section tdd "recorded TDD summary" "$tdd_doc" 4000
     fi
     case "$active_review" in
       passed|not-required)
         if [[ -n "$active_review_evidence" ]]; then
           review_doc=$(owned_record "$active_review_evidence" "$active_wid")
-          [[ -n "$review_doc" ]] && review_section=$(bounded_section review "recorded code-review summary" "$review_doc" 4000)
+          [[ -n "$review_doc" ]] && bounded_section review_section review "recorded code-review summary" "$review_doc" 4000
         fi ;;
     esac
   fi
@@ -358,7 +366,7 @@ printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=
 output_file=$(mktemp)
 trap 'rm -f "$output_file"' EXIT
 set +e
-printf '%s' "$prompt" | env "${provider_env[@]}" \
+printf '%s' "$prompt" | env "${provider_unset[@]}" "${provider_env[@]}" \
   claude -p "${session_args[@]}" --model "$model" --output-format text \
     --append-system-prompt "$role" \
     --tools "Read,Grep,Glob,Skill" \
