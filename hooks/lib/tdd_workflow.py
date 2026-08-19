@@ -22,6 +22,7 @@ from .workflow_cli import (
 from .workflow_documents import load_json
 from .workflow_state import (
     WorkflowError,
+    annotate_tdd_evidence,
     bound_state,
     commit_tdd,
     evidence_document,
@@ -198,12 +199,37 @@ def edit_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
         return [
             "valid behavior-specific RED for mapped item(s): " + ", ".join(pending)
         ]
-    if state.get("tdd") == "not-required" and behavior_map.all_disposition_only(items):
-        return []
-    return [
-        "new pending Behavior Map item and valid behavior-specific RED before "
-        "another production edit"
-    ]
+    # A resolved map blocks nothing: refactor-while-green and the workflow's
+    # non-behavioral return edge stay open, and a later behavioral finding
+    # re-enters through a new mapped item at review, not at this gate.
+    return []
+
+
+def flag_post_edit_reassessment(identity: RepoIdentity, state: JsonObject) -> None:
+    """A production edit after a resolved map flags it for one recorded
+    reassessment before completion: the behavioral item, or why the edits
+    were non-behavioral. Edits themselves stay admitted - the flag gates
+    completion, not the editor, so a batch of cleanup edits costs one record."""
+    if state.get("tdd") not in {"passed", "not-required"}:
+        return
+    items, document = current_map(identity, state)
+    if items is None or behavior_map.unresolved(items):
+        return
+    if isinstance(document, dict) and (
+        document.get("reassessmentPending") or document.get("postEditReassessment")
+    ):
+        return
+    slug, workflow_id = str(state["slug"]), str(instance_id(state))
+    flagged = _map_doc(
+        slug=slug, workflow_id=workflow_id, items=items,
+        status=str(state.get("tdd")), kind="map",
+        postEditReassessment=True,
+    )
+    evidence_id = state.get("tddEvidence")
+    annotate_tdd_evidence(
+        identity, slug, workflow_id, flagged,
+        expected_evidence_id=evidence_id if isinstance(evidence_id, str) else None,
+    )
 
 
 def completion_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
@@ -214,6 +240,11 @@ def completion_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
     missing: list[str] = []
     if isinstance(document, dict) and document.get("reassessmentPending"):
         missing.append("Behavior Map reassessment")
+    if isinstance(document, dict) and document.get("postEditReassessment"):
+        missing.append(
+            "post-production-edit Behavior Map reassessment via workflow tdd-map: "
+            "add the behavioral item, or record why the edits were non-behavioral"
+        )
     pending = behavior_map.unresolved(items)
     if pending:
         missing.append("unresolved Behavior Map items: " + ", ".join(pending))
@@ -508,7 +539,9 @@ def _map_update(values: list[str]) -> int:
         raise ValueError(
             "sourceBehaviorId is valid only for a pending post-GREEN reassessment"
         )
-    elif not additions and not dispositions:
+    elif not additions and not dispositions and not (
+        isinstance(current, dict) and current.get("postEditReassessment")
+    ):
         raise ValueError(
             "a map update outside post-GREEN reassessment must add or disposition an item"
         )

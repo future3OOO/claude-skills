@@ -15,12 +15,13 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib import behavior_map  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.tdd_workflow import edit_blockers  # noqa: E402
+from hooks.lib.tdd_workflow import completion_blockers, edit_blockers  # noqa: E402
 from hooks.lib.workflow_state import read_workflow  # noqa: E402
 from hooks.tests.support import pending_behavior  # noqa: E402
 from hooks.tests.test_tdd_repairs import MappedTddRepairTests  # noqa: E402
 
 STOP_HOOK = ROOT / "hooks" / "post-edit-blast-radius.py"
+EDIT_HOOK = ROOT / "hooks" / "code-quality-gate.py"
 PYTEST_AVAILABLE = importlib.util.find_spec("pytest") is not None
 PYTEST_COMMAND = (sys.executable, "-m", "pytest")
 
@@ -54,14 +55,74 @@ class MappedTddPolicyGateTests(unittest.TestCase):
         self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
         return slug, workflow_id
 
-    def test_resolved_map_closes_the_production_edit_window(self) -> None:
-        self.green_and_reassess("closed-edit-window")
+    def test_post_resolution_edit_requires_recorded_reassessment_to_complete(self) -> None:
+        # Post-resolution production edits are admitted without per-edit
+        # ceremony, but the real PostToolUse hook flags the map so COMPLETION
+        # demands one recorded reassessment: the behavioral item, or why the
+        # edits were non-behavioral - the WORKFLOW-MAP records-why edge made
+        # mechanical, so a behavioral edit cannot complete against stale GREEN.
+        slug, workflow_id = self.green_and_reassess("post-edit-window")
         identity = resolve_repo_identity(self.harness.repo)
         state = read_workflow(identity)
-        blockers = edit_blockers(identity, state)
-        self.assertEqual(len(blockers), 1)
-        self.assertIn("new pending Behavior Map item", blockers[0])
-        self.assertIn("valid RED", blockers[0])
+        self.assertEqual(edit_blockers(identity, state), [])
+        hook = subprocess.run(
+            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
+            env=self.harness.env, text=True,
+            input=json.dumps({"session_id": "policy-gate",
+                              "tool_input": {"file_path": str(self.harness.repo / "app.py")}}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(hook.returncode, 0, hook.stdout + hook.stderr)
+        state = read_workflow(identity)
+        blockers = completion_blockers(identity, state)
+        self.assertTrue(any("post-production-edit" in b for b in blockers), blockers)
+        self.assertEqual(edit_blockers(identity, state), [])
+        again = subprocess.run(
+            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
+            env=self.harness.env, text=True,
+            input=json.dumps({"session_id": "policy-gate",
+                              "tool_input": {"file_path": str(self.harness.repo / "app.py")}}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        recorded = self.harness.update_map(slug, workflow_id, {
+            "reassessment": "Cleanup only: wording and structure, no behavior changed.",
+        })
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        state = read_workflow(identity)
+        self.assertEqual(
+            [b for b in completion_blockers(identity, state) if "post-production-edit" in b], [])
+        # The flag predicate matches the intake gate: production NON-CODE paths
+        # (config, workflows) flag too, while test-path edits never do.
+        test_edit = subprocess.run(
+            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
+            env=self.harness.env, text=True,
+            input=json.dumps({"session_id": "policy-gate",
+                              "tool_input": {"file_path": str(self.harness.repo / "tests" / "test_app.py")}}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(test_edit.returncode, 0, test_edit.stdout + test_edit.stderr)
+        state = read_workflow(identity)
+        self.assertEqual(
+            [b for b in completion_blockers(identity, state) if "post-production-edit" in b], [],
+            "a test-path edit must not demand a reassessment")
+        config_edit = subprocess.run(
+            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
+            env=self.harness.env, text=True,
+            input=json.dumps({"session_id": "policy-gate",
+                              "tool_input": {"file_path": str(self.harness.repo / "settings.toml")}}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(config_edit.returncode, 0, config_edit.stdout + config_edit.stderr)
+        state = read_workflow(identity)
+        blockers = completion_blockers(identity, state)
+        self.assertTrue(any("post-production-edit" in b for b in blockers),
+                        f"a production non-code edit must flag the map: {blockers}")
+
+    def test_resolved_map_reopens_the_production_edit_window(self) -> None:
+        # Refactor-while-green and the workflow's non-behavioral return edge
+        # stay open once every mapped item is resolved and reassessed; a later
+        # behavioral finding re-enters through a new mapped item at review.
+        self.green_and_reassess("reopened-edit-window")
+        identity = resolve_repo_identity(self.harness.repo)
+        state = read_workflow(identity)
+        self.assertEqual(edit_blockers(identity, state), [])
 
     def test_stop_reason_names_pending_post_green_reassessment(self) -> None:
         item = pending_behavior("BM_STOP")

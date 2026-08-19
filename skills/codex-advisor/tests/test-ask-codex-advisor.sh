@@ -739,12 +739,12 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.lib import workflow_state as w
 from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.tests.support import build_document
+from hooks.tests.support import build_no_change_document
 repo = Path(sys.argv[2])
 identity = resolve_repo_identity(repo)
 state = w.read_workflow(identity)
 filler = "the reconciled contract governs this surface and must arrive whole " * 12
-document = build_document(filler)
+document = build_no_change_document(filler)
 document["verify"] = filler + " DEEP-PREFLIGHT-MARKER-BEYOND-4000"
 path = repo.parent / "deep-preflight.json"
 path.write_text(json.dumps(document), encoding="utf-8")
@@ -839,13 +839,13 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.lib import workflow_state as w
 from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.tests.support import advance_to_final_review, build_document
+from hooks.tests.support import advance_to_final_review, build_no_change_document
 repo = Path(sys.argv[2])
 identity = resolve_repo_identity(repo)
 w.begin(identity, "live-final-probe")
 advance_to_final_review(repo, repo.parent)
 state = w.read_workflow(identity)
-document = build_document("recorded preflight carries " + sys.argv[3] + " for the live probe")
+document = build_no_change_document("recorded preflight carries " + sys.argv[3] + " for the live probe")
 path = repo.parent / "nonce-preflight.json"
 path.write_text(json.dumps(document), encoding="utf-8")
 result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-workflow/scripts/workflow.py",

@@ -17,7 +17,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.tests.support import build_no_change_document, record_context_forge  # noqa: E402
+from hooks.tests.support import (  # noqa: E402
+    build_document,
+    build_no_change_document,
+    pending_behavior,
+    record_context_forge,
+)
 from hooks.lib.workflow_state import record_base_oid, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
@@ -146,8 +151,11 @@ class WorkflowHookTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def record_preflight_evidence(self, slug: str, wid: str) -> None:
-        document = build_no_change_document("hook-suite setup")
+    def record_preflight_evidence(self, slug: str, wid: str, behavior_map: list | None = None) -> None:
+        if behavior_map is None:
+            document = build_no_change_document("hook-suite setup")
+        else:
+            document = build_document("hook-suite setup", behavior_map=behavior_map)
         doc_path = self.tmp / "preflight-doc.json"
         doc_path.write_text(json.dumps(document), encoding="utf-8")
         recorded = subprocess.run(
@@ -277,7 +285,7 @@ class WorkflowHookTests(unittest.TestCase):
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.record_preflight_evidence("tdd-ordering", wid)
+        self.record_preflight_evidence("tdd-ordering", wid, behavior_map=[pending_behavior("BM_HOOK", behavior="app value must be 2", seam="app module import", expected="value equals 2", red_failure="VALUE_NOT_TWO")])
 
         blocked = self.intake("app.py")
         self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
@@ -299,13 +307,13 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("production-code", cleared, "the next missing step after RED is production-code")
 
     def red(self, slug: str) -> subprocess.CompletedProcess[str]:
-        """Drive one real valid RED through the workflow.py tdd command for this workflow."""
+        """Drive one real valid mapped RED through the workflow.py tdd command for this workflow."""
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
         return subprocess.run(
             [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(self.repo), "--slug", slug,
-             "--phase", "red", "--behavior", "app value must be 2",
-             "--seam", "app module import", "--expected-failure", "AssertionError",
+             "--phase", "red", "--behavior-id", "BM_HOOK",
              "--", sys.executable, "-c",
-             "import app; assert app.value == 2, 'AssertionError: value must be 2'"],
+             "import app; assert app.value == 2, 'VALUE_NOT_TWO'"],
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
@@ -320,7 +328,7 @@ class WorkflowHookTests(unittest.TestCase):
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.record_preflight_evidence("production-code-gate", wid)
+        self.record_preflight_evidence("production-code-gate", wid, behavior_map=[pending_behavior("BM_HOOK", behavior="app value must be 2", seam="app module import", expected="value equals 2", red_failure="VALUE_NOT_TWO")])
 
         early_test = self.intake("tests/test_app.py")
         self.assertEqual(early_test.returncode, 0, early_test.stdout + early_test.stderr)
@@ -348,6 +356,28 @@ class WorkflowHookTests(unittest.TestCase):
             premature = self.state("set-phase", "--phase", "implementation", "--status", status)
             self.assertEqual(premature.returncode, 2, f"implementation {status} bypassed production-code")
             self.assertIn("production-code", premature.stderr)
+        # Resolve the map so completion reaches the production-code refusal
+        # rather than stopping at the unresolved-item gate.
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(self.repo), "--slug", "production-code-gate",
+             "--phase", "green", "--behavior-id", "BM_HOOK",
+             "--", sys.executable, "-c",
+             "import app; assert app.value == 2, 'VALUE_NOT_TWO'"],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        reassess_json = self.tmp / "reassess.json"
+        reassess_json.write_text(json.dumps({
+            "sourceBehaviorId": "BM_HOOK",
+            "reassessment": "Hook-ordering fixture: no new load-bearing mechanism.",
+        }), encoding="utf-8")
+        assessed = subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd-map", "--repo", str(self.repo),
+             "--slug", "production-code-gate", "--workflow-id", wid, "--input", str(reassess_json)],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
         self.assertIn("productionCode", self.state("complete").stderr)
         latched = json.loads(self.stop().stdout)
         self.assertEqual(latched.get("decision"), "block")

@@ -275,19 +275,35 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         """The real recorders between recorded context evidence and the TDD gate."""
         state = self.status()
         slug, wid = str(state["slug"]), str(state["workflowId"])
-        preflight = self.tmp / "preflight.json"
-        preflight.write_text(
-            json.dumps(build_no_change_document("issue-106 typed verification fixture")), encoding="utf-8"
-        )
         for step in (
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
              "--source", "codex-advisor", "--verdict", "completed"),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid,
              "--stage", "preflight", "--findings", "none"),
-            ("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(preflight)),
         ):
             result = self.pass_state(*step)
             self.assertEqual(result.returncode, 0, " ".join(step) + "\n" + result.stdout + result.stderr)
+        # This suite proves growth-per-cycle accounting, not candidate policy;
+        # its free-form tdd() plumbing rides the legacy path, so the fixture
+        # commits a map-less pre-Behavior-Map preflight - a setup shortcut
+        # producing the imported-legacy document shape (the real importer path
+        # is proven by LegacyImportFreeFormTests) - inside the suite's own
+        # state-root environment. Setup only.
+        document = build_no_change_document("issue-106 typed verification fixture")
+        document.pop("behaviorMap", None)
+        doc_path = self.tmp / "legacy-preflight.json"
+        doc_path.write_text(json.dumps(document), encoding="utf-8")
+        committed = subprocess.run(
+            [sys.executable, "-c",
+             "import json, sys; sys.path.insert(0, sys.argv[1]); "
+             "from hooks.lib.repo_identity import resolve_repo_identity; "
+             "from hooks.lib import workflow_state as w; "
+             "w.commit_evidence_phase(resolve_repo_identity(sys.argv[2]), sys.argv[3], sys.argv[4], "
+             "'preflight', json.load(open(sys.argv[5])))",
+             str(ROOT), str(self.repo), slug, wid, str(doc_path)],
+            cwd=str(ROOT), env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(committed.returncode, 0, committed.stdout + committed.stderr)
 
     def tdd(self, phase: str, behavior: str, result_value: int,
             *, expected: str | None = None) -> subprocess.CompletedProcess[str]:

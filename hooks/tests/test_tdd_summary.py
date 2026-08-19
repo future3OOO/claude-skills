@@ -26,6 +26,73 @@ QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_g
 SEAM = "workflow.py tdd subprocess boundary"
 
 
+class LegacyImportFreeFormTests(unittest.TestCase):
+    """The settling proof for the legacy path: production reaches map-less
+    state only through the file importer, so this test writes the real
+    pre-migration slot files (workflow.json plus a map-less preflight
+    evidence envelope), lets the CLI import them, and drives free-form
+    RED/GREEN through it."""
+
+    def test_mapless_import_admits_free_form_red_green(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="workflow-legacy-import-"))
+        repo = tmp / "repo"; repo.mkdir()
+        env = os.environ.copy()
+        env.update({"CLAUDE_WORKFLOW_STATE_ROOT": str(tmp / "state"),
+                    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                    "PYTHONDONTWRITEBYTECODE": "1"})
+        for args in (("init", "-q"), ("config", "user.email", "t@example.invalid"),
+                     ("config", "user.name", "Harness")):
+            subprocess.run(["git", "-C", str(repo), *args], check=True, env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "app.py"], check=True, env=env)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "base"], check=True, env=env)
+        sys.path.insert(0, str(ROOT))
+        from hooks.lib.repo_identity import resolve_repo_identity as _rri
+        identity = _rri(repo)
+        slot = tmp / "state" / identity.key
+        slot.mkdir(parents=True)
+        workflow_id = "ab" * 16
+        evidence_path = slot / "preflight-legacy.json"
+        document = build_no_change_document("legacy import")
+        document.pop("behaviorMap", None)
+        evidence_path.write_text(json.dumps({
+            "schemaVersion": 1, "slug": "legacy", "workflowId": workflow_id,
+            "document": document, "recordedAt": "2026-08-01T00:00:00+00:00",
+        }), encoding="utf-8")
+        (slot / "workflow.json").write_text(json.dumps({
+            "schemaVersion": 1, "repo": identity.as_dict(), "slug": "legacy",
+            "workflowId": workflow_id, "intent": "legacy import",
+            "createdAt": "2026-08-01T00:00:00+00:00",
+            "updatedAt": "2026-08-01T00:00:00+00:00",
+            "phase": "preflight", "nextAction": "tdd",
+            "repoContextForge": "passed", "preflight": "passed",
+            "preflightEvidence": str(evidence_path),
+            "advisorPreflight": {"source": "codex-advisor", "status": "completed", "findings": "none", "reason": None},
+            "tdd": "pending", "productionCode": "pending", "implementation": "pending",
+            "verification": "pending",
+            "codeReview": {"status": "pending", "findings": "pending"},
+            "finalReview": {"source": None, "status": "pending", "findings": "pending"},
+        }), encoding="utf-8")
+        red = subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(repo), "--slug", "legacy",
+             "--phase", "red", "--behavior", "value must be 2", "--seam", "app import",
+             "--expected-failure", "VALUE_NOT_TWO", "--", sys.executable, "-c",
+             "import app; assert app.value == 2, 'VALUE_NOT_TWO'"],
+            cwd=str(ROOT), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        self.assertTrue(json.loads(red.stdout.strip().splitlines()[-1])["valid"], red.stdout)
+        (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(repo), "--slug", "legacy",
+             "--phase", "green", "--behavior", "value must be 2", "--seam", "app import",
+             "--", sys.executable, "-c",
+             "import app; assert app.value == 2, 'VALUE_NOT_TWO'"],
+            cwd=str(ROOT), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TddSummaryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="workflow-tdd-summary-"))
@@ -130,15 +197,21 @@ class TddSummaryTests(unittest.TestCase):
         return self.evidence_record(evidence_id)["document"]
 
     def record_preflight_evidence(self) -> None:
+        # This suite proves the LEGACY free-form candidate contract, which
+        # production reaches only through imported pre-Behavior-Map state. The
+        # recorder now always demands a map, so the fixture commits a map-less
+        # document through the same library seam the legacy migration writes -
+        # the one configuration whose workflows may still drive free-form
+        # candidates. Setup only; the candidate semantics under test all run
+        # through the real CLI.
+        from hooks.lib import workflow_state as w
         identity = resolve_repo_identity(self.repo)
-        doc_path = self.tmp / "setup-preflight.json"
-        doc_path.write_text(json.dumps(build_no_change_document("suite setup")), encoding="utf-8")
-        recorded = subprocess.run(
-            [sys.executable, str(WORKFLOW), "record-preflight", "--repo", str(self.repo), "--slug", "tdd-summary",
-             "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(doc_path)],
-            cwd=str(ROOT), env=self.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
+        state = read_workflow(identity)
+        document = build_no_change_document("suite setup")
+        document.pop("behaviorMap", None)
+        w.commit_evidence_phase(
+            identity, str(state["slug"]), str(state["workflowId"]), "preflight", document,
+        )
 
     def record_gate_evidence(self) -> None:
         identity = resolve_repo_identity(self.repo)

@@ -410,6 +410,29 @@ def commit_tdd(
         return _commit(transaction, state, f"tdd-{action}", evidence=writes), evidence_id
 
 
+def annotate_tdd_evidence(
+    identity: RepoIdentity,
+    slug: str,
+    workflow_id: str | None,
+    summary_doc: JsonObject,
+    *,
+    expected_evidence_id: str | None = None,
+) -> tuple[JsonObject, str]:
+    """Record a TDD evidence document without a phase transition.
+
+    Bookkeeping writes - such as flagging a resolved map for post-edit
+    reassessment - must not regress the pass to the tdd phase the way a
+    recorded run does; only the evidence pointer moves.
+    """
+    with mutation(identity) as transaction:
+        state = _bound_instance_state(transaction.state, slug, workflow_id)
+        if state.get("tddEvidence") != expected_evidence_id:
+            raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
+        write = evidence_write(str(state["workflowId"]), "tdd", summary_doc)
+        state["tddEvidence"] = write.evidence_id
+        return _commit(transaction, state, "tdd-annotated", evidence=[write]), write.evidence_id
+
+
 def commit_review(
     identity: RepoIdentity,
     slug: str,
