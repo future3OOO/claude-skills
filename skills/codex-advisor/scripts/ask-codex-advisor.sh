@@ -159,6 +159,9 @@ with os.fdopen(fd, "rb") as handle:
             kept += chunk[: limit - len(kept)]
         digest.update(chunk)
         total += len(chunk)
+if b"\x00" in kept:
+    print(f"retained excerpt contains NUL and cannot cross the Bash transport intact: {path}", file=sys.stderr)
+    raise SystemExit(1)
 with open(out, "wb") as sink:
     sink.write(kept)
 print(digest.hexdigest(), total)

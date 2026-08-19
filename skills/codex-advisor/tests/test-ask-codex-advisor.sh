@@ -580,6 +580,27 @@ HUGEPY
 huge_payload=$(POSIXLY_CORRECT=1 consult_input --slug intent-custody --phase preflight-advice \
   --design-file "$intenttmp/design-huge.md" -- "scope question") || exit 1
 check "POSIXLY_CORRECT oversized design still assembles" "shown=20000/224000 bytes, truncated=yes" "$huge_payload"
+
+# A NUL in the kept prefix cannot cross the Bash transport intact: the wrapper
+# refuses at assembly with a named cause, before the provider path starts -
+# asserted by the absence of the session marker on stderr.
+python3 - "$intenttmp/design-nul.md" <<'NULPY'
+import sys
+open(sys.argv[1], "wb").write(b"A\x00B\x00C")
+NULPY
+nul_err="$intenttmp/nul-stderr"
+PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
+  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
+  --design-file "$intenttmp/design-nul.md" -- "scope question" >/dev/null 2>"$nul_err"
+check_status "NUL-bearing excerpt refused" 2 "$?"
+check "NUL refusal names the transport rule" "cannot cross the Bash transport" "$(cat "$nul_err")"
+if grep -q "codex_advisor_session" "$nul_err"; then
+  printf 'FAIL  the provider path must never start for a refused excerpt\n'; fail=$((fail+1))
+else
+  printf 'PASS  the provider path never starts for a refused excerpt\n'; pass=$((pass+1))
+fi
 check "the absence reason travels verbatim" "trivial docs pass: no architecture decision was made" "$absent_payload"
 
 # Every caller-supplied bounded channel wears the same provenance header. The
