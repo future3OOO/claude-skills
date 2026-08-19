@@ -37,6 +37,9 @@ GENERIC_RED_FAILURES = frozenset({
     "fixturenotfound",
     "missingfixture",
 })
+# Details do not turn a generic failure into product proof. For example,
+# ``AttributeError: enable_safe_import is missing`` still proves only API absence.
+GENERIC_RED_PREFIXES = GENERIC_RED_FAILURES
 
 
 def _text(value: object) -> str | None:
@@ -44,7 +47,7 @@ def _text(value: object) -> str | None:
 
 
 def _normalized(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
 
 def _validate_red_failure(value: object, identifier: str) -> str:
@@ -52,20 +55,7 @@ def _validate_red_failure(value: object, identifier: str) -> str:
     if marker is None:
         raise ValueError(f"behavior {identifier} requires redFailure")
     normalized = _normalized(marker)
-    if normalized in GENERIC_RED_FAILURES or any(
-        normalized.startswith(prefix)
-        for prefix in (
-            "missingapi",
-            "missingmethod",
-            "missingfunction",
-            "missingmodule",
-            "notestsran",
-            "notestscollected",
-            "setupfailed",
-            "collectionfailed",
-            "fixturenotfound",
-        )
-    ):
+    if any(normalized.startswith(prefix) for prefix in GENERIC_RED_PREFIXES):
         raise ValueError(
             f"behavior {identifier} redFailure must name the product behavior, "
             "not a missing API, import, fixture, syntax, collection, setup, or no-test failure"
