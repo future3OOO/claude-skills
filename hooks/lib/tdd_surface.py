@@ -39,6 +39,8 @@ UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 PYTEST_FAILED = re.compile(r"(?<!\d)(\d+) failed(?:,|\s|$)")
 PYTEST_ERRORS = re.compile(r"(?<!\d)(\d+) errors?(?:,|\s|$)")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
+PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
+PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
 
 
 def identify(command: Sequence[str]) -> dict[str, object]:
@@ -202,10 +204,26 @@ def _unittest_failure_blocks(output: str) -> list[list[str]]:
 
 
 def _pytest_marker_in_failure(output: str, marker: str) -> bool:
-    return any(
-        marker in line and PYTEST_ASSERTION.match(line)
-        for line in output.splitlines()
-    )
+    in_failure = False
+    in_captured_output = False
+    for line in output.splitlines():
+        if PYTEST_FAILURE_HEADER.match(line):
+            in_failure = True
+            in_captured_output = False
+            continue
+        if line.startswith("=========================== short test summary"):
+            break
+        if in_failure and PYTEST_CAPTURED_HEADER.match(line):
+            in_captured_output = True
+            continue
+        if (
+            in_failure
+            and not in_captured_output
+            and marker in line
+            and PYTEST_ASSERTION.match(line)
+        ):
+            return True
+    return False
 
 
 def _rule(line: str, character: str) -> bool:
