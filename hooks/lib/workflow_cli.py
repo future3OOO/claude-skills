@@ -5,14 +5,13 @@ import argparse
 import json
 import os
 import shlex
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from . import tdd_surface
 from ._workflow_db import LedgerError, history
 from .preflight_document import validated_document
+from .command_runner import mute_stdout as _mute_stdout, print_output as _print_output, run as _run, run_entry as _run_entry
 from .repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity
 from .state_prune import prune
 from .state_store import tree_manifest, utc_timestamp
@@ -24,7 +23,6 @@ from .workflow_documents import (
 )
 from .workflow_state import (
     NO_INSTANCE_ID,
-    TDD_CLOSED,
     WorkflowError,
     advisor_disposition,
     begin,
@@ -32,7 +30,6 @@ from .workflow_state import (
     checkpoint,
     commit_evidence_phase,
     commit_review,
-    commit_tdd,
     commit_verification,
     complete,
     evidence_document,
@@ -48,7 +45,6 @@ from .workflow_state import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-MAX_CAPTURE = 16000
 LEAD_PHASES = {"implementation", "code-review"}
 PRODUCER_OWNED = {
     "repo-context-forge": "repo-context-forge is producer-owned; run the Repo Context Forge bootstrap",
@@ -146,17 +142,10 @@ def parser() -> argparse.ArgumentParser:
     _document_command(_instance_command(commands, "record-preflight", "validate and record production preflight"))
     _document_command(_instance_command(commands, "record-production-code", "validate and record the pre-edit quality gate"))
 
-    command = commands.add_parser("tdd", help="run and record one real RED/GREEN candidate")
-    _repo(command)
-    command.add_argument("--slug", required=True)
-    mode = command.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--phase", choices=("red", "green"))
-    mode.add_argument("--not-required", metavar="REASON")
-    command.add_argument("--behavior")
-    command.add_argument("--seam", default="")
-    command.add_argument("--expected-failure", default="")
-    command.add_argument("--timeout", type=int, default=900)
-    command.add_argument("runner_command", nargs=argparse.REMAINDER)
+    # Registered for top-level discovery only: the tdd verb's dual mapped/legacy
+    # flag surface is owned by tdd_workflow, which main() routes to before this
+    # parser ever sees the arguments.
+    commands.add_parser("tdd", help="run and record one real RED/GREEN candidate")
 
     command = commands.add_parser("verify", help="execute and record typed verification")
     _repo(command)
@@ -176,12 +165,6 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def _mute_stdout() -> None:
-    descriptor = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(descriptor, sys.stdout.fileno())
-    finally:
-        os.close(descriptor)
 
 
 def _emit_json(value: object) -> None:
@@ -228,206 +211,11 @@ def _state(identity: RepoIdentity) -> dict[str, object]:
     return value
 
 
-def _active_candidate(identity: RepoIdentity, value: str) -> tuple[dict[str, object], str, str]:
-    state = bound_state(identity, safe_slug(value))
-    if state.get("revalidation"):
-        raise WorkflowError(TDD_CLOSED)
-    if state.get("preflight") != "passed" or not state.get("preflightEvidence"):
-        raise WorkflowError("tdd requires recorded preflight evidence")
-    return state, str(state["slug"]), _workflow_id(state)
-
-
-def _run(command: list[str], identity: RepoIdentity, timeout: int) -> tuple[bytes, int, bool]:
-    try:
-        result = subprocess.run(
-            command,
-            cwd=str(identity.root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=False,
-        )
-        return result.stdout or b"", result.returncode, False
-    except subprocess.TimeoutExpired as exc:
-        return (exc.stdout or b"") + (exc.stderr or b""), 124, True
-
-
 def _workflow_id(state: dict[str, object]) -> str:
     value = instance_id(state)
     if value is None:
         raise WorkflowError(NO_INSTANCE_ID)
     return value
-
-
-def _run_entry(raw: bytes, exit_code: int, timed_out: bool, **fields: object) -> dict[str, object]:
-    return {
-        **fields,
-        "exitCode": exit_code,
-        "timedOut": timed_out,
-        "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
-        "at": utc_timestamp(),
-    }
-
-
-def _print_output(raw: bytes) -> None:
-    output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
-    if output:
-        try:
-            print(output, end="" if output.endswith("\n") else "\n")
-        except OSError:
-            # A successful run is already committed by the time it reports, so a
-            # lost reporting channel must not be re-labelled as a refusal; a run
-            # that genuinely failed still returns 2 through the branch below.
-            _mute_stdout()
-
-
-def _candidate_drift(
-    existing: dict[str, object],
-    contract: dict[str, str],
-    surface: dict[str, object],
-    command_text: str,
-) -> tuple[list[dict[str, object]], str]:
-    """Every field the requested candidate differs on, plus any operator guidance."""
-    drift = [
-        {"field": name, "recorded": existing.get(name), "requested": value}
-        for name, value in contract.items() if existing.get(name) != value
-    ]
-    recorded = existing.get("surface")
-    if isinstance(recorded, dict):
-        return drift + tdd_surface.differences(recorded, surface), ""
-    # A cycle recorded before surfaces existed gets no guessed identity: it stays
-    # bound to the exact command that produced its RED.
-    if existing.get("command") == command_text:
-        return drift, ""
-    drift.append({
-        "field": "command",
-        "recorded": existing.get("command"),
-        "requested": command_text,
-    })
-    return drift, "\n  this candidate predates normalized surfaces; rerun RED under the new contract"
-
-
-def _drift_report(drift: list[dict[str, object]]) -> str:
-    return "".join(
-        f"\n  {item['field']}: recorded {item['recorded']!r}, requested {item['requested']!r}"
-        for item in drift
-    )
-
-
-def _tdd(args: argparse.Namespace, identity: RepoIdentity) -> int:
-    state, slug, workflow_id = _active_candidate(identity, args.slug)
-    existing_id = state.get("tddEvidence") if isinstance(state.get("tddEvidence"), str) else None
-    existing = evidence_document(identity, existing_id)
-
-    if args.not_required is not None:
-        reason = args.not_required.strip()
-        if not reason:
-            raise ValueError("--not-required requires a non-empty reason")
-        if args.runner_command:
-            raise ValueError("--not-required does not accept a command")
-        runs = existing.get("runs") if isinstance(existing, dict) else None
-        if isinstance(runs, list) and any(isinstance(run, dict) and run.get("valid") is True for run in runs):
-            raise WorkflowError("--not-required cannot replace valid TDD evidence")
-        _, evidence_id = commit_tdd(
-            identity,
-            slug,
-            workflow_id,
-            {
-                "schemaVersion": 1,
-                "slug": slug,
-                "workflowId": workflow_id,
-                "status": "not-required",
-                "reason": reason,
-                "updatedAt": utc_timestamp(),
-            },
-            "not-required",
-            expected_evidence_id=existing_id,
-        )
-        _emit_json({"summaryId": evidence_id, "status": "not-required"})
-        return 0
-
-    behavior = str(args.behavior or "").strip()
-    seam = str(args.seam or "").strip()
-    command = args.runner_command[1:] if args.runner_command and args.runner_command[0] == "--" else args.runner_command
-    if not behavior:
-        raise ValueError("--behavior is required for RED/GREEN")
-    if not seam:
-        raise ValueError("--seam is required: name the real production Interface")
-    if not command:
-        raise ValueError("a command is required after --")
-
-    command_text = shlex.join(command)
-    surface = tdd_surface.identify(command)
-    same_instance = isinstance(existing, dict) and existing.get("workflowId") == workflow_id
-    drift, guidance = _candidate_drift(
-        existing, {"slug": slug, "behavior": behavior, "seam": seam}, surface, command_text,
-    ) if same_instance else ([], "")
-    matches = same_instance and not drift
-    completed_cycle = same_instance and existing.get("status") in {"passed", "not-required"}
-    drifted = same_instance and not matches
-    if drifted and (args.phase == "green" or not completed_cycle):
-        raise WorkflowError(
-            "candidate does not match the active cycle; finish or regress the current "
-            "candidate first" + _drift_report(drift) + guidance
-        )
-
-    raw, exit_code, timed_out = _run(command, identity, args.timeout)
-    expected = str(args.expected_failure or "").strip()
-    observed = bool(expected) and expected in raw.decode("utf-8", errors="replace")
-    prior_runs = existing.get("runs") if matches and isinstance(existing.get("runs"), list) else []
-    prior_red = any(
-        isinstance(run, dict) and run.get("phase") == "red" and run.get("valid") is True
-        for run in prior_runs
-    )
-    valid = (
-        not timed_out and exit_code != 0 and observed
-        if args.phase == "red"
-        else not timed_out and exit_code == 0 and prior_red
-    )
-    preserved = args.phase == "red" and matches and not valid and completed_cycle
-    new_cycle = args.phase == "red" and valid and not matches and (not same_instance or completed_cycle)
-    recorded = not preserved and (matches or new_cycle)
-    regression = args.phase == "green" and matches and not valid
-    run = _run_entry(
-        raw, exit_code, timed_out,
-        phase=args.phase, command=command_text, expectedFailure=expected or None, valid=valid,
-    )
-    evidence_id = existing_id
-    if recorded:
-        reopen = regression or (args.phase == "red" and valid and (new_cycle or completed_cycle))
-        action = "passed" if args.phase == "green" and valid else "reopen" if reopen else "in-progress"
-        _, evidence_id = commit_tdd(
-            identity,
-            slug,
-            workflow_id,
-            {
-                "schemaVersion": 1,
-                "slug": slug,
-                "workflowId": workflow_id,
-                "status": "passed" if args.phase == "green" and valid else "pending",
-                "behavior": behavior,
-                "seam": seam,
-                "command": command_text,
-                "surface": surface,
-                "runs": [*prior_runs, run] if matches else [run],
-                "updatedAt": utc_timestamp(),
-            },
-            action,
-            expected_evidence_id=existing_id,
-            opens_cycle=new_cycle,
-        )
-
-    _print_output(raw)
-    _emit_json({"summaryId": evidence_id, "phase": args.phase, "valid": valid, "exitCode": exit_code})
-    if not valid:
-        print(
-            "RED must fail for the expected reason."
-            if args.phase == "red"
-            else "GREEN must pass after a valid RED for the same command, behavior, and Seam.",
-            file=sys.stderr,
-        )
-        return 2
-    return 0
 
 
 def _verification_key(run: dict[str, object]) -> str:
@@ -688,13 +476,17 @@ def _dispatch(args: argparse.Namespace) -> int:
     elif args.command == "checkpoint":
         _emit_json(checkpoint(identity, args.phase))
     elif args.command == "complete":
+        from .tdd_workflow import completion_blockers
+        blocked_state = read_workflow(identity)
+        if blocked_state is not None:
+            blockers = completion_blockers(identity, blocked_state)
+            if blockers:
+                raise WorkflowError("workflow incomplete: " + "; ".join(blockers))
         _emit_state(complete(identity, slug=args.slug, workflow_id=args.workflow_id))
     elif args.command == "record-preflight":
         return _record_phase(args, identity, "preflight", "document", validated_document(args.input))
     elif args.command == "record-production-code":
         return _record_phase(args, identity, "production-code", "gate", gate_verdict(args.input))
-    elif args.command == "tdd":
-        return _tdd(args, identity)
     elif args.command == "verify":
         return _verify(args, identity)
     elif args.command == "record-review":
@@ -717,8 +509,18 @@ def _dispatch(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    values = list(sys.argv[1:] if argv is None else argv)
     try:
-        return _dispatch(parser().parse_args(argv))
+        # The TDD verbs' parsing travels with their implementation: the domain
+        # module owns both flag surfaces (mapped and imported-legacy), so they
+        # are routed before this module's stricter argparse ever sees them.
+        if values and values[0] == "tdd":
+            from .tdd_workflow import run_tdd
+            return run_tdd(values[1:])
+        if values and values[0] == "tdd-map":
+            from .tdd_workflow import run_map_update
+            return run_map_update(values[1:])
+        return _dispatch(parser().parse_args(values))
     except (RepoIdentityError, LedgerError, WorkflowError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -43,5 +43,20 @@ class WorkflowShimTests(unittest.TestCase):
                 )
 
 
+class CompleteHelpContractTests(unittest.TestCase):
+    def test_complete_help_serves_argparse_usage(self) -> None:
+        # The one-entry fusion restores main's public surface: `complete --help`
+        # is ordinary argparse help (exit 0, usage on stdout). The #138 umbrella
+        # briefly regressed this to an undocumented no-help error; that parser
+        # is deleted and this pin keeps the estate contract stable.
+        result = subprocess.run(
+            [sys.executable, str(WORKFLOW), "complete", "--help"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("usage:", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -90,6 +90,31 @@ class LegacyImportFreeFormTests(unittest.TestCase):
              "import app; assert app.value == 2, 'VALUE_NOT_TWO'"],
             cwd=str(ROOT), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        # Characterization (advisor P2-1): on imported-legacy state after a
+        # completed cycle, a re-RED whose command now PASSES still EXECUTES the
+        # command (run-then-decide order) and preserves state and evidence.
+        state_before = subprocess.run(
+            [sys.executable, str(WORKFLOW), "status", "--repo", str(repo)],
+            cwd=str(ROOT), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        evidence_before = json.loads(state_before.stdout)["tddEvidence"]
+        proof = repo / "reran.txt"
+        rerun = subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(repo), "--slug", "legacy",
+             "--phase", "red", "--behavior", "value must be 2", "--seam", "app import",
+             "--expected-failure", "VALUE_NOT_TWO", "--", sys.executable, "-c",
+             "open(r'" + str(proof).replace(chr(92), '/') + "','a').write('x'); "
+             "import app; assert app.value == 2, 'VALUE_NOT_TWO'"],
+            cwd=str(ROOT), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertTrue(proof.exists(), "the rerun command must actually execute (run-then-decide)")
+        self.assertEqual(rerun.returncode, 2, rerun.stdout + rerun.stderr)
+        payload = json.loads(rerun.stdout.strip().splitlines()[-1])
+        self.assertFalse(payload["valid"], payload)
+        state_after = subprocess.run(
+            [sys.executable, str(WORKFLOW), "status", "--repo", str(repo)],
+            cwd=str(ROOT), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        after = json.loads(state_after.stdout)
+        self.assertEqual(after["tddEvidence"], evidence_before, "a preserved invalid rerun must not move evidence")
+        self.assertEqual(after["tdd"], "passed", "a preserved invalid rerun must not regress tdd state")
         shutil.rmtree(tmp, ignore_errors=True)
 
 

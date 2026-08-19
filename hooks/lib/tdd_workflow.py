@@ -2,32 +2,38 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import sys
 
 from . import behavior_map, tdd_surface
-from ._workflow_db import LedgerError
-from .repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity
+from .repo_identity import RepoIdentity, resolve_repo_identity
 from .state_store import utc_timestamp
-from .workflow_cli import (
-    _active_candidate,
-    _candidate_drift,
-    _drift_report,
-    _emit_json,
-    _print_output,
-    _run,
-    _run_entry,
-    main as legacy_main,
+from .command_runner import (
+    mute_stdout as _mute_stdout,
+    print_output as _print_output,
+    run as _run,
+    run_entry as _run_entry,
 )
+
+
+def _emit_json(value: object) -> None:
+    try:
+        print(json.dumps(value, sort_keys=True), flush=True)
+    except OSError:
+        # The command's mutation, when any, is already committed. A reporting
+        # failure cannot be re-labelled as a refused transition.
+        _mute_stdout()
 from .workflow_documents import load_json
 from .workflow_state import (
+    NO_INSTANCE_ID,
+    TDD_CLOSED,
     WorkflowError,
     annotate_tdd_evidence,
     bound_state,
     commit_tdd,
     evidence_document,
     instance_id,
-    read_workflow,
     safe_slug,
 )
 
@@ -81,14 +87,6 @@ def _map_parser() -> argparse.ArgumentParser:
     parser.add_argument("--slug", required=True)
     parser.add_argument("--workflow-id", required=True)
     parser.add_argument("--input", required=True)
-    return parser
-
-
-def _complete_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="workflow complete", add_help=False)
-    parser.add_argument("--repo", "--cwd", dest="repo", default=".")
-    parser.add_argument("--slug")
-    parser.add_argument("--workflow-id")
     return parser
 
 
@@ -255,14 +253,14 @@ def _not_required(
     args: argparse.Namespace,
     identity: RepoIdentity,
     state: JsonObject,
-    items: list[JsonObject],
+    items: list[JsonObject] | None,
 ) -> int:
     reason = args.not_required.strip()
     if not reason:
         raise ValueError("--not-required requires a non-empty reason")
     if args.runner_command:
         raise ValueError("--not-required does not accept a command")
-    if not behavior_map.all_disposition_only(items):
+    if items is not None and not behavior_map.all_disposition_only(items):
         raise WorkflowError(
             "--not-required requires every mapped item to be already-satisfied "
             "or omitted by governing evidence"
@@ -278,14 +276,25 @@ def _not_required(
         isinstance(run, dict) and run.get("valid") is True for run in runs
     ):
         raise WorkflowError("--not-required cannot replace valid TDD evidence")
-    document = _map_doc(
-        slug=str(state["slug"]),
-        workflow_id=str(state["workflowId"]),
-        items=items,
-        status="not-required",
-        kind="map",
-        reassessment=reason,
-        reason=reason,
+    document: JsonObject = (
+        _map_doc(
+            slug=str(state["slug"]),
+            workflow_id=str(state["workflowId"]),
+            items=items,
+            status="not-required",
+            kind="map",
+            reassessment=reason,
+            reason=reason,
+        )
+        if items is not None
+        else {
+            "schemaVersion": 1,
+            "slug": str(state["slug"]),
+            "workflowId": str(state["workflowId"]),
+            "status": "not-required",
+            "reason": reason,
+            "updatedAt": utc_timestamp(),
+        }
     )
     _, evidence_id = commit_tdd(
         identity,
@@ -299,74 +308,189 @@ def _not_required(
     return 0
 
 
-def _run_mapped_cycle(
-    args: argparse.Namespace,
-    identity: RepoIdentity,
-    state: JsonObject,
-    slug: str,
-    workflow_id: str,
-    items: list[JsonObject],
-    current: JsonObject | None,
-) -> int:
-    if not args.behavior_id:
-        raise ValueError("--behavior-id is required for mapped RED/GREEN")
-    if isinstance(current, dict) and current.get("reassessmentPending"):
-        raise WorkflowError(
-            "record the pending post-GREEN Behavior Map reassessment before another cycle"
-        )
-    mapped = behavior_map.item(items, args.behavior_id)
-    phase = str(args.phase)
-    status = str(mapped["status"])
-    cycle = current if isinstance(current, dict) and current.get("kind") == "cycle" else None
-    active = cycle.get("activeBehaviorId") if isinstance(cycle, dict) else None
-    if phase == "red" and status not in {"pending", "red"}:
-        raise WorkflowError(
-            f"behavior {args.behavior_id} is {status}; add a new map item for a new defect"
-        )
-    if phase == "green" and status != "red":
-        raise WorkflowError(f"behavior {args.behavior_id} has no valid mapped RED")
-    if phase == "green" and active != args.behavior_id:
-        raise WorkflowError(
-            f"behavior {args.behavior_id} has no active mapped RED candidate"
-        )
+def _workflow_id_of(state: JsonObject) -> str:
+    value = instance_id(state)
+    if value is None:
+        raise WorkflowError(NO_INSTANCE_ID)
+    return str(value)
 
+
+def _active_candidate(identity: RepoIdentity, value: str) -> tuple[JsonObject, str, str]:
+    state = bound_state(identity, safe_slug(value))
+    if state.get("revalidation"):
+        raise WorkflowError(TDD_CLOSED)
+    if state.get("preflight") != "passed" or not state.get("preflightEvidence"):
+        raise WorkflowError("tdd requires recorded preflight evidence")
+    return state, str(state["slug"]), _workflow_id_of(state)
+
+
+def _candidate_drift(
+    existing: JsonObject,
+    contract: dict[str, str],
+    surface: JsonObject,
+    command_text: str,
+) -> tuple[list[JsonObject], str]:
+    """Every field the requested candidate differs on, plus any operator guidance."""
+    drift = [
+        {"field": name, "recorded": existing.get(name), "requested": value}
+        for name, value in contract.items() if existing.get(name) != value
+    ]
+    recorded = existing.get("surface")
+    if isinstance(recorded, dict):
+        return drift + tdd_surface.differences(recorded, surface), ""
+    # A cycle recorded before surfaces existed gets no guessed identity: it stays
+    # bound to the exact command that produced its RED.
+    if existing.get("command") == command_text:
+        return drift, ""
+    drift.append({
+        "field": "command",
+        "recorded": existing.get("command"),
+        "requested": command_text,
+    })
+    return drift, "\n  this candidate predates normalized surfaces; rerun RED under the new contract"
+
+
+def _drift_report(drift: list[JsonObject]) -> str:
+    return "".join(
+        f"\n  {item['field']}: recorded {item['recorded']!r}, requested {item['requested']!r}"
+        for item in drift
+    )
+
+
+def _candidate_command(runner_command: list[str] | None) -> tuple[list[str], str, JsonObject]:
+    """The one extraction of a cycle's command, text identity, and normalized
+    surface, shared by the mapped and imported-legacy policies."""
     command = (
-        args.runner_command[1:]
-        if args.runner_command and args.runner_command[0] == "--"
-        else args.runner_command
+        runner_command[1:]
+        if runner_command and runner_command[0] == "--"
+        else (runner_command or [])
     )
     if not command:
         raise ValueError("a command is required after --")
-    command_text = shlex.join(command)
-    surface = tdd_surface.identify(command)
-    contract = {
-        "slug": slug,
-        "behaviorId": args.behavior_id,
-        "behavior": str(mapped["behavior"]),
-        "seam": str(mapped["seam"]),
-    }
-    same_instance = isinstance(cycle, dict) and cycle.get("workflowId") == workflow_id
+    return command, shlex.join(command), tdd_surface.identify(command)
+
+
+def _legacy_parser() -> argparse.ArgumentParser:
+    """The imported-legacy free-form flag surface, byte-compatible with the
+    pre-map workflow CLI tdd verb."""
+    parser = argparse.ArgumentParser(prog="workflow tdd")
+    parser.add_argument("--repo", "--cwd", dest="repo", default=".")
+    parser.add_argument("--slug", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--phase", choices=("red", "green"))
+    mode.add_argument("--not-required", metavar="REASON")
+    parser.add_argument("--behavior")
+    parser.add_argument("--seam", default="")
+    parser.add_argument("--expected-failure", default="")
+    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("runner_command", nargs=argparse.REMAINDER)
+    return parser
+
+
+def _run_tdd(values: list[str]) -> int:
+    """The one candidate-cycle lifecycle. The imported-legacy free-form path is
+    the items-None branch of the same implementation: it keeps run-then-decide
+    validity order and preserved invalid reruns (PRES_LEGACY_RERUN), while the
+    mapped branch refuses invalid candidates before execution."""
+    route, _ = _tdd_route_parser().parse_known_args(values)
+    if not route.slug:
+        raise ValueError("--slug is required")
+    identity = resolve_repo_identity(route.repo)
+    state, slug, workflow_id = _active_candidate(identity, route.slug)
+    items, current = current_map(identity, state)
+    legacy = items is None or _legacy_green_candidate(current, workflow_id, values)
+    if not legacy and not (
+        _option_present(values, "--behavior-id")
+        or _option_present(values, "--not-required")
+    ):
+        raise WorkflowError(
+            "recorded Behavior Map requires --behavior-id or --not-required; "
+            "legacy free-form --behavior/--seam candidates cannot satisfy it"
+        )
+    args = (_legacy_parser() if legacy else _tdd_parser()).parse_args(values)
+    if args.not_required is not None:
+        return _not_required(args, identity, state, items)
+
+    phase = str(args.phase)
+    evidence_id = (
+        state.get("tddEvidence")
+        if isinstance(state.get("tddEvidence"), str)
+        else None
+    )
+    if legacy:
+        behavior = str(args.behavior or "").strip()
+        seam = str(args.seam or "").strip()
+        if not behavior:
+            raise ValueError("--behavior is required for RED/GREEN")
+        if not seam:
+            raise ValueError("--seam is required: name the real production Interface")
+        expected = str(args.expected_failure or "").strip()
+        contract: dict[str, str] = {"slug": slug, "behavior": behavior, "seam": seam}
+        candidate = current
+        active = None
+    else:
+        if not args.behavior_id:
+            raise ValueError("--behavior-id is required for mapped RED/GREEN")
+        if isinstance(current, dict) and current.get("reassessmentPending"):
+            raise WorkflowError(
+                "record the pending post-GREEN Behavior Map reassessment before another cycle"
+            )
+        mapped = behavior_map.item(items, args.behavior_id)
+        status = str(mapped["status"])
+        if phase == "red" and status not in {"pending", "red"}:
+            raise WorkflowError(
+                f"behavior {args.behavior_id} is {status}; add a new map item for a new defect"
+            )
+        if phase == "green" and status != "red":
+            raise WorkflowError(f"behavior {args.behavior_id} has no valid mapped RED")
+        candidate = (
+            current
+            if isinstance(current, dict) and current.get("kind") == "cycle"
+            else None
+        )
+        active = candidate.get("activeBehaviorId") if isinstance(candidate, dict) else None
+        if phase == "green" and active != args.behavior_id:
+            raise WorkflowError(
+                f"behavior {args.behavior_id} has no active mapped RED candidate"
+            )
+        expected = str(mapped["redFailure"])
+        contract = {
+            "slug": slug,
+            "behaviorId": args.behavior_id,
+            "behavior": str(mapped["behavior"]),
+            "seam": str(mapped["seam"]),
+        }
+
+    command, command_text, surface = _candidate_command(args.runner_command)
+    same_instance = isinstance(candidate, dict) and candidate.get("workflowId") == workflow_id
     drift, guidance = (
-        _candidate_drift(cycle, contract, surface, command_text)
+        _candidate_drift(candidate, contract, surface, command_text)
         if same_instance
         else ([], "")
     )
     matches = same_instance and not drift
-    if same_instance and drift:
-        raise WorkflowError(
-            "candidate does not match the active mapped cycle; finish it first"
-            + _drift_report(drift)
-            + guidance
-        )
-    if active is not None and not matches:
-        raise WorkflowError("finish the active mapped cycle before selecting another item")
+    completed_cycle = legacy and same_instance and candidate.get("status") in {"passed", "not-required"}
+    if legacy:
+        if same_instance and not matches and (phase == "green" or not completed_cycle):
+            raise WorkflowError(
+                "candidate does not match the active cycle; finish or regress the current "
+                "candidate first" + _drift_report(drift) + guidance
+            )
+    else:
+        if same_instance and drift:
+            raise WorkflowError(
+                "candidate does not match the active mapped cycle; finish it first"
+                + _drift_report(drift)
+                + guidance
+            )
+        if active is not None and not matches:
+            raise WorkflowError("finish the active mapped cycle before selecting another item")
 
     raw, exit_code, timed_out = _run(command, identity, args.timeout)
     output = raw.decode("utf-8", errors="replace")
-    expected = str(mapped["redFailure"])
     prior_runs = (
-        cycle.get("runs")
-        if matches and isinstance(cycle.get("runs"), list)
+        candidate.get("runs")
+        if matches and isinstance(candidate.get("runs"), list)
         else []
     )
     prior_red = any(
@@ -377,66 +501,95 @@ def _run_mapped_cycle(
     )
     proof: dict[str, object] | None = None
     proof_error = ""
+    red_ok = False
     if phase == "red" and not timed_out and exit_code != 0:
-        proof, proof_error = tdd_surface.evaluate_red(surface, output, expected)
-    valid = (
-        not timed_out and exit_code != 0 and proof is not None
-        if phase == "red"
-        else not timed_out and exit_code == 0 and prior_red
-    )
+        if legacy:
+            red_ok = bool(expected) and expected in output
+        else:
+            proof, proof_error = tdd_surface.evaluate_red(surface, output, expected)
+            red_ok = proof is not None
+    valid = red_ok if phase == "red" else not timed_out and exit_code == 0 and prior_red
+
     fields: dict[str, object] = {
         "phase": phase,
         "command": command_text,
-        "expectedFailure": expected if phase == "red" else None,
         "valid": valid,
     }
-    if proof is not None:
-        fields["redProof"] = proof
-    elif phase == "red" and proof_error:
-        fields["redProofFailure"] = proof_error
+    if legacy:
+        fields["expectedFailure"] = expected or None
+    else:
+        fields["expectedFailure"] = expected if phase == "red" else None
+        if proof is not None:
+            fields["redProof"] = proof
+        elif phase == "red" and proof_error:
+            fields["redProofFailure"] = proof_error
     run = _run_entry(raw, exit_code, timed_out, **fields)
 
-    evidence_id = (
-        state.get("tddEvidence")
-        if isinstance(state.get("tddEvidence"), str)
-        else None
-    )
-    recorded = matches or valid
-    if recorded:
-        updated = behavior_map.clone(items)
-        updated_item = behavior_map.item(updated, args.behavior_id)
-        if phase == "red" and valid:
-            updated_item["status"] = "red"
-            next_active = args.behavior_id
-            reassessment_pending = None
-            action = "in-progress" if matches else "reopen"
-            opens_cycle = not matches
-        elif phase == "green" and valid:
-            updated_item["status"] = "green"
-            next_active = None
-            reassessment_pending = args.behavior_id
-            action = "in-progress"
-            opens_cycle = False
-        else:
-            next_active = args.behavior_id
-            reassessment_pending = None
-            action = "reopen" if phase == "green" else "in-progress"
-            opens_cycle = False
-        document = _map_doc(
-            slug=slug,
-            workflow_id=workflow_id,
-            items=updated,
-            status="passed" if phase == "green" and valid else "pending",
-            kind="cycle",
-            active=next_active,
-            reassessment_pending=reassessment_pending,
-            behaviorId=args.behavior_id,
-            behavior=str(mapped["behavior"]),
-            seam=str(mapped["seam"]),
-            command=command_text,
-            surface=surface,
-            runs=[*prior_runs, run] if matches else [run],
+    document: JsonObject | None = None
+    opens_cycle = False
+    action = "in-progress"
+    if legacy:
+        preserved = phase == "red" and matches and not valid and completed_cycle
+        new_cycle = (
+            phase == "red" and valid and not matches
+            and (not same_instance or completed_cycle)
         )
+        recorded = not preserved and (matches or new_cycle)
+        if recorded:
+            regression = phase == "green" and matches and not valid
+            reopen = regression or (
+                phase == "red" and valid and (new_cycle or completed_cycle)
+            )
+            action = "passed" if phase == "green" and valid else "reopen" if reopen else "in-progress"
+            opens_cycle = new_cycle
+            document = {
+                "schemaVersion": 1,
+                "slug": slug,
+                "workflowId": workflow_id,
+                "status": "passed" if phase == "green" and valid else "pending",
+                "behavior": contract["behavior"],
+                "seam": contract["seam"],
+                "command": command_text,
+                "surface": surface,
+                "runs": [*prior_runs, run] if matches else [run],
+                "updatedAt": utc_timestamp(),
+            }
+    else:
+        recorded = matches or valid
+        if recorded:
+            updated = behavior_map.clone(items)
+            updated_item = behavior_map.item(updated, args.behavior_id)
+            if phase == "red" and valid:
+                updated_item["status"] = "red"
+                next_active = args.behavior_id
+                reassessment_pending = None
+                action = "in-progress" if matches else "reopen"
+                opens_cycle = not matches
+            elif phase == "green" and valid:
+                updated_item["status"] = "green"
+                next_active = None
+                reassessment_pending = args.behavior_id
+                action = "in-progress"
+            else:
+                next_active = args.behavior_id
+                reassessment_pending = None
+                action = "reopen" if phase == "green" else "in-progress"
+            document = _map_doc(
+                slug=slug,
+                workflow_id=workflow_id,
+                items=updated,
+                status="passed" if phase == "green" and valid else "pending",
+                kind="cycle",
+                active=next_active,
+                reassessment_pending=reassessment_pending,
+                behaviorId=args.behavior_id,
+                behavior=contract["behavior"],
+                seam=contract["seam"],
+                command=command_text,
+                surface=surface,
+                runs=[*prior_runs, run] if matches else [run],
+            )
+    if document is not None:
         _, evidence_id = commit_tdd(
             identity,
             slug,
@@ -448,18 +601,25 @@ def _run_mapped_cycle(
         )
 
     _print_output(raw)
-    _emit_json(
-        {
-            "summaryId": evidence_id,
-            "behaviorId": args.behavior_id,
-            "phase": phase,
-            "valid": valid,
-            "exitCode": exit_code,
-        }
-    )
+    payload: JsonObject = {
+        "summaryId": evidence_id,
+        "phase": phase,
+        "valid": valid,
+        "exitCode": exit_code,
+    }
+    if not legacy:
+        payload["behaviorId"] = args.behavior_id
+    _emit_json(payload)
     if valid:
         return 0
-    if phase == "red":
+    if legacy:
+        print(
+            "RED must fail for the expected reason."
+            if phase == "red"
+            else "GREEN must pass after a valid RED for the same command, behavior, and Seam.",
+            file=sys.stderr,
+        )
+    elif phase == "red":
         reason = proof_error or "command did not produce a non-zero product assertion"
         print(
             "RED must fail for the expected reason after reaching the mapped Seam. "
@@ -472,31 +632,6 @@ def _run_mapped_cycle(
             file=sys.stderr,
         )
     return 2
-
-
-def _run_tdd(values: list[str]) -> int:
-    route, _ = _tdd_route_parser().parse_known_args(values)
-    if not route.slug:
-        raise ValueError("--slug is required")
-    identity = resolve_repo_identity(route.repo)
-    state, slug, workflow_id = _active_candidate(identity, route.slug)
-    items, current = current_map(identity, state)
-    if items is None or _legacy_green_candidate(current, workflow_id, values):
-        return legacy_main(["tdd", *values])
-    if not (
-        _option_present(values, "--behavior-id")
-        or _option_present(values, "--not-required")
-    ):
-        raise WorkflowError(
-            "recorded Behavior Map requires --behavior-id or --not-required; "
-            "legacy free-form --behavior/--seam candidates cannot satisfy it"
-        )
-    args = _tdd_parser().parse_args(values)
-    if args.not_required is not None:
-        return _not_required(args, identity, state, items)
-    return _run_mapped_cycle(
-        args, identity, state, slug, workflow_id, items, current
-    )
 
 
 def _map_update(values: list[str]) -> int:
@@ -595,27 +730,12 @@ def _map_update(values: list[str]) -> int:
     return 0
 
 
-def _complete(values: list[str]) -> int:
-    args = _complete_parser().parse_args(values)
-    identity = resolve_repo_identity(args.repo)
-    state = read_workflow(identity)
-    if state is not None:
-        blockers = completion_blockers(identity, state)
-        if blockers:
-            raise WorkflowError("workflow incomplete: " + "; ".join(blockers))
-    return legacy_main(["complete", *values])
+def run_tdd(values: list[str]) -> int:
+    """Public entry for the workflow CLI's tdd verb: mapped when a Behavior Map
+    is recorded, imported-legacy free-form otherwise."""
+    return _run_tdd(values)
 
 
-def main(argv: list[str] | None = None) -> int:
-    values = list(sys.argv[1:] if argv is None else argv)
-    try:
-        if values and values[0] == "tdd-map":
-            return _map_update(values[1:])
-        if values and values[0] == "tdd":
-            return _run_tdd(values[1:])
-        if values and values[0] == "complete":
-            return _complete(values[1:])
-        return legacy_main(values)
-    except (RepoIdentityError, LedgerError, WorkflowError, ValueError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+def run_map_update(values: list[str]) -> int:
+    """Public entry for the workflow CLI's tdd-map verb."""
+    return _map_update(values)
