@@ -281,7 +281,7 @@ class MappedTddRepairTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         proof = self.evidence()["runs"][-1]["redProof"]
-        self.assertEqual(proof["runner"], "python")
+        self.assertEqual(proof["runner"], "python-assert")
         self.assertEqual(proof["quality"], "assertion-reached")
 
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
