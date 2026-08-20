@@ -653,6 +653,490 @@ class MappedTddRepairTests(unittest.TestCase):
         )
         self.assertNotIn("usage:", result.stdout, "RUNNER_HELP_INTERCEPTED")
 
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_param_id_with_colons_stays_red(self) -> None:
+        marker = "PYTEST_PARAM_COLON_MARKER"
+        item = pending_behavior("BM_PARAM_COLON", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-param-colon")
+        (self.repo / "test_param_pytest.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.parametrize('case', ['a::b'])\n"
+            "def test_value(case):\n"
+            f"    assert False, '{marker} observed for ' + case\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_PARAM_COLON", ("pytest", "test_param_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "PARAM_COLON_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_uncaptured_printed_block_is_not_red(self) -> None:
+        marker = "PYTEST_S_CAPTURE_MARKER"
+        item = pending_behavior("BM_S_CAPTURE_T", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-s-capture")
+        (self.repo / "test_s_pytest.py").write_text(
+            "def test_real():\n"
+            "    print()\n"
+            "    print('_' * 15 + ' unrelated banner ' + '_' * 15)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_S_CAPTURE_T", ("pytest", "-s", "test_s_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "S_CAPTURE_COUNTERFEIT_ACCEPTED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "S_CAPTURE_COUNTERFEIT_ACCEPTED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_param_ids_with_stray_brackets_stay_red(self) -> None:
+        marker = "PYTEST_BRACKET_ID_MARKER"
+        item = pending_behavior("BM_BRACKET_ID", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-bracket-ids")
+        (self.repo / "test_bracket_pytest.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.parametrize('case', ['a]b', 'a[b'])\n"
+            "def test_value(case):\n"
+            f"    assert False, '{marker} observed for ' + case\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_BRACKET_ID", ("pytest", "test_bracket_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "BRACKET_ID_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+        self.assertEqual(run["redProof"]["testsExecuted"], 2, "BRACKET_ID_REFUSED")
+
+    def test_run_returns_within_timeout_despite_pipe_holding_descendant(self) -> None:
+        # Pins the measured bounded-execution contract on the deployed Python:
+        # a killed child's descendant holding the captured pipe must not block
+        # run() past its timeout.
+        import signal
+        import time
+        from hooks.lib.command_runner import run as runner_run
+        identity = resolve_repo_identity(self.repo)
+        pid_file = self.repo / "descendant.pid"
+        started = time.monotonic()
+        try:
+            raw, code, timed_out = runner_run(
+                [sys.executable, "-c",
+                 "import pathlib,subprocess,sys,time; "
+                 "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                 "pathlib.Path('descendant.pid').write_text(str(p.pid)); "
+                 "time.sleep(30)"],
+                identity, 2,
+            )
+            elapsed = time.monotonic() - started
+            self.assertTrue(timed_out, "TIMEOUT_UNBOUNDED")
+            self.assertEqual(code, 124, "TIMEOUT_UNBOUNDED")
+            self.assertLess(elapsed, 10, f"TIMEOUT_UNBOUNDED: {elapsed:.1f}s")
+        finally:
+            # Deterministic cleanup: the deliberately spawned descendant must
+            # not outlive the proof.
+            if pid_file.exists():
+                pid = int(pid_file.read_text())
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                for _ in range(50):
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail("descendant survived cleanup")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_class_method_with_dotted_param_stays_red(self) -> None:
+        marker = "PYTEST_CLASS_DOT_MARKER"
+        item = pending_behavior("BM_CLASS_DOT", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-class-dot")
+        (self.repo / "test_classdot_pytest.py").write_text(
+            "import pytest\n"
+            "class TestCase:\n"
+            "    @pytest.mark.parametrize('case', ['a.b'])\n"
+            "    def test_value(self, case):\n"
+            f"        assert False, '{marker} observed for ' + case\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_CLASS_DOT", ("pytest", "test_classdot_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "CLASS_DOT_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_dot_alias_banner_cannot_impersonate_colon_id(self) -> None:
+        marker = "PYTEST_DOT_ALIAS_MARKER"
+        item = pending_behavior("BM_DOT_ALIAS", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-dot-alias")
+        (self.repo / "test_alias_pytest.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.parametrize('case', ['a::b'])\n"
+            "def test_value(case):\n"
+            "    print()\n"
+            "    print('_' * 12 + ' test_value[a.b] ' + '_' * 12)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_DOT_ALIAS", ("pytest", "-s", "test_alias_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "DOT_ALIAS_IMPERSONATED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "DOT_ALIAS_IMPERSONATED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_nodeid_spelled_banner_cannot_impersonate_class_header(self) -> None:
+        marker = "PYTEST_COLON_TITLE_MARKER"
+        item = pending_behavior("BM_COLON_TITLE", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-colon-title")
+        (self.repo / "test_colontitle_pytest.py").write_text(
+            "class TestCase:\n"
+            "    def test_value(self):\n"
+            "        print()\n"
+            "        print('_' * 12 + ' TestCase::test_value ' + '_' * 12)\n"
+            f"        print('E   AssertionError: {marker}')\n"
+            "        assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_COLON_TITLE", ("pytest", "-s", "test_colontitle_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "COLON_TITLE_IMPERSONATED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "COLON_TITLE_IMPERSONATED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_param_id_with_spaces_stays_red(self) -> None:
+        marker = "PYTEST_SPACE_ID_MARKER"
+        item = pending_behavior("BM_SPACE_ID", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-space-id")
+        (self.repo / "test_space_pytest.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.parametrize('case', ['a b'])\n"
+            "def test_value(case):\n"
+            f"    assert False, '{marker} observed for ' + case\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_SPACE_ID", ("pytest", "test_space_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "SPACE_ID_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_param_internal_anchor_cannot_corroborate(self) -> None:
+        marker = "PYTEST_PARAM_ANCHOR_MARKER"
+        item = pending_behavior("BM_PARAM_ANCHOR", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-param-anchor")
+        (self.repo / "test_anchor_pytest.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.parametrize('case', ['a::b'])\n"
+            "def test_value(case):\n"
+            "    print()\n"
+            "    print('_' * 14 + ' b] ' + '_' * 14)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_PARAM_ANCHOR", ("pytest", "-s", "test_anchor_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "PARAM_ANCHOR_IMPERSONATED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "PARAM_ANCHOR_IMPERSONATED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_bracketed_filename_stays_red(self) -> None:
+        marker = "PYTEST_PATH_BRACKET_MARKER"
+        item = pending_behavior("BM_PATH_BRACKET", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-path-bracket")
+        (self.repo / "test_[variant]_pytest.py").write_text(
+            "def test_value():\n"
+            f"    assert False, '{marker} observed'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            # pytest glob-expands bracketed path arguments, so the bracketed
+            # file is reached through directory discovery.
+            slug, "red", "BM_PATH_BRACKET", ("pytest", ".")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "PATH_BRACKET_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_composed_punctuation_banner_cannot_corroborate(self) -> None:
+        marker = "PYTEST_COMPOSED_ID_MARKER"
+        item = pending_behavior("BM_COMPOSED_ID", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-composed-id")
+        (self.repo / "test_composed_pytest.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.parametrize('case', ['a]::b'])\n"
+            "def test_value(case):\n"
+            "    print()\n"
+            "    print('_' * 14 + ' b] ' + '_' * 14)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_COMPOSED_ID", ("pytest", "-s", "test_composed_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "COMPOSED_ID_IMPERSONATED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "COMPOSED_ID_IMPERSONATED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_unmatched_bracket_filename_stays_red(self) -> None:
+        marker = "PYTEST_UNMATCHED_PATH_MARKER"
+        item = pending_behavior("BM_UNMATCHED_PATH", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-unmatched-path")
+        (self.repo / "test_[variant_pytest.py").write_text(
+            "def test_value():\n"
+            f"    assert False, '{marker} observed'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_UNMATCHED_PATH", ("pytest", ".")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "UNMATCHED_PATH_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_dashed_directory_stays_red(self) -> None:
+        marker = "PYTEST_DASH_DIR_MARKER"
+        item = pending_behavior("BM_DASH_DIR", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-dash-dir")
+        dashed = self.repo / "suite - variant"
+        dashed.mkdir()
+        (dashed / "test_dash_pytest.py").write_text(
+            "def test_value():\n"
+            f"    assert False, '{marker} observed'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_DASH_DIR", ("pytest", ".")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "DASH_DIR_REFUSED: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_post_summary_failed_line_cannot_inflate_records(self) -> None:
+        marker = "PYTEST_INFLATED_COUNT_MARKER"
+        item = pending_behavior("BM_INFLATED_COUNT", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-inflated-count")
+        (self.repo / "test_inflate_pytest.py").write_text(
+            "import atexit\n"
+            "import pytest\n"
+            "atexit.register(lambda: print('FAILED cleanup', flush=True))\n"
+            "@pytest.mark.parametrize('case', ['a]::b'])\n"
+            "def test_value(case):\n"
+            "    print()\n"
+            "    print('_' * 14 + ' b] ' + '_' * 14)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_INFLATED_COUNT", ("pytest", "-s", "test_inflate_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "COUNT_DENOMINATOR_INFLATED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "COUNT_DENOMINATOR_INFLATED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_xfail_reason_cannot_close_the_summary_region(self) -> None:
+        marker = "PYTEST_XFAIL_REASON_MARKER"
+        item = pending_behavior("BM_XFAIL_REASON", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-xfail-reason")
+        (self.repo / "test_xfail_pytest.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.xfail(reason='1 failed in 1s')\n"
+            "def test_expected():\n"
+            "    assert False\n"
+            "def test_real():\n"
+            f"    assert False, '{marker} observed'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_XFAIL_REASON", ("pytest", "-rxf", "test_xfail_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            "XFAIL_REASON_CLOSED_REGION: " + result.stdout + result.stderr,
+        )
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(run["redProof"]["quality"], "assertion-reached")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_suppressed_traceback_fails_closed(self) -> None:
+        marker = "PYTEST_TBNO_MARKER"
+        item = pending_behavior("BM_TBNO", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-tbno")
+        (self.repo / "test_tbno_pytest.py").write_text(
+            "def test_real():\n"
+            "    print()\n"
+            "    print('_' * 14 + ' test_real ' + '_' * 14)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_TBNO",
+            ("pytest", "-s", "--tb=no", "test_tbno_pytest.py"),
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "TBNO_COUNTERFEIT_ACCEPTED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "TBNO_COUNTERFEIT_ACCEPTED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_printed_failures_rule_fails_closed(self) -> None:
+        marker = "PYTEST_FAKE_RULE_MARKER"
+        item = pending_behavior("BM_FAKE_RULE", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-fake-rule")
+        (self.repo / "test_fakerule_pytest.py").write_text(
+            "def test_real():\n"
+            "    print()\n"
+            "    print('=' * 29 + ' FAILURES ' + '=' * 29)\n"
+            "    print('_' * 14 + ' test_real ' + '_' * 14)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_FAKE_RULE", ("pytest", "test_fakerule_pytest.py")
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "FAKE_RULE_ACCEPTED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "FAKE_RULE_ACCEPTED")
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_rule_shaped_logging_fails_closed_with_guidance(self) -> None:
+        # Documented fail-closed boundary: a genuine marker-bearing assertion
+        # whose test also logs a FAILURES-shaped rule refuses with the named
+        # rerun guidance (ambiguity is never guessed), like the self-name and
+        # structure-shaped-message boundaries.
+        marker = "PYTEST_RULE_LOG_MARKER"
+        item = pending_behavior("BM_RULE_LOG", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-rule-log")
+        (self.repo / "test_rulelog_pytest.py").write_text(
+            "def test_real():\n"
+            "    print('=' * 29 + ' FAILURES ' + '=' * 29)\n"
+            f"    assert False, '{marker} observed'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_RULE_LOG", ("pytest", "test_rulelog_pytest.py")
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(
+            "more than one FAILURES rule", result.stderr,
+            "RULE_LOG_GUIDANCE_LOST",
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state)
+
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_tbno_with_one_printed_rule_cannot_corroborate(self) -> None:
+        marker = "PYTEST_RULE_REPLACE_MARKER"
+        item = pending_behavior("BM_RULE_REPLACE", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "pytest-rule-replace")
+        (self.repo / "test_replace_pytest.py").write_text(
+            "def test_real():\n"
+            "    print()\n"
+            "    print('=' * 29 + ' FAILURES ' + '=' * 29)\n"
+            "    print('_' * 14 + ' test_real ' + '_' * 14)\n"
+            f"    print('E   AssertionError: {marker}')\n"
+            "    assert False, 'unrelated real failure'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_RULE_REPLACE",
+            ("pytest", "-s", "--tb=no", "test_replace_pytest.py"),
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "RULE_REPLACED: " + result.stdout + result.stderr,
+        )
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, "RULE_REPLACED")
+
     def test_map_rejects_normalized_infra_collection_variants(self) -> None:
         for marker in (
             "ERROR collecting",

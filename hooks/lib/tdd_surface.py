@@ -46,6 +46,12 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
+# The closed set of short-test-summary record prefixes pytest owns; the
+# terminal counts line never starts with one of these, while record lines may
+# carry caller reasons of any shape after " - ".
+PYTEST_SUMMARY_RECORDS = (
+    "FAILED ", "ERROR ", "SKIPPED ", "XFAIL ", "XPASS ", "PASSED ", "RERUN ",
+)
 PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
 PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
 
@@ -104,7 +110,10 @@ def evaluate_red(
     if runner == "unittest":
         return _unittest_red(output, marker)
     if runner == "pytest":
-        return _pytest_red(output, marker)
+        arguments = surface.get("arguments")
+        return _pytest_red(
+            output, marker, arguments if isinstance(arguments, list) else ()
+        )
     return {
         "quality": "marker-only-opaque",
         "runner": "exact",
@@ -160,7 +169,7 @@ def _pytest_terminal_counts(lines: list[str]) -> dict[str, int | bool] | None:
             start = index
     search = lines[start + 1:] if start is not None else list(reversed(lines))
     for line in search:
-        if start is not None and line.startswith(("FAILED ", "ERROR ")):
+        if start is not None and line.startswith(PYTEST_SUMMARY_RECORDS):
             continue
         text = line.strip().strip("=").strip()
         if not text or not re.search(r" in \d+(?:\.\d+)?s$", text):
@@ -175,9 +184,21 @@ def _pytest_terminal_counts(lines: list[str]) -> dict[str, int | bool] | None:
     return None
 
 
+PYTEST_TB_SUPPRESSED = ("--tb=no", "--tb=line")
+
+
 def _pytest_red(
-    output: str, marker: str
+    output: str, marker: str, arguments: Sequence[object] = ()
 ) -> tuple[dict[str, object] | None, str]:
+    # Input-channel provenance: traceback suppression lives in the RECORDED
+    # command tokens, which test output cannot forge. Without the genuine
+    # FAILURES section no marker is corroboratable, and a printed substitute
+    # must not be either - so suppressing surfaces refuse before parsing.
+    if any(argument in PYTEST_TB_SUPPRESSED for argument in arguments):
+        return None, (
+            "the recorded command suppresses tracebacks; rerun without "
+            "--tb=no/--tb=line so the marker can be corroborated"
+        )
     counts = _pytest_terminal_counts(output.splitlines())
     if counts is None:
         return None, "pytest did not print its terminal summary line"
@@ -190,7 +211,27 @@ def _pytest_red(
             "pytest printed no short-test-summary FAILED records to corroborate "
             "its failure blocks; rerun without summary suppression (-rN/-r without f)"
         )
-    if not _pytest_marker_in_failure(lines, marker, failed_names):
+    rule_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("=") and " FAILURES " in line
+    ]
+    if not rule_indexes:
+        # Printed test output always precedes the FAILURES section, so without
+        # one (--tb=no and kin) no marker is corroboratable at all.
+        return None, (
+            "pytest printed no FAILURES section to corroborate the marker; "
+            "rerun without traceback suppression (--tb=no)"
+        )
+    if len(rule_indexes) > 1:
+        # Genuine output carries exactly one FAILURES rule; a second is
+        # caller-printed text indistinguishable from the section boundary.
+        return None, (
+            "pytest output carries more than one FAILURES rule; the marker "
+            "cannot be corroborated - rerun without printing rule-shaped lines"
+        )
+    failures_rule = rule_indexes[0]
+    if not _pytest_marker_in_failure(lines[failures_rule + 1:], marker, failed_names):
         return None, "mapped marker was not emitted by an executed pytest assertion"
     return {
         "quality": "assertion-reached",
@@ -274,26 +315,80 @@ def _summary_failed_names(lines: list[str]) -> dict[str, int]:
         return {}
     names: dict[str, int] = {}
     for line in lines[start + 1:]:
-        matched = re.match(r"FAILED (\S+)", line)
+        text = line.strip().strip("=").strip()
+        if text and re.search(r" in \d+(?:\.\d+)?s$", text) and not line.startswith(
+            PYTEST_SUMMARY_RECORDS
+        ):
+            # The terminal counts line ends the framework-owned summary
+            # region: caller shutdown output printed after it (measured
+            # atexit ordering) can never add records to the denominator.
+            break
+        matched = re.match(r"FAILED (.+)", line)
         if matched:
-            name = matched.group(1).rsplit("::", 1)[-1]
-            names[name] = names.get(name, 0) + 1
+            # Caller-selected parameter ids may contain whitespace, so the
+            # record keeps the full remainder (an optional " - <message>"
+            # suffix is handled at match time by _title_matches).
+            record = matched.group(1).strip()
+            names[record] = names.get(record, 0) + 1
     return names
 
 
 def _corroborated_name(line: str, failed_names: dict[str, int]) -> str | None:
-    """The summary-FAILED test a header line names exactly, if any.
+    """The summary-FAILED nodeid a header line names exactly, if any.
 
     Genuine pytest headers wrap the failure identity in underscores: the bare
-    test name, ``Class.test_name``, or a parametrized id. Exact-identity
-    matching (never substring) is what keeps printed prefix/suffix variants
-    from reopening framework mode.
+    test name, ``Class.test_name``, or a parametrized id (which may itself
+    contain ``::`` or stray brackets). Matching by nodeid suffix needs no id
+    parsing: the plain form covers functions and parametrized ids verbatim,
+    and the dot-to-``::`` form covers class-based headers. Exact suffix
+    matching (never substring) keeps printed variants from reopening
+    framework mode.
     """
     title = line.strip("_").strip()
-    for name in failed_names:
-        if title == name or title.endswith("." + name):
-            return name
+    if not title:
+        return None
+    for nodeid in failed_names:
+        if _title_matches(title, nodeid):
+            return nodeid
     return None
+
+
+def _title_matches(title: str, nodeid: str) -> bool:
+    """A header title names a nodeid when it is a ``::``-aligned suffix.
+
+    Dots flex between ``.`` and ``::`` ONLY before the title's first bracket:
+    that region holds class/function identifiers, which cannot contain dots or
+    brackets, so a dot there is always the class separator pytest rendered.
+    From the first bracket onward the text is caller-controlled parameter id
+    and matches verbatim - a printed ``[a.b]`` can never alias a genuine
+    ``[a::b]``."""
+    bracket = title.find("[")
+    head = title if bracket < 0 else title[:bracket]
+    tail = "" if bracket < 0 else title[bracket:]
+    if "::" in head:
+        # Genuine headers never contain :: before the first bracket - pytest
+        # renders class separators as dots there. A nodeid-spelled banner is
+        # caller text, not a framework record.
+        return False
+    pattern = re.compile(
+        re.escape(head).replace(r"\.", r"(?:\.|::)")
+        + re.escape(tail)
+        # The stored summary record may carry a trailing " - <message>", so
+        # the title may end at that delimiter instead of end-of-record.
+        + r"(?=$| - )"
+    )
+    # Anchors are every :: occurrence plus the record start. Restricting
+    # anchors by bracket depth kept breaking on valid path/id grammar
+    # (bracketed and unmatched-bracket filenames are legal); the counterfeit
+    # direction no longer needs it, because the header-vs-record count rule
+    # refuses any output where a printed banner ALSO corroborates - genuine
+    # titles always match at their real separator, so a fake match can only
+    # exceed the count.
+    anchors = [0] + [m.end() for m in re.finditer("::", nodeid)]
+    # No prefix-purity guard: valid paths may themselves contain " - ", and a
+    # fake title anchored inside message text still has to corroborate - which
+    # the header-vs-record count rule then refuses.
+    return any(pattern.match(nodeid, anchor) for anchor in anchors)
 
 
 def _pytest_marker_in_failure(
@@ -301,33 +396,34 @@ def _pytest_marker_in_failure(
 ) -> bool:
     """Marker acceptance over summary-corroborated failure blocks.
 
-    The caller guarantees non-empty ``failed_names``: without parsable summary
-    FAILED records there is no corroboration channel, and `_pytest_red` fails
-    closed instead of walking uncorroborated headers.
+    The caller guarantees non-empty ``failed_names`` AND passes only the lines
+    after the FAILURES rule: printed test output precedes that section, so the
+    walk never sees uncaptured caller banners, and without the section
+    `_pytest_red` fails closed instead of walking at all.
     """
-    # Fail closed on ambiguous boundaries: each summary FAILED record owns
-    # exactly one genuine block header, so header occurrences beyond the
-    # summary's multiplicity mean caller-printed text is indistinguishable
-    # from the framework record, and no marker from this output can be
-    # trusted.
-    seen: dict[str, int] = {}
-    for line in lines:
-        if PYTEST_FAILURE_HEADER.match(line):
-            name = _corroborated_name(line, failed_names)
-            if name is not None:
-                seen[name] = seen.get(name, 0) + 1
-    if any(count > failed_names[name] for name, count in seen.items()):
+    # Fail closed on ambiguous boundaries, composition-proof: genuine output
+    # carries EXACTLY as many corroborated block headers as summary FAILED
+    # records, so any caller-printed banner that manages to corroborate -
+    # whatever punctuation it exploits - makes the header count exceed the
+    # record count, and no marker from this output can be trusted.
+    corroborated = sum(
+        1
+        for line in lines
+        if PYTEST_FAILURE_HEADER.match(line)
+        and _corroborated_name(line, failed_names) is not None
+    )
+    if corroborated > sum(failed_names.values()):
         return False
     in_failure = False
     in_captured_output = False
     in_assertion_message = False
     for line in lines:
+        # Printed header-shaped text never opens framework mode, captured or
+        # not (-s runs have no captured sections): only a header naming a
+        # summary-FAILED identity is a block boundary. The caller guarantees
+        # failed_names is non-empty.
         if PYTEST_FAILURE_HEADER.match(line) and (
-            not in_captured_output
-            # Inside a captured section, printed header-shaped text stays
-            # captured text; only a header naming a summary-FAILED test opens
-            # the next genuine block.
-            or _corroborated_name(line, failed_names) is not None
+            _corroborated_name(line, failed_names) is not None
         ):
             in_failure = True
             in_captured_output = False
