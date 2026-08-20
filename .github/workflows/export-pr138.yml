@@ -1,0 +1,24 @@
+name: export pr138 checkout
+
+on:
+  push:
+    branches:
+      - automation/pr138-export
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create source archive
+        run: tar --exclude=.git -czf /tmp/pr138-source.tgz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr138-source
+          path: /tmp/pr138-source.tgz
+          retention-days: 1
