@@ -6,14 +6,14 @@ import shlex
 import sys
 
 from . import behavior_map, tdd_surface
-from .repo_identity import RepoIdentity, resolve_repo_identity
-from .state_store import utc_timestamp
 from .command_runner import (
     emit_json as _emit_json,
     print_output as _print_output,
     run as _run,
     run_entry as _run_entry,
 )
+from .repo_identity import RepoIdentity, resolve_repo_identity
+from .state_store import utc_timestamp
 from .workflow_documents import load_json
 from .workflow_state import (
     NO_INSTANCE_ID,
@@ -31,6 +31,7 @@ JsonObject = dict[str, object]
 
 
 def _tdd_parser() -> argparse.ArgumentParser:
+    """The sole grammar for mapped and imported-legacy TDD options."""
     parser = argparse.ArgumentParser(
         prog="workflow tdd",
         epilog=(
@@ -44,20 +45,10 @@ def _tdd_parser() -> argparse.ArgumentParser:
     mode.add_argument("--phase", choices=("red", "green"))
     mode.add_argument("--not-required", metavar="REASON")
     parser.add_argument("--behavior-id")
-    parser.add_argument("--timeout", type=int, default=900)
-    parser.add_argument("runner_command", nargs=argparse.REMAINDER)
-    return parser
-
-
-def _tdd_route_parser() -> argparse.ArgumentParser:
-    """Parse every recorder option that affects mapped-vs-legacy routing."""
-    parser = argparse.ArgumentParser(prog="workflow tdd", add_help=False)
-    parser.add_argument("--repo", "--cwd", dest="repo", default=".")
-    parser.add_argument("--slug")
-    parser.add_argument("--phase", choices=("red", "green"))
-    parser.add_argument("--not-required", metavar="REASON")
-    parser.add_argument("--behavior-id")
     parser.add_argument("--behavior")
+    parser.add_argument("--seam", default="")
+    parser.add_argument("--expected-failure", default="")
+    parser.add_argument("--timeout", type=int, default=900)
     return parser
 
 
@@ -99,14 +90,14 @@ def current_map(
 def _legacy_green_candidate(
     current: JsonObject | None,
     workflow_id: str,
-    route: argparse.Namespace,
+    args: argparse.Namespace,
 ) -> bool:
     """Only an imported, already-open legacy RED may finish free-form."""
     if not isinstance(current, dict) or current.get("behaviorMap") is not None:
         return False
-    if route.behavior_id is not None or route.not_required is not None:
+    if args.behavior_id is not None or args.not_required is not None:
         return False
-    if route.phase != "green":
+    if args.phase != "green":
         return False
     if not all(
         (
@@ -343,59 +334,44 @@ def _drift_report(drift: list[JsonObject]) -> str:
     )
 
 
-def _candidate_command(runner_command: list[str] | None) -> tuple[list[str], str, JsonObject]:
+def _candidate_command(
+    runner_command: list[str] | None,
+) -> tuple[list[str], str, JsonObject]:
     """Extract one cycle's command, exact text identity, and normalized surface."""
-    command = (
-        runner_command[1:]
-        if runner_command and runner_command[0] == "--"
-        else (runner_command or [])
-    )
+    command = runner_command or []
     if not command:
         raise ValueError("a command is required after --")
     return command, shlex.join(command), tdd_surface.identify(command)
-
-
-def _legacy_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="workflow tdd")
-    parser.add_argument("--repo", "--cwd", dest="repo", default=".")
-    parser.add_argument("--slug", required=True)
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--phase", choices=("red", "green"))
-    mode.add_argument("--not-required", metavar="REASON")
-    parser.add_argument("--behavior")
-    parser.add_argument("--seam", default="")
-    parser.add_argument("--expected-failure", default="")
-    parser.add_argument("--timeout", type=int, default=900)
-    parser.add_argument("runner_command", nargs=argparse.REMAINDER)
-    return parser
 
 
 def _run_tdd(values: list[str]) -> int:
     """Run the one mapped-or-imported-legacy candidate-cycle lifecycle."""
     dash = values.index("--") if "--" in values else None
     recorder_region = values if dash is None else values[:dash]
-    for value in recorder_region:
-        if value in ("-h", "--help"):
-            _tdd_parser().parse_args(["--help"])
-    runner_region = [] if dash is None else values[dash + 1:]
-    route, _ = _tdd_route_parser().parse_known_args(recorder_region)
-    if route.phase in {"red", "green"} and not runner_region:
+    runner_region = [] if dash is None else values[dash + 1 :]
+    args = _tdd_parser().parse_args(recorder_region)
+    if args.phase in {"red", "green"} and not runner_region:
         raise ValueError(
             "a runner command is required after -- ; place recorder flags "
             "before the sentinel and the command after it"
         )
-    if not route.slug:
-        raise ValueError("--slug is required")
-    identity = resolve_repo_identity(route.repo)
-    state, slug, workflow_id = _active_candidate(identity, route.slug)
+    args.runner_command = runner_region
+
+    identity = resolve_repo_identity(args.repo)
+    state, slug, workflow_id = _active_candidate(identity, args.slug)
     items, current = current_map(identity, state)
-    legacy = items is None or _legacy_green_candidate(current, workflow_id, route)
-    if not legacy and route.behavior_id is None and route.not_required is None:
+    legacy = items is None or _legacy_green_candidate(current, workflow_id, args)
+    if legacy and args.behavior_id is not None:
         raise WorkflowError(
-            "recorded Behavior Map requires --behavior-id or --not-required; "
-            "legacy free-form --behavior/--seam candidates cannot satisfy it"
+            "imported legacy TDD uses --behavior/--seam, not --behavior-id"
         )
-    args = (_legacy_parser() if legacy else _tdd_parser()).parse_args(values)
+    if not legacy and (args.behavior is not None or args.seam or args.expected_failure):
+        raise WorkflowError(
+            "mapped TDD uses --behavior-id; legacy --behavior/--seam flags cannot "
+            "satisfy a recorded Behavior Map"
+        )
+    if not legacy and args.behavior_id is None and args.not_required is None:
+        raise WorkflowError("recorded Behavior Map requires --behavior-id or --not-required")
     if args.not_required is not None:
         return _not_required(args, identity, state, items)
 
@@ -431,7 +407,11 @@ def _run_tdd(values: list[str]) -> int:
             )
         if phase == "green" and status != "red":
             raise WorkflowError(f"behavior {args.behavior_id} has no valid mapped RED")
-        candidate = current if isinstance(current, dict) and current.get("kind") == "cycle" else None
+        candidate = (
+            current
+            if isinstance(current, dict) and current.get("kind") == "cycle"
+            else None
+        )
         active = candidate.get("activeBehaviorId") if isinstance(candidate, dict) else None
         if phase == "green" and active != args.behavior_id:
             raise WorkflowError(
@@ -446,14 +426,20 @@ def _run_tdd(values: list[str]) -> int:
         }
 
     command, command_text, surface = _candidate_command(args.runner_command)
-    same_instance = isinstance(candidate, dict) and candidate.get("workflowId") == workflow_id
+    same_instance = (
+        isinstance(candidate, dict) and candidate.get("workflowId") == workflow_id
+    )
     drift, guidance = (
         _candidate_drift(candidate, contract, surface, command_text)
         if same_instance
         else ([], "")
     )
     matches = same_instance and not drift
-    completed_cycle = legacy and same_instance and candidate.get("status") in {"passed", "not-required"}
+    completed_cycle = (
+        legacy
+        and same_instance
+        and candidate.get("status") in {"passed", "not-required"}
+    )
     if legacy:
         if same_instance and not matches and (phase == "green" or not completed_cycle):
             raise WorkflowError(
@@ -514,14 +500,25 @@ def _run_tdd(values: list[str]) -> int:
     action = "in-progress"
     if legacy:
         preserved = phase == "red" and matches and not valid and completed_cycle
-        new_cycle = phase == "red" and valid and not matches and (not same_instance or completed_cycle)
+        new_cycle = (
+            phase == "red"
+            and valid
+            and not matches
+            and (not same_instance or completed_cycle)
+        )
         recorded = not preserved and (matches or new_cycle)
         if recorded:
             regression = phase == "green" and matches and not valid
             reopen = regression or (
                 phase == "red" and valid and (new_cycle or completed_cycle)
             )
-            action = "passed" if phase == "green" and valid else "reopen" if reopen else "in-progress"
+            action = (
+                "passed"
+                if phase == "green" and valid
+                else "reopen"
+                if reopen
+                else "in-progress"
+            )
             opens_cycle = new_cycle
             document = {
                 "schemaVersion": 1,
@@ -641,12 +638,15 @@ def _map_update(values: list[str]) -> int:
     dispositions = value.get("dispositions", [])
     if not isinstance(dispositions, list):
         raise ValueError("TDD map update dispositions must be an array")
-    pending_source = current.get("reassessmentPending") if isinstance(current, dict) else None
+    pending_source = (
+        current.get("reassessmentPending") if isinstance(current, dict) else None
+    )
     source = value.get("sourceBehaviorId")
     if pending_source:
         if source != pending_source:
             raise WorkflowError(
-                "reassessment must name the GREEN behavior awaiting it: " f"{pending_source}"
+                "reassessment must name the GREEN behavior awaiting it: "
+                f"{pending_source}"
             )
     elif source is not None:
         raise ValueError(
