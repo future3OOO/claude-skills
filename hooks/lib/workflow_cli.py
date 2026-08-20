@@ -142,10 +142,12 @@ def parser() -> argparse.ArgumentParser:
     _document_command(_instance_command(commands, "record-preflight", "validate and record production preflight"))
     _document_command(_instance_command(commands, "record-production-code", "validate and record the pre-edit quality gate"))
 
-    # Registered for top-level discovery only: the tdd verb's dual mapped/legacy
-    # flag surface is owned by tdd_workflow, which main() routes to before this
-    # parser ever sees the arguments.
+    # Registered for top-level discovery only: the tdd verbs' flag surfaces are
+    # owned by tdd_workflow, which main() routes to before this parser ever
+    # sees the arguments. tdd-map is a completion-required producer, so its
+    # discovery is a deliberate addition to the baseline listing.
     commands.add_parser("tdd", help="run and record one real RED/GREEN candidate")
+    commands.add_parser("tdd-map", help="record Behavior Map reassessments and dispositions")
 
     command = commands.add_parser("verify", help="execute and record typed verification")
     _repo(command)

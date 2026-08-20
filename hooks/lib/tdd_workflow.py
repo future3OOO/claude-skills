@@ -395,17 +395,37 @@ def _run_tdd(values: list[str]) -> int:
     the items-None branch of the same implementation: it keeps run-then-decide
     validity order and preserved invalid reruns (PRES_LEGACY_RERUN), while the
     mapped branch refuses invalid candidates before execution."""
-    for value in values:
-        if value == "--":
-            break
+    # Argv framing first: the recorder's region ends at the first "--"; the
+    # runner command after it is opaque. Every scan and parse below sees only
+    # the recorder region, so runner-owned tokens (--repo/--slug/-h) can never
+    # steer routing, help, or state resolution.
+    dash = values.index("--") if "--" in values else None
+    recorder_region = values if dash is None else values[:dash]
+    for value in recorder_region:
         if value in ("-h", "--help"):
             # Help is identity-free and exact-token only: serve the primary
             # mapped surface (the epilog names the imported-legacy flags)
-            # before any state requirement. Equals forms are malformed input
-            # and fall through to ordinary parsing; tokens after -- belong to
-            # the runner command.
+            # before any state requirement. Positioned forms stay honored -
+            # the recorder region contains no runner tokens by construction.
             _tdd_parser().parse_args(["--help"])
-    route, _ = _tdd_route_parser().parse_known_args(values)
+    runner_region = [] if dash is None else values[dash + 1:]
+    # Phase intent comes from argparse's own grammar (abbreviations included),
+    # never a duplicated lexical scan: a tolerant probe binds --phase exactly
+    # as the real parsers would, on the recorder region only.
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--phase")
+    probe.add_argument("--not-required")
+    phase_intent, _ = probe.parse_known_args(recorder_region)
+    if phase_intent.phase in {"red", "green"} and not runner_region:
+        # Refuse BEFORE repository resolution: red/green always needs a runner
+        # command after the sentinel - no exemptions, so stray tokens (a
+        # runner-tail --not-required included) can never steer the state, and
+        # a bare sentinel counts as empty.
+        raise ValueError(
+            "a runner command is required after -- ; place recorder flags "
+            "before the sentinel and the command after it"
+        )
+    route, _ = _tdd_route_parser().parse_known_args(recorder_region)
     if not route.slug:
         raise ValueError("--slug is required")
     identity = resolve_repo_identity(route.repo)

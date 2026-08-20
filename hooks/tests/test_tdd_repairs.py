@@ -1137,6 +1137,55 @@ class MappedTddRepairTests(unittest.TestCase):
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertNotIn("tddCycleCount", state, "RULE_REPLACED")
 
+
+    def test_runner_command_requires_the_dash_sentinel(self) -> None:
+        marker = "DASH_SENTINEL_MISSING"
+        item = pending_behavior("BM_NO_DASH", red_failure=marker)
+        slug, _ = self.begin_with_map([item], "no-dash-sentinel")
+        evidence_before = read_workflow(resolve_repo_identity(self.repo)).get("tddEvidence")
+        result = self.cli(
+            "tdd", "--repo", str(self.repo), "--slug", slug,
+            "--phase", "red", "--behavior-id", "BM_NO_DASH",
+            sys.executable, "-c", "print('ran')", "--repo", "/nonexistent-bogus-path",
+        )
+        self.assertEqual(
+            result.returncode, 2,
+            "DASH_SENTINEL_MISSING: " + result.stdout + result.stderr,
+        )
+        self.assertIn("after --", result.stderr, "DASH_SENTINEL_MISSING")
+        self.assertNotIn("worktree", result.stderr, "DASH_SENTINEL_MISSING")
+        self.assertNotIn("ran", result.stdout, "DASH_SENTINEL_MISSING")
+        self.assertEqual(
+            read_workflow(resolve_repo_identity(self.repo)).get("tddEvidence"),
+            evidence_before, "DASH_SENTINEL_MISSING",
+        )
+        # A --not-required token inside the runner tail must not exempt the
+        # guard, and a sentinel with nothing after it is equally empty.
+        cases = (
+            # runner-tail --not-required must not exempt the gate
+            ("--repo", str(self.repo), "--phase", "red",
+             sys.executable, "-c", "print('ran')", "--not-required", "x",
+             "--repo", "/nonexistent-bogus-path"),
+            # bare sentinel counts as empty - the bogus RECORDER repo proves
+            # the refusal fires before repository resolution
+            ("--repo", "/nonexistent-bogus-path", "--phase", "red", "--"),
+            # argparse-abbreviated phase must not bypass the gate
+            ("--repo", "/nonexistent-bogus-path", "--pha", "red",
+             sys.executable, "-c", "print('ran')"),
+        )
+        for extra in cases:
+            with self.subTest(extra=extra):
+                result = self.cli(
+                    "tdd", "--slug", slug, "--behavior-id", "BM_NO_DASH", *extra,
+                )
+                self.assertEqual(
+                    result.returncode, 2,
+                    "SENTINEL_BYPASSED: " + result.stdout + result.stderr,
+                )
+                self.assertIn("after --", result.stderr, "SENTINEL_BYPASSED")
+                self.assertNotIn("worktree", result.stderr, "SENTINEL_BYPASSED")
+                self.assertNotIn("ran", result.stdout, "SENTINEL_BYPASSED")
+
     def test_map_rejects_normalized_infra_collection_variants(self) -> None:
         for marker in (
             "ERROR collecting",

@@ -59,7 +59,8 @@ class CompleteHelpContractTests(unittest.TestCase):
         import re
         verbs = re.search(r"\{([a-z0-9,-]+)\}", listing.stdout)
         self.assertIsNotNone(verbs, listing.stdout)
-        names = verbs.group(1).split(",") + ["tdd-map"]
+        names = verbs.group(1).split(",")
+        self.assertIn("tdd-map", names, "TDDMAP_UNLISTED")
         for verb in names:
             with self.subTest(verb=verb):
                 result = self.run_help(verb, "--help")
@@ -68,6 +69,20 @@ class CompleteHelpContractTests(unittest.TestCase):
                     f"TDD_HELP_REGRESSED {verb}: " + result.stdout + result.stderr,
                 )
                 self.assertIn("usage:", result.stdout, f"TDD_HELP_REGRESSED {verb}")
+
+    def test_positioned_help_matches_bare_help(self) -> None:
+        # PRES-A: help tokens are honored anywhere in the recorder region -
+        # positioned forms serve byte-identical usage to the bare form.
+        bare = self.run_help("tdd", "--help")
+        self.assertEqual(bare.returncode, 0, bare.stdout + bare.stderr)
+        for form in (("tdd", "--repo", ".", "--help"), ("tdd", "--slug", "x", "-h")):
+            with self.subTest(form=form):
+                result = self.run_help(*form)
+                self.assertEqual(
+                    result.returncode, 0,
+                    "POSITIONED_HELP_LOST: " + result.stdout + result.stderr,
+                )
+                self.assertEqual(result.stdout, bare.stdout, "POSITIONED_HELP_LOST")
 
     def test_tdd_help_presents_the_dual_flag_surface(self) -> None:
         for flag in ("--help", "-h"):

@@ -102,8 +102,11 @@ class LegacyImportFreeFormTests(unittest.TestCase):
             [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(repo), "--slug", "legacy",
              "--phase", "red", "--behavior", "value must be 2", "--seam", "app import",
              "--expected-failure", "VALUE_NOT_TWO", "--", sys.executable, "-c",
-             "open(r'" + str(proof).replace(chr(92), '/') + "','a').write('x'); "
-             "import app; assert app.value == 2, 'VALUE_NOT_TWO'"],
+             # The proof path travels as argv, never interpolated into the
+             # source: TMPDIR may contain quotes or backslashes.
+             "import sys; open(sys.argv[1],'a').write('x'); "
+             "import app; assert app.value == 2, 'VALUE_NOT_TWO'",
+             str(proof)],
             cwd=str(ROOT), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         self.assertTrue(proof.exists(), "the rerun command must actually execute (run-then-decide)")
         self.assertEqual(rerun.returncode, 2, rerun.stdout + rerun.stderr)
