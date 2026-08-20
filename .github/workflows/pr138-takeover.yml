@@ -14,8 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/tdd-behavior-map-evidence
-          fetch-depth: 2
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: true
       - uses: actions/setup-python@v5
         with:
@@ -230,13 +230,6 @@ jobs:
               '''For directly invoked pytest and unittest commands, the recorder verifies that a test ran and that the marker came from a test assertion. Mapped RED from any other command fails closed: exact-bound output cannot establish Seam reach or open production edits. Use a supported real runner, or disposition a behavior that already passes as `already-satisfied` with real-Seam evidence.
           ''',
           )
-          replace(
-              "skills/repo-production-workflow/WORKFLOW-MAP.md",
-              '''| `PreToolUse(Edit\\|Write\\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits only for an active valid mapped RED; block them again after GREEN until map reassessment |
-          ''',
-              '''| `PreToolUse(Edit\\|Write\\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved and reassessed GREEN map; block the next production edit after GREEN until map reassessment |
-          ''',
-          )
           PY
       - name: Run real-interface contracts
         shell: bash
@@ -247,16 +240,17 @@ jobs:
           python3 -u hooks/tests/test_tdd_dispatch.py
           python3 -u hooks/tests/test_workflow_hooks.py
           bash hooks/tests/run.sh
-      - name: Replace the trigger commit with the repair
+      - name: Collapse takeover commits and publish
         shell: bash
         env:
           BRANCH: fix/tdd-behavior-map-evidence
+          BASE: 807adaa252cd4749e339b80d9ca9ce6dc35ddd13
         run: |
           git config user.email "46719676+future3OOO@users.noreply.github.com"
           git config user.name "future3000"
           git rm .github/workflows/pr138-takeover.yml
           git add -A
-          git reset --soft HEAD^
+          git reset --soft "$BASE"
           git commit -m "fix(tdd): align public proof seams and unify CLI grammar"
           git push origin HEAD:refs/heads/$BRANCH \
             --force-with-lease=refs/heads/$BRANCH:${GITHUB_SHA}
