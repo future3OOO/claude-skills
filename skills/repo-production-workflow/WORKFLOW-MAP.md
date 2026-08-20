@@ -90,11 +90,13 @@ the transcript audit.
 
 The database and its containing directory are private and agent-writable. Committed transactions provide continuity across process restart and compaction; it is not tamper-proof and does not authorize Git. A normal
 commit or HEAD change does not invalidate it. After production preflight,
-test-like edits are admitted while TDD is pending. Production edits stay blocked
-until a pending map item has a valid behavior-specific RED. A GREEN blocks the
-next production edit until `tdd-map` records the required architecture,
-preservation, and interaction reassessment. A normally completed workflow is
-terminal: every mutation except `begin` is rejected.
+test-like edits are admitted while TDD is pending. Production edits are admitted
+after the production-code baseline for an active valid mapped RED, a fully
+dispositioned `not-required` map, or a resolved and reassessed GREEN map. A GREEN
+blocks the next production edit until `tdd-map` records the required architecture,
+preservation, and interaction reassessment. A later edit against a resolved map
+stays admitted but flags completion for another reassessment. A normally
+completed workflow is terminal: every mutation except `begin` is rejected.
 
 A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
 which only verification, code review, the final advisor review, and completion
@@ -188,10 +190,10 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits only for an active valid mapped RED; block them again after GREEN until map reassessment |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; after the production-code baseline admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed GREEN map; after GREEN block the next production edit until map reassessment |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
-| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success, because any Stop output re-prompts the model (progress on that instance re-latches); surfaces the bounded summary otherwise. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there, and is not a firing or an outcome: it is a per-Stop selection event counting one latch the association rule withheld, so it counts stops rather than distinct passes or sessions |
+| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while canonical completion readiness reports missing work and no pause is recorded; authoritative workflow or mapped-evidence corruption remains repair-only and cannot be released by `pause`. It permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound waits for ordinary external blockers, advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success because any Stop output re-prompts the model. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there and counts one selection event, not a firing or outcome |
 
 `Stop` consults the workflows the session actually edited in, not the directory
 it was launched from. `PostToolUse` records one immutable marker per repository
