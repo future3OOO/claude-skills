@@ -11,7 +11,7 @@ Production behavior changes require one **behavior-specific RED** before product
 
 A RED proves the mapped behavior is absent. It must reach the real Seam and fail at the product assertion named by the map. A missing method/import, invalid setup, collection error, syntax error, or test that fails before reaching the claimed behavior is not RED evidence.
 
-For directly invoked pytest and unittest surfaces, the recorder verifies that at least one test ran and the mapped marker came from a test assertion, not collection, setup, loader, or zero-test output. That verification is bounded evidence read from the runner's report text: it refuses accidental counterfeit shapes, while output deliberately crafted to imitate framework records is out of its scope - the ledger is agent-writable continuity, and the lead verifies evidence rather than trusting it. An unrecognized exact-bound runner can record only `marker-only-opaque` evidence: it is explicitly weaker and does not independently prove Seam reach, so the lead must verify that command before relying on it.
+For directly invoked pytest and unittest surfaces, the recorder verifies that at least one test ran and the mapped marker came from a test assertion, not collection, setup, loader, or zero-test output. An unrecognized exact-bound command remains exact-bound for RED/GREEN surface identity but cannot satisfy a mapped RED because its output cannot establish Seam reach. Drive mapped proof through pytest/unittest directly or record the proof gap; do not manufacture a second test path.
 
 The canonical mock ban in `~/.claude/CLAUDE.md` applies without exception. This skill never creates a test-only proof path.
 

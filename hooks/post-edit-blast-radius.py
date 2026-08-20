@@ -51,9 +51,6 @@ def _tracked(root: Path) -> list[str] | None:
 
 
 def _terminal(state: JsonObject) -> bool:
-    # PRD #30 scopes evidence-pending readings to legacy IN-FLIGHT passes; a
-    # completed pass is terminal here exactly as it is at the checkpoint. An
-    # open revalidation window still latches: that work is genuinely pending.
     return state.get("phase") == "complete" and not state.get("revalidation")
 
 
@@ -64,19 +61,16 @@ def _read_candidate(identity: RepoIdentity) -> tuple[JsonObject | None, str | No
         return None, str(exc)
 
 
-def _mapped_missing(identity: RepoIdentity, state: JsonObject | None) -> list[str]:
+def _mapped_status(
+    identity: RepoIdentity, state: JsonObject | None
+) -> tuple[list[str], str | None]:
     if state is None:
-        return []
+        return [], None
     try:
-        return mapped_completion_blockers(identity, state)
+        return mapped_completion_blockers(identity, state), None
     except (WorkflowError, LedgerError, ValueError) as exc:
-        return [f"mapped TDD evidence unreadable: {exc}"]
-
-
-def _all_missing(identity: RepoIdentity, state: JsonObject | None) -> list[str]:
-    if state is None:
-        return []
-    return [*completion_missing(state), *_mapped_missing(identity, state)]
+        error = f"mapped TDD evidence unreadable: {exc}"
+        return [error], error
 
 
 def _latchable(
@@ -84,19 +78,21 @@ def _latchable(
     state: JsonObject | None,
     read_error: str | None = None,
 ) -> bool:
-    """A pass with work genuinely outstanding, ignoring transient Stop conditions."""
-    return bool(read_error) or (
+    """True when this Stop must remain blocked."""
+    mapped, mapped_error = _mapped_status(identity, state)
+    if read_error or mapped_error:
+        return True
+    return bool(
         state is not None
         and not _terminal(state)
         and not state.get("paused")
-        and bool(_all_missing(identity, state))
+        and [*completion_missing(state), *mapped]
     )
 
 
 def _candidates(
     payload: dict[str, object], session: str | None, running_work: bool,
 ) -> list[tuple[RepoIdentity, JsonObject | None, str | None]]:
-    """The slots this Stop consults: the repositories the session edited in."""
     associated = []
     if session is not None:
         for identity in session_associations(session):
@@ -112,8 +108,6 @@ def _candidates(
         _latchable(identity, state, read_error)
         for identity, state, read_error in associated
     ):
-        # Only a latch this rule actually cost: with work running, or with an
-        # association still able to latch, the baseline would not have blocked.
         identity = try_resolve_repo_identity(working_directory(payload))
         if identity is not None and all(
             identity.key != other.key for other, _, _ in associated
@@ -137,17 +131,24 @@ def _state_summary(
     identity: RepoIdentity,
     state: JsonObject | None,
     read_error: str | None,
-) -> str:
+) -> tuple[str, str | None]:
     if read_error:
         return (
             f"Workflow state unavailable: {read_error}. Unknown is not green; "
-            "repair or explicitly retire the authoritative state before continuing."
+            "repair or explicitly retire the authoritative state before continuing.",
+            read_error,
+        )
+    mapped, mapped_error = _mapped_status(identity, state)
+    if mapped_error:
+        return (
+            f"Workflow state unavailable: {mapped_error}. Unknown is not green; "
+            "repair or explicitly retire the authoritative state before continuing.",
+            mapped_error,
         )
     rendered = summary(identity)
-    mapped = _mapped_missing(identity, state)
     if mapped:
         rendered += "\nMapped TDD missing: " + "; ".join(mapped)
-    return rendered
+    return rendered, None
 
 
 def _context(
@@ -155,7 +156,6 @@ def _context(
     state: JsonObject | None,
     read_error: str | None,
 ) -> str | None:
-    """One slot's bounded feedback, or None when it has nothing to report."""
     tracked = _tracked(identity.root)
     try:
         untracked = untracked_paths(identity)
@@ -174,12 +174,12 @@ def _context(
         changed_line = "changed code: " + (", ".join(labels) if labels else "none")
         if len(changed) > len(labels):
             changed_line += f"; plus {len(changed) - len(labels)} more"
-
+    state_summary, _ = _state_summary(identity, state, read_error)
     return (
         "Non-blocking completion feedback. Unknown is not green.\n"
         + changed_line
         + "\n"
-        + _state_summary(identity, state, read_error)
+        + state_summary
         + "\nblast radius after this edit: unknown until the edited checkout is reanalysed and change-detected"
         + "\nAny production edit after review makes code review and final review pending."
     )[:3600]
@@ -201,7 +201,7 @@ def main() -> int:
     for identity, state, read_error in candidates:
         if running_work or not _latchable(identity, state, read_error):
             continue
-        latch_summary = _state_summary(identity, state, read_error)
+        latch_summary, authoritative_error = _state_summary(identity, state, read_error)
         workflow_id = instance_id(state) if state else None
         fingerprint = f"{workflow_id}:{latch_summary}"
         previous_fingerprint = stop_session_swap(
@@ -222,7 +222,7 @@ def main() -> int:
             continue
         recovery = (
             "Recovery: repair or explicitly retire the corrupt authoritative workflow state before continuing."
-            if read_error
+            if authoritative_error
             else f"Continue that action, or record an honest wait with workflow.py pause "
             f"--slug '{state.get('slug')}' --workflow-id '{workflow_id}' --reason '<why>' for blockers "
             "the payload cannot see (running background tasks and scheduled wakeups already release the latch)."

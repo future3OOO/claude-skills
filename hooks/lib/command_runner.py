@@ -1,15 +1,9 @@
-"""Bounded command execution and output reporting shared by the TDD and
-verification recorders.
-
-It is also the one owner of CLI reporting mechanics: JSON emission and the
-committed-mutation policy for reporting failures (a command's mutation, when
-any, is already committed - a reporting failure is never re-labelled as a
-refused transition).
-"""
+"""Command execution and bounded reporting shared by workflow recorders."""
 from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 
@@ -20,18 +14,26 @@ MAX_CAPTURE = 16000
 
 
 def run(command: list[str], identity: RepoIdentity, timeout: int) -> tuple[bytes, int, bool]:
+    process = subprocess.Popen(
+        command,
+        cwd=str(identity.root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=os.name == "posix",
+    )
     try:
-        result = subprocess.run(
-            command,
-            cwd=str(identity.root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=False,
-        )
-        return result.stdout or b"", result.returncode, False
-    except subprocess.TimeoutExpired as exc:
-        return (exc.stdout or b"") + (exc.stderr or b""), 124, True
+        raw, _ = process.communicate(timeout=timeout)
+        return raw or b"", process.returncode, False
+    except subprocess.TimeoutExpired:
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            process.kill()
+        raw, _ = process.communicate()
+        return raw or b"", 124, True
 
 
 def run_entry(raw: bytes, exit_code: int, timed_out: bool, **fields: object) -> dict[str, object]:
@@ -48,8 +50,6 @@ def emit_json(value: object) -> None:
     try:
         print(json.dumps(value, sort_keys=True), flush=True)
     except OSError:
-        # The command's mutation, when any, is already committed. A reporting
-        # failure cannot be re-labelled as a refused transition.
         mute_stdout()
 
 
@@ -67,9 +67,4 @@ def print_output(raw: bytes) -> None:
         try:
             print(output, end="" if output.endswith("\n") else "\n")
         except OSError:
-            # A successful run is already committed by the time it reports, so a
-            # lost reporting channel must not be re-labelled as a refusal; a run
-            # that genuinely failed still returns 2 through the caller's branch.
             mute_stdout()
-
-

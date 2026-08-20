@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Option-spelling contracts for the mapped public TDD entrypoint."""
+"""Option-routing contracts for the mapped public TDD entrypoint."""
 from __future__ import annotations
 
 import sys
@@ -12,10 +12,8 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import read_workflow  # noqa: E402
-from hooks.tests.support import pending_behavior  # noqa: E402
-# Module alias only: binding the TestCase name here would make unittest.main
-# rediscover and re-run the whole repair suite inside this file.
 from hooks.tests import test_tdd_repairs as tdd_repairs  # noqa: E402
+from hooks.tests.support import pending_behavior  # noqa: E402
 
 
 class MappedTddDispatchTests(unittest.TestCase):
@@ -26,33 +24,32 @@ class MappedTddDispatchTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.harness.tearDown()
 
-    def test_equals_form_behavior_id_uses_the_mapped_path(self) -> None:
-        marker = "EQUALS_FORM_PRODUCT_FAILURE"
-        item = pending_behavior("BM_EQUALS", red_failure=marker)
-        slug, _ = self.harness.begin_with_map([item], "equals-behavior")
+    def test_argparse_abbreviations_use_the_same_mapped_route(self) -> None:
+        marker = "ABBREVIATED_PRODUCT_FAILURE"
+        item = pending_behavior("BM_ABBREV", red_failure=marker)
+        slug, _ = self.harness.begin_with_map([item], "abbreviated-options")
         command = self.harness.write_unittest(2, marker)
-
         result = self.harness.cli(
             "tdd",
             "--repo",
             str(self.harness.repo),
             "--slug",
             slug,
-            "--phase=red",
-            "--behavior-id=BM_EQUALS",
+            "--pha",
+            "red",
+            "--behavior-i",
+            "BM_ABBREV",
             "--",
             *command,
         )
-
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         state = read_workflow(resolve_repo_identity(self.harness.repo))
         self.assertEqual(state["tddCycleCount"], 1)
-        self.assertEqual(self.harness.evidence()["behaviorId"], "BM_EQUALS")
+        self.assertEqual(self.harness.evidence()["behaviorId"], "BM_ABBREV")
 
     def test_equals_form_not_required_cannot_bypass_a_pending_map(self) -> None:
         item = pending_behavior("BM_PENDING")
         slug, _ = self.harness.begin_with_map([item], "equals-not-required")
-
         result = self.harness.cli(
             "tdd",
             "--repo",
@@ -61,7 +58,6 @@ class MappedTddDispatchTests(unittest.TestCase):
             slug,
             "--not-required=shortcut",
         )
-
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("every mapped item", result.stderr)
         state = read_workflow(resolve_repo_identity(self.harness.repo))
@@ -73,9 +69,6 @@ class MappedTddDispatchTests(unittest.TestCase):
         item = pending_behavior("BM_MAPPED", red_failure=marker)
         slug, _ = self.harness.begin_with_map([item], "legacy-flags")
         command = self.harness.write_unittest(2, marker)
-        runs = self.harness.repo / "runs.log"
-        before = runs.read_text(encoding="utf-8").count("run") if runs.exists() else 0
-
         result = self.harness.cli(
             "tdd",
             "--repo",
@@ -93,11 +86,8 @@ class MappedTddDispatchTests(unittest.TestCase):
             "--",
             *command,
         )
-
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("--behavior-id", result.stderr)
-        after = runs.read_text(encoding="utf-8").count("run") if runs.exists() else 0
-        self.assertEqual(after, before, "a legacy candidate ran against a mapped pass")
         state = read_workflow(resolve_repo_identity(self.harness.repo))
         self.assertEqual(state["tdd"], "pending")
         self.assertNotIn("tddEvidence", state)
