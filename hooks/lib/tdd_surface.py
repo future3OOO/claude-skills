@@ -1,10 +1,9 @@
-"""TDD surface identity and framework-backed RED proof.
+"""TDD surface identity and structured RED proof.
 
 RED and GREEN must select the same tests, not use byte-identical command text.
-Direct pytest and unittest runs can prove an executed product assertion. Other
-commands remain exact-surface bound but cannot establish mapped RED proof: the
-workflow ledger is continuity, not an attestation system, so deliberate terminal
-transcript forgery is a review concern rather than a production parser taxonomy.
+Direct pytest, unittest, and Python assertion probes can prove an executed
+product assertion. Other commands remain exact-surface bound but cannot open a
+mapped RED: the workflow ledger is continuity, not an attestation system.
 """
 from __future__ import annotations
 
@@ -35,6 +34,9 @@ IGNORED_BY_RUNNER = {
 EXACT_BOUND = "unrecognised runner; identity stays bound to the exact command"
 EVIDENCE_ONLY = frozenset({"ignored"})
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+PYTHON_TERMINAL_EXCEPTION = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Exit)(?::|$)"
+)
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
@@ -60,7 +62,7 @@ def identify(command: Sequence[str]) -> dict[str, object]:
     arguments: list[str] = []
     ignored: set[str] = set()
     literal = False
-    for token in command[len(prefix):]:
+    for token in command[len(prefix) :]:
         literal = literal or token == "--"
         dropped = None if literal else _ignored_class(runner, token)
         if dropped is None:
@@ -89,20 +91,54 @@ def differences(
 def evaluate_red(
     surface: Mapping[str, object], output: str, marker: str
 ) -> tuple[dict[str, object] | None, str]:
-    """Return framework evidence that RED reached the mapped assertion."""
+    """Return evidence that RED reached the mapped assertion."""
     runner = surface.get("runner")
-    if runner not in {"unittest", "pytest"}:
+    if runner not in {"unittest", "pytest", "python-assert"}:
         return None, (
-            "mapped RED proof requires a directly invoked pytest or unittest "
-            "surface; exact-bound commands cannot establish Seam reach"
+            "mapped RED proof requires a directly invoked pytest, unittest, or "
+            "Python assertion surface; this exact-bound command cannot establish "
+            "Seam reach"
         )
     output = ANSI_ESCAPE.sub("", output)
     if marker not in output:
         return None, f"output did not contain the mapped redFailure marker {marker!r}"
     if runner == "unittest":
         return _unittest_red(output, marker)
+    if runner == "python-assert":
+        return _python_assert_red(output, marker)
     arguments = surface.get("arguments")
     return _pytest_red(output, marker, arguments if isinstance(arguments, list) else ())
+
+
+def _python_assert_red(
+    output: str, marker: str
+) -> tuple[dict[str, object] | None, str]:
+    """Validate one uncaught assertion from a direct ``python -c`` probe."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    tracebacks = [
+        index
+        for index, line in enumerate(lines)
+        if line == "Traceback (most recent call last):"
+    ]
+    if not tracebacks:
+        return None, "Python probe did not report an uncaught assertion traceback"
+    terminal = next(
+        (
+            line
+            for line in lines[tracebacks[-1] + 1 :]
+            if PYTHON_TERMINAL_EXCEPTION.match(line)
+        ),
+        None,
+    )
+    if terminal is None or not terminal.startswith("AssertionError"):
+        return None, "Python probe ended for a reason other than AssertionError"
+    if marker not in terminal:
+        return None, "mapped marker was not emitted by the Python assertion"
+    return {
+        "quality": "assertion-reached",
+        "runner": "python-assert",
+        "testsExecuted": 1,
+    }, ""
 
 
 def _unittest_red(
@@ -112,7 +148,9 @@ def _unittest_red(
     ran = runs[-1] if runs else None
     if ran is None or int(ran.group(1)) < 1:
         return None, "unittest did not report an executed test"
-    summaries = [match for match in UNITTEST_FAILED.finditer(output) if match.start() > ran.start()]
+    summaries = [
+        match for match in UNITTEST_FAILED.finditer(output) if match.start() > ran.start()
+    ]
     summary = summaries[-1] if summaries else None
     if summary is None:
         return None, "unittest did not report a failed test"
@@ -204,7 +242,9 @@ def _pytest_red(
     ]
     if not failure_rules:
         return None, "pytest printed no FAILURES section containing the mapped assertion"
-    if not _pytest_marker_in_failure(lines[failure_rules[-1] + 1:summary_start], marker):
+    if not _pytest_marker_in_failure(
+        lines[failure_rules[-1] + 1 : summary_start], marker
+    ):
         return None, "mapped marker was not emitted by an executed pytest assertion"
     return {
         "quality": "assertion-reached",
@@ -220,7 +260,7 @@ def _pytest_summary(lines: list[str]) -> tuple[dict[str, int | bool] | None, int
             start = index
     if start is None:
         return None, len(lines)
-    for line in lines[start + 1:]:
+    for line in lines[start + 1 :]:
         if line.startswith(PYTEST_SUMMARY_RECORDS):
             continue
         text = line.strip().strip("=").strip()
@@ -228,9 +268,18 @@ def _pytest_summary(lines: list[str]) -> tuple[dict[str, int | bool] | None, int
             continue
         lowered = text.lower()
         return {
-            "failed": sum(int(v) for v in re.findall(r"(?<!\d)(\d+) failed\b", lowered)),
-            "passed": sum(int(v) for v in re.findall(r"(?<!\d)(\d+) passed\b", lowered)),
-            "errors": sum(int(v) for v in re.findall(r"(?<!\d)(\d+) errors?\b", lowered)),
+            "failed": sum(
+                int(value)
+                for value in re.findall(r"(?<!\d)(\d+) failed\b", lowered)
+            ),
+            "passed": sum(
+                int(value)
+                for value in re.findall(r"(?<!\d)(\d+) passed\b", lowered)
+            ),
+            "errors": sum(
+                int(value)
+                for value in re.findall(r"(?<!\d)(\d+) errors?\b", lowered)
+            ),
             "no_tests": "no tests ran" in lowered,
         }, start
     return None, start
@@ -268,6 +317,8 @@ def _recognise(command: Sequence[str]) -> tuple[str | None, Sequence[str]]:
     if not command:
         return None, ()
     executable = PurePosixPath(command[0]).name
+    if len(command) >= 3 and INTERPRETER.match(executable) and command[1] == "-c":
+        return "python-assert", command[:2]
     if (
         len(command) >= 3
         and INTERPRETER.match(executable)
@@ -281,7 +332,7 @@ def _recognise(command: Sequence[str]) -> tuple[str | None, Sequence[str]]:
 
 
 def _ignored_class(runner: str, token: str) -> str | None:
-    named = IGNORED_BY_RUNNER[runner].get(token)
+    named = IGNORED_BY_RUNNER.get(runner, {}).get(token)
     if named is not None:
         return named
     return "verbosity" if REPEATED_VERBOSITY.match(token) else None

@@ -268,6 +268,22 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(proof["runner"], "unittest")
         self.assertEqual(proof["testsExecuted"], 1)
 
+    def test_direct_python_assertion_records_reached_proof(self) -> None:
+        marker = "PYTHON_PRODUCT_ASSERTION"
+        slug, _ = self.begin_with_map(
+            [pending_behavior("BM_PYTHON", red_failure=marker)], "python-red"
+        )
+        result = self.tdd(
+            slug,
+            "red",
+            "BM_PYTHON",
+            (sys.executable, "-c", f"import app; assert app.value == 2, {marker!r}"),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        proof = self.evidence()["runs"][-1]["redProof"]
+        self.assertEqual(proof["runner"], "python")
+        self.assertEqual(proof["quality"], "assertion-reached")
+
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
     def test_pytest_collection_failure_is_not_red(self) -> None:
         marker = "PYTEST_UNREACHED_ASSERTION"
@@ -312,7 +328,7 @@ class MappedTddRepairTests(unittest.TestCase):
             slug,
             "red",
             "BM_OPAQUE",
-            (sys.executable, "-c", f"raise AssertionError({marker!r})"),
+            (sys.executable, "-m", "module_that_does_not_exist_for_tdd"),
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("cannot establish Seam reach", result.stderr)
@@ -323,16 +339,16 @@ class MappedTddRepairTests(unittest.TestCase):
         slug, _ = self.begin_with_map(
             [pending_behavior("BM_RUNNER", red_failure=marker)], "runner-token"
         )
+        probe = self.repo / "runner_probe.py"
+        probe.write_text(
+            "import sys\nprint(sys.argv[1])\nraise SystemExit(1)\n",
+            encoding="utf-8",
+        )
         result = self.tdd(
             slug,
             "red",
             "BM_RUNNER",
-            (
-                sys.executable,
-                "-c",
-                f"import sys; print(sys.argv[1]); raise AssertionError({marker!r})",
-                "--help",
-            ),
+            (sys.executable, str(probe), "--help"),
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("--help", result.stdout)

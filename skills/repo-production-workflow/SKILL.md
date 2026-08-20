@@ -115,7 +115,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 For behavior changes invoke `tdd` and select one pending Behavior Map ID. The RED must reach its recorded real Seam and emit that item's behavior-specific `redFailure` marker. A missing API/import, setup, syntax, fixture, or collection failure is not RED for a later product behavior and does not unlock production edits.
 
-For directly invoked pytest and unittest commands, the recorder verifies that a test ran and that the marker came from a test assertion. An unrecognized exact-bound runner can record only `marker-only-opaque` evidence; that weaker record does not independently prove Seam reach and must be inspected by the lead before it is relied on.
+For directly invoked pytest, unittest, and `python -c` assertion probes, the recorder verifies that the mapped marker came from an executed assertion rather than collection, setup, loading, printed output, or another exception. Any other exact-bound command remains comparable for RED/GREEN identity but cannot satisfy a mapped RED because its output cannot establish Seam reach. Use a supported real assertion surface or leave the proof gap pending.
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
@@ -288,10 +288,11 @@ transport may be recorded `unavailable` only with the measured reason; final
 review has no unavailable exception. Ordinary documentation, scratch, and
 non-repository work keeps the lightweight exception; governance docs still
 reset downstream review readiness. Stop blocks with the exact `nextAction`
-while completion readiness is missing and no pause is recorded; any advancing
-update — including an edit-triggered invalidation — clears a recorded pause.
-[WORKFLOW-MAP.md](WORKFLOW-MAP.md) owns the full permit and re-stop
-conditions. Unavailable blast-radius impact is reported as `unknown`.
+while completion readiness is missing and no pause is recorded; authoritative
+workflow or mapped-evidence corruption is repair-only and cannot be released by
+`pause`. Any advancing update — including an edit-triggered invalidation — clears
+a recorded pause. [WORKFLOW-MAP.md](WORKFLOW-MAP.md) owns the full permit and
+re-stop conditions. Unavailable blast-radius impact is reported as `unknown`.
 
 ## Final response
 
