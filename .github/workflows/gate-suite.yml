@@ -46,12 +46,3 @@ jobs:
           else
             python3 skills/production-code/scripts/code_quality_gate.py check --repo . --base-ref "${{ github.event.before }}"
           fi
-      - name: Export checkout for takeover verification
-        if: always()
-        run: tar --exclude=.git -czf /tmp/pr138-source.tgz .
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: pr138-source-${{ github.sha }}
-          path: /tmp/pr138-source.tgz
-          retention-days: 1

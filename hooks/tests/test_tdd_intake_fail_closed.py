@@ -31,6 +31,7 @@ from hooks.tests.support import (  # noqa: E402
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
+STOP = ROOT / "hooks" / "post-edit-blast-radius.py"
 
 
 class MappedIntakeFailureTests(unittest.TestCase):
@@ -177,6 +178,17 @@ class MappedIntakeFailureTests(unittest.TestCase):
             production_code.stdout + production_code.stderr,
         )
 
+        paused = self.command(
+            "pause",
+            "--slug",
+            slug,
+            "--workflow-id",
+            workflow_id,
+            "--reason",
+            "external blocker",
+        )
+        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
+
         current = read_workflow(identity)
         evidence_id = str(current["tddEvidence"])
         connection = sqlite3.connect(database_path(identity))
@@ -213,6 +225,28 @@ class MappedIntakeFailureTests(unittest.TestCase):
         self.assertEqual(decision["permissionDecision"], "deny")
         self.assertIn("workflow evidence is unreadable", decision["permissionDecisionReason"])
         self.assertNotIn("Traceback", intake.stderr)
+
+        stop = subprocess.run(
+            [sys.executable, str(STOP)],
+            cwd=self.repo,
+            env=self.env,
+            text=True,
+            input=json.dumps(
+                {
+                    "cwd": str(self.repo),
+                    "session_id": "malformed-map-stop",
+                    "stop_hook_active": False,
+                }
+            ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+        blocked = json.loads(stop.stdout)
+        self.assertEqual(blocked["decision"], "block")
+        self.assertIn("repair or explicitly retire", blocked["reason"])
+        self.assertNotIn("workflow.py pause", blocked["reason"])
 
 
 if __name__ == "__main__":
