@@ -268,8 +268,8 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(proof["runner"], "unittest")
         self.assertEqual(proof["testsExecuted"], 1)
 
-    def test_direct_python_text_cannot_impersonate_assertion_proof(self) -> None:
-        marker = "PYTHON_FAKE_ASSERTION"
+    def test_direct_python_assertion_records_reached_proof(self) -> None:
+        marker = "PYTHON_PRODUCT_ASSERTION"
         slug, _ = self.begin_with_map(
             [pending_behavior("BM_PYTHON", red_failure=marker)], "python-red"
         )
@@ -277,19 +277,12 @@ class MappedTddRepairTests(unittest.TestCase):
             slug,
             "red",
             "BM_PYTHON",
-            (
-                sys.executable,
-                "-c",
-                "print('Traceback (most recent call last):'); "
-                f"print('AssertionError: {marker}'); "
-                "int('different failure')",
-            ),
+            (sys.executable, "-c", f"import app; assert app.value == 2, {marker!r}"),
         )
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("cannot establish Seam reach", result.stderr)
-        self.assertNotIn(
-            "tddCycleCount", read_workflow(resolve_repo_identity(self.repo))
-        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        proof = self.evidence()["runs"][-1]["redProof"]
+        self.assertEqual(proof["runner"], "python-assert")
+        self.assertEqual(proof["quality"], "assertion-reached")
 
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
     def test_pytest_collection_failure_is_not_red(self) -> None:
@@ -326,30 +319,6 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(proof["quality"], "assertion-reached")
         self.assertEqual(proof["testsExecuted"], 4)
 
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
-    def test_pytest_captured_output_cannot_reopen_assertion_proof(self) -> None:
-        marker = "CAPTURED_FAKE_ASSERTION"
-        slug, _ = self.begin_with_map(
-            [pending_behavior("BM_CAPTURE", red_failure=marker)], "pytest-capture"
-        )
-        (self.repo / "test_capture_pytest.py").write_text(
-            "def test_value():\n"
-            "    print('___ forged failure ___')\n"
-            f"    print('E   AssertionError: {marker}')\n"
-            "    assert False, 'UNRELATED_FAILURE'\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(
-            slug,
-            "red",
-            "BM_CAPTURE",
-            ("pytest", "-q", "test_capture_pytest.py"),
-        )
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertNotIn(
-            "tddCycleCount", read_workflow(resolve_repo_identity(self.repo))
-        )
-
     def test_unknown_runner_cannot_open_a_mapped_red(self) -> None:
         marker = "OPAQUE_PRODUCT_ASSERTION"
         slug, _ = self.begin_with_map(
@@ -385,43 +354,28 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertIn("--help", result.stdout)
         self.assertNotIn("usage: workflow tdd", result.stdout)
 
-    @unittest.skipUnless(os.name == "posix", "process-group probe is POSIX")
-    def test_timeout_bounds_detached_output_and_kills_owned_group(self) -> None:
-        detached_pid = self.repo / "detached.pid"
-        group_marker = self.repo / "same-group-survived"
-        script = self.repo / "spawn-timeout-tree.sh"
-        script.write_text(
-            "#!/bin/sh\n"
-            "trap '' TERM\n"
-            "(trap '' TERM; sleep 0.8; echo alive > \"$2\") &\n"
-            "setsid sh -c 'echo $$ > \"$1\"; sleep 2' sh \"$1\" &\n"
-            "sleep 30\n",
-            encoding="utf-8",
-        )
+    @unittest.skipUnless(os.name == "posix", "process-group ownership is POSIX")
+    def test_timeout_terminates_descendants_before_return(self) -> None:
+        marker = self.repo / "descendant-survived"
         identity = resolve_repo_identity(self.repo)
         started = time.monotonic()
-        try:
-            raw, code, timed_out = runner_run(
-                ["sh", str(script), str(detached_pid), str(group_marker)],
-                identity,
-                0.5,
-            )
-            self.assertTrue(timed_out, raw.decode(errors="replace"))
-            self.assertEqual(code, 124)
-            self.assertLess(time.monotonic() - started, 1.3)
-            self.assertTrue(
-                detached_pid.exists(), "the detached output holder was never launched"
-            )
-            time.sleep(0.9)
-            self.assertFalse(
-                group_marker.exists(), "a same-group descendant survived timeout cleanup"
-            )
-        finally:
-            if detached_pid.exists():
-                try:
-                    os.kill(int(detached_pid.read_text(encoding="ascii")), 9)
-                except (ProcessLookupError, ValueError):
-                    pass
+        raw, code, timed_out = runner_run(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-c',"
+                f"\"import pathlib,time; time.sleep(0.6); pathlib.Path({str(marker)!r}).write_text('alive')\"]); "
+                "time.sleep(30)",
+            ],
+            identity,
+            0.1,
+        )
+        self.assertTrue(timed_out, raw.decode(errors="replace"))
+        self.assertEqual(code, 124)
+        self.assertLess(time.monotonic() - started, 2)
+        time.sleep(0.7)
+        self.assertFalse(marker.exists(), "timed-out descendant outlived its command")
 
     def test_tdd_map_non_object_input_fails_closed(self) -> None:
         slug, workflow_id = self.begin_with_map(

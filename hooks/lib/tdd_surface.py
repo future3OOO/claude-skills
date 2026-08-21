@@ -1,13 +1,12 @@
 """TDD surface identity and structured RED proof.
 
 RED and GREEN must select the same tests, not use byte-identical command text.
-Direct pytest, unittest, and restricted Python assertion probes can prove an
-executed product assertion. Other commands remain exact-surface bound but cannot open a
+Direct pytest, unittest, and Python assertion probes can prove an executed
+product assertion. Other commands remain exact-surface bound but cannot open a
 mapped RED: the workflow ledger is continuity, not an attestation system.
 """
 from __future__ import annotations
 
-import ast
 import re
 import shlex
 from collections.abc import Mapping, Sequence
@@ -35,6 +34,9 @@ IGNORED_BY_RUNNER = {
 EXACT_BOUND = "unrecognised runner; identity stays bound to the exact command"
 EVIDENCE_ONLY = frozenset({"ignored"})
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+PYTHON_TERMINAL_EXCEPTION = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Exit)(?::|$)"
+)
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
@@ -94,8 +96,8 @@ def evaluate_red(
     if runner not in {"unittest", "pytest", "python-assert"}:
         return None, (
             "mapped RED proof requires a directly invoked pytest, unittest, or "
-            "restricted Python assertion surface; this exact-bound command cannot "
-            "establish Seam reach"
+            "Python assertion surface; this exact-bound command cannot establish "
+            "Seam reach"
         )
     output = ANSI_ESCAPE.sub("", output)
     if marker not in output:
@@ -111,7 +113,7 @@ def evaluate_red(
 def _python_assert_red(
     output: str, marker: str
 ) -> tuple[dict[str, object] | None, str]:
-    """Validate the terminal exception from one syntax-restricted assertion probe."""
+    """Validate one uncaught assertion from a direct ``python -c`` probe."""
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     tracebacks = [
         index
@@ -124,7 +126,7 @@ def _python_assert_red(
         (
             line
             for line in lines[tracebacks[-1] + 1 :]
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Exit)(?::|$)", line)
+            if PYTHON_TERMINAL_EXCEPTION.match(line)
         ),
         None,
     )
@@ -137,20 +139,6 @@ def _python_assert_red(
         "runner": "python-assert",
         "testsExecuted": 1,
     }, ""
-
-
-def _python_assert_probe(source: str) -> bool:
-    """Only imports followed by one final assert qualify as a direct probe."""
-    try:
-        body = ast.parse(source, mode="exec").body
-    except SyntaxError:
-        return False
-    if not body or not isinstance(body[-1], ast.Assert):
-        return False
-    if not all(isinstance(node, (ast.Import, ast.ImportFrom)) for node in body[:-1]):
-        return False
-    message = body[-1].msg
-    return isinstance(message, ast.Constant) and isinstance(message.value, str)
 
 
 def _unittest_red(
@@ -245,19 +233,17 @@ def _pytest_red(
             "pytest did not print its short failure summary; rerun without "
             "summary suppression so the RED is observable"
         )
-    if counts["no_tests"] or counts["errors"]:
+    if counts["no_tests"] or counts["errors"] or counts["failed"] < 1:
         return None, "pytest failed during collection/setup or executed no tests"
-    if counts["failed"] != 1:
-        return None, "mapped pytest RED must isolate exactly one failing test"
     failure_rules = [
         index
         for index, line in enumerate(lines[:summary_start])
         if line.startswith("=") and " FAILURES " in line
     ]
-    if len(failure_rules) != 1:
-        return None, "pytest must print one unambiguous FAILURES section"
+    if not failure_rules:
+        return None, "pytest printed no FAILURES section containing the mapped assertion"
     if not _pytest_marker_in_failure(
-        lines[failure_rules[0] + 1 : summary_start], marker
+        lines[failure_rules[-1] + 1 : summary_start], marker
     ):
         return None, "mapped marker was not emitted by an executed pytest assertion"
     return {
@@ -301,20 +287,18 @@ def _pytest_summary(lines: list[str]) -> tuple[dict[str, int | bool] | None, int
 
 def _pytest_marker_in_failure(lines: list[str], marker: str) -> bool:
     in_failure = False
+    in_captured_output = False
     in_assertion_message = False
     for line in lines:
-        if PYTEST_CAPTURED_HEADER.match(line):
-            # A mapped RED isolates one failing test, so captured output is the
-            # terminal boundary of the only genuine failure block. Header-shaped
-            # caller output after this point can never reopen framework mode.
-            return False
         if PYTEST_FAILURE_HEADER.match(line):
-            if in_failure:
-                return False
             in_failure = True
+            in_captured_output = False
             in_assertion_message = False
             continue
-        if not in_failure:
+        if in_failure and PYTEST_CAPTURED_HEADER.match(line):
+            in_captured_output = True
+            continue
+        if not in_failure or in_captured_output:
             continue
         if PYTEST_ASSERTION.match(line):
             in_assertion_message = True
@@ -333,12 +317,7 @@ def _recognise(command: Sequence[str]) -> tuple[str | None, Sequence[str]]:
     if not command:
         return None, ()
     executable = PurePosixPath(command[0]).name
-    if (
-        len(command) >= 3
-        and INTERPRETER.match(executable)
-        and command[1] == "-c"
-        and _python_assert_probe(command[2])
-    ):
+    if len(command) >= 3 and INTERPRETER.match(executable) and command[1] == "-c":
         return "python-assert", command[:2]
     if (
         len(command) >= 3

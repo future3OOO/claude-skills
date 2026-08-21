@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -97,40 +96,10 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         behavior_id: str,
         script: str,
     ) -> subprocess.CompletedProcess[str]:
-        probe = self.repo / "test_behavior_probe.py"
-        probe.write_text(
-            "import unittest\n\n"
-            "class BehaviorProbe(unittest.TestCase):\n"
-            "    def test_behavior(self):\n"
-            + textwrap.indent(script, "        ")
-            + "\n",
-            encoding="utf-8",
-        )
-        return subprocess.run(
-            [
-                sys.executable,
-                str(WORKFLOW),
-                "tdd",
-                "--repo",
-                str(self.repo),
-                "--slug",
-                slug,
-                "--phase",
-                phase,
-                "--behavior-id",
-                behavior_id,
-                "--",
-                sys.executable,
-                "-m",
-                "unittest",
-                "test_behavior_probe.BehaviorProbe.test_behavior",
-            ],
-            cwd=self.repo,
-            env=self.env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        return self.cli(
+            "tdd", "--slug", slug, "--phase", phase,
+            "--behavior-id", behavior_id,
+            "--", sys.executable, "-c", script,
         )
 
     def update_map(
@@ -246,7 +215,7 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
                 "dispositions": [{
                     "id": "BM_PRESENT",
                     "status": "already-satisfied",
-                    "evidence": "unittest assertion passed with app.value == 1 before editing",
+                    "evidence": "python assertion passed with app.value == 1 before editing",
                 }],
             },
         )
