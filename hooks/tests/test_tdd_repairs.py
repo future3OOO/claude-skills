@@ -459,25 +459,85 @@ class MappedTddRepairTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "process-group ownership is POSIX")
     def test_timeout_terminates_descendants_before_return(self) -> None:
         marker = self.repo / "descendant-survived"
-        identity = resolve_repo_identity(self.repo)
+        ready = self.repo / "descendant-ready"
+        (self.repo / "descendant.py").write_text(
+            "import pathlib,time\n"
+            f"pathlib.Path({str(ready)!r}).write_text('ready')\n"
+            "time.sleep(3.0)\n"
+            f"pathlib.Path({str(marker)!r}).write_text('alive')\n",
+            encoding="utf-8",
+        )
+        leader = (
+            "import pathlib,subprocess,sys,time\n"
+            "subprocess.Popen([sys.executable,'descendant.py'])\n"
+            f"while not pathlib.Path({str(ready)!r}).exists():\n"
+            "    time.sleep(0.01)\n"
+            "time.sleep(30)\n"
+        )
         started = time.monotonic()
         raw, code, timed_out = runner_run(
-            [
-                sys.executable,
-                "-c",
-                "import subprocess,sys,time; "
-                "subprocess.Popen([sys.executable,'-c',"
-                f"\"import pathlib,time; time.sleep(0.6); pathlib.Path({str(marker)!r}).write_text('alive')\"]); "
-                "time.sleep(30)",
-            ],
-            identity,
-            0.1,
+            [sys.executable, "-c", leader], resolve_repo_identity(self.repo), 1.0
         )
         self.assertTrue(timed_out, raw.decode(errors="replace"))
         self.assertEqual(code, 124)
-        self.assertLess(time.monotonic() - started, 2)
-        time.sleep(0.7)
+        self.assertTrue(ready.exists(), "descendant did not reach the measured state")
+        self.assertLess(time.monotonic() - started, 2.5)
+        # Anchor on readiness: a surviving descendant writes 3.0s after it.
+        time.sleep(max(0.0, ready.stat().st_mtime + 3.5 - time.time()))
         self.assertFalse(marker.exists(), "DESCENDANT_SURVIVED_TIMEOUT")
+
+    def test_record_preflight_refuses_zero_test_report_markers(self) -> None:
+        begun = self.cli(
+            "begin", "--repo", str(self.repo), "--slug", "zero-test-marker",
+            "--intent", "exercise marker validation",
+        )
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        workflow_id = str(json.loads(begun.stdout)["workflowId"])
+        identity = record_context_forge(self.repo, self.tmp)
+        record_advisor_result(
+            identity, "zero-test-marker", workflow_id, "preflight", "codex-advisor", "completed"
+        )
+        advisor_disposition(identity, "zero-test-marker", workflow_id, "preflight", "none")
+        for marker in ("Ran 0 tests", "0 tests ran"):
+            with self.subTest(marker=marker):
+                preflight = self.tmp / "zero-test-preflight.json"
+                preflight.write_text(
+                    json.dumps(build_document(
+                        "zero-test marker",
+                        behavior_map=[pending_behavior("BM_ZERO", red_failure=marker)],
+                    )),
+                    encoding="utf-8",
+                )
+                recorded = self.cli(
+                    "record-preflight", "--repo", str(self.repo), "--slug", "zero-test-marker",
+                    "--workflow-id", workflow_id, "--input", str(preflight),
+                )
+                self.assertEqual(
+                    recorded.returncode, 2,
+                    "NO_TEST_MARKER_ADMITTED\n" + recorded.stdout + recorded.stderr,
+                )
+                self.assertIn("product behavior", recorded.stderr, "NO_TEST_MARKER_ADMITTED")
+                self.assertEqual(
+                    read_workflow(identity).get("preflight"), "pending", "NO_TEST_MARKER_ADMITTED"
+                )
+        # A product marker that merely contains denylist words stays admitted.
+        preflight = self.tmp / "product-marker-preflight.json"
+        preflight.write_text(
+            json.dumps(build_document(
+                "product marker",
+                behavior_map=[pending_behavior(
+                    "BM_PRODUCT", red_failure="ZERO_TESTS_VISIBLE_AFTER_RAN_0_ROWS"
+                )],
+            )),
+            encoding="utf-8",
+        )
+        recorded = self.cli(
+            "record-preflight", "--repo", str(self.repo), "--slug", "zero-test-marker",
+            "--workflow-id", workflow_id, "--input", str(preflight),
+        )
+        self.assertEqual(
+            recorded.returncode, 0, "PRODUCT_MARKER_REFUSED\n" + recorded.stdout + recorded.stderr
+        )
 
     def write_leader_with_child(self, child_sleep: float, marker: Path) -> str:
         """A leader that starts a same-group child and exits 0 immediately."""

@@ -11,7 +11,7 @@ Production behavior changes require one **behavior-specific RED** before product
 
 A RED proves the mapped behavior is absent. It must reach the real Seam and fail at the product assertion named by the map. A missing method/import, invalid setup, collection error, syntax error, or test that fails before reaching the claimed behavior is not RED evidence.
 
-The recorder can establish assertion reach for directly invoked pytest and unittest. Other exact-bound commands remain useful for surface identity but cannot satisfy a mapped RED because their output cannot establish Seam reach. Use a supported real assertion surface or leave the proof gap pending; do not manufacture a second test path.
+The recorder can establish assertion reach for directly invoked pytest and unittest; its verdict is a bounded reading of the runner's report text - evidence the lead verifies, not an attestation, because the ledger is continuity. Other exact-bound commands remain useful for surface identity but cannot satisfy a mapped RED because their output cannot establish Seam reach. Use a supported real assertion surface or leave the proof gap pending; do not manufacture a second test path.
 
 The canonical mock ban in `~/.claude/CLAUDE.md` applies without exception. This skill never creates a test-only proof path.
 
@@ -49,14 +49,14 @@ Do not write all tests first. Select one pending map ID.
 
 - Write one test for that atomic behavior through its recorded Seam.
 - Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
-- Run `workflow.py tdd --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
+- Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
 - If the real-Seam test already passes before a production edit, disposition the item through `tdd-map` as `already-satisfied` with that evidence; do not manufacture RED or edit production code for it.
 - Production edits remain blocked until this RED is valid.
 
 **GREEN**
 
 - Write the smallest production change that passes the same test surface.
-- Run `workflow.py tdd --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
+- Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
 - Do not anticipate later slices.
 
 Several assertions may jointly prove one behavior; every assertion participating in that joint proof carries the same behavior-specific `redFailure` marker, so whichever guarantee breaks first still names the mapped failure. State after success or failure must match the complete observable contract.
@@ -66,7 +66,8 @@ Several assertions may jointly prove one behavior; every assertion participating
 GREEN creates architecture, so it also creates new proof obligations. Before another production edit, record a reassessment:
 
 ```bash
-workflow.py tdd-map --slug <task> --workflow-id <active-workflowId> \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  tdd-map --repo "$PWD" --slug <task> --workflow-id <active-workflowId> \
   --input <map-update.json>
 ```
 

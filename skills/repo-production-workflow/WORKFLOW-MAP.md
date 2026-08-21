@@ -11,10 +11,14 @@ flowchart LR
     D -->|no| A1[advisor preflight]
     DG --> A1
     A1 --> P[production preflight records the Behavior Map]
-    P --> TR[mapped TDD RED]
+    P --> M{map has a pending item?}
+    M -->|yes| TR[mapped TDD RED]
+    M -->|no: every item already-satisfied or omitted| NR[tdd --not-required]
     TR --> PC[production-code]
+    NR --> PC
     PC --> I[implementation]
-    I --> TG[mapped GREEN]
+    I -->|active RED| TG[mapped GREEN]
+    I -->|not-required map| V
     TG --> TM[post-GREEN map reassessment]
     TM -->|new obligation| TR
     TM -->|map resolved| V[verification]

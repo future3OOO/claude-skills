@@ -33,6 +33,8 @@ GENERIC_RED_PHRASES = (
     "missing module",
     "no tests ran",
     "zero tests ran",
+    "0 tests ran",
+    "ran 0 tests",
     "no tests collected",
     "zero tests collected",
     "setup failed",
