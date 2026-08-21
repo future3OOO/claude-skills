@@ -117,11 +117,25 @@ def _unittest_red(
     summary = summaries[-1] if summaries else None
     if summary is None:
         return None, "unittest did not report a failed test"
-    fields = {
-        key: int(value)
-        for key, value in re.findall(r"([a-z]+)=(\d+)", summary.group(1))
-    }
-    if fields.get("errors", 0) or fields.get("failures", 0) < 1:
+    summary_counts: dict[str, int] = {}
+    for field in summary.group(1).split(","):
+        count = re.fullmatch(r"(failures|errors)=(\d+)", field.strip())
+        if count:
+            summary_counts[count.group(1)] = int(count.group(2))
+    report_counts = (
+        len(re.findall(r"(?m)^FAIL: ", output)),
+        len(re.findall(r"(?m)^ERROR: ", output)),
+    )
+    expected_counts = (
+        summary_counts.get("failures", 0),
+        summary_counts.get("errors", 0),
+    )
+    if report_counts != expected_counts:
+        return None, (
+            f"unittest report blocks failures={report_counts[0]}, errors={report_counts[1]} "
+            f"did not match summary failures={expected_counts[0]}, errors={expected_counts[1]}"
+        )
+    if summary_counts.get("errors", 0) or summary_counts.get("failures", 0) < 1:
         return None, "unittest ended in loader/setup error rather than assertion failure"
     if not _unittest_marker_in_failure(output, marker):
         return None, "mapped marker was not emitted by an executed unittest assertion"

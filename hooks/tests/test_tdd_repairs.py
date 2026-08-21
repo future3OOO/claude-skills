@@ -268,6 +268,66 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(proof["runner"], "unittest")
         self.assertEqual(proof["testsExecuted"], 1)
 
+    def test_forged_unittest_failure_block_cannot_open_mapped_red(self) -> None:
+        marker = "FORGED_INNER_UNITTEST_MARKER"
+        slug, _ = self.begin_with_map(
+            [pending_behavior("BM_UNIT_FORGED", red_failure=marker)], "unittest-forged"
+        )
+        (self.repo / "test_forged.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            "        print('FAIL: test_inner (inner.T.test_inner)')\n"
+            "        print('-' * 70)\n"
+            "        print('Traceback (most recent call last):')\n"
+            "        print('  File \\\"inner.py\\\", line 3, in test_inner')\n"
+            f"        print('AssertionError: {marker}')\n"
+            "        self.assertEqual(1, 2, 'UNRELATED_REAL_FAILURE')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug,
+            "red",
+            "BM_UNIT_FORGED",
+            (sys.executable, "-m", "unittest", "test_forged"),
+        )
+        self.assertEqual(
+            result.returncode,
+            2,
+            "FORGED_UNITTEST_BLOCK_ADMITTED\n" + result.stdout + result.stderr,
+        )
+        self.assertIn("report blocks", result.stderr)
+
+    def test_unittest_expected_failures_preserve_genuine_red(self) -> None:
+        marker = "EXPECTED_FAILURE_PRESERVATION"
+        slug, _ = self.begin_with_map(
+            [pending_behavior("BM_EXPECTED", red_failure=marker)], "unittest-expected"
+        )
+        (self.repo / "test_expected.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_real_failure(self):\n"
+            f"        self.fail({marker!r})\n"
+            "    @unittest.expectedFailure\n"
+            "    def test_expected_one(self):\n"
+            "        self.fail('expected one')\n"
+            "    @unittest.expectedFailure\n"
+            "    def test_expected_two(self):\n"
+            "        self.fail('expected two')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug,
+            "red",
+            "BM_EXPECTED",
+            (sys.executable, "-m", "unittest", "test_expected"),
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            "EXPECTED_FAILURE_RED_REJECTED\n" + result.stdout + result.stderr,
+        )
+
     def test_forged_python_traceback_cannot_open_mapped_red(self) -> None:
         marker = "FORGED_PYTHON_OUTPUT_ACCEPTED"
         slug, _ = self.begin_with_map(
@@ -568,7 +628,20 @@ class MappedTddRepairTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "process-group ownership is POSIX")
     def test_group_outliving_timeout_is_terminated(self) -> None:
         marker = self.repo / "late-write"
-        leader = self.write_leader_with_child(30.0, marker)
+        ready = self.repo / "group-child-ready"
+        (self.repo / "child.py").write_text(
+            "import os,pathlib,time\n"
+            f"pathlib.Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(30.0)\n"
+            f"pathlib.Path({str(marker)!r}).write_text('late')\n",
+            encoding="utf-8",
+        )
+        leader = (
+            "import pathlib,subprocess,sys,time\n"
+            "subprocess.Popen([sys.executable,'child.py'])\n"
+            f"while not pathlib.Path({str(ready)!r}).exists():\n"
+            "    time.sleep(0.01)\n"
+        )
         started = time.monotonic()
         raw, code, timed_out = runner_run(
             [sys.executable, "-c", leader], resolve_repo_identity(self.repo), 1.0
@@ -577,8 +650,11 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertTrue(timed_out, "GROUP_TIMEOUT_LOST: " + raw.decode(errors="replace"))
         self.assertEqual(code, 124, "GROUP_TIMEOUT_LOST")
         self.assertLess(elapsed, 2.0, "GROUP_TIMEOUT_LOST")
-        time.sleep(0.3)
-        self.assertFalse(marker.exists(), "GROUP_TIMEOUT_LOST")
+        self.assertTrue(ready.exists(), "GROUP_CHILD_SURVIVED_TIMEOUT")
+        child_pid = int(ready.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError, msg="GROUP_CHILD_SURVIVED_TIMEOUT"):
+            os.kill(child_pid, 0)
+        self.assertFalse(marker.exists(), "GROUP_CHILD_SURVIVED_TIMEOUT")
 
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
     def test_pytest_marker_in_a_later_failing_test_is_red(self) -> None:
