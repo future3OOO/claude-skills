@@ -1,8 +1,8 @@
 """TDD surface identity and structured RED proof.
 
 RED and GREEN must select the same tests, not use byte-identical command text.
-Direct pytest, unittest, and Python assertion probes can prove an executed
-product assertion. Other commands remain exact-surface bound but cannot open a
+Direct pytest and unittest commands can prove an executed product assertion.
+Other commands remain exact-surface bound but cannot open a
 mapped RED: the workflow ledger is continuity, not an attestation system.
 """
 from __future__ import annotations
@@ -34,9 +34,6 @@ IGNORED_BY_RUNNER = {
 EXACT_BOUND = "unrecognised runner; identity stays bound to the exact command"
 EVIDENCE_ONLY = frozenset({"ignored"})
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-PYTHON_TERMINAL_EXCEPTION = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Exit)(?::|$)"
-)
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
@@ -93,52 +90,18 @@ def evaluate_red(
 ) -> tuple[dict[str, object] | None, str]:
     """Return evidence that RED reached the mapped assertion."""
     runner = surface.get("runner")
-    if runner not in {"unittest", "pytest", "python-assert"}:
+    if runner not in {"unittest", "pytest"}:
         return None, (
-            "mapped RED proof requires a directly invoked pytest, unittest, or "
-            "Python assertion surface; this exact-bound command cannot establish "
-            "Seam reach"
+            "mapped RED proof requires a directly invoked pytest or unittest "
+            "surface; this exact-bound command cannot establish Seam reach"
         )
     output = ANSI_ESCAPE.sub("", output)
     if marker not in output:
         return None, f"output did not contain the mapped redFailure marker {marker!r}"
     if runner == "unittest":
         return _unittest_red(output, marker)
-    if runner == "python-assert":
-        return _python_assert_red(output, marker)
     arguments = surface.get("arguments")
     return _pytest_red(output, marker, arguments if isinstance(arguments, list) else ())
-
-
-def _python_assert_red(
-    output: str, marker: str
-) -> tuple[dict[str, object] | None, str]:
-    """Validate one uncaught assertion from a direct ``python -c`` probe."""
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    tracebacks = [
-        index
-        for index, line in enumerate(lines)
-        if line == "Traceback (most recent call last):"
-    ]
-    if not tracebacks:
-        return None, "Python probe did not report an uncaught assertion traceback"
-    terminal = next(
-        (
-            line
-            for line in lines[tracebacks[-1] + 1 :]
-            if PYTHON_TERMINAL_EXCEPTION.match(line)
-        ),
-        None,
-    )
-    if terminal is None or not terminal.startswith("AssertionError"):
-        return None, "Python probe ended for a reason other than AssertionError"
-    if marker not in terminal:
-        return None, "mapped marker was not emitted by the Python assertion"
-    return {
-        "quality": "assertion-reached",
-        "runner": "python-assert",
-        "testsExecuted": 1,
-    }, ""
 
 
 def _unittest_red(
@@ -242,9 +205,17 @@ def _pytest_red(
     ]
     if not failure_rules:
         return None, "pytest printed no FAILURES section containing the mapped assertion"
-    if not _pytest_marker_in_failure(
-        lines[failure_rules[-1] + 1 : summary_start], marker
-    ):
+    failures = lines[failure_rules[-1] + 1 : summary_start]
+    # pytest prints one header per failed test; any extra header-shaped line
+    # is printed text, and the marker can no longer be attributed to a test.
+    headers = sum(1 for line in failures if PYTEST_FAILURE_HEADER.match(line))
+    if headers != counts["failed"]:
+        return None, (
+            f"pytest reported {counts['failed']} failed but its FAILURES section "
+            f"holds {headers} header-shaped lines; printed header-shaped text "
+            "cannot be attributed to a test - remove it or narrow the command"
+        )
+    if not _pytest_marker_in_failure(failures, marker):
         return None, "mapped marker was not emitted by an executed pytest assertion"
     return {
         "quality": "assertion-reached",
@@ -290,6 +261,8 @@ def _pytest_marker_in_failure(lines: list[str], marker: str) -> bool:
     in_captured_output = False
     in_assertion_message = False
     for line in lines:
+        # Every header is a genuine block start here: _pytest_red has already
+        # matched the header count against the failed count.
         if PYTEST_FAILURE_HEADER.match(line):
             in_failure = True
             in_captured_output = False
@@ -317,8 +290,6 @@ def _recognise(command: Sequence[str]) -> tuple[str | None, Sequence[str]]:
     if not command:
         return None, ()
     executable = PurePosixPath(command[0]).name
-    if len(command) >= 3 and INTERPRETER.match(executable) and command[1] == "-c":
-        return "python-assert", command[:2]
     if (
         len(command) >= 3
         and INTERPRETER.match(executable)

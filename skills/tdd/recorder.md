@@ -13,7 +13,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <targeted-command>
 ```
 
-The map owns the behavior, Seam, expected outcome, and behavior-specific `redFailure` marker. For directly invoked pytest and unittest, RED is valid only when collection/loading/setup reaches at least one executed test and the marker is emitted by its assertion failure. Missing APIs, imports, fixtures, syntax, collection/setup failures, and zero-test runs do not open a cycle. Unknown runners remain exact-command bound and their accepted RED is labelled `marker-only-opaque`, not assertion-reached proof.
+The map owns the behavior, Seam, expected outcome, and behavior-specific `redFailure` marker. For directly invoked pytest and unittest, RED is valid only when collection/loading/setup reaches at least one executed test and the marker is emitted by its assertion failure. Printed output is never the assertion: a pytest run whose FAILURES section carries more header-shaped lines than failed tests is unattributable and refuses, naming both counts. Missing APIs, imports, fixtures, syntax, collection/setup failures, and zero-test runs do not open a cycle. Other exact-bound commands remain comparable for RED/GREEN identity but cannot satisfy a mapped RED because their output cannot establish Seam reach.
 
 A valid RED unlocks production edits for that active item. GREEN must rerun the same normalized test surface, not merely the same spelling. For directly invoked stdlib unittest or pytest, fail-fast and verbosity aliases may differ; selectors, target, config, runner, behavior ID, and Seam remain load-bearing. Unknown runners remain exact-command bound.
 
