@@ -42,6 +42,7 @@ def pending_behavior(
         "expected": expected,
         "redFailure": red_failure,
         "status": "pending",
+        "sourceRefs": [],
     }
 
 
@@ -55,7 +56,9 @@ def build_document(
         name: "none" if name == "openQuestions" else f"{name}: {fill}"
         for name in SECTIONS
     }
-    document[BEHAVIOR_MAP_SECTION] = behavior_map
+    document[BEHAVIOR_MAP_SECTION] = [
+        {**item, "sourceRefs": item.get("sourceRefs", [])} for item in behavior_map
+    ]
     return document
 
 

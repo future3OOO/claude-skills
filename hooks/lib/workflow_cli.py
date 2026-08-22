@@ -17,6 +17,7 @@ from .state_prune import prune
 from .state_store import tree_manifest, utc_timestamp
 from .workflow_documents import (
     advisor_disposition_document,
+    design_declaration,
     gate_verdict,
     review_summary,
     validate_gate_result,
@@ -121,6 +122,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--verdict", required=True)
     command.add_argument("--findings")
     command.add_argument("--reason")
+    command.add_argument("--design-declaration", required=True)
 
     command = _instance_command(commands, "advisor-disposition", "record lead disposition of advisor findings")
     command.add_argument("--stage", required=True)
@@ -445,6 +447,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             args.verdict,
             findings=args.findings,
             reason=args.reason,
+            design=design_declaration(args.design_declaration),
         ))
     elif args.command == "advisor-disposition":
         if args.findings == "addressed" and args.input is None:

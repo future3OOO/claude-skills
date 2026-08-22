@@ -48,6 +48,7 @@ REPLAY_INPUTS: dict[str, object] = {
         "chosenApproach", "rejectedAlternatives", "touchpoints", "verify", "update",
         "modularityPlan", "riskChecks")}, "openQuestions": "none"},
     "review.json": {"findings": [], "dispositions": []},
+    "design-absent.json": {"schemaVersion": 1, "status": "absent", "reason": "benchmark replay has no governing design artifact"},
 }
 def _fields(names: tuple[str, ...]):
     """Project a step's last command, which is the one that reports the state it reached."""
@@ -100,7 +101,8 @@ REPLAY = (
      lambda p: (p["exits"] == [0, 0] or (p["exits"] == [2, 0] and p["retiredTransitionRefused"]))
      and p["gitnexus"] == "passed" and p["nextAction"] == "advisor-preflight"),
     ("replay-advisor-preflight", lambda c: [[*c["cli"], "advisor-result", *c["bound"], "--stage", "preflight",
-                                            "--source", "codex-advisor", "--verdict", "completed"]],
+                                            "--source", "codex-advisor", "--verdict", "completed",
+                                            "--design-declaration", str(c["inputs"] / "design-absent.json")]],
      _fields(STATE_FIELDS), lambda p: p["advisorPreflight.status"] == "completed"),
     ("replay-advisor-disposition", lambda c: [[*c["cli"], "advisor-disposition", *c["bound"],
                                               "--stage", "preflight", "--findings", "none"]],
@@ -138,7 +140,8 @@ REPLAY = (
                                       "--input", str(c["inputs"] / "review.json")]],
      _fields(("status",)), lambda p: p["exits"] == [0] and p["status"] == "passed"),
     ("replay-advisor-final", lambda c: [[*c["cli"], "advisor-result", *c["bound"], "--stage", "final",
-                                        "--source", "codex-advisor", "--verdict", "commit-ready"]],
+                                        "--source", "codex-advisor", "--verdict", "commit-ready",
+                                        "--design-declaration", str(c["inputs"] / "design-absent.json")]],
      _fields(STATE_FIELDS), lambda p: p["finalReview.source"] == "codex-advisor" and p["finalReview.status"] == "commit-ready"),
     ("replay-final-disposition", lambda c: [[*c["cli"], "advisor-disposition", *c["bound"], "--stage", "final",
                                             "--findings", "none"]],

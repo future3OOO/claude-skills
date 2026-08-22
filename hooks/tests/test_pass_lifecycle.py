@@ -21,9 +21,10 @@ REARM = ROOT / "hooks" / "skill-discipline-rearm.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
-from hooks.tests.support import build_no_change_document, record_context_forge  # noqa: E402
+from hooks.tests.support import build_document, build_no_change_document, record_context_forge  # noqa: E402
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_documents import design_file_declaration  # noqa: E402
 from hooks.lib.workflow_state import set_phase  # noqa: E402
 
 
@@ -125,6 +126,10 @@ class PassLifecycleTests(unittest.TestCase):
         self.git("add", "app.py")
         self.git("commit", "-q", "-m", "base")
         self.documents = 0
+        self.design_declaration = self.tmp / "design-absent.json"
+        self.design_declaration.write_text(json.dumps({
+            "schemaVersion": 1, "status": "absent", "reason": "test pass has no governing design",
+        }), encoding="utf-8")
 
     def tearDown(self) -> None:
         if self.previous_state_root is None:
@@ -142,8 +147,11 @@ class PassLifecycleTests(unittest.TestCase):
         return result.stdout.rstrip("\n")
 
     def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        values = list(args)
+        if values and values[0] == "advisor-result" and "--design-declaration" not in values:
+            values += ["--design-declaration", str(self.design_declaration)]
         return subprocess.run(
-            [sys.executable, str(WORKFLOW), *args, "--repo", str(self.repo)],
+            [sys.executable, str(WORKFLOW), *values, "--repo", str(self.repo)],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
@@ -1724,6 +1732,161 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(self.evidence(preflight_id), kept,
                          "begin deleted retained history instead of merely deactivating it")
+
+    def test_governed_design_rejects_catalogue_only_label(self) -> None:
+        design = self.tmp / "catalogue-only-design.md"
+        design.write_text(
+            "ASSUMP-"
+            "<!-- governed-design-labels:v1 -->\n```json\n"
+            '{"schemaVersion":1,"labels":['
+            '{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}\n```'
+            "1\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "catalogue-only: ASSUMP-1",
+            msg="CATALOGUE_ONLY_LABEL_WAS_ACCEPTED",
+        ):
+            design_file_declaration(str(design))
+
+    def test_governed_design_labels_bind_preflight_coverage_atomically(self) -> None:
+        wid = self.begin_slug("design-labels")
+        self.advance_to_context_forge()
+        design = self.tmp / "design.md"
+        design.write_text(
+            "Decision preserves PRES-1 and relies on ASSUMP-1.\n"
+            "<!-- governed-design-labels:v1 -->\n```json\n"
+            '{"schemaVersion":1,"labels":['
+            '{"id":"PRES-1","kind":"preservation"},'
+            '{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}\n```\n',
+            encoding="utf-8",
+        )
+        declaration = self.tmp / "design.json"
+        declaration.write_text(json.dumps(design_file_declaration(str(design))), encoding="utf-8")
+        bad_design = self.tmp / "bad-design.md"
+        bad_design.write_text(design.read_text(encoding="utf-8") + "Uncatalogued ASSUMP-2.\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "uncatalogued: ASSUMP-2"):
+            design_file_declaration(str(bad_design))
+        recorded = self.cli(
+            "advisor-result", "--slug", "design-labels", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+            "--design-declaration", str(declaration),
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        evidence_id = json.loads(recorded.stdout)["governedDesignEvidence"]
+
+        changed = json.loads(declaration.read_text(encoding="utf-8"))
+        changed["catalogue"]["labels"].append(
+            {"id": "ASSUMP-2", "kind": "assumption", "behavioral": False}
+        )
+        changed_path = self.tmp / "changed-design.json"
+        changed_path.write_text(json.dumps(changed), encoding="utf-8")
+        refused = self.cli(
+            "advisor-result", "--slug", "design-labels", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+            "--design-declaration", str(changed_path),
+        )
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("differs from the recorded declaration", refused.stderr)
+
+        self.assertEqual(self.dispose("design-labels", wid, "preflight", "none").returncode, 0)
+        item = {
+            "id": "BM_DESIGN", "kind": "preservation", "basis": "governed design",
+            "behavior": "design labels own map proof", "seam": "public workflow CLI",
+            "expected": "required labels have an owner", "redFailure": "DESIGN_LABEL_UNOWNED",
+            "status": "already-satisfied", "evidence": "real CLI declaration intake",
+            "sourceRefs": [{"type": "design", "evidenceId": evidence_id, "id": "PRES-1"}],
+        }
+        before = json.loads(self.cli("status").stdout)
+        repeated = {**item, "sourceRefs": [*item["sourceRefs"], *item["sourceRefs"]]}
+        duplicate = self.record_preflight(wid, build_document("design coverage", behavior_map=[repeated]))
+        self.assertEqual(duplicate.returncode, 2, duplicate.stdout + duplicate.stderr)
+        self.assertIn("repeats design sourceRef PRES-1", duplicate.stderr)
+        missing = self.record_preflight(wid, build_document("design coverage", behavior_map=[item]))
+        self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
+        self.assertIn("ASSUMP-1", missing.stderr)
+        self.assertEqual(json.loads(self.cli("status").stdout).get("preflightEvidence"), before.get("preflightEvidence"))
+
+        item["sourceRefs"].append(
+            {"type": "design", "evidenceId": evidence_id, "id": "ASSUMP-1"}
+        )
+        empty = {**item, "id": "BM_EMPTY", "sourceRefs": []}
+        empty_result = self.record_preflight(
+            wid, build_document("design coverage", behavior_map=[item, empty])
+        )
+        self.assertEqual(
+            empty_result.returncode, 2,
+            "EMPTY_SOURCE_REFS_ACCEPTED" + empty_result.stdout + empty_result.stderr,
+        )
+        accepted = self.record_preflight(wid, build_document("design coverage", behavior_map=[item]))
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+
+    def test_identical_pending_preflight_design_replay_is_a_no_op(self) -> None:
+        wid = self.begin_slug("design-replay")
+        self.advance_to_context_forge()
+        first = self.cli(
+            "advisor-result", "--slug", "design-replay", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = json.loads(self.cli("status").stdout)
+        before_events = json.loads(self.cli("history", "--workflow-id", wid).stdout)["events"]
+        replay = self.cli(
+            "advisor-result", "--slug", "design-replay", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+        )
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        after = json.loads(self.cli("status").stdout)
+        after_events = json.loads(self.cli("history", "--workflow-id", wid).stdout)["events"]
+        self.assertEqual(
+            (after["phase"], after["advisorPreflight"], after["updatedAt"], len(after_events)),
+            (before["phase"], before["advisorPreflight"], before["updatedAt"], len(before_events)),
+            "PENDING_DESIGN_REPLAY_MUTATED_STATE",
+        )
+
+    def test_identical_dispositioned_preflight_design_replay_records_new_result(self) -> None:
+        wid = self.begin_slug("design-replay-dispositioned")
+        self.advance_to_context_forge()
+        first = self.cli(
+            "advisor-result", "--slug", "design-replay-dispositioned", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(
+            self.dispose("design-replay-dispositioned", wid, "preflight", "none").returncode,
+            0,
+        )
+        before_events = json.loads(self.cli("history", "--workflow-id", wid).stdout)["events"]
+        replay = self.cli(
+            "advisor-result", "--slug", "design-replay-dispositioned", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+        )
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        after = json.loads(self.cli("status").stdout)
+        after_events = json.loads(self.cli("history", "--workflow-id", wid).stdout)["events"]
+        self.assertEqual(
+            (after["advisorPreflight"]["findings"], len(after_events)),
+            ("pending", len(before_events) + 1),
+            "DISPOSITIONED_DESIGN_REPLAY_WAS_NOT_RECORDED",
+        )
+
+    def test_final_review_refuses_a_design_changed_after_preflight(self) -> None:
+        wid = self.begin_slug("stale-design")
+        self.advance_to_verification("stale-design", wid)
+        self.owner_phase("code-review", "passed", findings="none")
+        changed = self.tmp / "changed-absence.json"
+        changed.write_text(json.dumps({
+            "schemaVersion": 1, "status": "absent", "reason": "a later declaration",
+        }), encoding="utf-8")
+        refused = self.cli(
+            "advisor-result", "--slug", "stale-design", "--workflow-id", wid,
+            "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready",
+            "--design-declaration", str(changed),
+        )
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("differs from the recorded declaration", refused.stderr)
 
     def test_advisor_results_bind_to_the_workflow_instance(self) -> None:
         begun = self.cli("begin", "--slug", "reused-slug")

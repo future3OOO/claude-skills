@@ -11,6 +11,16 @@ WRAPPER="$ROOT/skills/codex-advisor/scripts/ask-codex-advisor.sh"
 pass=0
 fail=0
 
+write_design() {
+  cat >"$1" <<'EOF'
+Chosen architecture: preserve transport behavior under PRES-1 and test ASSUMP-1.
+<!-- governed-design-labels:v1 -->
+```json
+{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"},{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}
+```
+EOF
+}
+
 check() {
   local name="$1" expected="$2" actual="$3"
   if [[ "$actual" == *"$expected"* ]]; then
@@ -144,7 +154,7 @@ printf '== governing-design transport (offline)\n'
 designtmp=$(mktemp -d)
 mkdir -p "$designtmp/repo"
 git -C "$designtmp/repo" init -q
-printf 'chosen architecture\n' >"$designtmp/design.md"
+write_design "$designtmp/design.md"
 
 out=$("$WRAPPER" --slug t --phase preflight-advice --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
 check_status "phased consult without a design declaration refused" 2 "$status"
@@ -196,6 +206,15 @@ check "declared absence proceeds to the workflow lookup" "requires an active wor
 out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/design.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
 check_status "readable design file clears the design gate" 2 "$status"
 check "readable design file proceeds to the workflow lookup" "requires an active workflow" "$out"
+
+cp "$designtmp/design.md" "$designtmp/uncatalogued.md"; printf 'ASSUMP-2\n' >>"$designtmp/uncatalogued.md"
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/uncatalogued.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "uncatalogued design token refused" 1 "$status"
+check "uncatalogued token named" "uncatalogued: ASSUMP-2" "$out"
+cp "$designtmp/design.md" "$designtmp/two-markers.md"; printf '\n<!-- governed-design-labels:v1 -->\n```json\n{}\n```\n' >>"$designtmp/two-markers.md"
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/two-markers.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+check_status "two design markers refused" 1 "$status"
+check "two-marker refusal named" "exactly one labels marker" "$out"
 
 # Fail closed on a phase-less consult: there is no checkpoint to carry the
 # design to, so accepting the flag would silently drop caller-supplied evidence.
@@ -523,94 +542,9 @@ check "final-review carries the recorded intent verbatim" "$intent_text" "$armh_
 check "the armH denial travels in the same payload as the text that refutes it" \
   "There is no governing spec beyond the recorded workflow intent" "$armh_payload"
 
-# The governing design must reach the delegate as delegate-visible evidence with
-# its own provenance header: hash and byte accounting live in the payload, not
-# only on the lead's stderr, because silent truncation reads as complete design.
-printf 'PRES-1 preserve batching. ASSUMP-1 savepoints nest.\n' >"$intenttmp/design.md"
-design_sha=$(sha256sum -- "$intenttmp/design.md" | cut -d' ' -f1)
-design_payload=$(consult_input --slug intent-custody --phase preflight-advice \
-  --design-file "$intenttmp/design.md" -- "scope question") || exit 1
-check "design section header present" "--- governing design artifact (bounded: shown=" "$design_payload"
-check "design content reaches the delegate" "PRES-1 preserve batching. ASSUMP-1 savepoints nest." "$design_payload"
-check "design header carries the file sha256" "$design_sha" "$design_payload"
-check "small design is not marked truncated" "truncated=no" "$design_payload"
-
-# Byte custody: an artifact's trailing newlines are excerpt bytes the header
-# counts, so they must reach the provider stdin intact - two preserved plus the
-# heredoc's two structural newlines before the next section line.
-printf 'TAILNL_X\n\n' >"$intenttmp/design-tail.md"
-tail_payload=$(consult_input --slug intent-custody --phase preflight-advice \
-  --design-file "$intenttmp/design-tail.md" -- "scope question") || exit 1
-check "trailing newlines reach the provider byte-exact" \
-  "$(printf 'TAILNL_X\n\n\n\n--- unstaged diff ---')" "$tail_payload"
-check "the tail artifact advertises its full byte count" "shown=10/10 bytes" "$tail_payload"
-
-# An oversized design must be cut at its bound and say so in the same header the
-# delegate reads: shown/total bytes plus truncated=yes, with the tail absent.
-python3 - "$intenttmp/design-big.md" <<'BIGPY'
-import sys
-with open(sys.argv[1], "w", encoding="utf-8") as handle:
-    handle.write("a" * 24990)
-    handle.write("TAIL_MARKER_BEYOND_BOUND")
-BIGPY
-big_payload=$(consult_input --slug intent-custody --phase preflight-advice \
-  --design-file "$intenttmp/design-big.md" -- "scope question") || exit 1
-check "oversized design discloses its exact cut" "shown=20000/25014 bytes" "$big_payload"
-check "oversized design is marked truncated" "truncated=yes" "$big_payload"
-if [[ "$big_payload" == *"TAIL_MARKER_BEYOND_BOUND"* ]]; then
-  printf 'FAIL  bytes beyond the design bound must not reach the delegate\n'; fail=$((fail+1))
-else
-  printf 'PASS  bytes beyond the design bound do not reach the delegate\n'; pass=$((pass+1))
-fi
-
-# A declared absence is itself evidence: the delegate must see the declaration
-# verbatim so an unstated design on architecture-shaping work can be a finding.
-absent_payload=$(consult_input --slug intent-custody --phase preflight-advice \
-  --design-absent "trivial docs pass: no architecture decision was made" -- "scope question") || exit 1
-check "declared absence reaches the delegate" "--- governing design artifact, declared absent (bounded: shown=" "$absent_payload"
-
-# Startup-inherited errexit (POSIXLY_CORRECT=1) plus an artifact beyond pipe
-# capacity: producer-side SIGPIPE must not abort assembly - the excerpt arrives
-# bounded with its cut disclosed. Regression coverage; the production proof is
-# the recorded real-provider RED/GREEN on the pass that shipped the guard.
-python3 - "$intenttmp/design-huge.md" <<'HUGEPY'
-import sys
-open(sys.argv[1], "w").write("survive oversized artifacts " * 8000)
-HUGEPY
-huge_payload=$(POSIXLY_CORRECT=1 consult_input --slug intent-custody --phase preflight-advice \
-  --design-file "$intenttmp/design-huge.md" -- "scope question") || exit 1
-check "POSIXLY_CORRECT oversized design still assembles" "shown=20000/224000 bytes, truncated=yes" "$huge_payload"
-
-# A NUL in the kept prefix cannot cross the Bash transport intact: the wrapper
-# refuses at assembly with a named cause, before the provider path starts -
-# asserted by the absence of the session marker on stderr.
-python3 - "$intenttmp/design-nul.md" <<'NULPY'
-import sys
-open(sys.argv[1], "wb").write(b"A\x00B\x00C")
-NULPY
-nul_err="$intenttmp/nul-stderr"
-PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
-  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
-  --design-file "$intenttmp/design-nul.md" -- "scope question" >/dev/null 2>"$nul_err"
-check_status "NUL-bearing excerpt refused" 2 "$?"
-check "NUL refusal names the transport rule" "cannot cross the Bash transport" "$(cat "$nul_err")"
-if grep -q "codex_advisor_session" "$nul_err"; then
-  printf 'FAIL  the provider path must never start for a refused excerpt\n'; fail=$((fail+1))
-else
-  printf 'PASS  the provider path never starts for a refused excerpt\n'; pass=$((pass+1))
-fi
-check "the absence reason travels verbatim" "trivial docs pass: no architecture decision was made" "$absent_payload"
-
-# Every caller-supplied bounded channel wears the same provenance header. The
-# packet is proven through the payload; TDD and review summaries route through
-# the one bounded_section owner (asserted structurally below, matching this
-# suite's existing grep checks), so one implementation carries all channels.
-packet_payload=$(consult_input --slug intent-custody --phase preflight-advice \
-  --design-absent "packet channel check" --packet "$intenttmp/design.md" -- "scope question") || exit 1
-check "packet channel wears the provenance header" "--- repo context packet (bounded: shown=" "$packet_payload"
-check "packet content still reaches the delegate" "PRES-1 preserve batching." "$packet_payload"
+grep -q 'bounded_section design_declaration_section design-declaration' "$WRAPPER" \
+  && { printf 'PASS  canonical design declaration reaches the bounded evidence owner\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  canonical design declaration must reach bounded_section\n'; fail=$((fail+1)); }
 
 grep -q 'bounded_section tdd_section tdd "recorded TDD summary"' "$WRAPPER" \
   && { printf 'PASS  TDD summary routes through the bounded channel owner\n'; pass=$((pass+1)); } \
@@ -628,16 +562,16 @@ PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claud
   CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
   CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
   "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
-  --design-file "$intenttmp/design.md" -- "scope question" >/dev/null 2>"$telemetry_file"
+  --design-absent "intent-custody rig: no plan artifact" -- "scope question" >/dev/null 2>"$telemetry_file"
 check "design channel reports itself on stderr" "codex_advisor_evidence name=design" "$(cat "$telemetry_file")"
 check "assembled prompt reports its total bytes" "codex_advisor_prompt bytes_total=" "$(cat "$telemetry_file")"
 
 # The preflight prompt frames the consult as falsification of a decided design,
 # bounds the advisor's epistemics, and keeps the decision with measurement.
-check "preflight frames the design as the object under falsification" "the decided design under review: try to falsify it" "$design_payload"
-check "the advisor may recommend a family; measurement decides" "You may recommend a different architecture family; the decision is settled by measurement" "$design_payload"
-check "unobserved claims are labeled with their settling measurement" "inferred/unverified and name the smallest real-Seam measurement" "$design_payload"
-check "an unstated design on architecture-shaping work is a finding" "an absent design artifact is itself a top-ranked finding" "$design_payload"
+check "preflight frames the design as the object under falsification" "the decided design under review: try to falsify it" "$preflight_payload"
+check "the advisor may recommend a family; measurement decides" "You may recommend a different architecture family; the decision is settled by measurement" "$preflight_payload"
+check "unobserved claims are labeled with their settling measurement" "inferred/unverified and name the smallest real-Seam measurement" "$preflight_payload"
+check "an unstated design on architecture-shaping work is a finding" "an absent design artifact is itself a top-ranked finding" "$preflight_payload"
 
 # Window knobs pass through from the resolved model configuration only when
 # configured: absent from the claudex block means absent from the provider env.
@@ -647,8 +581,7 @@ PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claud
   CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
   CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
   CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
-  --design-absent "knob rig" -- "scope question" >/dev/null 2>&1
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-rig -- "scope question" >/dev/null 2>&1
 check "unconfigured max-context knob stays unset" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
 check "unconfigured auto-compact window stays unset" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
 check "unconfigured autocompact percent stays unset" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
@@ -665,8 +598,7 @@ PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claud
   CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
   CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
   CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
-  --design-absent "knob rig" -- "scope question" >/dev/null 2>&1
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-rig -- "scope question" >/dev/null 2>&1
 check "configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
 check "configured auto-compact window reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
 check "configured autocompact percent reaches the provider" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80" "$(cat "$env_file")"
@@ -685,8 +617,7 @@ PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claud
   CLAUDE_CODE_AUTO_COMPACT_WINDOW=999111 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
   CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
   CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
-  --design-absent "knob isolation rig" -- "scope question" >/dev/null 2>&1
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-isolation -- "scope question" >/dev/null 2>&1
 check "the alias-configured knob still reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
 check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
 check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
@@ -704,8 +635,7 @@ PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claud
   CLAUDE_CODE_MAX_CONTEXT_TOKENS=888222 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
   CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
   CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
-  --design-absent "knob isolation rig" -- "scope question" >/dev/null 2>&1
+  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-isolation -- "scope question" >/dev/null 2>&1
 check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
 check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
 
@@ -794,7 +724,7 @@ if [[ "${LIVE:-0}" = "1" ]]; then
   mkdir -p "$livetmp/repo"
   git -C "$livetmp/repo" init -q
   git -C "$livetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-  printf 'Chosen architecture: probe. PRES-1 keep transport green. ASSUMP-1 flags reach the provider.\n' >"$livetmp/design.md"
+  write_design "$livetmp/design.md"
   CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
     begin --repo "$livetmp/repo" --slug live-design-probe >/dev/null
   CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" python3 -c 'import sys

@@ -50,6 +50,12 @@ class WorkflowLedgerTests(unittest.TestCase):
         self.previous_state_root = os.environ.get("CLAUDE_WORKFLOW_STATE_ROOT")
         os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.state_root)
         self.env = os.environ.copy()
+        self.design_declaration = self.tmp / "design-absent.json"
+        self.design_declaration.write_text(json.dumps({
+            "schemaVersion": 1,
+            "status": "absent",
+            "reason": "workflow ledger test has no governing design",
+        }), encoding="utf-8")
 
     def tearDown(self) -> None:
         if self.previous_state_root is None:
@@ -59,8 +65,11 @@ class WorkflowLedgerTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        command = list(args)
+        if "advisor-result" in command and "--design-declaration" not in command:
+            command.extend(("--design-declaration", str(self.design_declaration)))
         return subprocess.run(
-            [sys.executable, str(WORKFLOW), *args], cwd=self.repo, env=self.env,
+            [sys.executable, str(WORKFLOW), *command], cwd=self.repo, env=self.env,
             text=True, encoding="utf-8", stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, check=False,
         )

@@ -361,6 +361,35 @@ def set_phase(
 TDD_ACTIONS = {"reopen", "in-progress", "passed", "not-required"}
 
 
+def _validate_design_map(
+    transaction: LedgerMutation,
+    state: JsonObject,
+    document: JsonObject | None,
+    *,
+    require_coverage: bool,
+    evidence_id: str | None = None,
+    declaration: JsonObject | None = None,
+) -> None:
+    if not isinstance(document, dict):
+        return
+    value = document.get("behaviorMap")
+    if value is None:
+        inner = document.get("document")
+        value = inner.get("behaviorMap") if isinstance(inner, dict) else None
+    if value is None:
+        return
+    items = behavior_map.runtime_items(value)
+    design_id = evidence_id or (
+        state.get("governedDesignEvidence")
+        if isinstance(state.get("governedDesignEvidence"), str)
+        else None
+    )
+    design = declaration or transaction.evidence(design_id)
+    behavior_map.validate_design_authority(
+        items, design_id, design, require_coverage=require_coverage,
+    )
+
+
 def commit_tdd(
     identity: RepoIdentity,
     slug: str,
@@ -389,6 +418,9 @@ def commit_tdd(
             raise WorkflowError("tdd requires recorded preflight evidence")
         if state.get("tddEvidence") != expected_evidence_id:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
+        _validate_design_map(
+            transaction, state, summary_doc, require_coverage=False,
+        )
         writes: list[EvidenceWrite] = []
         evidence_id: str | None = None
         if summary_doc is not None:
@@ -477,6 +509,10 @@ def commit_evidence_phase(
         latest_field = f"{field}LatestEvidence"
         if expected_evidence_id is not _NO_CAS and state.get(latest_field) != expected_evidence_id:
             raise WorkflowError(f"{phase} evidence changed during the run; re-read and re-run the command")
+        if phase == "preflight":
+            _validate_design_map(
+                transaction, state, evidence_doc, require_coverage=True,
+            )
         _apply_step(identity, state, phase, status)
         write = evidence_write(str(state["workflowId"]), phase, evidence_doc)
         state[latest_field] = write.evidence_id
@@ -584,6 +620,7 @@ def record_advisor_result(
     *,
     findings: str | None = None,
     reason: str | None = None,
+    design: JsonObject | None = None,
 ) -> JsonObject:
     if source not in REVIEW_SOURCES:
         raise ValueError(f"unsupported reviewer source: {source}")
@@ -591,7 +628,29 @@ def record_advisor_result(
         raise ValueError("advisor-result records findings=pending; disposition findings with advisor-disposition")
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
-        state.pop("paused", None)
+        writes: list[EvidenceWrite] = []
+        replayed_design = False
+        if design is not None:
+            candidate = evidence_write(str(state["workflowId"]), "governed-design", design)
+            existing_id = state.get("governedDesignEvidence")
+            if isinstance(existing_id, str):
+                if transaction.evidence(existing_id) != design:
+                    raise WorkflowError("governed design differs from the recorded declaration")
+                replayed_design = True
+            elif stage == "final":
+                raise WorkflowError("final review requires the recorded governing design declaration")
+            else:
+                if state.get("preflightEvidence"):
+                    _validate_design_map(
+                        transaction,
+                        state,
+                        transaction.evidence(str(state["preflightEvidence"])),
+                        require_coverage=True,
+                        evidence_id=candidate.evidence_id,
+                        declaration=design,
+                    )
+                state["governedDesignEvidence"] = candidate.evidence_id
+                writes.append(candidate)
         if stage == "preflight":
             if state.get("revalidation"):
                 raise WorkflowError(PREFLIGHT_CLOSED)
@@ -603,14 +662,25 @@ def record_advisor_result(
             measured_reason = str(reason or "").strip() or None
             if verdict == "unavailable" and not measured_reason:
                 raise ValueError("preflight unavailable requires --reason")
+            recorded_reason = measured_reason if verdict == "unavailable" else None
+            current = state.get("advisorPreflight")
+            if replayed_design and isinstance(current, dict) and all((
+                current.get("findings") == "pending",
+                current.get("source") == source,
+                current.get("status") == verdict,
+                current.get("reason") == recorded_reason,
+            )):
+                return state
+            state.pop("paused", None)
             state["advisorPreflight"] = {
                 "source": source,
                 "status": verdict,
                 "findings": "none" if verdict == "unavailable" else "pending",
-                "reason": measured_reason if verdict == "unavailable" else None,
+                "reason": recorded_reason,
             }
             state["phase"] = "advisor-preflight"
         elif stage == "final":
+            state.pop("paused", None)
             _require_predecessor(state, "final-review")
             if verdict not in FINAL_VERDICTS:
                 raise ValueError(f"unsupported final-review verdict: {verdict}")
@@ -623,7 +693,9 @@ def record_advisor_result(
         else:
             raise ValueError(f"unsupported advisor stage: {stage}")
         state["nextAction"] = _derive_next_action(state)
-        return _commit(transaction, state, f"advisor-{stage}-result")
+        return _commit(
+            transaction, state, f"advisor-{stage}-result", evidence=writes,
+        )
 
 
 def _require_open(state: JsonObject) -> None:
@@ -793,12 +865,18 @@ def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: st
         _require_instance(state, slug, workflow_id)
         state.pop("paused", None)
         state.pop("revalidation", None)
-        # Behavior Map closure is judged from the evidence this transaction
-        # sees, so a map committed between the CLI's diagnostic precheck and
-        # this mutation cannot slip through.
+        # Behavior Map closure and design coverage are judged from the evidence
+        # this transaction sees, so a concurrent map change cannot slip through.
+        tdd_document = transaction.evidence(state.get("tddEvidence"))
+        preflight_document = transaction.evidence(state.get("preflightEvidence"))
+        _validate_design_map(
+            transaction,
+            state,
+            tdd_document or preflight_document,
+            require_coverage=True,
+        )
         missing = behavior_map.closure_blockers(
-            transaction.evidence(state.get("tddEvidence")),
-            transaction.evidence(state.get("preflightEvidence")),
+            tdd_document, preflight_document,
         ) + completion_missing(state)
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
