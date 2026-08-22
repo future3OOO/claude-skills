@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Sole production advisor transport: read-only delegate, no plugin/Agent fallback.
+# Sole production advisor transport: trusted delegate, no plugin/Agent fallback.
 set -euo pipefail
 umask 077
 
 usage() {
   printf 'Usage: %s --slug <name> [--phase preflight-advice|final-review] [--cwd path] [--base-ref ref] [--packet file] [--design-file file | --design-absent reason] [--budget words] [--fresh] -- "question"\n' "$0" >&2
   printf '  A phased consult requires exactly one governing-design declaration: --design-file <readable artifact> or --design-absent <specific reason>.\n' >&2
+  printf '  Default budget: 600 words; values above 1200 are refused.\n' >&2
+  printf '  Advisor trust: same as the lead; instructed not to mutate the checkout or workflow ledger.\n' >&2
   exit 2
 }
 
@@ -14,7 +16,7 @@ if [[ -n "${CODEX_ADVISOR_ACTIVE:-}${ADVISOR_ACTIVE:-}" ]]; then
   exit 3
 fi
 
-slug=""; phase=""; cwd="$PWD"; base_ref=""; packet_file=""; design_file=""; design_absent=""; budget=300; fresh=0; question=""
+slug=""; phase=""; cwd="$PWD"; base_ref=""; packet_file=""; design_file=""; design_absent=""; budget=600; fresh=0; question=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slug) slug="${2:?missing --slug value}"; shift 2 ;;
@@ -33,6 +35,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$slug" ]] || { printf 'error: --slug is required (stable per task, no phase words)\n' >&2; usage; }
+if [[ ! "$budget" =~ ^[1-9][0-9]*$ ]] || (( budget > 1200 )); then
+  printf 'error: --budget must be an integer from 1 through 1200\n' >&2
+  exit 2
+fi
 [[ -d "$cwd" ]] || { printf 'error: --cwd is not a directory: %s\n' "$cwd" >&2; exit 2; }
 case "$phase" in ""|preflight-advice|final-review) ;; *) printf 'error: unsupported phase: %s\n' "$phase" >&2; exit 2 ;; esac
 if [[ "$phase" == "final-review" && -z "$base_ref" ]]; then
@@ -281,7 +287,7 @@ print(rendered)' "$GRAPH_EXCERPT_LIMIT"
 }
 
 active_wid=""; active_tdd=""; active_review=""; active_tdd_evidence=""; active_review_evidence=""
-active_design_evidence=""; active_intent=""
+active_design_evidence=""; active_verification_evidence=""; active_intent=""
 graph_excerpt=""
 if [[ -n "$phase" ]]; then
   if ! checkpoint_json=$(python3 "$workflow_cli" checkpoint --repo "$repo_root" --phase "$phase" 2>&1); then
@@ -319,10 +325,11 @@ print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") o
     IFS= read -r -d '' active_preflight_evidence
     IFS= read -r -d '' active_graph_evidence
     IFS= read -r -d '' active_design_evidence
+    IFS= read -r -d '' active_verification_evidence
     IFS= read -r -d '' active_intent
   } < <(printf '%s' "$status_json" | python3 -c 'import json,sys
 state = json.load(sys.stdin)
-for field in ("tddEvidence", "codeReviewEvidence", "preflightEvidence", "repoContextForgeEvidence", "governedDesignEvidence", "intent"):
+for field in ("tddEvidence", "codeReviewEvidence", "preflightEvidence", "repoContextForgeEvidence", "governedDesignEvidence", "verificationLatestEvidence", "intent"):
     sys.stdout.write((state.get(field) or "") + "\0")')
   if [[ -n "$active_design_evidence" ]]; then
     recorded_design=$(owned_record "$active_design_evidence" "$active_wid")
@@ -392,10 +399,10 @@ phase_prompt=""
 case "$phase" in
   preflight-advice)
     phase_prompt='Checkpoint Interface: preflight-advice
-Load /codebase-design, /tdd, and /code-quality. Challenge task scope, packet and GitNexus caller/callee coverage, Module/Interface/Seam choice, reuse, first real-seam RED, no-change surfaces, and demonstrated risks. The governing design artifact below is the decided design under review: try to falsify it — unsupported assumptions, contracts it violates, reachable operations that defeat it, exploration findings it fails to disposition. You may recommend a different architecture family; the decision is settled by measurement, not by this consult. Label any claim about existing behavior, tests, compatibility, or runtime semantics you have not directly observed as inferred/unverified and name the smallest real-Seam measurement that settles it. For work proposing a new Module, public Seam, or choosing between architecture families, an absent design artifact is itself a top-ranked finding. Give the highest-risk finding first and one exact next action before editing.' ;;
+Load /codebase-design, /tdd, and /code-quality. Challenge task scope, packet and GitNexus caller/callee coverage, Module/Interface/Seam choice, reuse, first real-seam RED, no-change surfaces, and demonstrated risks. The governing design artifact below is the decided design under review: try to falsify it — unsupported assumptions, contracts it violates, reachable operations that defeat it, exploration findings it fails to disposition. You may recommend a different architecture family; the decision is settled by measurement, not by this consult. Label any claim about existing behavior, tests, compatibility, or runtime semantics you have not directly observed as inferred/unverified and name the smallest real-Seam measurement that settles it. For work proposing a new Module, public Seam, or choosing between architecture families, an absent design artifact is itself a top-ranked finding. Contract coverage: treat every supplied contract item not GREEN or producer-backed baseline as material. Design coverage: treat every supplied PRES-n or behavioral ASSUMP-n without an owning Behavior Map item as material. Framing: the lead question is a claim; measure any premise it states as fact before relying on it. Measure before you infer: run the test, CLI, or probe and quote the command and result; a claim you could measure but did not is not material. Use configured GitNexus when available and report GitNexus unavailable explicitly when it is not. Give the highest-risk finding first and one exact next action before editing.' ;;
   final-review)
     phase_prompt='Checkpoint Interface: final-review
-Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. Precedence: the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof. Unreconciled divergence between the design and the recorded preflight is a finding. Recheck each PRES-n preservation obligation the design names against the live diff, and attempt to falsify each ASSUMP-n load-bearing assumption against the implementation. Apply the contradictory-contract gate: an Interface that admits arbitrary caller behavior may not also require callers to avoid particular operations — such a caveat is the defect. After the named checks, identify at most one additional material reachable failure class introduced by the changed Interface or state boundary and absent from both the design and the recorded proof; no broad exploration. Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation. A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed already-satisfied with baseline-passed evidence for its exact surface and the pass unchanged for it, or superseded with a GREEN terminal replacement; a contract item that is omitted, already-satisfied by prose, RED, unresolved, stale, or superseded without a GREEN terminal replacement is material. End with exactly one of: Verdict: commit-ready, Verdict: fix-before-commit, Verdict: context-mismatch. Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.' ;;
+Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. Precedence: the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof. Unreconciled divergence between the design and the recorded preflight is a finding. Recheck each PRES-n preservation obligation the design names against the live diff, and attempt to falsify each ASSUMP-n load-bearing assumption against the implementation. Apply the contradictory-contract gate: an Interface that admits arbitrary caller behavior may not also require callers to avoid particular operations — such a caveat is the defect. After the named checks, identify at most one additional material reachable failure class introduced by the changed Interface or state boundary and absent from both the design and the recorded proof; no broad exploration. Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation. A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed already-satisfied with baseline-passed evidence for its exact surface and the pass unchanged for it, or superseded with a GREEN terminal replacement; a contract item that is omitted, already-satisfied by prose, RED, unresolved, stale, or superseded without a GREEN terminal replacement is material. Contract coverage: treat every contract item not GREEN or producer-backed baseline as material. Design coverage: treat every PRES-n or behavioral ASSUMP-n without an owning Behavior Map item as material. Framing: the lead question is a claim; measure any premise it states as fact before relying on it. Measure before you infer: run the test, CLI, or probe and quote the command and result; a claim you could measure but did not is not material. Use configured GitNexus when available and report GitNexus unavailable explicitly when it is not. End with exactly one of: Verdict: commit-ready, Verdict: fix-before-commit, Verdict: context-mismatch. Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.' ;;
 esac
 
 evidence=""
@@ -430,11 +437,43 @@ if [[ -n "$phase" ]]; then
   fi
   [[ -z "$packet_section" ]] && packet_section="--- repo context packet ---
 <none>"
-  tdd_section=""; review_section=""
+  tdd_section=""; review_section=""; verification_section=""; behavior_map_section=""
+  tdd_doc=""
+  if [[ -n "$active_wid" && -n "$active_tdd_evidence" ]]; then
+    tdd_doc=$(owned_record "$active_tdd_evidence" "$active_wid")
+  fi
+  if [[ -n "$active_wid" && -n "$active_verification_evidence" ]]; then
+    verification_doc=$(owned_record "$active_verification_evidence" "$active_wid")
+    verification_projection=$(printf '%s' "$verification_doc" | python3 -c 'import json,sys
+raw = sys.stdin.read()
+if not raw.strip():
+    raise SystemExit
+record = json.loads(raw)
+fields = ("kind", "command", "exitCode", "timedOut", "valid", "outputTail", "at")
+print(json.dumps({"sourceEvidenceId": sys.argv[1], "runs": [
+    {key: run.get(key) for key in fields if key in run}
+    for run in record.get("runs") or []
+]}, indent=1))' "$active_verification_evidence")
+    [[ -n "$verification_projection" ]] && bounded_section verification_section verification "recorded verification runs" "$verification_projection" 12000
+  fi
+  behavior_source="$tdd_doc"; behavior_source_id="$active_tdd_evidence"
+  if [[ -z "$behavior_source" && -n "${preflight_doc:-}" ]]; then
+    behavior_source="$preflight_doc"; behavior_source_id="$active_preflight_evidence"
+  fi
+  if [[ -n "$behavior_source" ]]; then
+    behavior_projection=$(printf '%s' "$behavior_source" | python3 -c 'import json,sys
+raw = json.load(sys.stdin)
+items = raw.get("behaviorMap") or (raw.get("document") or {}).get("behaviorMap") or []
+fields = ("id", "kind", "status", "sourceRefs", "basis", "behavior", "seam", "expected", "evidence", "supersededBy")
+print(json.dumps({"sourceEvidenceId": sys.argv[1], "items": [
+    {key: item.get(key) for key in fields if key in item}
+    for item in items
+]}, indent=1))' "$behavior_source_id")
+    [[ -n "$behavior_projection" ]] && bounded_section behavior_map_section behavior-map "current Behavior Map" "$behavior_projection" 12000
+  fi
   if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
-    if [[ "$active_tdd" != "pending" && -n "$active_tdd_evidence" ]]; then
-      tdd_doc=$(owned_record "$active_tdd_evidence" "$active_wid")
-      [[ -n "$tdd_doc" ]] && bounded_section tdd_section tdd "recorded TDD summary" "$tdd_doc" 4000
+    if [[ "$active_tdd" != "pending" && -n "$tdd_doc" ]]; then
+      bounded_section tdd_section tdd "recorded TDD summary" "$tdd_doc" 4000
     fi
     case "$active_review" in
       passed|not-required)
@@ -447,6 +486,10 @@ if [[ -n "$phase" ]]; then
   [[ -z "$tdd_section" ]] && tdd_section="--- recorded TDD summary ---
 <none>"
   [[ -z "$review_section" ]] && review_section="--- recorded code-review summary ---
+<none>"
+  [[ -z "$verification_section" ]] && verification_section="--- recorded verification runs ---
+<none>"
+  [[ -z "$behavior_map_section" ]] && behavior_map_section="--- current Behavior Map ---
 <none>"
   evidence="
 === Live repository evidence
@@ -467,11 +510,13 @@ ${branch_diff:-<empty>}
 ${packet_section}
 --- Repo Context Forge graph evidence, this workflow instance (bounded) ---
 ${graph_excerpt}
+${verification_section}
+${behavior_map_section}
 ${tdd_section}
 ${review_section}"
 fi
 
-role="Codex advisor mode, read-only. You are the independent advisor delegate for one consult. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. An undemonstrated theoretical failure is at most a report line and cannot require code. A real-Seam reproduction of behavior admitted by the supported Interface is occurrence; caller enumeration proves absence only on a closed, complete execution surface. For bugs, require a reproduced symptom and falsifiable root-cause hypothesis. Apply only the named rubric skills. Do not invoke execution workflows, spawn agents, run an advisor, mutate files or Git, or call external systems. Use targeted repository reads and cite file:line. Give findings, not orders, in <=${budget} words."
+role="Codex advisor mode, investigative. You are the independent advisor delegate for one consult. You run with the same trust as the lead and are instructed not to mutate the checkout or workflow ledger. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. An undemonstrated theoretical failure is at most a report line and cannot require code. A real-Seam reproduction of behavior admitted by the supported Interface is occurrence; caller enumeration proves absence only on a closed, complete execution surface. For bugs, require a reproduced symptom and falsifiable root-cause hypothesis. Apply only the named rubric skills. Do not invoke execution workflows, spawn agents, or run an advisor. You may use Bash, web reads, Git and GitHub reads, configured MCP tools, tests, CLI probes, and workflow status, history, evidence, and checkpoint commands. You may create and mutate temporary files and repositories solely for measurement. Report GitNexus unavailable explicitly when it is not configured. A claim you could measure but did not is not a material finding. Use targeted repository reads and cite file:line. Give findings, not orders, in <=${budget} words."
 prompt="${phase_prompt}
 ${evidence}
 
@@ -487,9 +532,8 @@ set +e
 printf '%s' "$prompt" | env "${provider_unset[@]}" "${provider_env[@]}" \
   claude -p "${session_args[@]}" --model "$model" --output-format text \
     --append-system-prompt "$role" \
-    --tools "Read,Grep,Glob,Skill" \
-    --disallowed-tools "Edit Write NotebookEdit Task Bash mcp__*" \
-    --strict-mcp-config >"$output_file"
+    --tools "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch" \
+    --disallowed-tools "Edit Write NotebookEdit Task" >"$output_file"
 status=$?
 set -e
 if [[ "$status" -ne 0 ]]; then

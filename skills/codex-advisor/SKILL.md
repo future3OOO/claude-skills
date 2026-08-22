@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: Consult the read-only Codex advisor at the workflow preflight and final-review checkpoints through the sole local wrapper.
+description: Consult the Codex advisor at the workflow preflight and final-review checkpoints through the sole local wrapper.
 ---
 
 # Codex advisor
@@ -20,7 +20,10 @@ Supply the task contract, packet/coverage summary, intended Module/Interface/Sea
 first real-seam RED, and no-change surfaces. The recorded graph result is attached
 for you, carrying the caller and upstream-impact halves; it holds no callee facts,
 so callee context stays yours to supply. The advisor challenges scope and design; it does not create
-the preflight artifact or approve implementation.
+the preflight artifact or approve implementation. It treats the lead question
+as a claim, measures accessible premises before inferring, and makes supplied
+contract items without GREEN/baseline proof plus unowned `PRES-n` or behavioral
+`ASSUMP-n` obligations material.
 
 Every phased consult carries a governing-design declaration: `--design-file`
 with the durable design artifact, or `--design-absent` with the specific
@@ -111,23 +114,25 @@ wait for the process rather than polling with repeated sleeps.
   --slug "<task>" --phase preflight-advice \
   --cwd "$PWD" --packet "<packet-file>" \
   --design-file "<design-artifact>" \
-  --budget 350 -- "<focused scope question>"
+  --budget 600 -- "<focused scope question>"
 
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase final-review \
   --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" \
   --design-file "<design-artifact>" \
-  --budget 450 -- "<focused completion question>"
+  --budget 600 -- "<focused completion question>"
 ```
 
 Substitute `--design-absent "<specific reason>"` when the pass genuinely has
-no design artifact. The final-review budget is 450, not 350: the precedence
-and falsification obligations added to that phase prompt displace answer
-budget at 350.
+no design artifact. The operator-selected default budget is 600 words, and
+budgets above 1,200 are refused. Exact 51KB bodies did not finish within the
+240-second deadline at 450, 600, or 900; those runs record the measured provider
+throughput limit, not a replay-calibrated budget threshold.
 
-Every bounded evidence channel — design, recorded preflight, packet, TDD and
-review summaries — wears a delegate-visible header with shown/total bytes,
-truncation, and sha256, and reports the same on stderr as
+Every bounded evidence channel — design, recorded preflight, packet,
+verification runs, current Behavior Map, TDD, and review summaries — wears a
+delegate-visible header with shown/total bytes, truncation, and sha256, and
+reports the same on stderr as
 `codex_advisor_evidence`; the assembled prompt reports
 `codex_advisor_prompt bytes_total`. Graph evidence keeps its whole-check
 omission accounting. The claudex window knobs
@@ -136,8 +141,8 @@ omission accounting. The claudex window knobs
 the alias block configures them, so a proxy model the CLI does not recognize
 stops compacting against a guessed window.
 
-Carry `--packet` on **both** checkpoints. The delegate is isolated: it sees the
-diff and the repository, but not the packet you read, so evidence you gathered
+Carry `--packet` on **both** checkpoints. The delegate has a separate context:
+it sees the diff and the repository, but not the packet you read, so evidence you gathered
 and did not attach does not exist for it. A final review that cannot check
 consumer completeness independently answers `context-mismatch`, and the paid
 consult buys a re-run rather than a review.
@@ -170,15 +175,18 @@ A successful transport requires exit 0, non-empty stdout, and
 `codex_advisor_complete status=0 provider=codex` on stderr. A missing terminal
 marker, empty output, or quoting error is not a completed consult.
 
-## Read-only and recursion contract
+## Measurement and recursion contract
 
-The delegate may read and search the repository and load the named rubric
-skills. Bash, Edit, Write, NotebookEdit, Task/subagents, Git mutation, and
-external mutation are unavailable. `CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE`
-prevent nested consultation.
+The delegate runs with the same trust as the lead and is instructed not to
+mutate the checkout or workflow ledger. It may use repository reads, Bash, web
+reads, Git and GitHub reads, tests, CLI probes, and normally configured MCP
+tools. It must report GitNexus unavailable explicitly rather than imply it
+searched. Edit, Write, NotebookEdit, and Task/subagents remain denied, but the
+wrapper promises no sandbox or immutability enforcement around Bash or MCP.
+`CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE` prevent nested consultation.
 
 The wrapper carries the canonical mock and imaginary-risk rules because the
-isolated delegate does not inherit the lead context. A fake CLI or fixture
+separate advisor context does not inherit the lead context. A fake CLI or fixture
 output may test parsing but never proves the live transport.
 
 ## Failure and disposition
