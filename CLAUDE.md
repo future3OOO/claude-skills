@@ -102,13 +102,15 @@ For PR merge quiet windows specifically:
 
 When spawning sub-agents via the `Agent` tool, default to:
 
-- `subagent_type`: choose the most specific agent type that matches the task (`Explore` for codebase searches, `Plan` for implementation planning, `general-purpose` otherwise).
+- `subagent_type`: choose the most specific agent type that matches the task (`Explore` for codebase searches, `Plan` for planning-input work, `general-purpose` otherwise).
 - `Explore` and `Plan`: when reading production code, invoke `codebase-design` and discover deepening opportunities; do not stop at locating code.
 - `model`: omit it; delegates inherit the parent session's model — through a proxy/gateway, the gateway's model. Pass one only when the task clearly warrants a different tier, and never a model the session's auth route cannot serve.
 - If `CLAUDE_CODE_SUBAGENT_MODEL` is set in the session environment (e.g. `claudehx` sessions route subagents to GPT-5.6 via CLIProxyAPI), it force-overrides the Agent tool's `model` parameter: every delegated agent runs on that model, and a "fresh Claude second opinion" is actually that model's opinion. When the delegated model matters, check `echo $CLAUDE_CODE_SUBAGENT_MODEL` before claiming which model ran.
 
 Keep delegation bounded:
 
+- **Fan-in before planning.** Every spawned delegate returns before the lead writes the design or plan.
+- **Delegates provide planning inputs; the lead owns the plan.** Explore/Plan delegates explore, compare alternatives, and invoke `codebase-design`; the lead reconciles their reports and authors the governing artifact.
 - Do not run build, typecheck, or proof commands concurrently with a delegated agent unless the user explicitly asks for that level of parallel execution.
 
 If the parent session needs an independent second opinion, spawn a fresh agent rather than asking the same context-laden agent to self-review.
