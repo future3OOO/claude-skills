@@ -42,9 +42,11 @@ and how each was measured; stable `PRES-n` preservation-obligation labels;
 stable `ASSUMP-n` load-bearing-assumption labels; and every unverified
 falsifiable prediction explicitly marked unresolved. The labels and the
 behavioral/non-behavioral classification below are the handoff surface
-downstream proof machinery references (PR #138's Behavior Map `sourceRefs`);
-they are prose contract only — this skill machine-enforces the declaration's
-presence, never the artifact's content or any disposition.
+Behavior Map `sourceRefs` reference. The wrapper captures and validates the
+catalogue once, records that canonical declaration as workflow evidence, and
+requires final review to present the identical declaration; preflight and
+completion enforce reference integrity and required-label ownership. The
+advisor still reviews the design's prose and never owns dispositions.
 
 The canonical imaginary-risk ban and the premise/occurrence checks in the
 repo's `CLAUDE.md` govern architecture-family decisions; this checkpoint adds

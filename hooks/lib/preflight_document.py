@@ -53,7 +53,9 @@ def validate_document(
     if document["openQuestions"] != "none":
         raise ValueError("openQuestions must be exactly 'none'; an unresolved question blocks the recording")
     if BEHAVIOR_MAP_SECTION in value:
-        document[BEHAVIOR_MAP_SECTION] = initial_items(value[BEHAVIOR_MAP_SECTION])
+        document[BEHAVIOR_MAP_SECTION] = initial_items(
+            value[BEHAVIOR_MAP_SECTION], require_source_refs=require_behavior_map,
+        )
     return document
 
 

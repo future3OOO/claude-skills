@@ -86,6 +86,50 @@ case "$normalized_slug" in
 esac
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+transport_dir=$(mktemp -d)
+trap 'rm -rf "$transport_dir"' EXIT
+design_declaration_file=""
+design_transport_file=""
+if [[ -n "$phase" ]]; then
+  design_declaration_file="$transport_dir/design-declaration.json"
+  if [[ -n "$design_file" ]]; then
+  design_transport_file="$transport_dir/design-snapshot"
+  python3 - "$design_file" "$design_transport_file" <<'PY'
+import os, stat, sys
+source, target = sys.argv[1:]
+fd = os.open(source, os.O_RDONLY | os.O_NONBLOCK)
+status = os.fstat(fd)
+if not stat.S_ISREG(status.st_mode):
+    os.close(fd)
+    raise SystemExit("governing design is not a regular file at snapshot time")
+os.set_blocking(fd, True)
+remaining = status.st_size
+with os.fdopen(fd, "rb") as handle, open(target, "wb") as sink:
+    while remaining:
+        chunk = handle.read(min(65536, remaining))
+        if not chunk:
+            break
+        sink.write(chunk)
+        remaining -= len(chunk)
+PY
+  python3 - "$script_dir/../../.." "$design_transport_file" "$design_declaration_file" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from hooks.lib.workflow_documents import design_file_declaration
+with open(sys.argv[3], "w", encoding="utf-8") as handle:
+    json.dump(design_file_declaration(sys.argv[2]), handle, sort_keys=True)
+PY
+else
+  design_transport_file=""
+  python3 - "$script_dir/../../.." "$design_absent" "$design_declaration_file" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from hooks.lib.workflow_documents import design_absence
+with open(sys.argv[3], "w", encoding="utf-8") as handle:
+    json.dump(design_absence(sys.argv[2]), handle, sort_keys=True)
+PY
+  fi
+fi
 repo_identity="$script_dir/../../../hooks/lib/repo_identity.py"
 repo_key=$(python3 "$repo_identity" --path "$cwd" --field key) || {
   printf 'error: --cwd is not inside a Git worktree: %s\n' "$cwd" >&2
@@ -237,7 +281,7 @@ print(rendered)' "$GRAPH_EXCERPT_LIMIT"
 }
 
 active_wid=""; active_tdd=""; active_review=""; active_tdd_evidence=""; active_review_evidence=""
-active_intent=""
+active_design_evidence=""; active_intent=""
 graph_excerpt=""
 if [[ -n "$phase" ]]; then
   if ! checkpoint_json=$(python3 "$workflow_cli" checkpoint --repo "$repo_root" --phase "$phase" 2>&1); then
@@ -274,11 +318,29 @@ print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") o
     IFS= read -r -d '' active_review_evidence
     IFS= read -r -d '' active_preflight_evidence
     IFS= read -r -d '' active_graph_evidence
+    IFS= read -r -d '' active_design_evidence
     IFS= read -r -d '' active_intent
   } < <(printf '%s' "$status_json" | python3 -c 'import json,sys
 state = json.load(sys.stdin)
-for field in ("tddEvidence", "codeReviewEvidence", "preflightEvidence", "repoContextForgeEvidence", "intent"):
+for field in ("tddEvidence", "codeReviewEvidence", "preflightEvidence", "repoContextForgeEvidence", "governedDesignEvidence", "intent"):
     sys.stdout.write((state.get(field) or "") + "\0")')
+  if [[ -n "$active_design_evidence" ]]; then
+    recorded_design=$(owned_record "$active_design_evidence" "$active_wid")
+    recorded_design_file="$transport_dir/recorded-design.json"
+    printf '%s' "$recorded_design" >"$recorded_design_file"
+    if [[ -z "$recorded_design" ]] || ! python3 - "$design_declaration_file" "$recorded_design_file" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    candidate = json.load(handle)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    recorded = json.load(handle)
+raise SystemExit(0 if recorded == candidate else 1)
+PY
+    then
+      printf 'error: governing design differs from the declaration recorded for this workflow\n' >&2
+      exit 2
+    fi
+  fi
   # The graph evidence is read from the pass, never supplied by the caller, and it is
   # resolved before the provider so a stale or foreign result costs no consultation.
   graph_excerpt=$(graph_excerpt_of "$active_graph_evidence" "$active_wid")
@@ -348,10 +410,12 @@ if [[ -n "$phase" ]]; then
   branch_diff=""
   [[ -n "$base_ref" ]] && branch_diff=$(git -C "$repo_root" diff "$base_ref"...HEAD)
   if [[ -n "$design_file" ]]; then
-    bounded_section design_section design "governing design artifact" "$design_file" 20000 file
+    bounded_section design_section design "governing design artifact" "$design_transport_file" 20000 file
   else
     bounded_section design_section design "governing design artifact, declared absent" "$design_absent" 2000
   fi
+  bounded_section design_declaration_section design-declaration \
+    "canonical governing design declaration" "$design_declaration_file" 20000 file
   # Final review reconciles authorities, so it also receives the recorded
   # production preflight this pass owns; preflight-advice runs before that
   # document exists and carries none.
@@ -390,6 +454,7 @@ root: $repo_root  branch: $(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/d
 --- recorded workflow intent, verbatim: the task text this pass is answerable to ---
 ${active_intent}
 ${design_section}
+${design_declaration_section}
 ${preflight_section}
 --- unstaged diff ---
 ${dirty:-<empty>}
@@ -417,8 +482,7 @@ printf 'codex_advisor_prompt bytes_total=%s\n' "$(printf '%s' "$prompt" | wc -c)
 printf 'codex_advisor_session raw_slug=%q normalized_slug=%q mode=%s sid_prefix=%s phase=%s model=%s provider=codex\n' \
   "$slug" "$normalized_slug" "$mode" "${sid:0:8}" "${phase:-none}" "$model" >&2
 
-output_file=$(mktemp)
-trap 'rm -f "$output_file"' EXIT
+output_file="$transport_dir/provider-output"
 set +e
 printf '%s' "$prompt" | env "${provider_unset[@]}" "${provider_env[@]}" \
   claude -p "${session_args[@]}" --model "$model" --output-format text \
@@ -439,7 +503,8 @@ fi
 
 if [[ "$phase" == "preflight-advice" ]]; then
   python3 "$workflow_cli" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
-    --stage preflight --source codex-advisor --verdict completed >/dev/null
+    --stage preflight --source codex-advisor --verdict completed \
+    --design-declaration "$design_declaration_file" >/dev/null
 elif [[ "$phase" == "final-review" ]]; then
   last_line=$(awk 'NF {line=$0} END {print line}' "$output_file")
   case "$last_line" in
@@ -449,7 +514,8 @@ elif [[ "$phase" == "final-review" ]]; then
     *) printf 'error: final-review output lacks an exact terminal Verdict line\n' >&2; exit 2 ;;
   esac
   python3 "$workflow_cli" advisor-result --repo "$repo_root" --slug "$producer_slug" ${active_wid:+--workflow-id "$active_wid"} \
-    --stage final --source codex-advisor --verdict "$verdict" >/dev/null
+    --stage final --source codex-advisor --verdict "$verdict" \
+    --design-declaration "$design_declaration_file" >/dev/null
 fi
 
 cat "$output_file"

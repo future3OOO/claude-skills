@@ -54,6 +54,10 @@ class WorkflowHookTests(unittest.TestCase):
         (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
         self.git("add", "app.py")
         self.git("commit", "-q", "-m", "base")
+        self.design_declaration = self.tmp / "design-absent.json"
+        self.design_declaration.write_text(json.dumps({
+            "schemaVersion": 1, "status": "absent", "reason": "test pass has no governing design",
+        }), encoding="utf-8")
 
     def tearDown(self) -> None:
         if self.previous_state_root is None:
@@ -82,8 +86,11 @@ class WorkflowHookTests(unittest.TestCase):
         return repo
 
     def state(self, *args: str, repo: Path | None = None) -> subprocess.CompletedProcess[str]:
+        values = list(args)
+        if values and values[0] == "advisor-result" and "--design-declaration" not in values:
+            values += ["--design-declaration", str(self.design_declaration)]
         return subprocess.run(
-            [sys.executable, str(WORKFLOW), *args, "--repo", str(repo or self.repo)],
+            [sys.executable, str(WORKFLOW), *values, "--repo", str(repo or self.repo)],
             cwd=ROOT, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )

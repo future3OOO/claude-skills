@@ -275,9 +275,11 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         """The real recorders between recorded context evidence and the TDD gate."""
         state = self.status()
         slug, wid = str(state["slug"]), str(state["workflowId"])
+        declaration = self.tmp / "design-absent.json"
+        declaration.write_text(json.dumps({"schemaVersion": 1, "status": "absent", "reason": "test pass has no governing design"}), encoding="utf-8")
         for step in (
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
-             "--source", "codex-advisor", "--verdict", "completed"),
+             "--source", "codex-advisor", "--verdict", "completed", "--design-declaration", str(declaration)),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid,
              "--stage", "preflight", "--findings", "none"),
         ):
