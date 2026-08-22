@@ -47,8 +47,8 @@ REPLAY_INPUTS: dict[str, object] = {
         "affectedSurface", "authoritativeContract", "invariants", "proofPlan", "reusePath",
         "chosenApproach", "rejectedAlternatives", "touchpoints", "verify", "update",
         "modularityPlan", "riskChecks")}, "openQuestions": "none"},
-    "review.json": {"findings": [], "dispositions": []},
     "design-absent.json": {"schemaVersion": 1, "status": "absent", "reason": "benchmark replay has no governing design artifact"},
+    "review.json": {"findings": [], "dispositions": []},
 }
 def _fields(names: tuple[str, ...]):
     """Project a step's last command, which is the one that reports the state it reached."""
@@ -380,6 +380,7 @@ def replay_seed(arm: dict[str, object]) -> tuple[dict[str, object], dict[str, ob
     inputs.mkdir(parents=True)
     for name, document in REPLAY_INPUTS.items():
         (inputs / name).write_text(json.dumps(document), encoding="utf-8")
+    workflow_id = str(loaded(begun.stdout).get("workflowId"))
     # The recorder refuses anything but this gate's own ok verdict, so the arm's gate is
     # run against the arm's fixture rather than a document describing one.
     gate = run([sys.executable, str(root / "home/skills/production-code/scripts/code_quality_gate.py"),
@@ -394,7 +395,7 @@ def replay_seed(arm: dict[str, object]) -> tuple[dict[str, object], dict[str, ob
                   "--help"], env)
     quality_gate = "--kind" in helped.stdout
     return ({"state": home / "seed-state", "repo": repo, "inputs": inputs, "qualityGate": quality_gate,
-             "key": repo_key(root, repo, env), "instance": str(loaded(begun.stdout).get("workflowId"))},
+             "key": repo_key(root, repo, env), "instance": workflow_id},
             {"beginExit": begun.returncode, "exit": forged.returncode, "gateExit": gate.returncode,
              "seconds": seconds, "repoContextForge": reached["repoContextForge"],
              "qualityGate": quality_gate, "helpExit": helped.returncode,

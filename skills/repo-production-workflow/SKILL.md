@@ -83,14 +83,14 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 ```
 
 The active `workflowId` comes from `workflow.py status`. A disposition is
-bound to the active workflow instance and can only move findings
-to `none` or `addressed`; it can never create a result or alter its source or
-verdict. `addressed` stays lead-owned but is now document-backed: it demands
-`--input` with the lead's structured document — the review recorder's
-findings-and-dispositions shape, every finding carrying one of `fixed`,
-`rejected-with-evidence`, or `accepted-follow-up`, the first two with their
-evidence and the follow-up with its reference. The document is validated structurally, then stored under a logical evidence identity in the same transaction as the transition, so a refusal mutates nothing. An unavailable consult requires `--reason` with the measured
-transport failure and needs no disposition.
+bound to that instance and cannot create or alter the immutable advisor intake.
+For strict envelope findings, `--findings addressed --input <document>` carries
+only `intakeEvidenceId` and dispositions. Behavioral `accepted-for-proof`
+reserves exact Behavior Map IDs; later `fixed` requires the consumed reservation,
+those items GREEN, and no pending reassessment. The legacy
+findings-plus-dispositions form remains compatible but cannot reserve proof.
+Refusal mutates nothing. An unavailable consult requires `--reason` with the
+measured transport failure and needs no disposition.
 
 ### 5. Production preflight
 
@@ -232,7 +232,10 @@ separately, verify every finding, and disposition each one. In this governed wor
 workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
-Record the structured result through the unified Interface:
+Record immutable intake first as `{"findings":[...]}` through the unified
+Interface. If it contains findings, capture the returned `summaryId`, then call
+the same command with `{"intakeEvidenceId":"<summaryId>","dispositions":[...]}`.
+A document carrying both forms refuses.
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
@@ -240,9 +243,11 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --resolved-model "<model>" --review-context-id "<context-id>" --input <review.json>
 ```
 
-Recording the review also binds it to the tree it reviewed, so re-recording it
-refreshes that binding and returns the final review to pending. Any correction
-returns to implementation and invalidates downstream readiness. Before fixing a behavioral finding, append it to the Behavior Map with `tdd-map` and drive its behavior-specific RED; non-behavioral corrections record why.
+A no-finding intake binds the reviewed tree and passes immediately. A finding
+intake stays pending until its appended dispositions resolve every material
+finding. Before fixing a behavioral finding, reserve its exact Behavior Map IDs
+with `accepted-for-proof`, then drive RED/GREEN and reassessment; nonbehavioral
+corrections record their evidence directly.
 
 ### 11. Independent final Codex Advisor review
 

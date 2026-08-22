@@ -17,6 +17,7 @@ from .state_prune import prune
 from .state_store import tree_manifest, utc_timestamp
 from .workflow_documents import (
     advisor_disposition_document,
+    advisor_envelope,
     design_declaration,
     gate_verdict,
     review_summary,
@@ -119,7 +120,8 @@ def parser() -> argparse.ArgumentParser:
     command = _instance_command(commands, "advisor-result", "record a completed advisor result")
     command.add_argument("--stage", required=True)
     command.add_argument("--source", required=True)
-    command.add_argument("--verdict", required=True)
+    command.add_argument("--verdict")
+    command.add_argument("--input")
     command.add_argument("--findings")
     command.add_argument("--reason")
     command.add_argument("--design-declaration", required=True)
@@ -438,16 +440,31 @@ def _dispatch(args: argparse.Namespace) -> int:
             workflow_id=args.workflow_id,
         ))
     elif args.command == "advisor-result":
+        intake = None
+        verdict = args.verdict
+        if args.input is not None:
+            if any(value is not None for value in (args.verdict, args.findings, args.reason)):
+                raise ValueError("advisor-result --input derives verdict and findings; legacy verdict fields are incompatible")
+            intake, verdict = advisor_envelope(
+                args.input,
+                slug=safe_slug(args.slug),
+                workflow_id=args.workflow_id,
+                stage=args.stage,
+                producer=args.source,
+            )
+        elif verdict is None:
+            raise ValueError("advisor-result requires --input or legacy --verdict")
         _emit_state(record_advisor_result(
             identity,
             args.slug,
             args.workflow_id,
             args.stage,
             args.source,
-            args.verdict,
+            verdict,
             findings=args.findings,
             reason=args.reason,
             design=design_declaration(args.design_declaration),
+            intake=intake,
         ))
     elif args.command == "advisor-disposition":
         if args.findings == "addressed" and args.input is None:
@@ -488,6 +505,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _verify(args, identity)
     elif args.command == "record-review":
         slug = safe_slug(args.slug)
+        if _workflow_id(bound_state(identity, slug)) != args.workflow_id:
+            raise WorkflowError("--workflow-id does not match the active workflow instance")
         document, status, findings = review_summary(
             args.input,
             slug=slug,
@@ -495,11 +514,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             resolved_model=args.resolved_model,
             review_context_id=args.review_context_id,
         )
-        _, evidence_id = commit_review(identity, slug, args.workflow_id, document, status, findings)
-        _emit_json({"summaryId": evidence_id, "status": status})
-        if status != "passed":
-            print("error: material review findings remain unresolved", file=sys.stderr)
-            return 2
+        state, evidence_id = commit_review(identity, slug, args.workflow_id, document, status, findings)
+        _emit_json({"summaryId": evidence_id, "status": state["codeReview"]["status"]})
     else:
         raise ValueError(f"unsupported workflow command: {args.command}")
     return 0

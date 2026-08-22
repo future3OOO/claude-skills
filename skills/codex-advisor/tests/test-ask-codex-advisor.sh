@@ -94,7 +94,7 @@ grep -q 'Load /code-review, /codebase-design, /tdd, and /code-quality' "$WRAPPER
 # A phase prompt is one arm of a case statement, so a whole-file grep cannot tell
 # which phase carries a rule. Extract the arm and assert against that block.
 phase_block() { sed -n "/^  $1)\$/,/;;\$/p" "$WRAPPER"; }
-materiality='Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.'
+materiality='Use fix-before-commit only when at least one finding is material true; use commit-ready when context matches and none is material; preserve context-mismatch for mismatched review context.'
 preflight_block=$(phase_block preflight-advice)
 final_block=$(phase_block final-review)
 
@@ -139,9 +139,10 @@ else
   printf 'PASS  no commit authorization residue\n'; pass=$((pass+1))
 fi
 
-grep -q 'final-review output lacks an exact terminal Verdict line' "$WRAPPER" \
-  && { printf 'PASS  final verdict is exact and terminal\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  final verdict contract missing\n'; fail=$((fail+1)); }
+grep -q 'verdict commit-ready, fix-before-commit, or context-mismatch' "$WRAPPER" \
+  && grep -q -- '--input "$output_file"' "$WRAPPER" \
+  && { printf 'PASS  final verdict is carried by the strict recorded envelope\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  strict final envelope contract missing\n'; fail=$((fail+1)); }
 
 if grep -q 'advisor-disposition' "$WRAPPER"; then
   printf 'FAIL  wrapper must never disposition findings; that is lead-owned\n'; fail=$((fail+1))

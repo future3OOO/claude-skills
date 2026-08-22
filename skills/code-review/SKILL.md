@@ -59,39 +59,28 @@ consequence, and the smallest correction.
 
 ## 5. Return structured output
 
-Return a human-readable Standards/Spec review followed by one JSON object:
+Return a human-readable Standards/Spec review followed by immutable finding
+intake:
 
 ```json
-{
-  "findings": [
-    {
-      "id": "SPEC-1",
-      "axis": "Spec",
-      "severity": "high",
-      "material": true,
-      "location": "path:line",
-      "claim": "...",
-      "evidence": "...",
-      "consequence": "...",
-      "smallest_action": "..."
-    }
-  ],
-  "dispositions": [
-    {
-      "finding_id": "SPEC-1",
-      "status": "fixed | rejected-with-evidence | accepted-follow-up",
-      "evidence": "required for rejection"
-    }
-  ]
-}
+{"findings":[{"id":"SPEC-1","axis":"Spec","severity":"high","material":true,"kind":"behavioral","location":"path:line","claim":"...","evidence":"...","consequence":"...","smallest_action":"..."}]}
 ```
 
-The delegate proposes findings. The lead verifies them and owns dispositions.
-If there are no findings, use empty arrays and name remaining proof gaps.
+The delegate proposes findings. The lead verifies them and owns later
+dispositions. Use `{"findings":[]}` when there are none and name remaining proof
+gaps.
 
 ## Optional continuity summary
 
-After lead disposition, record the ordinary workflow summary:
+Record the intake first. When it contains findings, capture the returned
+`summaryId`, then record a second document carrying only that identity and the
+lead dispositions:
+
+```json
+{"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","evidence":"verified correction"}]}
+```
+
+Both documents use the same command:
 
 ```bash
 <review-json-producer> | python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-review \
@@ -100,6 +89,7 @@ After lead disposition, record the ordinary workflow summary:
   --review-context-id "<review-context-id>" --input -
 ```
 
-The summary is agent-writable continuity state. It is not a certificate, Git
-authorization, or substitute for the live review. Material unresolved findings
-leave code review pending.
+A behavioral finding may reserve exact Behavior Map IDs with
+`accepted-for-proof`; `fixed` then requires those linked items GREEN and
+reassessed. The summary is continuity state, not a certificate or Git
+authorization. Material unresolved findings leave code review pending.

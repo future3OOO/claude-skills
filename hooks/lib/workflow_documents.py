@@ -7,13 +7,11 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Callable
-
 from .state_store import utc_timestamp
 
 JsonObject = dict[str, object]
 RESOLVED_REVIEW = {"fixed", "rejected-with-evidence"}
-DISPOSITIONS = RESOLVED_REVIEW | {"accepted-follow-up"}
+DISPOSITIONS = RESOLVED_REVIEW | {"accepted-follow-up", "accepted-for-proof"}
 
 
 def load_json(path: str, *, label: str) -> JsonObject:
@@ -25,6 +23,64 @@ def load_json(path: str, *, label: str) -> JsonObject:
     if not isinstance(value, dict):
         raise ValueError(f"{label} input must be a JSON object")
     return value
+
+
+def advisor_envelope(
+    path: str, *, slug: str, workflow_id: str, stage: str, producer: str,
+) -> tuple[JsonObject, str]:
+    """Validate one strict provider envelope while retaining its exact bytes."""
+    try:
+        raw = sys.stdin.buffer.read() if path == "-" else Path(path).read_bytes()
+        text = raw.decode("utf-8")
+
+        def unique(pairs: list[tuple[str, object]]) -> JsonObject:
+            result: JsonObject = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"advisor envelope repeats field: {key}")
+                result[key] = value
+            return result
+
+        value = json.loads(text, object_pairs_hook=unique)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read advisor envelope JSON: {exc}") from exc
+    if not isinstance(value, dict) or set(value) != {"schemaVersion", "findings", "verdict"}:
+        raise ValueError("advisor envelope requires only schemaVersion, findings, and verdict")
+    findings, verdict = value.get("findings"), value.get("verdict")
+    if value.get("schemaVersion") != 1 or not isinstance(findings, list):
+        raise ValueError("advisor envelope requires schemaVersion 1 and a findings array")
+    allowed = {"completed"} if stage == "preflight" else FINAL_ENVELOPE_VERDICTS if stage == "final" else set()
+    if verdict not in allowed:
+        raise ValueError(f"advisor envelope verdict {verdict!r} is incompatible with stage {stage}")
+    typed: list[JsonObject] = []
+    identifiers: set[str] = set()
+    for position, item in enumerate(findings, 1):
+        if not isinstance(item, dict) or set(item) != {"id", "claim", "material", "kind"}:
+            raise ValueError(f"advisor finding {position} requires only id, claim, material, and kind")
+        identifier, kind = item.get("id"), item.get("kind")
+        if not _text(identifier) or identifier in identifiers:
+            raise ValueError("advisor finding ids must be non-empty and unique")
+        if not _text(item.get("claim")) or not isinstance(item.get("material"), bool):
+            raise ValueError(f"advisor finding {identifier} requires claim and material boolean")
+        if kind not in {"behavioral", "nonbehavioral"}:
+            raise ValueError(f"advisor finding {identifier} kind must be behavioral or nonbehavioral")
+        identifiers.add(str(identifier))
+        typed.append({"id": identifier, "claim": item["claim"], "material": item["material"], "kind": kind})
+    return {
+        "schemaVersion": 1,
+        "slug": slug,
+        "workflowId": workflow_id,
+        "producer": producer,
+        "stage": stage,
+        "verdict": verdict,
+        "findings": typed,
+        "raw": text,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "recordedAt": utc_timestamp(),
+    }, str(verdict)
+
+
+FINAL_ENVELOPE_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
 
 
 DESIGN_MARKER = "<!-- governed-design-labels:v1 -->"
@@ -274,106 +330,82 @@ def graph_evidence_document(
     return document
 
 
-def _arrays(value: JsonObject, label: str) -> tuple[list[object], list[object]]:
-    findings, dispositions = value.get("findings"), value.get("dispositions")
-    if not isinstance(findings, list) or not isinstance(dispositions, list):
-        raise ValueError(f"{label} requires findings and dispositions arrays")
-    return findings, dispositions
-
-
-def _finding_ids(
-    findings: list[object],
-    validate: Callable[[JsonObject, str], None],
-) -> tuple[list[JsonObject], set[str]]:
+def _finding_disposition(value: JsonObject) -> tuple[str, list[JsonObject]]:
+    if set(value) != {"intakeEvidenceId", "dispositions"}:
+        raise ValueError("disposition requires only intakeEvidenceId and dispositions")
+    intake_id, dispositions = value.get("intakeEvidenceId"), value.get("dispositions")
+    if not _text(intake_id) or not isinstance(dispositions, list) or not dispositions:
+        raise ValueError("disposition requires an intakeEvidenceId and non-empty dispositions array")
     typed: list[JsonObject] = []
-    identifiers: set[str] = set()
-    for item in findings:
-        if not isinstance(item, dict):
-            raise ValueError("each finding must be an object")
-        identifier = item.get("id")
-        if not isinstance(identifier, str) or not identifier or identifier in identifiers:
-            raise ValueError("finding ids must be non-empty and unique")
-        validate(item, identifier)
-        identifiers.add(identifier)
-        typed.append(item)
-    return typed, identifiers
-
-
-def _typed_dispositions(
-    dispositions: list[object],
-    identifiers: set[str],
-    validate: Callable[[JsonObject, str, str], None],
-) -> tuple[list[JsonObject], dict[str, JsonObject]]:
-    typed: list[JsonObject] = []
-    by_id: dict[str, JsonObject] = {}
+    seen: set[str] = set()
     for item in dispositions:
         if not isinstance(item, dict):
-            raise ValueError("each disposition must reference a finding")
+            raise ValueError("each disposition must be an object")
         identifier, status = item.get("finding_id"), item.get("status")
-        if not isinstance(identifier, str) or identifier not in identifiers:
+        if not _text(identifier):
             raise ValueError("each disposition must reference a finding")
-        if identifier in by_id or not isinstance(status, str) or status not in DISPOSITIONS:
+        if identifier in seen or not isinstance(status, str) or status not in DISPOSITIONS:
             raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
-        validate(item, identifier, status)
-        by_id[identifier] = item
-        typed.append(item)
-    if set(by_id) != identifiers:
-        raise ValueError("every finding requires one lead disposition")
-    return typed, by_id
-
-
-def validate_review(value: JsonObject) -> tuple[list[JsonObject], list[JsonObject], bool]:
-    findings, dispositions = _arrays(value, "review")
-
-    def validate_finding(item: JsonObject, identifier: str) -> None:
-        axis = item.get("axis")
-        if not isinstance(axis, str) or axis not in {"Standards", "Spec"}:
-            raise ValueError(f"finding {identifier} has an invalid axis")
-        for field in ("severity", "location", "claim", "evidence", "consequence", "smallest_action"):
-            if not _text(item.get(field)):
-                raise ValueError(f"finding {identifier} requires {field}")
-        if not isinstance(item.get("material"), bool):
-            raise ValueError(f"finding {identifier} requires a material boolean")
-
-    typed_findings, identifiers = _finding_ids(findings, validate_finding)
-
-    def validate_disposition(item: JsonObject, identifier: str, status: str) -> None:
-        if status == "rejected-with-evidence" and not _text(item.get("evidence")):
-            raise ValueError(f"finding {identifier} rejection requires evidence")
-
-    typed_dispositions, by_id = _typed_dispositions(dispositions, identifiers, validate_disposition)
-    material = {
-        str(item["id"]) for item in typed_findings if item.get("material") is True
-    }
-    unresolved = any(by_id[identifier].get("status") not in RESOLVED_REVIEW for identifier in material)
-    return typed_findings, typed_dispositions, unresolved
+        field = "reservedBehaviorIds" if status == "accepted-for-proof" else "reference" if status == "accepted-follow-up" else "evidence"
+        supplied = item.get(field)
+        valid = (
+            isinstance(supplied, list) and bool(supplied)
+            and all(_text(entry) for entry in supplied) and len(set(supplied)) == len(supplied)
+            if field == "reservedBehaviorIds" else _text(supplied)
+        )
+        if set(item) != {"finding_id", "status", field} or not valid:
+            raise ValueError(f"finding {identifier} {status} requires only {field}")
+        seen.add(str(identifier))
+        typed.append(dict(item))
+    return str(intake_id), typed
 
 
 def review_summary(
-    path: str,
-    *,
-    slug: str,
-    workflow_id: str,
-    resolved_model: str,
-    review_context_id: str,
+    path: str, *, slug: str, workflow_id: str, resolved_model: str, review_context_id: str,
 ) -> tuple[JsonObject, str, str]:
     model, context = resolved_model.strip(), review_context_id.strip()
     if not model or not context:
         raise ValueError("resolved model and review context id must be non-empty")
-    findings, dispositions, unresolved = validate_review(load_json(path, label="review"))
-    status = "pending" if unresolved else "passed"
-    finding_status = "pending" if unresolved else "addressed" if findings else "none"
-    return {
-        "schemaVersion": 1,
-        "slug": slug,
-        "workflowId": workflow_id,
-        "status": status,
-        "resolvedModel": model,
-        "reviewContextId": context,
-        "findings": findings,
-        "dispositions": dispositions,
-        "recordedAt": utc_timestamp(),
-    }, status, finding_status
+    value = load_json(path, label="review")
+    common: JsonObject = {
+        "schemaVersion": 1, "slug": slug, "workflowId": workflow_id,
+        "producer": "code-review", "stage": "code-review",
+        "resolvedModel": model, "reviewContextId": context, "recordedAt": utc_timestamp(),
+    }
+    if value == {"findings": [], "dispositions": []}:
+        value = {"findings": []}
+    if set(value) == {"findings"}:
+        findings = value["findings"]
+        if not isinstance(findings, list):
+            raise ValueError("review intake findings must be an array")
+        seen: set[str] = set()
+        required = {"id", "axis", "severity", "material", "kind", "location", "claim", "evidence", "consequence", "smallest_action"}
+        for item in findings:
+            if not isinstance(item, dict):
+                raise ValueError("each review finding must be an object")
+            identifier = item.get("id")
+            missing, extra = required - set(item), set(item) - required
+            if len(missing) == 1 and not extra:
+                raise ValueError(f"finding {identifier} requires {next(iter(missing))}")
+            if missing or extra:
+                raise ValueError("each review finding requires only the intake fields")
+            if not _text(identifier) or identifier in seen:
+                raise ValueError("review finding ids must be non-empty and unique")
+            axis, kind = item.get("axis"), item.get("kind")
+            if not isinstance(axis, str) or axis not in {"Standards", "Spec"}:
+                raise ValueError(f"finding {identifier} has an invalid axis")
+            if not isinstance(kind, str) or kind not in {"behavioral", "nonbehavioral"}:
+                raise ValueError(f"finding {identifier} has an invalid kind")
+            for field in required - {"id", "axis", "material", "kind"}:
+                if not _text(item.get(field)):
+                    raise ValueError(f"finding {identifier} requires {field}")
+            if not isinstance(item.get("material"), bool):
+                raise ValueError(f"finding {identifier} requires a material boolean")
+            seen.add(str(identifier))
+        status = "pending" if findings else "passed"
+        return {**common, "kind": "intake", "status": status, "findings": findings}, status, "pending" if findings else "none"
+    intake_id, dispositions = _finding_disposition(value)
+    return {**common, "kind": "disposition", "status": "pending", "intakeEvidenceId": intake_id, "dispositions": dispositions}, "pending", "pending"
 
 
 def advisor_disposition_document(
@@ -383,29 +415,41 @@ def advisor_disposition_document(
     workflow_id: str,
     stage: str,
 ) -> JsonObject:
-    findings, dispositions = _arrays(load_json(path, label="disposition"), "disposition document")
+    value = load_json(path, label="disposition")
+    common: JsonObject = {
+        "schemaVersion": 1, "slug": slug, "workflowId": workflow_id,
+        "stage": stage, "recordedAt": utc_timestamp(),
+    }
+    if set(value) == {"intakeEvidenceId", "dispositions"}:
+        intake_id, typed = _finding_disposition(value)
+        return {**common, "intakeEvidenceId": intake_id, "dispositions": typed}
+    findings, dispositions = value.get("findings"), value.get("dispositions")
+    if not isinstance(findings, list) or not isinstance(dispositions, list):
+        raise ValueError("disposition document requires findings and dispositions arrays")
     if not findings:
         raise ValueError("a document with no findings is --findings none, not addressed")
-
-    def validate_finding(item: JsonObject, identifier: str) -> None:
-        if not _text(item.get("claim")):
+    claims: set[str] = set()
+    for item in findings:
+        if not isinstance(item, dict):
+            raise ValueError("each finding must be an object")
+        identifier = item.get("id")
+        if not isinstance(identifier, str) or not identifier or identifier in claims:
+            raise ValueError("finding ids must be non-empty and unique")
+        if set(item) != {"id", "claim"} or not _text(item.get("claim")):
             raise ValueError(f"finding {identifier} requires a claim")
-
-    typed_findings, identifiers = _finding_ids(findings, validate_finding)
-
-    def validate_disposition(item: JsonObject, identifier: str, status: str) -> None:
+        claims.add(identifier)
+    answered: set[str] = set()
+    for item in dispositions:
+        if not isinstance(item, dict) or not isinstance(item.get("finding_id"), str) or item.get("finding_id") not in claims:
+            raise ValueError("each disposition must reference a finding")
+        identifier, status = str(item["finding_id"]), item.get("status")
+        if identifier in answered or not isinstance(status, str) or status not in RESOLVED_REVIEW | {"accepted-follow-up"}:
+            raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
         field = "reference" if status == "accepted-follow-up" else "evidence"
-        if not _text(item.get(field)):
+        if set(item) != {"finding_id", "status", field} or not _text(item.get(field)):
             requirement = "follow-up requires a reference" if field == "reference" else "requires evidence"
             raise ValueError(f"finding {identifier} {requirement}")
-
-    typed_dispositions, _ = _typed_dispositions(dispositions, identifiers, validate_disposition)
-    return {
-        "schemaVersion": 1,
-        "slug": slug,
-        "workflowId": workflow_id,
-        "stage": stage,
-        "findings": typed_findings,
-        "dispositions": typed_dispositions,
-        "recordedAt": utc_timestamp(),
-    }
+        answered.add(identifier)
+    if answered != claims:
+        raise ValueError("every finding requires one lead disposition")
+    return {**common, "findings": findings, "dispositions": dispositions}

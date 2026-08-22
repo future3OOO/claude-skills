@@ -78,30 +78,24 @@ divergence a finding. It requires each `PRES-n` obligation rechecked against
 the diff, each `ASSUMP-n` assumption falsified against the implementation,
 the contradictory-contract gate applied to the changed Interface, and at most
 one additional material reachable failure class beyond the design and
-recorded proof. The advisor reconciles the governed slice,
-real-seam proof, module shape, minimality, and regression coverage, ending with
-exactly one terminal line:
+recorded proof. The advisor reconciles the governed slice, real-seam proof,
+module shape, minimality, and regression coverage, returning only this strict
+envelope:
 
-- `Verdict: commit-ready`
-- `Verdict: fix-before-commit`
-- `Verdict: context-mismatch`
+```json
+{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"commit-ready"}
+```
 
-The prompt supplies the criterion for choosing between them. Return
-`Verdict: fix-before-commit` only when at least one finding is `material: true`;
-when context matches and no material finding remains, return
-`Verdict: commit-ready`. Report `material: false` findings for lead disposition
-without blocking, treat uncertainty as `material: true`, and preserve
-`Verdict: context-mismatch` for mismatched review context. This aligns the final
-advisor with the lead-review axis, which already computes unresolved state only
-over material findings. It removes a paid re-consult, not the audit record:
-every finding, material or not, still requires its lead-owned disposition below.
+Findings carry exactly `id`, `claim`, `material`, and `kind` (`behavioral` or
+`nonbehavioral`). Final verdict is `commit-ready`, `fix-before-commit`, or
+`context-mismatch`; use `fix-before-commit` only with a material finding, and
+`commit-ready` only when context matches and none is material.
 
-The wrapper records every raw result — source and verdict — with findings
-pending; it never dispositions. After reading the output, the lead validates
-every finding and records the separate lead-owned disposition, which can only
-move findings to `none` or `addressed` and can never create a result or alter
-its source or verdict. Only `commit-ready` with that lead-owned disposition
-allows workflow `complete`. This is workflow state, not permission to run Git.
+The wrapper records the exact UTF-8 response and its digest as immutable finding
+intake; it never dispositions. After reading the output, the lead validates
+every finding and appends a separate intake-referenced disposition. Only
+`commit-ready` with all material findings resolved allows workflow `complete`.
+This is workflow state, not permission to run Git.
 
 ## Invocation
 
@@ -214,15 +208,21 @@ Dispositions and `pause` are bound to the active workflow instance: a slug or
 workflowId that does not match is rejected without mutating state.
 
 Use `--findings addressed` with `--input <document>` when the consult produced
-findings. The document reuses the review recorder's shape: a `findings` array
-whose entries each carry a unique `id` and a `claim`, and a `dispositions` array
-with exactly one entry per finding and no extras. Each disposition is `fixed`,
-`rejected-with-evidence`, or `accepted-follow-up`: the first two carry
-`evidence` text, and `accepted-follow-up` carries a `reference` in its place,
-validated as present, not as true. Validation is structural — it proves every
-finding carries a dispositioned claim at a fixed path, never that the judgment
-is right. The document is stored under a logical evidence identity in the same SQLite transaction as the disposition, so a refusal changes neither. `--findings none`
-takes no document and clears any earlier one for that stage.
+findings. The strict path carries only the immutable intake evidence identity and
+dispositions; it never restates a finding:
+
+```json
+{"intakeEvidenceId":"<advisor intake evidence>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","evidence":"verified correction"}]}
+```
+
+A behavioral finding may first use `accepted-for-proof` with a non-empty unique
+`reservedBehaviorIds` array. Its later `fixed` disposition is accepted only
+after those exact Behavior Map items consume the reservation, are GREEN, and
+have no pending post-GREEN reassessment. `rejected-with-evidence` and `fixed`
+carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
+findings-plus-dispositions form remains compatible for previously recorded
+advisor results, but cannot create proof reservations. A refusal mutates no
+state. `--findings none` takes no document.
 
 For an unavailable consult, record the full
 slug- and instance-bound command; no disposition is needed and final review
