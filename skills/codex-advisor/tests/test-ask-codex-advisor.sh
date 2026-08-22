@@ -112,7 +112,8 @@ for prompt_rule in \
   check "preflight asks ${prompt_rule%:}" "$prompt_rule" "$preflight_block"
   check "final review asks ${prompt_rule%:}" "$prompt_rule" "$final_block"
 done
-check "GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$preflight_block$final_block"
+check "preflight GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$preflight_block"
+check "final-review GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$final_block"
 
 if [[ "$preflight_block" == *"$materiality"* ]]; then
   printf 'FAIL  materiality rule must stay out of preflight-advice, which emits no gating verdict\n'; fail=$((fail+1))
@@ -542,8 +543,20 @@ check "preflight-advice carries the recorded intent verbatim" "$intent_text" "$p
 intent_py 'import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+from hooks.lib.workflow_state import commit_tdd, instance_id, read_workflow
 from hooks.tests.support import advance_to_final_review
-advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
+identity = advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)
+state = read_workflow(identity)
+workflow_id = str(instance_id(state))
+commit_tdd(identity, str(state["slug"]), workflow_id, {
+    "schemaVersion": 1,
+    "workflowId": workflow_id,
+    "status": "passed",
+    "behavior": "imported legacy behavior",
+    "seam": "legacy production Interface",
+    "command": "python -m unittest",
+    "runs": [],
+}, "passed", expected_evidence_id=None)'
 # The armH replay: the consult question denies that any governing spec exists. The
 # recorded text has to arrive in the same payload as the denial, so the delegate can
 # see for itself that the premise is false.
@@ -661,7 +674,8 @@ check "the preflight header carries sha256 provenance" "sha256=" "$armh_payload"
 check "final-review carries the governing-design section too" "governing design artifact, declared absent (bounded: shown=" "$armh_payload"
 check "final-review attaches recorded verification runs" "--- recorded verification runs (bounded: shown=" "$armh_payload"
 check "final-review attaches the current Behavior Map" "--- current Behavior Map (bounded: shown=" "$armh_payload"
-check "Behavior Map carries item kind" '"kind":' "$armh_payload"
+behavior_map_payload=$(printf '%s\n' "$armh_payload" | sed -n '/^--- current Behavior Map (bounded:/,/^--- recorded TDD summary/p')
+check "Behavior Map carries item kind" '"kind":' "$behavior_map_payload"
 check "precedence is stated to the delegate" "the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof" "$armh_payload"
 check "design/preflight divergence is a finding" "Unreconciled divergence between the design and the recorded preflight is a finding" "$armh_payload"
 check "PRES-n obligations are rechecked" "Recheck each PRES-n preservation obligation" "$armh_payload"

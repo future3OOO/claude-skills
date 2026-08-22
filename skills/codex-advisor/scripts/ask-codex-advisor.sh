@@ -457,6 +457,10 @@ print(json.dumps({"sourceEvidenceId": sys.argv[1], "runs": [
     [[ -n "$verification_projection" ]] && bounded_section verification_section verification "recorded verification runs" "$verification_projection" 12000
   fi
   behavior_source="$tdd_doc"; behavior_source_id="$active_tdd_evidence"
+  if [[ -n "$behavior_source" ]] && ! printf '%s' "$behavior_source" | python3 -c 'import json,sys
+raise SystemExit(0 if "behaviorMap" in json.load(sys.stdin) else 1)'; then
+    behavior_source=""; behavior_source_id=""
+  fi
   if [[ -z "$behavior_source" && -n "${preflight_doc:-}" ]]; then
     behavior_source="$preflight_doc"; behavior_source_id="$active_preflight_evidence"
   fi

@@ -18,7 +18,7 @@ WORKFLOW = ROOT / "skills/repo-production-workflow/scripts/workflow.py"
 QUALITY_GATE = ROOT / "skills/production-code/scripts/code_quality_gate.py"
 sys.path.insert(0, str(ROOT))
 from hooks.lib.workflow_documents import design_absence  # noqa: E402
-from hooks.lib.workflow_state import instance_id, read_workflow, set_phase  # noqa: E402
+from hooks.lib.workflow_state import commit_tdd, instance_id, read_workflow, set_phase  # noqa: E402
 from hooks.tests.support import build_document, record_context_forge  # noqa: E402
 
 
@@ -164,7 +164,22 @@ class AdvisorDirectMeasurementTest(unittest.TestCase):
                     cwd=repo,
                     env=env,
                 )
-                set_phase(identity, "tdd", "not-required")
+                commit_tdd(
+                    identity,
+                    slug,
+                    workflow_id,
+                    {
+                        "schemaVersion": 1,
+                        "workflowId": workflow_id,
+                        "status": "passed",
+                        "behavior": "imported legacy behavior",
+                        "seam": "legacy production Interface",
+                        "command": "python -m unittest",
+                        "runs": [],
+                    },
+                    "passed",
+                    expected_evidence_id=None,
+                )
 
                 gate = json.loads(
                     run_checked(
@@ -351,7 +366,7 @@ class AdvisorTrustContractTest(unittest.TestCase):
             "ADVISOR_TRUST_PROMISE_NOT_NARROWED",
         )
         source = WRAPPER.read_text(encoding="utf-8")
-        role = next(line for line in source.splitlines() if line.startswith('role="'))
+        role = next((line for line in source.splitlines() if line.startswith('role="')), "")
         self.assertIn(
             "You run with the same trust as the lead and are instructed not to mutate the checkout or workflow ledger.",
             role,
