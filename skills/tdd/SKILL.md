@@ -85,6 +85,6 @@ A reassessment with no new item records why. A reassessment that adds items reop
 
 The refactor window opens only after every contract item is resolved and at least one reached GREEN through RED; a baseline `already-satisfied` alone never opens it. Refactor only inside that window and rerun relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
 
-TDD is complete only when every contract item is GREEN or baseline `already-satisfied`, every preservation item is already satisfied or omitted with evidence, no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
+TDD is complete only when every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN, already satisfied, or omitted with evidence, no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
 
 When governed workflow continuity is active, follow [recorder.md](recorder.md). It records bounded map/RED/GREEN evidence; it is not authorization.
