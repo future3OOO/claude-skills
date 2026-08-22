@@ -652,8 +652,15 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertLess(elapsed, 2.0, "GROUP_TIMEOUT_LOST")
         self.assertTrue(ready.exists(), "GROUP_CHILD_SURVIVED_TIMEOUT")
         child_pid = int(ready.read_text(encoding="utf-8"))
-        with self.assertRaises(ProcessLookupError, msg="GROUP_CHILD_SURVIVED_TIMEOUT"):
-            os.kill(child_pid, 0)
+        if Path("/proc").is_dir():
+            try:
+                child_state = Path(f"/proc/{child_pid}/stat").read_text().split()[2]
+            except FileNotFoundError:
+                child_state = None
+            self.assertIn(child_state, {None, "Z"}, "GROUP_CHILD_SURVIVED_TIMEOUT")
+        else:
+            with self.assertRaises(ProcessLookupError, msg="GROUP_CHILD_SURVIVED_TIMEOUT"):
+                os.kill(child_pid, 0)
         self.assertFalse(marker.exists(), "GROUP_CHILD_SURVIVED_TIMEOUT")
 
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
