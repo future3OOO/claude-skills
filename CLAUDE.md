@@ -109,6 +109,8 @@ When spawning sub-agents via the `Agent` tool, default to:
 
 Keep delegation bounded:
 
+- **Fan-in before planning.** Every spawned delegate returns before the lead writes the design or plan.
+- **Delegates explore and report; they do not plan.**
 - Do not run build, typecheck, or proof commands concurrently with a delegated agent unless the user explicitly asks for that level of parallel execution.
 
 If the parent session needs an independent second opinion, spawn a fresh agent rather than asking the same context-laden agent to self-review.
