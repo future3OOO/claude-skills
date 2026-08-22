@@ -134,7 +134,16 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self, slug: str, workflow_id: str, update: dict[str, object], names: str, marker: str
     ) -> None:
         before = read_workflow(self.identity).get("tddEvidence")
-        result = self.h.update_map(slug, workflow_id, update)
+        payload = self.h.tmp / "map-update.json"
+        payload.write_text(json.dumps(update), encoding="utf-8")
+        try:
+            result = subprocess.run(
+                [sys.executable, str(bmw.WORKFLOW), "tdd-map", "--repo", str(self.repo), "--slug", slug,
+                 "--workflow-id", workflow_id, "--input", str(payload)],
+                cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=False, timeout=60)
+        except subprocess.TimeoutExpired:
+            self.fail(f"{marker}: tdd-map did not return")
         self.assertEqual(result.returncode, 2, f"{marker}: " + result.stdout + result.stderr)
         self.assertIn(names, result.stderr, marker)
         self.assertEqual(read_workflow(self.identity).get("tddEvidence"), before, marker)
@@ -299,10 +308,10 @@ class ContractProofAuthorityTests(unittest.TestCase):
     def green(self, slug: str, behavior_id: str, value: int, marker: str) -> None:
         script = f"import app; assert app.value == {value}, {marker!r}"
         red = self.h.tdd(slug, "red", behavior_id, script)
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        self.assertEqual(red.returncode, 0, (red.stderr.strip().splitlines() or [""])[-1])
         (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
         green = self.h.tdd(slug, "green", behavior_id, script)
-        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        self.assertEqual(green.returncode, 0, (green.stderr.strip().splitlines() or [""])[-1])
 
     def test_contract_baseline_counts_only_this_passes_edits(self) -> None:
         # The recorded baseOid is the branch fork point; a reviewer-fix pass on
@@ -416,6 +425,131 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(state["tdd"], "pending", marker)
         self.assertNotIn("tddCycleCount", state, marker)
 
+
+    def supersede(self, source: str, target: str | None, items: list[dict[str, object]] | None = None,
+                  pending: str | None = None) -> dict[str, object]:
+        """A tdd-map update superseding ``source`` by ``target`` (None omits supersededBy)."""
+        disposition: dict[str, object] = {"id": source, "status": "superseded", "evidence": "a sharper item owns this outcome"}
+        if target is not None:
+            disposition["supersededBy"] = target
+        update: dict[str, object] = {"reassessment": "supersede", "items": items or [], "dispositions": [disposition]}
+        if pending:
+            update["sourceBehaviorId"] = pending
+        return update
+
+    def test_supersede_from_green_resolves_through_the_replacements_green(self) -> None:
+        marker = "SUPERSEDED_RESOLVED_WITHOUT_GREEN"
+        slug, workflow_id = self.h.begin_to_preflight([contract("BM_A")])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        replacement = contract("BM_B", expected="value is three", red_failure="VALUE_NOT_THREE")
+        superseded = self.h.update_map(slug, workflow_id, self.supersede("BM_A", "BM_B", [replacement], pending="BM_A"))
+        self.assertEqual(superseded.returncode, 0, f"{marker}: {(superseded.stderr.strip().splitlines() or [''])[-1]}")
+        self.assertEqual(json.loads(superseded.stdout)["pending"], ["BM_A", "BM_B"], marker)
+        self.record_production_code(slug, workflow_id)
+        with self.assertRaises(WorkflowIncomplete, msg=marker) as refused:
+            complete(self.identity, slug=slug, workflow_id=workflow_id)
+        self.assertIn("BM_A", str(refused.exception), marker)
+        self.green(slug, "BM_B", 3, "VALUE_NOT_THREE")
+        closed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_B", "reassessment": "no new obligation", "items": []})
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        self.assertEqual(json.loads(closed.stdout)["pending"], [], marker)
+        self.assertEqual(read_workflow(self.identity)["tdd"], "passed", marker)
+        # The same walk resolves a chain only at its terminal replacement and
+        # refuses a target that is not in the map.
+        slug, workflow_id = self.h.begin_to_preflight([contract("BM_A")])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        self.assert_map_refused(slug, workflow_id, self.supersede("BM_A", "BM_MISSING", pending="BM_A"), "BM_MISSING", marker)
+        b = contract("BM_B", expected="value is three", red_failure="VALUE_NOT_THREE")
+        first = self.h.update_map(slug, workflow_id, self.supersede("BM_A", "BM_B", [b], pending="BM_A"))
+        self.assertEqual(first.returncode, 0, f"{marker}: {(first.stderr.strip().splitlines() or [''])[-1]}")
+        self.green(slug, "BM_B", 3, "VALUE_NOT_THREE")
+        c = contract("BM_C", expected="value is four", red_failure="VALUE_NOT_FOUR")
+        second = self.h.update_map(slug, workflow_id, self.supersede("BM_B", "BM_C", [c], pending="BM_B"))
+        self.assertEqual(second.returncode, 0, f"{marker}: {(second.stderr.strip().splitlines() or [''])[-1]}")
+        self.assertEqual(json.loads(second.stdout)["pending"], ["BM_A", "BM_B", "BM_C"], marker)
+        self.green(slug, "BM_C", 4, "VALUE_NOT_FOUR")
+        closed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_C", "reassessment": "none", "items": []})
+        self.assertEqual(closed.returncode, 0, closed.stdout + closed.stderr)
+        self.assertEqual(json.loads(closed.stdout)["pending"], [], marker)
+
+
+    def test_superseded_item_never_blocks_its_replacements_red(self) -> None:
+        marker = "SUPERSEDED_BLOCKED_REPLACEMENT_RED"
+        # preservation A (GREEN through the post-implementation regression path) -> contract B
+        slug, workflow_id = self.h.begin_to_preflight([contract("BM_C")])
+        self.green(slug, "BM_C", 2, "VALUE_NOT_TWO")
+        assessed = self.h.update_map(slug, workflow_id, {
+            "sourceBehaviorId": "BM_C", "reassessment": "regression found",
+            "items": [preservation("BM_A", red_failure="VALUE_NOT_THREE_A")]})
+        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
+        self.green(slug, "BM_A", 3, "VALUE_NOT_THREE_A")
+        replacement = contract("BM_B", expected="value is four", red_failure="VALUE_NOT_FOUR")
+        superseded = self.h.update_map(slug, workflow_id, self.supersede("BM_A", "BM_B", [replacement], pending="BM_A"))
+        self.assertEqual(superseded.returncode, 0, f"{marker}: {(superseded.stderr.strip().splitlines() or [''])[-1]}")
+        red = self.h.tdd(slug, "red", "BM_B", "import app; assert app.value == 4, 'VALUE_NOT_FOUR'")
+        self.assertEqual(red.returncode, 0, f"{marker}: {(red.stderr.strip().splitlines() or [''])[-1]}")
+        # contract A -> preservation B: the window counts A's GREEN-through-RED
+        slug, workflow_id = self.h.begin_to_preflight([contract("BM_A")])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        replacement = preservation("BM_B", red_failure="VALUE_NOT_TWO_B")
+        superseded = self.h.update_map(slug, workflow_id, self.supersede("BM_A", "BM_B", [replacement], pending="BM_A"))
+        self.assertEqual(superseded.returncode, 0, f"{marker}: {(superseded.stderr.strip().splitlines() or [''])[-1]}")
+        red = self.h.tdd(slug, "red", "BM_B", "import app; assert app.value == 5, 'VALUE_NOT_TWO_B'")
+        self.assertEqual(red.returncode, 0, f"{marker}: {(red.stderr.strip().splitlines() or [''])[-1]}")
+
+    def green_pair(self) -> tuple[str, str]:
+        """A map with GREEN contract BM_A and pending contract BM_OTHER, BM_A's reassessment pending."""
+        slug, workflow_id = self.h.begin_to_preflight([contract("BM_A"), contract("BM_OTHER", red_failure="VALUE_NOT_NINE")])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        return slug, workflow_id
+
+    def test_supersede_requires_a_target(self) -> None:
+        slug, workflow_id = self.green_pair()
+        self.assert_map_refused(slug, workflow_id, self.supersede("BM_A", None, pending="BM_A"),
+                                "supersededBy", "SUPERSEDE_WITHOUT_TARGET_RECORDED")
+
+    def test_supersede_refuses_self_reference(self) -> None:
+        slug, workflow_id = self.green_pair()
+        self.assert_map_refused(slug, workflow_id, self.supersede("BM_A", "BM_A", pending="BM_A"),
+                                "BM_A", "SELF_SUPERSESSION_RECORDED")
+
+    def test_supersede_refuses_a_non_green_source(self) -> None:
+        slug, workflow_id = self.green_pair()
+        self.assert_map_refused(slug, workflow_id, self.supersede("BM_OTHER", "BM_A", pending="BM_A"),
+                                "BM_OTHER", "NON_GREEN_SUPERSESSION_RECORDED")
+
+    def test_supersede_field_is_status_specific(self) -> None:
+        slug, workflow_id = self.h.begin_to_preflight([contract("BM_C"), preservation("BM_P")])
+        self.assert_map_refused(slug, workflow_id, {"reassessment": "stray", "dispositions": [
+            {"id": "BM_P", "status": "already-satisfied", "evidence": "seen", "supersededBy": "BM_C"}]},
+            "supersededBy", "STRAY_SUPERSEDED_BY_RECORDED")
+
+    def test_supersede_refuses_a_cycle(self) -> None:
+        marker = "SUPERSESSION_CYCLE_RECORDED"
+        slug, workflow_id = self.green_pair()
+        settled = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_A", "reassessment": "none", "items": []})
+        self.assertEqual(settled.returncode, 0, settled.stdout + settled.stderr)
+        self.green(slug, "BM_OTHER", 9, "VALUE_NOT_NINE")
+        cycle = {"sourceBehaviorId": "BM_OTHER", "reassessment": "loop", "items": [], "dispositions": [
+            {"id": "BM_A", "status": "superseded", "supersededBy": "BM_OTHER", "evidence": "loop"},
+            {"id": "BM_OTHER", "status": "superseded", "supersededBy": "BM_A", "evidence": "loop"},
+        ]}
+        self.assert_map_refused(slug, workflow_id, cycle, "cycle", marker)
+
+
+    def test_supersede_refuses_a_replacement_that_cannot_reach_green(self) -> None:
+        # A target whose terminal item is already-satisfied or omitted can
+        # never be GREEN, so accepting it would leave the map uncloseable.
+        marker = "UNREACHABLE_REPLACEMENT_RECORDED"
+        slug, workflow_id = self.h.begin_to_preflight(
+            [contract("BM_A"), preservation("BM_DONE"), preservation("BM_GONE", red_failure="VALUE_NOT_SIX")])
+        settled = self.h.update_map(slug, workflow_id, {"reassessment": "baseline", "dispositions": [
+            {"id": "BM_DONE", "status": "already-satisfied", "evidence": "app.value == 1 observed"},
+            {"id": "BM_GONE", "status": "omitted", "evidence": "out of scope by governing evidence"}]})
+        self.assertEqual(settled.returncode, 0, settled.stdout + settled.stderr)
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        for target in ("BM_DONE", "BM_GONE"):
+            self.assert_map_refused(slug, workflow_id, self.supersede("BM_A", target, pending="BM_A"), target, marker)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

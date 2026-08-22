@@ -7,13 +7,14 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green"}
+RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green", "superseded"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
+EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded"}
 KINDS = frozenset({"contract", "preservation"})
 REQUIRED_FIELDS = frozenset({
     "id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status",
 })
-OPTIONAL_FIELDS = frozenset({"evidence"})
+OPTIONAL_FIELDS = frozenset({"evidence", "supersededBy"})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
 _CONTRACT_DISPOSITION_REFUSED = (
     "behavior {} is a contract item: it is never omitted, and already-satisfied "
@@ -159,7 +160,7 @@ def validate_items(
         if "evidence" in raw and not isinstance(raw.get("evidence"), str):
             raise ValueError(f"behavior {identifier} evidence must be text")
         evidence = _text(raw.get("evidence"))
-        if status in DISPOSITION_STATUSES:
+        if status in EVIDENCED_STATUSES:
             if evidence is None:
                 raise ValueError(f"behavior {identifier} status {status} requires evidence")
             item["evidence"] = evidence
@@ -167,8 +168,14 @@ def validate_items(
             raise ValueError(
                 f"behavior {identifier} status {status} cannot carry disposition evidence"
             )
+        if status == "superseded":
+            item["supersededBy"] = _required(raw, "supersededBy", identifier)
+        elif "supersededBy" in raw:
+            raise ValueError(f"behavior {identifier} status {status} cannot carry supersededBy")
         result.append(item)
     whole = [*existing, *result]
+    for entry in whole:
+        _terminal(whole, entry)
     if not allow_runtime and any(
         entry["status"] == "pending" for entry in whole
     ) and not any(entry.get("kind") == "contract" for entry in whole):
@@ -209,15 +216,37 @@ def item(items: list[JsonObject], identifier: str) -> JsonObject:
         raise ValueError(f"behavior id is not in the recorded map: {identifier}") from exc
 
 
+def _terminal(items: list[JsonObject], entry: JsonObject) -> JsonObject:
+    """The item a superseded entry finally defers to; self-reference, cycles, and missing targets refuse."""
+    seen = {entry["id"]}
+    while entry.get("status") == "superseded":
+        target = entry.get("supersededBy")
+        if target in seen:
+            raise ValueError(
+                f"behavior {entry['id']} supersededBy must name another item without forming a cycle"
+            )
+        seen.add(target)
+        entry = item(items, str(target))
+    if len(seen) > 1 and entry.get("status") in DISPOSITION_STATUSES:
+        raise ValueError(
+            f"behavior {entry['id']} is {entry['status']} and can never be GREEN; it cannot replace a superseded item"
+        )
+    return entry
+
+
 def apply_dispositions(items: list[JsonObject], value: object) -> None:
-    """Apply explicit no-edit dispositions to pending items in place."""
+    """Apply no-edit dispositions to pending items, and supersession to GREEN ones, in place.
+
+    The supersession graph is checked by the caller's validation of the merged
+    map, so a replacement added in the same update is legal.
+    """
     if not isinstance(value, list):
         raise ValueError("TDD map dispositions must be an array")
     seen: set[str] = set()
     for position, raw in enumerate(value, 1):
         if not isinstance(raw, dict):
             raise ValueError(f"TDD map disposition {position} must be an object")
-        unknown = sorted(set(raw) - {"id", "status", "evidence"})
+        unknown = sorted(set(raw) - {"id", "status", "evidence", "supersededBy"})
         if unknown:
             raise ValueError(
                 f"TDD map disposition {position} has unknown fields: {', '.join(unknown)}"
@@ -228,15 +257,23 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
         if identifier is None or identifier in seen:
             raise ValueError("TDD map dispositions require unique behavior ids")
         seen.add(identifier)
-        if status not in DISPOSITION_STATUSES:
+        if status not in EVIDENCED_STATUSES:
             raise ValueError(
                 f"behavior {identifier} disposition must be one of: "
-                + ", ".join(sorted(DISPOSITION_STATUSES))
+                + ", ".join(sorted(EVIDENCED_STATUSES))
             )
         if evidence is None:
             raise ValueError(f"behavior {identifier} disposition requires evidence")
         mapped = item(items, identifier)
-        if mapped.get("kind") == "contract":
+        if status == "superseded":
+            if mapped.get("status") != "green":
+                raise ValueError(
+                    f"behavior {identifier} is {mapped.get('status')}; only a GREEN item can be superseded"
+                )
+            mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
+        elif "supersededBy" in raw:
+            raise ValueError(f"behavior {identifier} disposition {status} cannot carry supersededBy")
+        elif mapped.get("kind") == "contract":
             raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
         elif mapped.get("status") != "pending":
             raise ValueError(
@@ -247,26 +284,35 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:
-    """Closure: pending and red items are the open obligations."""
+    """Closure: pending, red, and superseded whose terminal replacement is not GREEN."""
     return [
         str(entry["id"])
         for entry in items
         if entry.get("status") in {"pending", "red"}
+        or (
+            entry.get("status") == "superseded"
+            and _terminal(items, entry).get("status") != "green"
+        )
     ]
+
+
+def _actionable(items: list[JsonObject]) -> set[str]:
+    """Admission reads only the items a RED can act on; a superseded item's obligation moved on."""
+    return {str(entry["id"]) for entry in items if entry.get("status") in {"pending", "red"}}
 
 
 def may_refactor(items: list[JsonObject]) -> bool:
     """The refactor-while-GREEN window: every contract item resolved and one GREEN through RED."""
-    pending = set(unresolved(items))
+    pending = _actionable(items)
     contract = [entry for entry in items if entry.get("kind") == "contract"]
     return not any(entry["id"] in pending for entry in contract) and any(
-        entry.get("status") == "green" for entry in contract
+        entry.get("status") in {"green", "superseded"} for entry in contract
     )
 
 
 def edit_blocker(items: list[JsonObject], active: str | None) -> str | None:
     """Why the map forbids the next production edit, or None when it opens."""
-    pending = set(unresolved(items))
+    pending = _actionable(items)
     preservation = [
         str(entry["id"]) for entry in items
         if entry.get("kind") != "contract"
