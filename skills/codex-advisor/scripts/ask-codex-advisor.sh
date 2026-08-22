@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$slug" ]] || { printf 'error: --slug is required (stable per task, no phase words)\n' >&2; usage; }
-if [[ ! "$budget" =~ ^[1-9][0-9]*$ ]] || (( budget > 1200 )); then
+if [[ ! "$budget" =~ ^[1-9][0-9]{0,3}$ ]] || (( budget > 1200 )); then
   printf 'error: --budget must be an integer from 1 through 1200\n' >&2
   exit 2
 fi

@@ -312,31 +312,34 @@ class AdvisorBudgetContractTest(unittest.TestCase):
             help_result.stderr,
             "OPERATOR_SELECTED_BUDGET_CONTRACT_NOT_SATISFIED",
         )
-        result = subprocess.run(
-            [
-                str(WRAPPER),
-                "--slug",
-                "issue144-budget-bound",
-                "--cwd",
-                "/definitely/not/a/dir",
-                "--budget",
-                "1201",
-                "--",
-                "q",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            result.returncode,
-            2,
-            "OPERATOR_SELECTED_BUDGET_CONTRACT_NOT_SATISFIED",
-        )
-        self.assertIn(
-            "budget must be an integer from 1 through 1200",
-            result.stderr,
-            "OPERATOR_SELECTED_BUDGET_CONTRACT_NOT_SATISFIED",
-        )
+        for budget, marker in (
+            ("1201", "OPERATOR_SELECTED_BUDGET_CONTRACT_NOT_SATISFIED"),
+            ("18446744073709552816", "OVERSIZED_BUDGET_ACCEPTED"),
+        ):
+            with self.subTest(budget=budget):
+                result = subprocess.run(
+                    [
+                        str(WRAPPER),
+                        "--slug",
+                        "issue144-budget-bound",
+                        "--cwd",
+                        "/definitely/not/a/dir",
+                        "--budget",
+                        budget,
+                        "--",
+                        "q",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2, marker)
+                self.assertIn(
+                    "budget must be an integer from 1 through 1200",
+                    result.stderr,
+                    marker,
+                )
+                if budget == "18446744073709552816":
+                    self.assertNotIn("cwd is not a directory", result.stderr, marker)
 
 
 class AdvisorTrustContractTest(unittest.TestCase):
