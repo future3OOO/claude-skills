@@ -221,12 +221,9 @@ class PassLifecycleTests(unittest.TestCase):
     def finding_disposition_document(self, intake_id: str, status: str = "accepted-for-proof") -> Path:
         self.documents += 1
         path = self.tmp / f"finding-disposition-{self.documents}.json"
-        owed = ({"reservedBehaviorIds": ["BM_ADV_1"]} if status == "accepted-for-proof"
-                else {"evidence": "linked proof"})
-        path.write_text(json.dumps({
-            "intakeEvidenceId": intake_id,
-            "dispositions": [{"finding_id": "SPEC-1", "status": status, **owed}],
-        }), encoding="utf-8")
+        owed = ({"reservedBehaviorIds": ["BM_ADV_1"]} if status == "accepted-for-proof" else {"reference": "issue-1"} if status == "accepted-follow-up" else {"evidence": "linked proof"})
+        path.write_text(json.dumps({"intakeEvidenceId": intake_id, "dispositions": [
+            {"finding_id": "SPEC-1", "status": status, **owed}]}), encoding="utf-8")
         return path
 
     def dispose(self, slug: str, wid: str, stage: str, findings: str, *input_path: str) -> subprocess.CompletedProcess[str]:
@@ -1604,11 +1601,12 @@ class PassLifecycleTests(unittest.TestCase):
         self.advance_to_context_forge()
         envelope = self.tmp / "advisor-envelope.json"
         before_events = len(self.history_events())
-        envelope.write_text('{"schemaVersion":1,"findings":[],"verdict":"completed","extra":true}', encoding="utf-8")
-        malformed = self.cli("advisor-result", "--slug", "accepted-proof", "--workflow-id", wid,
-                             "--stage", "preflight", "--source", "codex-advisor", "--input", str(envelope))
-        self.assertEqual(malformed.returncode, 2, marker + malformed.stdout + malformed.stderr)
-        self.assertEqual(len(self.history_events()), before_events, marker)
+        for raw in ('{"schemaVersion":1,"findings":[],"verdict":"completed","extra":true}', '{"schemaVersion":true,"findings":[],"verdict":"completed"}'):
+            envelope.write_text(raw, encoding="utf-8")
+            malformed = self.cli("advisor-result", "--slug", "accepted-proof", "--workflow-id", wid,
+                                 "--stage", "preflight", "--source", "codex-advisor", "--input", str(envelope))
+            self.assertEqual(malformed.returncode, 2, marker + malformed.stdout + malformed.stderr)
+            self.assertEqual(len(self.history_events()), before_events, marker)
         raw_envelope = ('{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"proof is missing",'
                         '"material":true,"kind":"behavioral"}],"verdict":"completed"}')
         envelope.write_text(raw_envelope, encoding="utf-8")
@@ -1970,20 +1968,23 @@ class PassLifecycleTests(unittest.TestCase):
         self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
         self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0)
         self.owner_phase("code-review", "passed", findings="none")
-        self.run_cli((
-            "advisor-result", "--slug", "disposition-lifetime", "--workflow-id", wid,
-            "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready",
-        ))
-        self.assertEqual(
-            self.dispose("disposition-lifetime", wid, "final", "addressed", self.disposition_document()).returncode,
-            0,
+        envelope = self.tmp / "material-follow-up.json"
+        envelope.write_text('{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"follow up","material":true,"kind":"nonbehavioral"}],"verdict":"fix-before-commit"}', encoding="utf-8")
+        result = self.cli("advisor-result", "--slug", "disposition-lifetime", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(result.returncode, 0, "MATERIAL_FOLLOWUP_ADVANCED" + result.stdout + result.stderr)
+        intake_id = json.loads(result.stdout)["finalReview"]["intakeEvidence"]
+        follow_up = self.dispose("disposition-lifetime", wid, "final", "addressed", str(self.finding_disposition_document(intake_id, "accepted-follow-up")))
+        state = json.loads(follow_up.stdout)
+        self.assertEqual((follow_up.returncode, state["finalReview"]["findings"], state["nextAction"]), (0, "pending", "address-review-findings"), "MATERIAL_FOLLOWUP_ADVANCED")
+        self.assertEqual(self.evidence(preflight_id), kept, "the final disposition clobbered the preflight document")
+        final_id = state["finalReview"]["dispositionEvidence"]
+        self.assertEqual((final_id == preflight_id, self.evidence(final_id)["stage"]), (False, "final"))
+        self.assertEqual(self.dispose("disposition-lifetime", wid, "final", "addressed", str(self.finding_disposition_document(intake_id, "rejected-with-evidence"))).returncode, 0)
+        self.run_cli(
+            ("advisor-result", "--slug", "disposition-lifetime", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
+            ("advisor-disposition", "--slug", "disposition-lifetime", "--workflow-id", wid, "--stage", "final", "--findings", "none"),
+            ("complete",),
         )
-        self.assertEqual(self.evidence(preflight_id), kept,
-                         "the final disposition clobbered the preflight document")
-        final_id = json.loads(self.cli("status").stdout)["finalReview"]["dispositionEvidence"]
-        self.assertNotEqual(final_id, preflight_id)
-        self.assertEqual(self.evidence(final_id)["stage"], "final")
-        self.assertEqual(self.cli("complete").returncode, 0)
 
         # A same-slug begin starts a new instance without clearing artifacts, so a
         # findings-none pass must stop publishing the dead instance's dispositions.
@@ -2480,8 +2481,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("code-review", "passed", findings="none")
 
         missing = self.cli("complete")
-        self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
-        self.assertIn("finalReview", missing.stderr)
+        self.assertEqual((missing.returncode, "finalReview" in missing.stderr), (2, True), missing.stdout + missing.stderr)
 
         unimplemented = self.cli(
             "advisor-result", "--slug", "completion-contract", "--workflow-id", wid,
@@ -2497,20 +2497,19 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
         blocked = self.cli("complete")
-        self.assertEqual(blocked.returncode, 2, blocked.stdout + blocked.stderr)
-        self.assertIn("finalReview", blocked.stderr)
+        self.assertEqual((blocked.returncode, "finalReview" in blocked.stderr), (2, True), blocked.stdout + blocked.stderr)
 
-        ready = self.cli(
-            "advisor-result", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor",
-            "--verdict", "commit-ready",
-        )
-        self.assertEqual(ready.returncode, 0, ready.stdout + ready.stderr)
-        undisposed = self.cli("complete")
-        self.assertEqual(undisposed.returncode, 2, undisposed.stdout + undisposed.stderr)
+        envelope = self.tmp / "material-commit-ready.json"
+        for raw, marker in (('{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"must fix","material":true,"kind":"nonbehavioral"}],"verdict":"commit-ready"}', "MATERIAL_COMMIT_READY_ACCEPTED"), ('{"schemaVersion":1,"findings":[],"verdict":"fix-before-commit"}', "EMPTY_FIX_VERDICT_ACCEPTED")):
+            envelope.write_text(raw, encoding="utf-8")
+            before = json.loads(self.cli("status").stdout), len(self.history_events())
+            refused = self.cli("advisor-result", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--input", str(envelope))
+            self.assertEqual((refused.returncode, json.loads(self.cli("status").stdout), len(self.history_events())), (2, *before), marker + refused.stdout + refused.stderr)
+        self.assertEqual(self.cli("advisor-result", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready").returncode, 0)
+        self.assertEqual(self.cli("complete").returncode, 2, "undispositioned final review completed")
         disposed = self.dispose("completion-contract", wid, "final", "addressed", self.disposition_document())
         self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
-        completed = self.cli("complete")
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(self.cli("complete").returncode, 0)
 
 
 if __name__ == "__main__":

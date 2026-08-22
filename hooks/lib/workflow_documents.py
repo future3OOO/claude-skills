@@ -47,7 +47,7 @@ def advisor_envelope(
     if not isinstance(value, dict) or set(value) != {"schemaVersion", "findings", "verdict"}:
         raise ValueError("advisor envelope requires only schemaVersion, findings, and verdict")
     findings, verdict = value.get("findings"), value.get("verdict")
-    if value.get("schemaVersion") != 1 or not isinstance(findings, list):
+    if type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != 1 or not isinstance(findings, list):
         raise ValueError("advisor envelope requires schemaVersion 1 and a findings array")
     allowed = {"completed"} if stage == "preflight" else FINAL_ENVELOPE_VERDICTS if stage == "final" else set()
     if verdict not in allowed:
@@ -66,6 +66,8 @@ def advisor_envelope(
             raise ValueError(f"advisor finding {identifier} kind must be behavioral or nonbehavioral")
         identifiers.add(str(identifier))
         typed.append({"id": identifier, "claim": item["claim"], "material": item["material"], "kind": kind})
+    if stage == "final" and verdict in {"commit-ready", "fix-before-commit"} and ((verdict == "commit-ready") == any(item["material"] for item in typed)):
+        raise ValueError("advisor envelope verdict is incompatible with finding materiality")
     return {
         "schemaVersion": 1,
         "slug": slug,

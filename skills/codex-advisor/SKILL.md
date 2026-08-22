@@ -83,7 +83,7 @@ module shape, minimality, and regression coverage, returning only this strict
 envelope:
 
 ```json
-{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"commit-ready"}
+{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"fix-before-commit"}
 ```
 
 Findings carry exactly `id`, `claim`, `material`, and `kind` (`behavioral` or

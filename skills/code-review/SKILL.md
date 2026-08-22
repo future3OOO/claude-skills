@@ -77,7 +77,7 @@ Record the intake first. When it contains findings, capture the returned
 lead dispositions:
 
 ```json
-{"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","evidence":"verified correction"}]}
+{"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","reservedBehaviorIds":["BM_SPEC_1"]}]}
 ```
 
 Both documents use the same command:

@@ -986,9 +986,8 @@ def advisor_disposition(
         states = state.get("findingStates", [])
         if not isinstance(states, list):
             raise WorkflowError("recorded finding states are corrupt")
-        unresolved = any(isinstance(entry, dict) and entry.get("stage") == stage
-                         and entry.get("producer") == record["source"] and entry.get("status") == "pending"
-                         for entry in states)
+        unresolved = any(isinstance(entry, dict) and entry.get("stage") == stage and
+                         entry.get("producer") == record["source"] and _finding_unresolved(entry) and (stage != "preflight" or entry.get("status") != "accepted-for-proof") for entry in states)
         if findings == "none" and unresolved:
             raise WorkflowError("findings none conflicts with an undispositioned finding intake")
         writes: list[EvidenceWrite] = []
