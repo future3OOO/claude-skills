@@ -801,10 +801,11 @@ sys.path.insert(0, sys.argv[1])
 from hooks.lib import workflow_state as w
 from hooks.lib.repo_identity import resolve_repo_identity
 from hooks.tests.support import advance_to_final_review, build_no_change_document
+from hooks.lib.workflow_documents import design_absence
 repo = Path(sys.argv[2])
 identity = resolve_repo_identity(repo)
 w.begin(identity, "live-final-probe")
-advance_to_final_review(repo, repo.parent)
+advance_to_final_review(repo, repo.parent, design_absence("live final probe"))
 state = w.read_workflow(identity)
 document = build_no_change_document("recorded preflight carries " + sys.argv[3] + " for the live probe")
 path = repo.parent / "nonce-preflight.json"
@@ -817,7 +818,7 @@ assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$finaltmp
   live_final_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" "$WRAPPER" \
     --slug live-final-probe --phase final-review --base-ref HEAD --cwd "$finaltmp/repo" \
     --design-absent "live final probe" --budget 60 --fresh \
-    -- "Quote the exact PROOF-NONCE value that appears in the recorded production preflight evidence, then end with your verdict." 2>"$finaltmp/stderr")
+    -- "Return only the required strict final-review JSON envelope with one nonmaterial nonbehavioral finding whose claim quotes the exact PROOF-NONCE value in the recorded production preflight, and verdict commit-ready." 2>"$finaltmp/stderr")
   status=$?
   check_status "live final-review consult exits 0" 0 "$status"
   check "the real delegate echoes the final-only nonce" "$final_nonce" "$live_final_out"

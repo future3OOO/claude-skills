@@ -116,7 +116,7 @@ def graph_packet(root: str) -> dict[str, object]:
     }
 
 
-def advance_to_final_review(repo: Path, tmp: Path) -> RepoIdentity:
+def advance_to_final_review(repo: Path, tmp: Path, design=None) -> RepoIdentity:
     """Drive one pass from intake to a ready final-review checkpoint.
 
     Producer-owned steps go through the real recorders because that is the only way
@@ -151,7 +151,7 @@ def advance_to_final_review(repo: Path, tmp: Path) -> RepoIdentity:
         assert result.returncode == 0, result.stdout + result.stderr
 
     record_advisor_result(
-        identity, slug, workflow_id, "preflight", "codex-advisor", "completed"
+        identity, slug, workflow_id, "preflight", "codex-advisor", "completed", design=design
     )
     advisor_disposition(identity, slug, workflow_id, "preflight", "none")
     producer(
