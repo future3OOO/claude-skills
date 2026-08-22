@@ -52,7 +52,6 @@ Do not write all tests first. Settle every preservation item before the first ed
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
 - If the surface passes before any production edit, the recorder marks the item `already-satisfied` with that run as evidence, opens no editing, and counts no cycle; do not manufacture RED or edit production code for it.
 - A preservation RED cannot open the first edit; the recorder refuses it until a contract item has reached GREEN. After implementation a preservation item goes RED only when the real Seam shows the change regressed it.
-- Production edits remain blocked until a contract RED is valid.
 
 **GREEN**
 
