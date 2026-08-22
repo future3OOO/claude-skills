@@ -1,19 +1,18 @@
-"""The preflight document contract: its sections and structural validation.
-
-One importable owner for the thirteen-section shape the preflight recorder
-demands. The advisor-test shell script keeps a necessarily inline copy.
-"""
+"""The preflight document contract: text sections plus its Behavior Map."""
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
+from .behavior_map import initial_items
+
 SECTIONS = (
     "affectedSurface", "authoritativeContract", "invariants", "proofPlan",
     "reusePath", "chosenApproach", "rejectedAlternatives", "touchpoints",
     "verify", "update", "modularityPlan", "riskChecks", "openQuestions",
 )
+BEHAVIOR_MAP_SECTION = "behaviorMap"
 
 
 def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -25,39 +24,44 @@ def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return seen
 
 
-def validate_document(value: object) -> dict[str, str]:
+def validate_document(
+    value: object, *, require_behavior_map: bool = False,
+) -> dict[str, object]:
     """The validated preflight document, or a refusal naming what is wrong.
 
-    Unlike the review recorder's array-of-findings input, this contract is a
-    fixed set of prose sections where an empty section would record a preflight
-    that never happened, so every section must carry text.
+    The thirteen prose sections retain their original contract. New producer
+    recordings additionally require the structured Behavior Map; the optional
+    legacy path exists only for importing evidence recorded before that field.
     """
     if not isinstance(value, dict):
         raise ValueError("preflight document must be a JSON object")
-    missing = [name for name in SECTIONS if name not in value]
+    required = set(SECTIONS) | ({BEHAVIOR_MAP_SECTION} if require_behavior_map else set())
+    missing = [name for name in (*SECTIONS, BEHAVIOR_MAP_SECTION) if name in required and name not in value]
     if missing:
         raise ValueError(f"preflight document is missing sections: {', '.join(missing)}")
-    unknown = sorted(set(value) - set(SECTIONS))
+    allowed = set(SECTIONS) | {BEHAVIOR_MAP_SECTION}
+    unknown = sorted(set(value) - allowed)
     if unknown:
         raise ValueError(f"preflight document has unknown sections: {', '.join(unknown)}")
-    empty = [name for name in SECTIONS if not isinstance(value[name], str) or not value[name].strip()]
+    empty = [
+        name for name in SECTIONS
+        if not isinstance(value.get(name), str) or not str(value[name]).strip()
+    ]
     if empty:
         raise ValueError(f"preflight sections must be non-empty text: {', '.join(empty)}")
-    document = {name: str(value[name]).strip() for name in SECTIONS}
+    document: dict[str, object] = {name: str(value[name]).strip() for name in SECTIONS}
     if document["openQuestions"] != "none":
         raise ValueError("openQuestions must be exactly 'none'; an unresolved question blocks the recording")
+    if BEHAVIOR_MAP_SECTION in value:
+        document[BEHAVIOR_MAP_SECTION] = initial_items(value[BEHAVIOR_MAP_SECTION])
     return document
 
 
-def validated_document(path: str) -> dict[str, str]:
-    """The validated preflight document read from a file or stdin.
-
-    Duplicate section keys refuse at parse time, where a later section would
-    otherwise silently overwrite an earlier one.
-    """
+def validated_document(path: str) -> dict[str, object]:
+    """Read and strictly validate new preflight evidence from a file or stdin."""
     try:
         raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
         value = json.loads(raw, object_pairs_hook=_reject_duplicates)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read preflight JSON: {exc}") from exc
-    return validate_document(value)
+    return validate_document(value, require_behavior_map=True)

@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.tests.support import build_document, record_context_forge
+from hooks.tests.support import build_no_change_document, record_context_forge
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 
@@ -94,7 +94,7 @@ class WorkflowLedgerTests(unittest.TestCase):
             result = self.cli(*command, "--repo", str(self.repo))
             self.assertEqual(result.returncode, 0, result.stderr)
         document = self.tmp / "preflight.json"
-        document.write_text(json.dumps(build_document("ledger proof")), encoding="utf-8")
+        document.write_text(json.dumps(build_no_change_document("ledger proof")), encoding="utf-8")
         return state, document
 
     def write_preflight_evidence(self, path: Path, workflow_id: str) -> None:
@@ -103,7 +103,7 @@ class WorkflowLedgerTests(unittest.TestCase):
             "schemaVersion": 1,
             "slug": "legacy",
             "workflowId": workflow_id,
-            "document": build_document("legacy"),
+            "document": build_no_change_document("legacy"),
             "recordedAt": "2026-08-01T00:00:00+00:00",
         }), encoding="utf-8")
 
@@ -614,7 +614,7 @@ class WorkflowLedgerTests(unittest.TestCase):
             "--evidence-id", str(state["preflightEvidence"]),
         )
         self.assertEqual(evidence.returncode, 0, evidence.stderr)
-        self.assertEqual(json.loads(evidence.stdout)["document"]["document"], build_document("legacy"))
+        self.assertEqual(json.loads(evidence.stdout)["document"]["document"], build_no_change_document("legacy"))
 
     def test_referenced_legacy_evidence_without_an_owner_is_rejected(self) -> None:
         legacy, evidence_path = self.legacy_state()

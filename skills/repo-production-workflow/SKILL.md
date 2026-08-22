@@ -99,9 +99,11 @@ packet, graph, advisor findings, and governing artifact. Resolve, interview, or
 block on every material unknown. For transaction-sensitive work, load the
 [transaction doctrine](../production-code/references/transaction-doctrine.md).
 
+The recorded preflight owns the initial Behavior Map: stable, atomic proof obligations for the contract, state transitions, every material guarantee at a wrapped or rerouted Seam, visible interactions, and known architecture assumptions needing falsification. It is authoritative for proof obligations, not architecture selection; a plan may reference it but is not a second proof owner.
+
 Record a completed preflight only through its recorder, which demands the
-skill's structured document (all thirteen sections, `openQuestions` exactly
-`none`) and refuses without mutating state:
+skill's structured document (thirteen non-empty text sections plus a non-empty
+`behaviorMap`, with `openQuestions` exactly `none`) and refuses without mutating state:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
@@ -109,14 +111,21 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --workflow-id "<active-workflowId>" --input <preflight.json>
 ```
 
-### 6. TDD RED or not-required
+### 6. Mapped TDD RED or not-required
 
-For behavior changes invoke `tdd` and drive one real-Seam RED/GREEN tracer
-bullet at a time. In this governed workflow `workflow.py tdd` is the required producer
-for behavior-change TDD state (`set-phase` does not accept the `tdd` phase);
-outside the governed workflow it stays optional. It keeps a bounded summary
-and advances the TDD state; it is not proof by itself. For genuinely
-non-behavioral work record the decision with the full producer command:
+For behavior changes invoke `tdd` and select one pending Behavior Map ID. The RED must reach its recorded real Seam and emit that item's behavior-specific `redFailure` marker. A missing API/import, setup, syntax, fixture, or collection failure is not RED for a later product behavior and does not unlock production edits.
+
+For directly invoked pytest and unittest, the recorder verifies that the mapped marker came from an executed assertion rather than collection, setup, loading, printed output, or another exception. Any other exact-bound command remains comparable for RED/GREEN identity but cannot satisfy a mapped RED because its output cannot establish Seam reach. Use a supported real assertion surface or leave the proof gap pending.
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
+  --repo "$PWD" --slug "<task>" --phase red --behavior-id "BM_..." \
+  -- <targeted-command>
+```
+
+A passing pre-edit behavior is dispositioned through `tdd-map` as `already-satisfied` with real-Seam evidence rather than manufacturing a RED.
+
+In this governed workflow the public TDD producers are required; `set-phase` does not accept the `tdd` phase. They keep bounded evidence and advance state but are not proof by themselves. For genuinely non-behavioral work, `--not-required` is available only after every map item is already satisfied or omitted by governing evidence:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
@@ -124,11 +133,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --not-required "<specific non-behavioral reason>"
 ```
 
-After
-production preflight, test-like edits are admitted while TDD is pending;
-production edits stay blocked until a valid RED (`in-progress`) or a recorded
-not-required decision, and `implementation` cannot be recorded `passed` until
-TDD is `passed` or `not-required`.
+After production preflight, test-like edits are admitted while TDD is pending. Production edits require the production-code baseline in step 7 plus either a valid mapped RED for the active item or a recorded `--not-required` decision (reachable only once every map item is already-satisfied or omitted). Once every mapped item is resolved and reassessed, further production edits (refactoring while GREEN) stay admitted with TDD `passed`; each such edit flags the map, and completion then demands one recorded `tdd-map` reassessment - the behavioral item, or the recorded why-non-behavioral. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
 
 ### 7. Production code
 
@@ -163,8 +168,30 @@ verification run in step 9.
 Implement the smallest direct change and remove obsolete code created by the
 change. PostToolUse marks implementation in-progress and resets downstream
 readiness after every production edit; governance edits reset the downstream
-review steps without reopening production editing. When implementation is ready
-for verification:
+review steps without reopening production editing.
+
+After the smallest production edit, run GREEN on the same mapped surface:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
+  --repo "$PWD" --slug "<task>" --phase green --behavior-id "BM_..." \
+  -- <same test surface>
+```
+
+After every GREEN, record a `workflow.py tdd-map` reassessment before another
+production edit:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
+  --input <map-update.json>
+```
+
+The JSON document accepts `sourceBehaviorId` (the GREEN under review),
+`reassessment`, `items`, and `dispositions` only. Add newly exposed touched-Seam preservation, interaction,
+semantic falsification, or review-discovered behavior; an empty addition records
+why the GREEN created no further obligation. Only after GREEN and reassessment
+leave TDD `passed` or `not-required` may implementation be recorded passed:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
@@ -215,7 +242,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 Recording the review also binds it to the tree it reviewed, so re-recording it
 refreshes that binding and returns the final review to pending. Any correction
-returns to implementation and invalidates downstream readiness.
+returns to implementation and invalidates downstream readiness. Before fixing a behavioral finding, append it to the Behavior Map with `tdd-map` and drive its behavior-specific RED; non-behavioral corrections record why.
 
 ### 11. Independent final Codex Advisor review
 
@@ -234,13 +261,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   complete --repo "$PWD"
 ```
 
-`complete` refuses unless required phases are ready, material code-review
-findings are dispositioned, the final source is `codex-advisor` with
-`commit-ready`, the reviewable working tree still matches the manifest
-recorded by the lead review, and every evidence phase carries its producer's
-evidence reference — a passed phase without one is a bare claim and reads
-pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not
-inspect, intercept, authorize, or execute Git.
+`complete` refuses unless every Behavior Map item is GREEN or validly dispositioned, no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, the final source is `codex-advisor` with `commit-ready`, the reviewable working tree still matches the manifest recorded by the lead review, and every evidence phase carries its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion
 
@@ -267,14 +288,12 @@ transport may be recorded `unavailable` only with the measured reason; final
 review has no unavailable exception. Ordinary documentation, scratch, and
 non-repository work keeps the lightweight exception; governance docs still
 reset downstream review readiness. Stop blocks with the exact `nextAction`
-while completion readiness is missing and no pause is recorded; any advancing
-update — including an edit-triggered invalidation — clears a recorded pause.
-[WORKFLOW-MAP.md](WORKFLOW-MAP.md) owns the full permit and re-stop
-conditions. Unavailable blast-radius impact is reported as `unknown`.
+while completion readiness is missing and no pause is recorded; authoritative
+workflow or mapped-evidence corruption is repair-only and cannot be released by
+`pause`. Any advancing update — including an edit-triggered invalidation — clears
+a recorded pause. [WORKFLOW-MAP.md](WORKFLOW-MAP.md) owns the full permit and
+re-stop conditions. Unavailable blast-radius impact is reported as `unknown`.
 
 ## Final response
 
-Report changed behavior, RED/GREEN proof, verification, review findings and
-dispositions, both advisor outcomes, workflow completion, reviewer-loop state,
-and any explicitly unverified surface. Never describe state summaries as
-proof, authorization, or tamper-resistant evidence.
+Report Behavior Map dispositions, behavior-specific RED/GREEN proof, post-GREEN reassessments, verification, review findings and dispositions, both advisor outcomes, workflow completion, reviewer-loop state, and any explicitly unverified surface. Never describe state summaries as proof, authorization, or tamper-resistant evidence.

@@ -1,6 +1,6 @@
 ---
 name: production-preflight
-description: Produce the required before-edit proof for production code changes — reuse path, chosen approach, touchpoints, verify vs update surfaces, module shape, risks, and honest openQuestions. Use before writing code on implementation, refactor, bug-fix, or review-comment passes.
+description: Produce the required before-edit proof for production code changes — reuse path, chosen approach, touchpoints, verify vs update surfaces, module shape, risks, Behavior Map, and honest openQuestions. Use before writing code on implementation, refactor, bug-fix, or review-comment passes.
 ---
 
 # Production Preflight
@@ -110,8 +110,9 @@ Produce a short preflight with these exact sections:
 - `modularityPlan`
 - `riskChecks`
 - `openQuestions`
+- `behaviorMap`
 
-Keep each section concrete and repo-specific. No filler.
+The first thirteen sections are concise text. `behaviorMap` is authoritative for the behavior obligations TDD must reconcile, not for choosing the architecture. A plan may reference the map but does not own another copy.
 
 For ordinary local work, keep `affectedSurface`, `authoritativeContract`, `invariants`, and `proofPlan` short.
 For transaction-sensitive work, these sections must be explicit enough to govern the full surrounding surface.
@@ -151,6 +152,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 ### `chosenApproach`
 
 - State the intended implementation in direct terms.
+- State each material implementation assumption and its evidence. An unresolved architecture-selection or contract question - one whose answer could change the chosen approach - moves to `openQuestions` and blocks recording until resolved. A settled choice whose behavioral consequence still needs falsification is not an open question: record it as a pending `behaviorMap` item and drive it through TDD.
 - Explain why it is the shortest correct path.
 - Keep the approach aligned with fail-closed behavior, boundary validation, and minimal diff size.
 - If a governing plan or review artifact exists, state how this pass fits its current owner slice and checklist progression.
@@ -216,6 +218,31 @@ Use a three-way decision for every material unknown:
 
 Do not pause for ceremonial approval after evidence has resolved the decision.
 
+### `behaviorMap`
+
+Record a non-empty JSON array. Every item has these seven required fields:
+
+```json
+[
+  {
+    "id": "BM_ATOMICITY",
+    "basis": "touched-Seam preservation",
+    "behavior": "a caught inner failure remains atomic under the new transaction path",
+    "seam": "the public operation through that path",
+    "expected": "no partial inner write survives",
+    "redFailure": "PARTIAL_INNER_WRITE_SURVIVED",
+    "status": "pending"
+  }
+]
+```
+
+- IDs are stable uppercase identifiers used by RED/GREEN evidence.
+- `redFailure` names the product failure. Do not use missing-API/import, setup, syntax, fixture, collection, or no-test failures.
+- Initial status is `pending`, `already-satisfied`, or `omitted`. `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
+- Map every declared success/failure, meaningful state transition, material guarantee at a wrapped or rerouted Seam, visible interaction, and known architecture assumption needing falsification.
+- Split independently-failable outcomes. A broad test that fails at the first missing API is not evidence for later rollback, persistence, or lifecycle behavior.
+- Proof gaps stay in `openQuestions`; they are not omissions.
+
 ## Execution Gate
 
 - Preflight must happen before the first tracked edit on the governed pass.
@@ -227,17 +254,16 @@ Do not pause for ceremonial approval after evidence has resolved the decision.
 ## Recording
 
 In the governed workflow this preflight records only through
-`python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-preflight --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input "/path/to/preflight.json"`, which demands the full thirteen-section document
-as JSON (every section non-empty, `openQuestions` exactly `none`) and refuses
+`python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-preflight --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input "/path/to/preflight.json"`, which demands the full thirteen text sections plus `behaviorMap`
+as JSON (every text section non-empty, `openQuestions` exactly `none`) and refuses
 without mutating state. Write the document to a file and pass it with
 `--input`; response prose is not evidence.
 
 ## Output Shape
 
-Use this compact structure:
+Use the exact JSON section names above. For a visible summary, use the compact text shape - one bold-labelled line per section, in order:
 
 ```md
-**Preflight**
 `affectedSurface`: ...
 `authoritativeContract`: ...
 `invariants`: ...
@@ -250,7 +276,8 @@ Use this compact structure:
 `update`: ...
 `modularityPlan`: ...
 `riskChecks`: ...
-`openQuestions`: none | ...
+`openQuestions`: none
+`behaviorMap`: BM_... pending | already-satisfied | omitted (with evidence)
 ```
 
 If blocked, say so explicitly and keep the block reason inside `openQuestions`.

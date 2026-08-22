@@ -1,45 +1,59 @@
 # Governed TDD Recorder
 
-Use this reference only when governed workflow continuity is active. The recorder keeps bounded observations; it is not proof, authorization, or a substitute for inspecting the test.
+Use this reference only when governed workflow continuity is active. The recorded preflight owns the initial Behavior Map; the recorder binds real RED/GREEN executions and reassessments to its stable IDs. It is evidence, not authorization.
 
-Run RED and GREEN through the optional recorder. It keeps the command, exit status, bounded output, declared behavior, and real Seam:
+## RED and GREEN
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --phase red \
-  --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
-  --seam "<real public Interface/Seam>" --expected-failure "<expected product failure>" \
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
+  --repo "$PWD" --slug "<task>" --phase red --behavior-id "BM_..." \
   -- <targeted-command>
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --phase green \
-  --repo "$PWD" --slug "<task>" --behavior "<behavior>" \
-  --seam "<same real public Interface/Seam>" -- <targeted-command>
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
+  --repo "$PWD" --slug "<task>" --phase green --behavior-id "BM_..." \
+  -- <targeted-command>
 ```
 
-The recorder also counts the cycles it opens. On a pass with a recorded base, the per-edit quality-gate hook divides branch-cumulative net production growth by that count and warns once past about 200 lines per recorded cycle, naming both numbers. This is a granularity smell that one small cycle is carrying a whole feature, never a block.
+The map owns the behavior, Seam, expected outcome, and behavior-specific `redFailure` marker. For directly invoked pytest and unittest, RED is valid only when collection/loading/setup reaches at least one executed test and the marker is emitted by its assertion failure. Printed output is never the assertion: a pytest run whose FAILURES section carries more header-shaped lines than failed tests is unattributable and refuses, naming both counts. Missing APIs, imports, fixtures, syntax, collection/setup failures, and zero-test runs do not open a cycle. Other exact-bound commands remain comparable for RED/GREEN identity but cannot satisfy a mapped RED because their output cannot establish Seam reach.
 
-GREEN must rerun the test surface that produced RED, not repeat its spelling. For a directly invoked stdlib unittest or pytest command, the recorder compares a normalized surface: runner family, invocation, and the ordered arguments that select tests. A rerun differing only by pytest `-x`/`--exitfirst`/`--maxfail=1`, unittest `-f`/`--failfast`, or a verbosity alias is the same candidate.
+A valid RED unlocks production edits for that active item. GREEN must rerun the same normalized test surface, not merely the same spelling. For directly invoked stdlib unittest or pytest, fail-fast and verbosity aliases may differ; selectors, target, config, runner, behavior ID, and Seam remain load-bearing. Unknown runners remain exact-command bound.
 
-While a cycle is pending, a different target, `-k`/`-m` selector, config path, start or root directory, runner, behavior, or Seam refuses RED or GREEN before the command runs and names each differing field with both normalized values. GREEN remains bound after completion. A RED against completed `passed` or `not-required` evidence may run with a changed candidate; a valid changed RED opens the next cycle.
+The recorder counts valid cycle-opening REDs only as a coarse granularity smell. Cycle count is never a coverage target.
 
-Any other command, including `bash -lc`, a pipeline, or an unknown runner, keeps exact command identity and records why. A pending cycle whose RED predates normalized surfaces stays bound to its exact command; rerun that exact RED to move it onto a normalized surface.
+## Map updates and post-GREEN reassessment
 
-When every scoped map item is already satisfied or omitted by governing evidence, record the existing no-change decision:
+GREEN blocks the next production edit until the architecture it introduced is reassessed:
+
+```json
+{
+  "sourceBehaviorId": "BM_...",
+  "reassessment": "What the GREEN introduced and which preservation, interaction, or falsification obligations follow.",
+  "items": [],
+  "dispositions": []
+}
+```
 
 ```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" \
-  --slug "<task>" --not-required "<specific reason no production behavior edit is required>"
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-map \
+  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
+  --input "/path/to/tdd-map-update.json"
 ```
 
-Use `--not-required` only in that state. Governance forbids it while any item, including a proof gap, remains pending. The CLI separately refuses to replace existing valid RED/GREEN evidence.
+Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. If a pending behavior already passes before a production edit, use `dispositions` with its ID, `already-satisfied`, and the real-Seam evidence; `omitted` requires governing evidence that removes it from scope. Only pending items can be dispositioned.
 
-The recorder has no phase for individual already-satisfied or omitted items in a mixed pass; those remain behavior-map dispositions reported in the handoff.
+A review-discovered behavioral defect is added with `tdd-map` before its fix. Outside post-GREEN reassessment, omit `sourceBehaviorId` and add or disposition at least one item — except after a post-resolution production edit has flagged the map (`postEditReassessment`): there a reassessment-only update is accepted, recording why the edit was non-behavioral, and completion demands that record.
 
-Before completion, or when stopping on a proof gap, report the applicable items:
+While a cycle is pending, a changed candidate refuses before execution. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 
-- **RED:** targeted command and expected product failure observed for each implemented slice;
-- **GREEN:** the same behavior surface passed after the smallest production change;
-- **ALREADY SATISFIED:** the real-Seam command passed before a production edit, with evidence that no RED/GREEN cycle or production change was required;
-- **OMITTED:** each item removed by governing evidence, with that evidence;
-- **PROOF GAP:** each unresolved gap, the real Seam or evidence required to close it, and that implementation and completion remain blocked;
-- **REGRESSION:** broader relevant suite passed, or strongest practical substitute with reason;
-- **REFACTOR:** only performed while tests were GREEN;
-- **LIMIT:** chronology and intent remain claims to verify against the diff and review record.
+## No behavior change
+
+Use `--not-required` only when every map item is already satisfied or omitted by governing evidence:
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \
+  --repo "$PWD" --slug "<task>" \
+  --not-required "<specific reason no production behavior edit is required>"
+```
+
+Proof gaps and pending items forbid this path. The CLI separately refuses to replace existing valid RED/GREEN evidence.
+
+Before completion, report the applicable map IDs and evidence: RED, GREEN, already satisfied, omitted, proof gaps, reassessments, broader regression proof, and refactoring performed while GREEN.

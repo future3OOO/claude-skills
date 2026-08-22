@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.tests.support import build_document, record_context_forge  # noqa: E402
+from hooks.tests.support import build_no_change_document, record_context_forge  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
@@ -50,7 +50,7 @@ class ReviewSummaryTests(unittest.TestCase):
         record_advisor_result(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
         advisor_disposition(identity, "review-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         doc_path = self.tmp / "setup-preflight.json"
-        doc_path.write_text(json.dumps(build_document("suite setup")), encoding="utf-8")
+        doc_path.write_text(json.dumps(build_no_change_document("suite setup")), encoding="utf-8")
         recorded = subprocess.run(
             [sys.executable, str(WORKFLOW), "record-preflight", "--repo", str(self.repo), "--slug", "review-summary",
              "--workflow-id", read_workflow(identity)["workflowId"], "--input", str(doc_path)],

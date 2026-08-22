@@ -10,15 +10,24 @@ flowchart LR
     D -->|yes| DG[diagnose]
     D -->|no| A1[advisor preflight]
     DG --> A1
-    A1 --> P[production preflight]
-    P --> T[TDD when required]
-    T --> PC[production-code]
+    A1 --> P[production preflight records the Behavior Map]
+    P --> M{map has a pending item?}
+    M -->|yes| TR[mapped TDD RED]
+    M -->|no: every item already-satisfied or omitted| NR[tdd --not-required]
+    TR --> PC[production-code]
+    NR --> PC
     PC --> I[implementation]
-    I --> V[verification]
+    I -->|active RED| TG[mapped GREEN]
+    I -->|not-required map| V
+    TG --> TM[post-GREEN map reassessment]
+    TM -->|new obligation| TR
+    TM -->|map resolved| V[verification]
     V --> CR[lead structured code review when non-trivial]
     CR --> A2[independent final Codex Advisor review]
     A2 --> C{commit-ready and findings addressed?}
-    C -->|no| I
+    C -->|behavioral finding| TM2[tdd-map adds the item]
+    TM2 --> TR
+    C -->|non-behavioral finding| I
     C -->|yes| WC[workflow complete]
     WC --> DL[delivery]
     DL --> PR[reviewer completion]
@@ -34,9 +43,10 @@ workflow status|summary        # active canonical state
 workflow history               # ordered accepted events and logical references
 workflow evidence              # read one logical evidence record
 workflow set-phase             # lead-owned implementation and trivial review
-workflow record-preflight      # validates the thirteen-section document
+workflow record-preflight      # validates 13 text sections + Behavior Map
 workflow record-production-code # validates the bundled gate verdict
-workflow tdd                   # runs RED/GREEN or records not-required
+workflow tdd                   # mapped RED/GREEN or records not-required
+workflow tdd-map               # dispositions and post-GREEN map updates
 workflow verify                # generic commands or typed final-tree quality gate
 workflow record-review         # structured lead review plus tree manifest
 workflow advisor-result|advisor-disposition
@@ -58,31 +68,41 @@ Repo Context Forge, preflight, production-code, TDD, verification, review, and
 addressed advisor dispositions record only with their native validated documents
 as logical evidence, inserted in the same SQLite transaction as the accepted event; a
 findings-none advisor disposition intentionally carries no document, and a
-refusal names the missing evidence and mutates nothing.
+refusal names the missing evidence and mutates nothing. The preflight document
+owns the initial Behavior Map; mapped TDD evidence carries its stable IDs,
+RED/GREEN runs, current dispositions, and pending reassessment. A plan may show
+the map but is not an evidence owner.
+
 Exit 2 alone does not prove a refusal: the verification, TDD, and review
 producers each document a path that commits first and returns 2 after — a
 command that failed after being recorded, an invalid TDD run recorded as
 `reopen` or `in-progress`, and a review whose material findings remain
 unresolved. Repo Context Forge, preflight, production-code, and verification keep their
 accepted reference only while producer-recorded as passed — every other transition drops
-it, so a bare replay can never resurrect prior evidence. Tdd and code review
+it, so a bare replay can never resurrect prior evidence. TDD and code review
 instead keep a current producer reference across their own non-passed states —
-tdd while in-progress and when not-required, code review while pending — so a
-later run can validate or supersede it; only tdd's in-progress reference serves
-GREEN's validation of the RED it follows. Tdd entry demands
-the recorded preflight evidence, not just its status. Each producer stamps the workflow instance into its evidence and the ledger keeps its logical identity, so a passed Repo Context Forge, preflight, production-code, or verification phase without one — legacy state, or a bare
-library claim — reads pending at completion, never success; completion gates tdd
-on its status and both reviews on their own record predicates. Evidence proves the
-output exists, not that the analysis is good; fabrication remains deception and
-stays covered by the transcript audit.
+TDD while in-progress and when not-required, code review while pending — so a
+later run can validate or supersede it. Only TDD's in-progress reference serves
+GREEN's validation of the RED it follows. TDD entry demands recorded preflight
+evidence and, for new governed passes, a mapped behavior ID. Each producer stamps
+the workflow instance into its evidence and the ledger keeps its logical
+identity, so a passed Repo Context Forge, preflight, production-code, or
+verification phase without one — legacy state, or a bare library claim — reads
+pending at completion, never success. Evidence proves the output exists, not
+that the analysis is good; fabrication remains deception and stays covered by
+the transcript audit.
 
 The database and its containing directory are private and agent-writable. Committed transactions provide continuity across process restart and compaction; it is not tamper-proof and does not authorize Git. A normal
 commit or HEAD change does not invalidate it. After production preflight,
-test-like edits are admitted while TDD is pending; production edits stay
-blocked until a valid RED or a recorded not-required decision. A normally
+test-like edits are admitted while TDD is pending. Production edits are admitted
+after the production-code baseline for an active valid mapped RED, a fully
+dispositioned `not-required` map, or a resolved and reassessed GREEN map. A GREEN
+blocks the next production edit until `tdd-map` records the required architecture,
+preservation, and interaction reassessment. A later edit against a resolved map
+stays admitted but flags completion for another reassessment. A normally
 completed workflow is terminal: every mutation except `begin` is rejected.
-A governance-document edit after
-completion is the sole controlled revalidation exception: it opens a window in
+
+A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
 which only verification, code review, the final advisor review, and completion
 are accepted, production editing stays closed, and completing again restores
 the terminal state. The read-only `checkpoint` query reports consult
@@ -93,7 +113,10 @@ readiness for the advisor phases without mutating anything.
 - Repo Context Forge completed, carrying its producer graph evidence;
 - advisor preflight completed with findings dispositioned, or explicitly
   unavailable with a measured reason;
-- production preflight completed;
+- production preflight completed with a non-empty Behavior Map;
+- every behavior-changing map item GREEN, or validly dispositioned `already-satisfied` on real-Seam evidence when it passed before any edit;
+- every other map item already satisfied or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check);
+- no pending proof gap or post-GREEN map reassessment;
 - TDD passed or not required;
 - production-code recorded;
 - implementation and verification passed;
@@ -124,7 +147,7 @@ resume at the first unsatisfied phase in the same ordered workflow. A
 governance-first pass therefore returns to TDD, while a completed
 implementation returns to verification.
 
-Findings from the lead's code review or final Codex Advisor against the current unpushed tree follow the return edge to implementation and retain the active `workflowId`. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
+Behavioral findings from the lead's code review or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. The behavioral/non-behavioral classification is a lead-owned obligation, not a machine-validated edge: the recorder validates the reassessment's structure and blocks completion until one is recorded, but it cannot judge the classification itself - a behavioral defect routed through a why-only reassessment is a doctrine violation the reviews are expected to catch, not a state the hooks can refuse. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
 
 ## Approval freshness
 
@@ -171,10 +194,10 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require the recorded before-edit sequence through production preflight |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; after the production-code baseline admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed GREEN map; after GREEN block the next production edit until map reassessment |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
-| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while the canonical completion-readiness check reports missing steps and no pause is recorded; permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound `pause` waits (reserved for blockers the payload cannot represent), advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success, because any Stop output re-prompts the model (progress on that instance re-latches); surfaces the bounded summary otherwise. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there, and is not a firing or an outcome: it is a per-Stop selection event counting one latch the association rule withheld, so it counts stops rather than distinct passes or sessions |
+| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while canonical completion readiness reports missing work and no pause is recorded; authoritative workflow or mapped-evidence corruption remains repair-only and cannot be released by `pause`. It permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound waits for ordinary external blockers, advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success because any Stop output re-prompts the model. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there and counts one selection event, not a firing or outcome |
 
 `Stop` consults the workflows the session actually edited in, not the directory
 it was launched from. `PostToolUse` records one immutable marker per repository
@@ -188,10 +211,9 @@ consulted only by a session that recorded no association at all, whose behaviour
 is unchanged. A payload whose `session_id` is missing, null, not a string, empty,
 or only whitespace belongs to no session: it is rejected before any key is
 derived, so it records no association and reads none, and therefore keeps that
-`cwd` fallback —
-the association key is never defaulted to a shared literal, because every
-anonymous payload would then share one identity and one repository's pass could
-reach another's Stop.
+`cwd` fallback — the association key is never defaulted to a shared literal,
+because every anonymous payload would then share one identity and one
+repository's pass could reach another's Stop.
 
 For an admitted non-blank string id the key is `safe_slug(session_id)[:40]`, and
 that transform is lossy rather than injective. In order it trims surrounding
@@ -251,12 +273,13 @@ parser, candidate-tree gate, approval marker, nonce, or evidence graph.
 
 ## Ordinary summaries
 
-Repo Context Forge output, TDD runs, and code-review findings may be retained as
-bounded summaries for the next agent. They carry no HEAD/tree/hash identity and
-are never substitutes for the real packet, test command, or live review. The
-review-time manifest above is workflow state rather than one of these summaries,
-and it identifies working-tree file mode and content, plus each submodule's
-checked-out commit — never this repository's own HEAD, and never an attestation.
+Repo Context Forge output, mapped TDD runs/reassessments, and code-review
+findings may be retained as bounded summaries for the next agent. They carry no
+HEAD/tree/hash identity and are never substitutes for the real packet, recorded
+Behavior Map, test command, or live review. The review-time manifest above is
+workflow state rather than one of these summaries, and it identifies working-tree
+file mode and content, plus each submodule's checked-out commit — never this
+repository's own HEAD, and never an attestation.
 
 ## Delivery is separate
 
