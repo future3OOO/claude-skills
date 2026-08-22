@@ -38,7 +38,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-
   --input "/path/to/tdd-map-update.json"
 ```
 
-Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. Prose `dispositions` (`already-satisfied` with real-Seam evidence, `omitted` with governing evidence) apply to pending preservation items only; a contract item is dispositioned only by the producer's baseline run.
+Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. Prose `dispositions` (`already-satisfied` with real-Seam evidence, `omitted` with governing evidence) apply to pending preservation items only; a contract item is dispositioned only by the producer's baseline run. A GREEN item is dispositioned `superseded` with `supersededBy` naming its replacement in the same map; a missing target, self-reference, cycle, non-GREEN source, or a terminal replacement that is already-satisfied or omitted refuses the whole update; closure follows the chain to its terminal replacement.
 
 A review-discovered behavioral defect is added with `tdd-map` before its fix. Outside post-GREEN reassessment, omit `sourceBehaviorId` and add or disposition at least one item — except after a post-resolution production edit has flagged the map (`postEditReassessment`): there a reassessment-only update is accepted, recording why the edit was non-behavioral, and completion demands that record.
 

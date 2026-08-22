@@ -707,6 +707,9 @@ def _map_update(values: list[str]) -> int:
     if additions:
         added_items = behavior_map.added_items(additions, updated)
         updated.extend(added_items)
+    # Supersession is judged over the merged map, so a replacement added in
+    # this same update is legal and a broken graph refuses before any commit.
+    updated = behavior_map.runtime_items(updated)
     unresolved = behavior_map.unresolved(updated)
     status = "pending" if unresolved else "passed"
     document = _map_doc(
