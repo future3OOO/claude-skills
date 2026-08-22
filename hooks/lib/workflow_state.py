@@ -6,6 +6,7 @@ import re
 import uuid
 from typing import Sequence
 
+from . import behavior_map
 from ._workflow_db import (
     EvidenceWrite,
     LedgerError,
@@ -792,7 +793,13 @@ def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: st
         _require_instance(state, slug, workflow_id)
         state.pop("paused", None)
         state.pop("revalidation", None)
-        missing = completion_missing(state)
+        # Behavior Map closure is judged from the evidence this transaction
+        # sees, so a map committed between the CLI's diagnostic precheck and
+        # this mutation cannot slip through.
+        missing = behavior_map.closure_blockers(
+            transaction.evidence(state.get("tddEvidence")),
+            transaction.evidence(state.get("preflightEvidence")),
+        ) + completion_missing(state)
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
         if drift := _binding_drift(identity, state, "review", transaction):

@@ -220,12 +220,13 @@ Do not pause for ceremonial approval after evidence has resolved the decision.
 
 ### `behaviorMap`
 
-Record a non-empty JSON array. Every item has these seven required fields:
+Record a non-empty JSON array. Every item has these eight required fields:
 
 ```json
 [
   {
     "id": "BM_ATOMICITY",
+    "kind": "preservation",
     "basis": "touched-Seam preservation",
     "behavior": "a caught inner failure remains atomic under the new transaction path",
     "seam": "the public operation through that path",
@@ -237,10 +238,11 @@ Record a non-empty JSON array. Every item has these seven required fields:
 ```
 
 - IDs are stable uppercase identifiers used by RED/GREEN evidence.
-- `redFailure` names the product failure. Do not use missing-API/import, setup, syntax, fixture, collection, or no-test failures.
-- Initial status is `pending`, `already-satisfied`, or `omitted`. `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
+- `kind` is `contract` for the requested behavior and `preservation` for what the change must keep true. List contract items first. A map with any pending item carries at least one contract item; `basis` is prose and carries no authority.
+- `redFailure` names the product failure. A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`).
+- A contract item starts `pending`: it is never `omitted`, and only `tdd --phase red` passing its exact mapped surface pre-edit records it `already-satisfied`. A preservation item starts `pending`, `already-satisfied`, or `omitted`; `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
 - Map every declared success/failure, meaningful state transition, material guarantee at a wrapped or rerouted Seam, visible interaction, and known architecture assumption needing falsification.
-- Split independently-failable outcomes. A broad test that fails at the first missing API is not evidence for later rollback, persistence, or lifecycle behavior.
+- Split independently-failable outcomes.
 - Proof gaps stay in `openQuestions`; they are not omissions.
 
 ## Execution Gate
@@ -277,7 +279,7 @@ Use the exact JSON section names above. For a visible summary, use the compact t
 `modularityPlan`: ...
 `riskChecks`: ...
 `openQuestions`: none
-`behaviorMap`: BM_... pending | already-satisfied | omitted (with evidence)
+`behaviorMap`: BM_... contract|preservation, pending | already-satisfied | omitted (with evidence)
 ```
 
 If blocked, say so explicitly and keep the block reason inside `openQuestions`.

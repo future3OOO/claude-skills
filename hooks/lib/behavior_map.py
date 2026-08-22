@@ -9,11 +9,16 @@ JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
 RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
+KINDS = frozenset({"contract", "preservation"})
 REQUIRED_FIELDS = frozenset({
-    "id", "basis", "behavior", "seam", "expected", "redFailure", "status",
+    "id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status",
 })
 OPTIONAL_FIELDS = frozenset({"evidence"})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
+_CONTRACT_DISPOSITION_REFUSED = (
+    "behavior {} is a contract item: it is never omitted, and already-satisfied "
+    "is recorded only by tdd --phase red passing its mapped surface"
+)
 # Infra-failure phrases, matched on word boundaries: a phrase is refused when
 # its words appear as an adjacent run in the marker, or its collapsed form is
 # itself one of the marker's words (AttributeError). Substring matching over
@@ -89,19 +94,26 @@ def validate_items(
     value: object,
     *,
     allow_runtime: bool,
-    existing_ids: Iterable[str] = (),
+    existing: Iterable[JsonObject] = (),
 ) -> list[JsonObject]:
-    """Validate and return one canonical Behavior Map item list."""
+    """Validate and return one canonical Behavior Map item list.
+
+    `existing` holds the recorded items a new batch joins, so map-level rules
+    read the whole map.
+    """
     if not isinstance(value, list) or not value:
         raise ValueError("behaviorMap must be a non-empty array")
     statuses = RUNTIME_STATUSES if allow_runtime else INITIAL_STATUSES
-    seen = set(existing_ids)
+    existing = list(existing)
+    seen = {str(entry["id"]) for entry in existing}
     result: list[JsonObject] = []
     for position, raw in enumerate(value, 1):
         if not isinstance(raw, dict):
             raise ValueError(f"behaviorMap item {position} must be an object")
         unknown = sorted(set(raw) - REQUIRED_FIELDS - OPTIONAL_FIELDS)
-        missing = sorted(REQUIRED_FIELDS - set(raw))
+        # Maps recorded before `kind` existed still load; their items carry no
+        # contract authority. New items always declare a kind.
+        missing = sorted(REQUIRED_FIELDS - set(raw) - ({"kind"} if allow_runtime else set()))
         if missing:
             raise ValueError(
                 f"behaviorMap item {position} is missing fields: {', '.join(missing)}"
@@ -118,13 +130,25 @@ def validate_items(
         if identifier in seen:
             raise ValueError(f"behavior id is duplicated: {identifier}")
         seen.add(identifier)
+        kind = _text(raw.get("kind"))
+        if kind not in KINDS and not (kind is None and allow_runtime):
+            raise ValueError(
+                f"behavior {identifier} kind must be one of: {', '.join(sorted(KINDS))}"
+            )
         status = _text(raw.get("status"))
         if status not in statuses:
             raise ValueError(
                 f"behavior {identifier} status must be one of: {', '.join(sorted(statuses))}"
             )
+        # Recorded evidence carries contract already-satisfied only from the
+        # producer (tdd --phase red), so the loading path admits it.
+        if kind == "contract" and (
+            status == "omitted" or (status == "already-satisfied" and not allow_runtime)
+        ):
+            raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
         item: JsonObject = {
             "id": identifier,
+            **({"kind": kind} if kind is not None else {}),
             "basis": _required(raw, "basis", identifier),
             "behavior": _required(raw, "behavior", identifier),
             "seam": _required(raw, "seam", identifier),
@@ -144,6 +168,14 @@ def validate_items(
                 f"behavior {identifier} status {status} cannot carry disposition evidence"
             )
         result.append(item)
+    whole = [*existing, *result]
+    if not allow_runtime and any(
+        entry["status"] == "pending" for entry in whole
+    ) and not any(entry.get("kind") == "contract" for entry in whole):
+        raise ValueError(
+            "a map with a pending item must carry at least one contract item; "
+            "a no-change pass maps only dispositioned preservation items"
+        )
     return result
 
 
@@ -163,11 +195,7 @@ def runtime_items(value: object) -> list[JsonObject]:
 
 
 def added_items(value: object, existing: list[JsonObject]) -> list[JsonObject]:
-    return validate_items(
-        value,
-        allow_runtime=False,
-        existing_ids=(str(item["id"]) for item in existing),
-    )
+    return validate_items(value, allow_runtime=False, existing=existing)
 
 
 def clone(items: list[JsonObject]) -> list[JsonObject]:
@@ -208,7 +236,9 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
         if evidence is None:
             raise ValueError(f"behavior {identifier} disposition requires evidence")
         mapped = item(items, identifier)
-        if mapped.get("status") != "pending":
+        if mapped.get("kind") == "contract":
+            raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
+        elif mapped.get("status") != "pending":
             raise ValueError(
                 f"behavior {identifier} is {mapped.get('status')}; only pending items can be dispositioned"
             )
@@ -217,11 +247,79 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:
+    """Closure: pending and red items are the open obligations."""
     return [
         str(entry["id"])
         for entry in items
         if entry.get("status") in {"pending", "red"}
     ]
+
+
+def may_refactor(items: list[JsonObject]) -> bool:
+    """The refactor-while-GREEN window: every contract item resolved and one GREEN through RED."""
+    pending = set(unresolved(items))
+    contract = [entry for entry in items if entry.get("kind") == "contract"]
+    return not any(entry["id"] in pending for entry in contract) and any(
+        entry.get("status") == "green" for entry in contract
+    )
+
+
+def edit_blocker(items: list[JsonObject], active: str | None) -> str | None:
+    """Why the map forbids the next production edit, or None when it opens."""
+    pending = set(unresolved(items))
+    preservation = [
+        str(entry["id"]) for entry in items
+        if entry.get("kind") != "contract"
+        and entry["id"] in pending
+        and entry["id"] != active
+    ]
+    if preservation:
+        return "baseline or disposition preservation item(s) before the edit: " + ", ".join(preservation)
+    if active is not None:
+        candidate = item(items, active)
+        if candidate.get("status") == "red" and candidate.get("kind") == "contract":
+            return None
+    if may_refactor(items):
+        return None
+    contract = [str(entry["id"]) for entry in items if entry.get("kind") == "contract"]
+    return (
+        "valid behavior-specific RED for a contract Behavior Map item (contract before "
+        "preservation; the refactor window needs every contract item resolved and one "
+        "GREEN through RED): " + (", ".join(contract) or "none mapped")
+    )
+
+
+def recorded_map(
+    tdd_document: JsonObject | None, preflight_document: JsonObject | None
+) -> list[JsonObject] | None:
+    """The current map: TDD evidence's, else the recorded preflight's, else none."""
+    value = tdd_document.get("behaviorMap") if isinstance(tdd_document, dict) else None
+    if value is None and isinstance(preflight_document, dict):
+        inner = preflight_document.get("document")
+        value = inner.get("behaviorMap") if isinstance(inner, dict) else None
+    return runtime_items(value) if value is not None else None
+
+
+def closure_blockers(
+    tdd_document: JsonObject | None, preflight_document: JsonObject | None
+) -> list[str]:
+    """Why the recorded map is not closed; empty when completion may proceed."""
+    items = recorded_map(tdd_document, preflight_document)
+    if items is None:
+        return []
+    document = tdd_document if isinstance(tdd_document, dict) else {}
+    missing: list[str] = []
+    if document.get("reassessmentPending"):
+        missing.append("Behavior Map reassessment")
+    if document.get("postEditReassessment"):
+        missing.append(
+            "post-production-edit Behavior Map reassessment via workflow tdd-map: "
+            "add the behavioral item, or record why the edits were non-behavioral"
+        )
+    pending = unresolved(items)
+    if pending:
+        missing.append("unresolved Behavior Map items: " + ", ".join(pending))
+    return missing
 
 
 def all_disposition_only(items: list[JsonObject]) -> bool:
@@ -234,6 +332,7 @@ def no_change_item(evidence: str) -> JsonObject:
     """One explicit fixture/no-change disposition for non-behavioral passes."""
     return {
         "id": "BM_NO_CHANGE",
+        "kind": "preservation",
         "basis": "governing evidence",
         "behavior": "No production behavior changes in this pass",
         "seam": "workflow preflight evidence",

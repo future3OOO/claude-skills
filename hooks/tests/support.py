@@ -31,9 +31,11 @@ def pending_behavior(
     expected: str = "value is two",
     red_failure: str = "VALUE_NOT_TWO",
     basis: str = "test contract",
+    kind: str = "contract",
 ) -> dict[str, object]:
     return {
         "id": identifier,
+        "kind": kind,
         "basis": basis,
         "behavior": behavior,
         "seam": seam,

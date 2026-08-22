@@ -9,7 +9,7 @@ description: TDD for production behavior changes through real Seams. Use when im
 
 Production behavior changes require one **behavior-specific RED** before production code changes.
 
-A RED proves the mapped behavior is absent. It must reach the real Seam and fail at the product assertion named by the map. A missing method/import, invalid setup, collection error, syntax error, or test that fails before reaching the claimed behavior is not RED evidence.
+A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`). Contract before preservation: the map's `contract` items are the requested behavior, and only a contract RED opens production editing.
 
 The recorder can establish assertion reach for directly invoked pytest and unittest; its verdict is a bounded reading of the runner's report text - evidence the lead verifies, not an attestation, because the ledger is continuity. Other exact-bound commands remain useful for surface identity but cannot satisfy a mapped RED because their output cannot establish Seam reach. Use a supported real assertion surface or leave the proof gap pending; do not manufacture a second test path.
 
@@ -39,19 +39,19 @@ Map:
 - interactions where one behavior can mutate state or invalidate a guarantee owned by another;
 - known load-bearing assumptions that need semantic falsification.
 
-Each item has a stable ID and is `pending`, `already-satisfied` with real-Seam evidence, or `omitted` by governing evidence. Proof gaps remain pending. Every applicable category above must be accounted for before the first RED.
+Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. A contract item is `pending` until its RED reaches GREEN; it is never `omitted`, and it becomes `already-satisfied` only when `tdd --phase red` runs its exact mapped surface pre-edit and the surface passes. A preservation item is `pending`, `already-satisfied` with real-Seam evidence, or `omitted` by governing evidence. Proof gaps remain pending. Every applicable category above must be accounted for before the first RED.
 
 ## 2. Drive One Mapped Vertical Slice
 
-Do not write all tests first. Select one pending map ID.
+Do not write all tests first. Settle every preservation item before the first edit: run its mapped surface through `tdd --phase red` (a pass records it `already-satisfied` as a baseline) or disposition it through `tdd-map`. Then select one pending contract ID.
 
 **RED**
 
 - Write one test for that atomic behavior through its recorded Seam.
 - Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
-- If the real-Seam test already passes before a production edit, disposition the item through `tdd-map` as `already-satisfied` with that evidence; do not manufacture RED or edit production code for it.
-- Production edits remain blocked until this RED is valid.
+- If the surface passes before any production edit, the recorder marks the item `already-satisfied` with that run as evidence, opens no editing, and counts no cycle; do not manufacture RED or edit production code for it.
+- A preservation RED cannot open the first edit; the recorder refuses it until a contract item has reached GREEN. After implementation a preservation item goes RED only when the real Seam shows the change regressed it.
 
 **GREEN**
 
@@ -82,8 +82,8 @@ A reassessment with no new item records why. A reassessment that adds items reop
 
 ## 4. Refactor and Complete
 
-Refactor only while GREEN and rerun relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
+The refactor window opens only after every contract item is resolved and at least one reached GREEN through RED; a baseline `already-satisfied` alone never opens it. Refactor only inside that window and rerun relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
 
-TDD is complete only when every behavior-changing item is GREEN, every other item is already satisfied or omitted with evidence, no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
+TDD is complete only when every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN, already satisfied, or omitted with evidence, no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
 
 When governed workflow continuity is active, follow [recorder.md](recorder.md). It records bounded map/RED/GREEN evidence; it is not authorization.
