@@ -119,7 +119,8 @@ def design_file_declaration(path: str) -> JsonObject:
     except json.JSONDecodeError as exc:
         raise ValueError(f"cannot parse governed design catalogue JSON: {exc}") from exc
     declared = {str(label["id"]) for label in catalogue["labels"]}
-    reserved = set(RESERVED_DESIGN_TOKEN.findall(text))
+    reserved = set(RESERVED_DESIGN_TOKEN.findall(text[: text.index(DESIGN_MARKER)]))
+    reserved.update(RESERVED_DESIGN_TOKEN.findall(tail[match.end():]))
     if declared != reserved:
         missing = sorted(reserved - declared)
         unused = sorted(declared - reserved)

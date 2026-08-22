@@ -1733,6 +1733,24 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(self.evidence(preflight_id), kept,
                          "begin deleted retained history instead of merely deactivating it")
 
+    def test_governed_design_rejects_catalogue_only_label(self) -> None:
+        design = self.tmp / "catalogue-only-design.md"
+        design.write_text(
+            "ASSUMP-"
+            "<!-- governed-design-labels:v1 -->\n```json\n"
+            '{"schemaVersion":1,"labels":['
+            '{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}\n```'
+            "1\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "catalogue-only: ASSUMP-1",
+            msg="CATALOGUE_ONLY_LABEL_WAS_ACCEPTED",
+        ):
+            design_file_declaration(str(design))
+
     def test_governed_design_labels_bind_preflight_coverage_atomically(self) -> None:
         wid = self.begin_slug("design-labels")
         self.advance_to_context_forge()
