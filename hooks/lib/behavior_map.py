@@ -105,11 +105,14 @@ def _source_refs(value: object, identifier: str, *, required: bool) -> list[Json
                 f"behavior {identifier} sourceRef {position} requires only type, evidenceId, and id"
             )
         reference_type, evidence_id, label = raw.get("type"), _text(raw.get("evidenceId")), _text(raw.get("id"))
-        if reference_type != "design" or evidence_id is None or label is None or not DESIGN_LABEL.fullmatch(label):
-            raise ValueError(f"behavior {identifier} sourceRef {position} is not a valid design reference")
-        key = (reference_type, evidence_id, label)
+        valid = (
+            reference_type == "design" and label is not None and DESIGN_LABEL.fullmatch(label)
+        ) or (reference_type == "finding" and label is not None)
+        if evidence_id is None or not valid:
+            raise ValueError(f"behavior {identifier} sourceRef {position} is not a valid design or finding reference")
+        key = (str(reference_type), evidence_id, str(label))
         if key in seen:
-            raise ValueError(f"behavior {identifier} repeats design sourceRef {label}")
+            raise ValueError(f"behavior {identifier} repeats {reference_type} sourceRef {label}")
         seen.add(key)
         result.append({"type": reference_type, "evidenceId": evidence_id, "id": label})
     return result
@@ -243,12 +246,16 @@ def validate_design_authority(
     *,
     require_coverage: bool,
 ) -> None:
+    design_refs = lambda entry: [
+        ref for ref in entry.get("sourceRefs", [])
+        if isinstance(ref, dict) and ref.get("type") == "design"
+    ]
     if evidence_id is None or declaration is None:
-        if any(entry.get("sourceRefs") for entry in items):
+        if any(design_refs(entry) for entry in items):
             raise ValueError("design sourceRefs require captured governed-design evidence")
         return
     if declaration.get("status") == "absent":
-        if any(entry.get("sourceRefs") for entry in items):
+        if any(design_refs(entry) for entry in items):
             raise ValueError("design-absent workflow cannot carry design sourceRefs")
         return
     catalogue = declaration.get("catalogue")
@@ -261,8 +268,8 @@ def validate_design_authority(
     }
     owned: set[str] = set()
     for entry in items:
-        refs = entry.get("sourceRefs")
-        if not isinstance(refs, list) or not refs:
+        refs = design_refs(entry)
+        if not refs:
             raise ValueError(f"behavior {entry['id']} requires a design sourceRef")
         for ref in refs:
             if ref.get("evidenceId") != evidence_id:

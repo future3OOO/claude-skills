@@ -94,7 +94,7 @@ grep -q 'Load /code-review, /codebase-design, /tdd, and /code-quality' "$WRAPPER
 # A phase prompt is one arm of a case statement, so a whole-file grep cannot tell
 # which phase carries a rule. Extract the arm and assert against that block.
 phase_block() { sed -n "/^  $1)\$/,/;;\$/p" "$WRAPPER"; }
-materiality='Return Verdict: fix-before-commit only when at least one finding is material: true; when context matches and no material finding remains, return Verdict: commit-ready. Report material: false findings for lead disposition without blocking, treat uncertainty as material: true, and preserve Verdict: context-mismatch for mismatched review context.'
+materiality='Use fix-before-commit only when at least one finding is material true; use commit-ready when context matches and none is material; preserve context-mismatch for mismatched review context.'
 preflight_block=$(phase_block preflight-advice)
 final_block=$(phase_block final-review)
 
@@ -139,9 +139,10 @@ else
   printf 'PASS  no commit authorization residue\n'; pass=$((pass+1))
 fi
 
-grep -q 'final-review output lacks an exact terminal Verdict line' "$WRAPPER" \
-  && { printf 'PASS  final verdict is exact and terminal\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  final verdict contract missing\n'; fail=$((fail+1)); }
+grep -q 'verdict commit-ready, fix-before-commit, or context-mismatch' "$WRAPPER" \
+  && grep -q -- '--input "$output_file"' "$WRAPPER" \
+  && { printf 'PASS  final verdict is carried by the strict recorded envelope\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  strict final envelope contract missing\n'; fail=$((fail+1)); }
 
 if grep -q 'advisor-disposition' "$WRAPPER"; then
   printf 'FAIL  wrapper must never disposition findings; that is lead-owned\n'; fail=$((fail+1))
@@ -800,10 +801,11 @@ sys.path.insert(0, sys.argv[1])
 from hooks.lib import workflow_state as w
 from hooks.lib.repo_identity import resolve_repo_identity
 from hooks.tests.support import advance_to_final_review, build_no_change_document
+from hooks.lib.workflow_documents import design_absence
 repo = Path(sys.argv[2])
 identity = resolve_repo_identity(repo)
 w.begin(identity, "live-final-probe")
-advance_to_final_review(repo, repo.parent)
+advance_to_final_review(repo, repo.parent, design_absence("live final probe"))
 state = w.read_workflow(identity)
 document = build_no_change_document("recorded preflight carries " + sys.argv[3] + " for the live probe")
 path = repo.parent / "nonce-preflight.json"
@@ -816,7 +818,7 @@ assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$finaltmp
   live_final_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" "$WRAPPER" \
     --slug live-final-probe --phase final-review --base-ref HEAD --cwd "$finaltmp/repo" \
     --design-absent "live final probe" --budget 60 --fresh \
-    -- "Quote the exact PROOF-NONCE value that appears in the recorded production preflight evidence, then end with your verdict." 2>"$finaltmp/stderr")
+    -- "Return only the required strict final-review JSON envelope with one nonmaterial nonbehavioral finding whose claim quotes the exact PROOF-NONCE value in the recorded production preflight, and verdict commit-ready." 2>"$finaltmp/stderr")
   status=$?
   check_status "live final-review consult exits 0" 0 "$status"
   check "the real delegate echoes the final-only nonce" "$final_nonce" "$live_final_out"
