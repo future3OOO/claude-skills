@@ -69,17 +69,19 @@ grep -q 'phase belongs in --phase' "$WRAPPER" \
   && { printf 'PASS  phase-word warning retained\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  phase-word warning missing\n'; fail=$((fail+1)); }
 
-grep -q 'disallowed-tools "Edit Write NotebookEdit Task Bash mcp__\*"' "$WRAPPER" \
-  && { printf 'PASS  writes, subagents, Bash, and MCP tools blocked\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  tool policy must block writes, subagents, Bash, and inherited MCP tools\n'; fail=$((fail+1)); }
+grep -q 'disallowed-tools "Edit Write NotebookEdit Task"' "$WRAPPER" \
+  && { printf 'PASS  writes and subagents remain blocked\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  tool policy must retain writes and subagent denies\n'; fail=$((fail+1)); }
 
-grep -q -- '--tools "Read,Grep,Glob,Skill"' "$WRAPPER" \
-  && { printf 'PASS  built-in tool surface restricted via --tools\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  --tools must restrict the built-in surface to Read,Grep,Glob,Skill\n'; fail=$((fail+1)); }
+grep -q -- '--tools "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
+  && { printf 'PASS  direct-measurement built-ins granted\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  --tools must grant the exact direct-measurement built-ins\n'; fail=$((fail+1)); }
 
-grep -q -- '--strict-mcp-config' "$WRAPPER" \
-  && { printf 'PASS  MCP configuration isolated via --strict-mcp-config\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  --strict-mcp-config must isolate MCP configuration\n'; fail=$((fail+1)); }
+if grep -q -- '--strict-mcp-config\|mcp__\*' "$WRAPPER"; then
+  printf 'FAIL  normally configured MCP tools must be inherited\n'; fail=$((fail+1))
+else
+  printf 'PASS  normally configured MCP tools are inherited\n'; pass=$((pass+1))
+fi
 
 grep -q 'Load /codebase-design, /tdd, and /code-quality' "$WRAPPER" \
   && { printf 'PASS  before-code rubric named\n'; pass=$((pass+1)); } \
@@ -102,6 +104,16 @@ check "preflight-advice arm extracts" "Checkpoint Interface: preflight-advice" "
 check "final-review arm extracts" "Checkpoint Interface: final-review" "$final_block"
 check "final-review states the materiality verdict criterion" "$materiality" "$final_block"
 check "final-review remeasures changed findings" "Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation." "$final_block"
+for prompt_rule in \
+  "Contract coverage:" \
+  "Design coverage:" \
+  "Framing:" \
+  "Measure before you infer:"; do
+  check "preflight asks ${prompt_rule%:}" "$prompt_rule" "$preflight_block"
+  check "final review asks ${prompt_rule%:}" "$prompt_rule" "$final_block"
+done
+check "preflight GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$preflight_block"
+check "final-review GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$final_block"
 
 if [[ "$preflight_block" == *"$materiality"* ]]; then
   printf 'FAIL  materiality rule must stay out of preflight-advice, which emits no gating verdict\n'; fail=$((fail+1))
@@ -117,9 +129,9 @@ grep -q 'cannot require code.*caller enumeration proves absence only on a closed
   && { printf 'PASS  imaginary-risk rule handles open execution surfaces\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  imaginary-risk open-surface rule missing\n'; fail=$((fail+1)); }
 
-grep -q '"Read,Grep,Glob,Skill"' "$WRAPPER" \
-  && { printf 'PASS  rubric skills permitted\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  Skill must stay available for read-only rubric use\n'; fail=$((fail+1)); }
+grep -q '"Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
+  && { printf 'PASS  rubric skills remain permitted\n'; pass=$((pass+1)); } \
+  || { printf 'FAIL  Skill must stay available with direct-measurement tools\n'; fail=$((fail+1)); }
 
 if grep -q '\.stamp\|commit gate\|commit-approval' "$WRAPPER"; then
   printf 'FAIL  commit authorization residue remains\n'; fail=$((fail+1))
@@ -531,8 +543,20 @@ check "preflight-advice carries the recorded intent verbatim" "$intent_text" "$p
 intent_py 'import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+from hooks.lib.workflow_state import commit_tdd, instance_id, read_workflow
 from hooks.tests.support import advance_to_final_review
-advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
+identity = advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)
+state = read_workflow(identity)
+workflow_id = str(instance_id(state))
+commit_tdd(identity, str(state["slug"]), workflow_id, {
+    "schemaVersion": 1,
+    "workflowId": workflow_id,
+    "status": "passed",
+    "behavior": "imported legacy behavior",
+    "seam": "legacy production Interface",
+    "command": "python -m unittest",
+    "runs": [],
+}, "passed", expected_evidence_id=None)'
 # The armH replay: the consult question denies that any governing spec exists. The
 # recorded text has to arrive in the same payload as the denial, so the delegate can
 # see for itself that the premise is false.
@@ -648,6 +672,10 @@ check "final-review attaches the recorded production preflight" "--- recorded pr
 check "the attached preflight is the recorded document" "advance to final review" "$armh_payload"
 check "the preflight header carries sha256 provenance" "sha256=" "$armh_payload"
 check "final-review carries the governing-design section too" "governing design artifact, declared absent (bounded: shown=" "$armh_payload"
+check "final-review attaches recorded verification runs" "--- recorded verification runs (bounded: shown=" "$armh_payload"
+check "final-review attaches the current Behavior Map" "--- current Behavior Map (bounded: shown=" "$armh_payload"
+behavior_map_payload=$(printf '%s\n' "$armh_payload" | sed -n '/^--- current Behavior Map (bounded:/,/^--- recorded TDD summary/p')
+check "Behavior Map carries item kind" '"kind":' "$behavior_map_payload"
 check "precedence is stated to the delegate" "the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof" "$armh_payload"
 check "design/preflight divergence is a finding" "Unreconciled divergence between the design and the recorded preflight is a finding" "$armh_payload"
 check "PRES-n obligations are rechecked" "Recheck each PRES-n preservation obligation" "$armh_payload"
