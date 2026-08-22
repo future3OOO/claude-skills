@@ -12,7 +12,7 @@ flowchart LR
     DG --> A1
     A1 --> P[production preflight records the Behavior Map]
     P --> M{map has a pending item?}
-    M -->|yes| TR[mapped TDD RED]
+    M -->|yes| TR[mapped contract RED, preservation items settled first]
     M -->|no: every item already-satisfied or omitted| NR[tdd --not-required]
     TR --> PC[production-code]
     NR --> PC
@@ -114,8 +114,8 @@ readiness for the advisor phases without mutating anything.
 - advisor preflight completed with findings dispositioned, or explicitly
   unavailable with a measured reason;
 - production preflight completed with a non-empty Behavior Map;
-- every behavior-changing map item GREEN, or validly dispositioned `already-satisfied` on real-Seam evidence when it passed before any edit;
-- every other map item already satisfied or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check);
+- every contract map item GREEN, or `already-satisfied` by the recorder's own baseline run (its exact mapped surface passed before any edit);
+- every preservation map item already satisfied or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - judged by `behavior_map` inside `complete()`'s transaction;
 - no pending proof gap or post-GREEN map reassessment;
 - TDD passed or not required;
 - production-code recorded;

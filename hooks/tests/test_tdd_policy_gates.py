@@ -62,7 +62,7 @@ class MappedTddPolicyGateTests(unittest.TestCase):
         # The bypass: a disposition-only map plus the hook's flag evidence
         # (which carries no runs) passed both --not-required guards, so the
         # overwrite erased postEditReassessment and its completion demand.
-        item = pending_behavior("BM_DISPOSED")
+        item = pending_behavior("BM_DISPOSED", kind="preservation")
         item["status"] = "already-satisfied"
         item["evidence"] = "real-Seam proof recorded before this pass"
         slug, _ = self.harness.begin_with_map([item], "not-required-flag")

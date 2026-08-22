@@ -216,51 +216,6 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         self.assertEqual(state["tddCycleCount"], 1)
         self.assertEqual(edit_blockers(resolve_repo_identity(self.repo), state), [])
 
-    def test_passing_behavior_can_be_dispositioned_without_manufacturing_red(self) -> None:
-        behavior = pending_behavior(
-            "BM_PRESENT",
-            behavior="the existing public value remains one",
-            seam="public app value",
-            expected="value is one",
-            red_failure="VALUE_WAS_NOT_ONE",
-        )
-        slug, workflow_id = self.begin_to_preflight([behavior])
-
-        passing_red = self.tdd(
-            slug,
-            "red",
-            "BM_PRESENT",
-            "import app; assert app.value == 1, 'VALUE_WAS_NOT_ONE'",
-        )
-        self.assertEqual(passing_red.returncode, 2, passing_red.stdout + passing_red.stderr)
-        state = read_workflow(resolve_repo_identity(self.repo))
-        self.assertEqual(state["tdd"], "pending")
-        self.assertNotIn("tddCycleCount", state)
-
-        disposition = self.update_map(
-            slug,
-            workflow_id,
-            {
-                "reassessment": "The real-Seam command passed before any production edit.",
-                "items": [],
-                "dispositions": [{
-                    "id": "BM_PRESENT",
-                    "status": "already-satisfied",
-                    "evidence": "unittest assertion passed with app.value == 1 before editing",
-                }],
-            },
-        )
-        self.assertEqual(disposition.returncode, 0, disposition.stdout + disposition.stderr)
-        state = read_workflow(resolve_repo_identity(self.repo))
-        self.assertEqual(state["tdd"], "passed")
-
-        not_required = self.cli(
-            "tdd", "--slug", slug,
-            "--not-required", "all mapped behavior was already satisfied",
-        )
-        self.assertEqual(not_required.returncode, 0, not_required.stdout + not_required.stderr)
-        self.assertEqual(json.loads(not_required.stdout)["status"], "not-required")
-
     def test_green_blocks_more_production_until_map_reassessment(self) -> None:
         behavior = pending_behavior("BM_VALUE")
         slug, workflow_id = self.begin_to_preflight([behavior])

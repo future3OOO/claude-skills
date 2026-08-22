@@ -15,7 +15,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
 
 The map owns the behavior, Seam, expected outcome, and behavior-specific `redFailure` marker. For directly invoked pytest and unittest, RED is valid only when collection/loading/setup reaches at least one executed test and the marker is emitted by its assertion failure. Printed output is never the assertion: a pytest run whose FAILURES section carries more header-shaped lines than failed tests is unattributable and refuses, naming both counts. Missing APIs, imports, fixtures, syntax, collection/setup failures, and zero-test runs do not open a cycle. Other exact-bound commands remain comparable for RED/GREEN identity but cannot satisfy a mapped RED because their output cannot establish Seam reach.
 
-A valid RED unlocks production edits for that active item. GREEN must rerun the same normalized test surface, not merely the same spelling. For directly invoked stdlib unittest or pytest, fail-fast and verbosity aliases may differ; selectors, target, config, runner, behavior ID, and Seam remain load-bearing. Unknown runners remain exact-command bound.
+A valid contract RED unlocks production edits for that active item; a preservation RED before the first contract GREEN, or a RED while another preservation item is unresolved, is refused at cycle-open and records nothing. A RED whose surface passes pre-edit records the item `already-satisfied` (baseline) and unlocks nothing. GREEN must rerun the same normalized test surface, not merely the same spelling. For directly invoked stdlib unittest or pytest, fail-fast and verbosity aliases may differ; selectors, target, config, runner, behavior ID, and Seam remain load-bearing. Unknown runners remain exact-command bound.
 
 The recorder counts valid cycle-opening REDs only as a coarse granularity smell. Cycle count is never a coverage target.
 
@@ -38,7 +38,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-
   --input "/path/to/tdd-map-update.json"
 ```
 
-Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. If a pending behavior already passes before a production edit, use `dispositions` with its ID, `already-satisfied`, and the real-Seam evidence; `omitted` requires governing evidence that removes it from scope. Only pending items can be dispositioned.
+Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. Prose `dispositions` (`already-satisfied` with real-Seam evidence, `omitted` with governing evidence) apply to pending preservation items only; a contract item is dispositioned only by the producer's baseline run.
 
 A review-discovered behavioral defect is added with `tdd-map` before its fix. Outside post-GREEN reassessment, omit `sourceBehaviorId` and add or disposition at least one item — except after a post-resolution production edit has flagged the map (`postEditReassessment`): there a reassessment-only update is accepted, recording why the edit was non-behavioral, and completion demands that record.
 

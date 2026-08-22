@@ -18,7 +18,7 @@ A behavior test survives internal refactoring: if observable behavior is unchang
 
 The RED must reach the mapped Seam and fail at the assertion for the claimed product behavior. Give that assertion a behavior-specific marker and record the same marker as `redFailure` in preflight. For directly invoked pytest and unittest, the recorder also requires at least one executed test and refuses collection, setup, loader, or zero-test failures. Other exact-bound commands cannot satisfy a mapped RED because their output cannot establish Seam reach.
 
-A test for “rollback restores exact state” is **not** a RED for rollback when it stops first at `AttributeError: enable_safe_import`. That proves only that an API is absent. Split API availability from rollback semantics and drive each independently.
+A test for “rollback restores exact state” is **not** a RED for rollback when it stops first at `AttributeError: enable_safe_import`; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "enable_safe_import"), MARKER`); rollback semantics are a separate item driven once the Seam exists.
 
 ```python
 def test_rejected_transfer_preserves_balances():
