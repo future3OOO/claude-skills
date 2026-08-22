@@ -264,6 +264,38 @@ class ContractProofAuthorityTests(unittest.TestCase):
             self.assertEqual(state["tdd"], "pending", marker)
             self.assertIsNone(state.get("tddEvidence"), marker)
 
+    def test_baseline_counts_only_genuinely_passing_tests(self) -> None:
+        # unittest exits 0 and counts skipped and expected-failure tests in
+        # "Ran N", so the Ran count alone is not a pass; test-printed OK lines
+        # land before the Ran line and must not be read as the runner's result.
+        marker = "SKIPPED_SURFACE_RECORDED_AS_BASELINE"
+        slug, _ = self.h.begin_to_preflight([contract("BM_PRESENT", red_failure="VALUE_WAS_NOT_ONE")])
+        header = "import sys, unittest, app\nclass Probe(unittest.TestCase):\n"
+        skip = "    @unittest.skip('later')\n    def test_skip(self):\n        self.fail('never')\n"
+        xfail = ("    @unittest.expectedFailure\n    def test_xfail(self):\n"
+                 "        print('OK'); sys.stderr.write('OK\\n'); self.assertEqual(app.value, 2)\n")
+        passing = "    def test_pass(self):\n        self.assertEqual(app.value, 1, 'VALUE_WAS_NOT_ONE')\n"
+        probe = self.repo / "test_baseline_probe.py"
+        command = (sys.executable, "-m", "unittest", "test_baseline_probe")
+        for body in (skip, xfail):
+            probe.write_text(header + body, encoding="utf-8")
+            refused = subprocess.run(
+                [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+                 "--phase", "red", "--behavior-id", "BM_PRESENT", "--", *command],
+                cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(refused.returncode, 2, f"{marker}: {(refused.stderr.strip().splitlines() or [''])[-1]}")
+            state = read_workflow(self.identity)
+            self.assertEqual(state["tdd"], "pending", marker)
+            self.assertIsNone(state.get("tddEvidence"), marker)
+        probe.write_text(header + passing + skip + xfail, encoding="utf-8")
+        mixed = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+             "--phase", "red", "--behavior-id", "BM_PRESENT", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(mixed.returncode, 0, f"{marker}: {(mixed.stderr.strip().splitlines() or [''])[-1]}")
+        document = self.h.cli("evidence", "--evidence-id", str(read_workflow(self.identity)["tddEvidence"]))
+        self.assertEqual(json.loads(document.stdout)["document"]["runs"][-1]["redProof"]["testsExecuted"], 1, marker)
+
     def green(self, slug: str, behavior_id: str, value: int, marker: str) -> None:
         script = f"import app; assert app.value == {value}, {marker!r}"
         red = self.h.tdd(slug, "red", behavior_id, script)

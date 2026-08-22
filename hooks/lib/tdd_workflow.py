@@ -327,8 +327,18 @@ def _baseline_proof(
         )
     output = tdd_surface.ANSI_ESCAPE.sub("", output)
     if runner == "unittest":
+        # unittest exits 0 with skipped and expected-failure tests inside its
+        # Ran count; only its own result line says how many did not genuinely
+        # pass. That line is the first OK line after the last Ran line: test
+        # output either precedes Ran (unbuffered) or flushes after the runner
+        # has finished (buffered), never between the two runner writes.
         runs = list(tdd_surface.UNITTEST_RAN.finditer(output))
         executed = int(runs[-1].group(1)) if runs else 0
+        result = re.search(r"(?m)^OK(?: \((.*)\))?$", output[runs[-1].end():]) if runs else None
+        executed -= sum(
+            int(count)
+            for count in re.findall(r"(?:skipped|expected failures)=(\d+)", result.group(1) or "")
+        ) if result else 0
     else:
         executed = sum(
             int(value) for value in re.findall(r"(?<!\d)(\d+) passed\b", output.lower())
