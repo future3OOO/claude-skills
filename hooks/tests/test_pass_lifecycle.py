@@ -1588,7 +1588,6 @@ class PassLifecycleTests(unittest.TestCase):
         preflight = self.record_preflight(wid, self.preflight_document())
         self.assertEqual(preflight.returncode, 2, preflight.stdout + preflight.stderr)
         self.assertIn("advisor-preflight", preflight.stderr)
-
         marker = "UNMEASURED_ADVISOR_FIXED_ACCEPTED"
         unmeasured = self.tmp / "unmeasured-advisor-fixed.json"
         unmeasured.write_text(json.dumps({"findings": [{"id": "ADV-1", "claim": "claim"}],
@@ -1603,7 +1602,6 @@ class PassLifecycleTests(unittest.TestCase):
         copied = self.dispose("advisor-preflight-contract", wid, "preflight", "addressed", stale)
         self.assertEqual(copied.returncode, 2, stale_marker + copied.stdout + copied.stderr)
         self.git("checkout", "--", "app.py")
-
         initial_fixed = self.dispose(
             "advisor-preflight-contract", wid, "preflight", "addressed",
             self.disposition_document(occurrence={
@@ -1622,17 +1620,14 @@ class PassLifecycleTests(unittest.TestCase):
         marker, slug = "LEGACY_BEHAVIORAL_DISPOSITION_ACCEPTED_OR_MUTATED_STATE", "legacy-behavioral"
         wid = self.begin_slug(slug)
         self.advance_to_context_forge()
-        self.rewrite_latest_state(
-            lambda state: state.__setitem__("advisorPreflight", {"source": "codex-advisor", "status": "completed"})
-        )
+        self.rewrite_latest_state(lambda state: state.__setitem__(
+            "advisorPreflight", {"source": "codex-advisor", "status": "completed"}))
         path = Path(self.disposition_document("accepted-follow-up"))
         document = json.loads(path.read_text(encoding="utf-8"))
         document["dispositions"][0]["kind"] = "behavioral"
         path.write_text(json.dumps(document), encoding="utf-8")
         before = self.cli("status").stdout, len(self.history_events())
-
         refused = self.dispose(slug, wid, "preflight", "addressed", str(path))
-
         after = self.cli("status").stdout, len(self.history_events())
         self.assertEqual((refused.returncode, after), (2, before), marker + refused.stdout + refused.stderr)
         self.assertIn("immutable intake and accepted-for-proof", refused.stderr, marker)
@@ -1641,9 +1636,8 @@ class PassLifecycleTests(unittest.TestCase):
         wid = self.begin_slug("legacy-advisor-state")
         self.advance_to_context_forge()
 
-        self.rewrite_latest_state(
-            lambda state: state.__setitem__("advisorPreflight", {"source": "codex-advisor", "status": "completed"})
-        )
+        self.rewrite_latest_state(lambda state: state.__setitem__(
+            "advisorPreflight", {"source": "codex-advisor", "status": "completed"}))
 
         status = self.cli("status")
         self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
@@ -1721,6 +1715,7 @@ class PassLifecycleTests(unittest.TestCase):
              ["preserve advisor intake", " preserve advisor intake "], "workflow CLI", "workflow CLI",
              "preserve advisor intake"),
             ("invalid-id", ["bad id", "BM_ADV_PRESERVE"], obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
+            ("occurrence-seam", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"), ("count-only", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
         ):
             slug = f"reservation-{suffix}"
             wid = self.begin_slug(slug)
@@ -1737,10 +1732,12 @@ class PassLifecycleTests(unittest.TestCase):
             document = json.loads(disposition.read_text(encoding="utf-8"))
             document["dispositions"][0].update({"reservedBehaviorIds": reserved_ids,
                 "preservationObligations": reserved_obligations, "seam": reservation_seam})
+            if suffix == "occurrence-seam": document["dispositions"][0]["occurrence"]["seam"] = "different seam"
+            if suffix == "count-only": document["dispositions"][0]["occurrence"] = {"domain": "fixture", "count": 1, "complete": True, "command": "inspect", "result": "count=1"}
             disposition.write_text(json.dumps(document), encoding="utf-8")
             before_intake = self.cli("status").stdout, len(self.history_events())
             accepted = self.dispose(slug, wid, "preflight", "addressed", str(disposition))
-            if suffix in {"duplicate", "invalid-id"}:
+            if suffix in {"duplicate", "invalid-id", "occurrence-seam", "count-only"}:
                 intake_outcomes.append((accepted.returncode, (self.cli("status").stdout,
                     len(self.history_events())) == before_intake))
                 diagnostics += accepted.stdout + accepted.stderr
@@ -1775,7 +1772,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(outcomes[3], (0, False), text_marker + diagnostics)
         self.assertEqual(outcomes[4:6], [(0, False), (2, True)], "LEGACY_RESERVATION_UPGRADE_BROKEN" + diagnostics)
         self.assertEqual(intake_outcomes[0], (2, True), duplicate_marker + diagnostics)
-        self.assertEqual(intake_outcomes[1], (2, True), invalid_marker + diagnostics)
+        self.assertEqual(intake_outcomes[1:], [(2, True)] * 3, invalid_marker + diagnostics)
 
     def test_preflight_proof_reservation_closes_only_after_green_and_reassessment(self) -> None:
         marker, mixed_marker, slug = (
@@ -1902,11 +1899,9 @@ class PassLifecycleTests(unittest.TestCase):
         update.write_text(json.dumps({"reassessment": "map final finding", "items": [mapped, preserved], "dispositions": []}), encoding="utf-8")
         mapped_result = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
         self.assertEqual(mapped_result.returncode, 0, marker + mapped_result.stdout + mapped_result.stderr)
-
         disposition = self.finding_disposition_document(intake_id, "fixed")
         early = self.dispose(slug, wid, "final", "addressed", str(disposition))
         self.assertEqual(early.returncode, 2, marker + early.stdout + early.stderr)
-
         probe = self.repo / "test_cycle_probe.py"
         probe.write_text("import app, unittest\nclass CycleProbe(unittest.TestCase):\n"
                          "    def test_value(self): self.assertEqual(app.value, 2, 'PROOF_CYCLE_NOT_OPEN')\n",

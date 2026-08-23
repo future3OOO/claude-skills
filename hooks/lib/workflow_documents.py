@@ -403,9 +403,10 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
                 and len(set(canonical_preserved)) == len(preserved)
             ):
                 raise ValueError(f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations")
-            demonstrated = "reproduction" in occurrence or occurrence.get("count", 0) > 0
+            demonstrated = ("reproduction" in occurrence
+                and occurrence.get("seam", "").strip() == str(item["seam"]).strip())
             if not demonstrated:
-                raise ValueError(f"finding {identifier} accepted-for-proof requires demonstrated occurrence")
+                raise ValueError(f"finding {identifier} accepted-for-proof requires demonstrated occurrence at its Seam")
             if consequence["result"].strip().lower() == "false":
                 raise ValueError(f"finding {identifier} accepted-for-proof requires material consequence")
         else:

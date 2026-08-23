@@ -227,14 +227,24 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
     return begin_workflow(identity, state)
 
 
-def _bind_review_to_tree(identity: RepoIdentity, state: JsonObject) -> ManifestWrite | None:
+def _head_oid(identity: RepoIdentity) -> str | None:
+    result = subprocess.run(["git", "-C", str(identity.root), "rev-parse", "HEAD"], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _bind_review_to_tree(
+    identity: RepoIdentity, state: JsonObject, document: dict[str, str] | None = None,
+    head: str | None = None,
+) -> ManifestWrite | None:
     """Create the lead-review tree binding and reopen independent final review."""
     state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
-    state.pop("reviewManifestId", None)
+    state.pop("reviewManifestId", None); state.pop("reviewHead", None)
     try:
-        document = tree_manifest(identity)
+        document = document if document is not None else tree_manifest(identity)
     except RuntimeError:
         return None
+    if head := head or _head_oid(identity): state["reviewHead"] = head
     write = manifest_write(str(state["workflowId"]), "lead-review-tree", document)
     state["reviewManifestId"] = write.manifest_id
     return write
@@ -285,6 +295,8 @@ def _binding_drift(
         "review": ("reviewManifestId", MANIFEST_MISSING, MANIFEST_STALE),
         "quality-gate": ("qualityGateManifestId", QUALITY_GATE_MISSING, QUALITY_GATE_STALE),
     }[binding]
+    if binding == "review" and isinstance(head := state.get("reviewHead"), str):
+        if _head_oid(identity) != head: return f"{stale}: HEAD changed after lead review"
     return _tree_drift(
         identity, state, field=field, missing=missing, stale=stale, transaction=transaction,
     )
@@ -305,6 +317,8 @@ def _apply_step(
     phase: str,
     status: str,
     findings: str | None = None,
+    review_manifest: dict[str, str] | None = None,
+    review_head: str | None = None,
 ) -> ManifestWrite | None:
     """Validated policy mutation shared by every transactional command."""
     if status not in STEP_STATUSES:
@@ -324,7 +338,7 @@ def _apply_step(
             raise ValueError("code-review requires --findings pending, none, or addressed")
         state["codeReview"] = {"status": status, "findings": findings}
         state.pop("codeReviewEvidence", None)
-        manifest = _bind_review_to_tree(identity, state)
+        manifest = _bind_review_to_tree(identity, state, review_manifest, review_head)
     else:
         if findings is not None:
             raise ValueError(f"{phase} does not accept findings")
@@ -531,25 +545,23 @@ def annotate_tdd_evidence(
         return _commit(transaction, state, "tdd-annotated", evidence=[write]), write.evidence_id
 
 
-def _candidate_tree(identity: RepoIdentity) -> str:
-    payload = json.dumps(tree_manifest(identity), sort_keys=True, separators=(",", ":")).encode("utf-8")
+def _candidate_tree(identity: RepoIdentity, manifest: dict[str, str] | None = None) -> str:
+    payload = json.dumps(manifest if manifest is not None else tree_manifest(identity),
+                         sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
-def _validate_disposition_context(identity: RepoIdentity, state: JsonObject, document: JsonObject) -> None:
+def _validate_disposition_context(identity: RepoIdentity, state: JsonObject, document: JsonObject) -> tuple[dict[str, str], str | None]:
     context = document.get("context")
     if not isinstance(context, dict) or context.get("workflowId") != state.get("workflowId"):
         raise WorkflowError("disposition context does not match the active workflow instance")
-    if context.get("candidateTree") != _candidate_tree(identity):
+    manifest = tree_manifest(identity)
+    if context.get("candidateTree") != _candidate_tree(identity, manifest):
         raise WorkflowError("disposition candidateTree does not match the current reviewable tree")
-    expected_head = context.get("prHead")
-    if expected_head is not None:
-        result = subprocess.run(
-            ["git", "-C", str(identity.root), "rev-parse", "HEAD"],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        if result.returncode or result.stdout.strip() != expected_head:
-            raise WorkflowError("disposition prHead does not match the current HEAD")
+    expected_head, head = context.get("prHead"), _head_oid(identity)
+    if expected_head is not None and head != expected_head:
+        raise WorkflowError("disposition prHead does not match the current HEAD")
+    return manifest, head
 
 
 def _finding_unresolved(entry: JsonObject) -> bool:
@@ -587,13 +599,13 @@ def commit_review(
             else:
                 manifest = _apply_step(identity, state, "code-review", "passed", "none")
         else:
-            _validate_disposition_context(identity, state, summary_doc)
+            review_manifest, review_head = _validate_disposition_context(identity, state, summary_doc)
             intake_id = str(summary_doc["intakeEvidenceId"])
             unresolved = _apply_finding_dispositions(
                 transaction, state, intake_id, summary_doc["dispositions"], "code-review", "code-review",
             )
             status, findings = ("pending", "pending") if unresolved else ("passed", "addressed")
-            manifest = _apply_step(identity, state, "code-review", status, findings)
+            manifest = _apply_step(identity, state, "code-review", status, findings, review_manifest, review_head)
         state["codeReviewEvidence"] = write.evidence_id
         state["nextAction"] = _derive_next_action(state)
         return _commit(transaction, state, "record-code-review", evidence=[write],

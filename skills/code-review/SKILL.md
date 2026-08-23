@@ -77,7 +77,7 @@ Record the intake first. When it contains findings, capture the returned
 lead dispositions:
 
 ```json
-{"context":{"workflowId":"<active-workflowId>","candidateTree":"<64-hex tree digest>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"seam":"<real Seam>","reproduction":{"command":"...","result":"..."}},"materialConsequence":{"claim":"...","command":"...","result":"..."},"reservedBehaviorIds":["BM_SPEC_1"],"seam":"<real Seam>","preservationObligations":["..."]}]}
+{"context":{"workflowId":"<active-workflowId>","candidateTree":"<64-hex tree digest>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"seam":"<real Seam>","reproduction":{"command":"...","result":"..."}},"materialConsequence":{"claim":"...","command":"...","result":"..."},"reservedBehaviorIds":["BM_SPEC_1","BM_SPEC_1_PRESERVE"],"seam":"<real Seam>","preservationObligations":["..."]}]}
 ```
 
 Both documents use the same command:
