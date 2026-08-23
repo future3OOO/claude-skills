@@ -1597,7 +1597,6 @@ class PassLifecycleTests(unittest.TestCase):
         refused = self.dispose("advisor-preflight-contract", wid, "preflight", "addressed", str(unmeasured))
         self.assertEqual(refused.returncode, 2, marker + refused.stdout + refused.stderr)
         self.assertEqual(len(self.history_events()), before_events, marker)
-
         stale_marker = "STALE_ADVISOR_MEASUREMENTS_ACCEPTED"
         stale = self.disposition_document()
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
@@ -1716,6 +1715,8 @@ class PassLifecycleTests(unittest.TestCase):
             ("canonical-seam", ids, obligations, " workflow CLI ", " workflow CLI ", "preserve advisor intake"),
             ("canonical-text", [" BM_ADV_1 ", " BM_ADV_PRESERVE "], [" preserve advisor intake "],
              "workflow CLI", "workflow CLI", " preserve advisor intake "),
+            ("legacy", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
+            ("legacy-alias", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
             ("duplicate", ["BM_ADV_1", " BM_ADV_1 ", "BM_ADV_PRESERVE"],
              ["preserve advisor intake", " preserve advisor intake "], "workflow CLI", "workflow CLI",
              "preserve advisor intake"),
@@ -1734,9 +1735,8 @@ class PassLifecycleTests(unittest.TestCase):
             intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
             disposition = self.finding_disposition_document(intake_id)
             document = json.loads(disposition.read_text(encoding="utf-8"))
-            document["dispositions"][0]["reservedBehaviorIds"] = reserved_ids
-            document["dispositions"][0]["preservationObligations"] = reserved_obligations
-            document["dispositions"][0]["seam"] = reservation_seam
+            document["dispositions"][0].update({"reservedBehaviorIds": reserved_ids,
+                "preservationObligations": reserved_obligations, "seam": reservation_seam})
             disposition.write_text(json.dumps(document), encoding="utf-8")
             before_intake = self.cli("status").stdout, len(self.history_events())
             accepted = self.dispose(slug, wid, "preflight", "addressed", str(disposition))
@@ -1746,6 +1746,12 @@ class PassLifecycleTests(unittest.TestCase):
                 diagnostics += accepted.stdout + accepted.stderr
                 continue
             self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+            if suffix.startswith("legacy"):
+                def legacy_shape(state):
+                    reservation = state["findingReservations"][0]
+                    reservation.pop("seam"); reservation.pop("preservationObligations")
+                    if suffix == "legacy-alias": reservation["reservedBehaviorIds"] = ["BM_ADV_1", " BM_ADV_1 ", "BM_ADV_PRESERVE"]
+                self.rewrite_latest_state(legacy_shape)
             source_ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
             preflight = self.preflight_document()
             preflight["behaviorMap"] = [{
@@ -1762,12 +1768,12 @@ class PassLifecycleTests(unittest.TestCase):
             }]
             before = self.cli("status").stdout, len(self.history_events())
             result = self.record_preflight(wid, preflight)
-            after = self.cli("status").stdout, len(self.history_events())
-            outcomes.append((result.returncode, after == before))
+            outcomes.append((result.returncode, (self.cli("status").stdout, len(self.history_events())) == before))
             diagnostics += result.stdout + result.stderr
         self.assertEqual(outcomes[:2], [(2, True), (2, True)], marker + diagnostics)
         self.assertEqual(outcomes[2], (0, False), canonical_marker + diagnostics)
         self.assertEqual(outcomes[3], (0, False), text_marker + diagnostics)
+        self.assertEqual(outcomes[4:6], [(0, False), (2, True)], "LEGACY_RESERVATION_UPGRADE_BROKEN" + diagnostics)
         self.assertEqual(intake_outcomes[0], (2, True), duplicate_marker + diagnostics)
         self.assertEqual(intake_outcomes[1], (2, True), invalid_marker + diagnostics)
 

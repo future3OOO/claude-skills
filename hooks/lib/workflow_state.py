@@ -396,25 +396,19 @@ def _validate_design_map(
     )
 
 
-def _validate_finding_reservation(
-    reservation: JsonObject, linked: dict[str, JsonObject], finding_id: str,
-) -> set[str]:
-    expected = set(str(identifier).strip() for identifier in reservation["reservedBehaviorIds"])
+def _validate_finding_reservation(reservation: JsonObject, linked: dict[str, JsonObject], finding_id: str) -> set[str]:
+    legacy = "seam" not in reservation and "preservationObligations" not in reservation
+    expected = {str(value) if legacy else str(value).strip() for value in reservation["reservedBehaviorIds"]}
     if set(linked) != expected or not expected:
-        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires exactly: "
-                            + ", ".join(sorted(expected)))
-    contract_seams = {
-        str(entry["seam"]) for entry in linked.values() if entry.get("kind") == "contract"
-    }
+        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires exactly: " + ", ".join(sorted(expected)))
+    if legacy: return expected
+    contract_seams = {str(entry["seam"]) for entry in linked.values() if entry.get("kind") == "contract"}
     if str(reservation["seam"]).strip() not in contract_seams:
         raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires Seam: {reservation['seam']}")
-    obligations = set(str(value).strip() for value in reservation["preservationObligations"])
-    preserved = {
-        str(entry["behavior"]) for entry in linked.values() if entry.get("kind") == "preservation"
-    }
+    obligations = {str(value).strip() for value in reservation["preservationObligations"]}
+    preserved = {str(entry["behavior"]) for entry in linked.values() if entry.get("kind") == "preservation"}
     if preserved != obligations:
-        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires preservation obligations: "
-                            + ", ".join(sorted(obligations)))
+        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires preservation obligations: " + ", ".join(sorted(obligations)))
     return expected
 
 
