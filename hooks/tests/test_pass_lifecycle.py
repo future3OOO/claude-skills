@@ -235,7 +235,7 @@ class PassLifecycleTests(unittest.TestCase):
     ) -> Path:
         self.documents += 1
         path = self.tmp / f"finding-disposition-{self.documents}.json"
-        owed = ({"reservedBehaviorIds": ["BM_ADV_1"], "seam": "workflow CLI",
+        owed = ({"reservedBehaviorIds": ["BM_ADV_1", "BM_ADV_PRESERVE"], "seam": "workflow CLI",
                  "preservationObligations": ["preserve advisor intake"]}
                 if status == "accepted-for-proof" else {"reference": "issue-1"}
                 if status == "accepted-follow-up" else {"evidence": "linked proof"})
@@ -268,7 +268,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.documents += 1
         path = self.tmp / f"review-finding-disposition-{self.documents}.json"
         fixed = status == "fixed"
-        extra = ({"reservedBehaviorIds": ["BM_ADV_1"], "seam": "app module",
+        extra = ({"reservedBehaviorIds": ["BM_ADV_1", "BM_ADV_PRESERVE"], "seam": "app module",
                   "preservationObligations": ["preserve unrelated app behavior"]}
                  if not fixed else {"evidence": "GREEN and reassessment recorded"})
         occurrence = ({"domain": "the complete fixture repository", "count": 0, "complete": True,
@@ -1703,6 +1703,74 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(after, {"source": "codex-advisor", "status": "completed", "findings": "addressed", "reason": None})
         self.assertEqual(self.evidence(disposition_id)["stage"], "preflight")
 
+    def test_proof_reservation_constraints_are_enforced_atomically(self) -> None:
+        marker, canonical_marker, text_marker, duplicate_marker, invalid_marker = (
+            "RESERVATION_CONSTRAINTS_BYPASSED", "RESERVATION_SEAM_CANONICALIZATION_BROKEN",
+            "RESERVATION_TEXT_CANONICALIZATION_BROKEN", "CANONICAL_RESERVATION_DUPLICATES_ACCEPTED",
+            "UNREPRESENTABLE_RESERVATION_ID_ACCEPTED")
+        outcomes, intake_outcomes, diagnostics = [], [], ""
+        ids, obligations = ["BM_ADV_1", "BM_ADV_PRESERVE"], ["preserve advisor intake"]
+        for suffix, reserved_ids, reserved_obligations, reservation_seam, contract_seam, preserved_behavior in (
+            ("seam", ids, obligations, "workflow CLI", "different seam", "preserve advisor intake"),
+            ("preservation", ids, obligations, "workflow CLI", "workflow CLI", "different preservation obligation"),
+            ("canonical-seam", ids, obligations, " workflow CLI ", " workflow CLI ", "preserve advisor intake"),
+            ("canonical-text", [" BM_ADV_1 ", " BM_ADV_PRESERVE "], [" preserve advisor intake "],
+             "workflow CLI", "workflow CLI", " preserve advisor intake "),
+            ("duplicate", ["BM_ADV_1", " BM_ADV_1 ", "BM_ADV_PRESERVE"],
+             ["preserve advisor intake", " preserve advisor intake "], "workflow CLI", "workflow CLI",
+             "preserve advisor intake"),
+            ("invalid-id", ["bad id", "BM_ADV_PRESERVE"], obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
+        ):
+            slug = f"reservation-{suffix}"
+            wid = self.begin_slug(slug)
+            self.advance_to_context_forge()
+            envelope = self.tmp / f"{slug}-envelope.json"
+            envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [{
+                "id": "SPEC-1", "claim": "proof is missing", "material": True, "kind": "behavioral",
+            }], "verdict": "completed"}), encoding="utf-8")
+            recorded = self.cli("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                                "--source", "codex-advisor", "--input", str(envelope))
+            self.assertEqual(recorded.returncode, 0, marker + recorded.stdout + recorded.stderr)
+            intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
+            disposition = self.finding_disposition_document(intake_id)
+            document = json.loads(disposition.read_text(encoding="utf-8"))
+            document["dispositions"][0]["reservedBehaviorIds"] = reserved_ids
+            document["dispositions"][0]["preservationObligations"] = reserved_obligations
+            document["dispositions"][0]["seam"] = reservation_seam
+            disposition.write_text(json.dumps(document), encoding="utf-8")
+            before_intake = self.cli("status").stdout, len(self.history_events())
+            accepted = self.dispose(slug, wid, "preflight", "addressed", str(disposition))
+            if suffix in {"duplicate", "invalid-id"}:
+                intake_outcomes.append((accepted.returncode, (self.cli("status").stdout,
+                    len(self.history_events())) == before_intake))
+                diagnostics += accepted.stdout + accepted.stderr
+                continue
+            self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+            source_ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+            preflight = self.preflight_document()
+            preflight["behaviorMap"] = [{
+                "id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding",
+                "behavior": "close the finding through proof", "seam": contract_seam,
+                "expected": "explicit fixed closes", "redFailure": marker, "status": "pending",
+                "sourceRefs": source_ref,
+            }, {
+                "id": "BM_ADV_PRESERVE", "kind": "preservation", "basis": "advisor finding",
+                "behavior": preserved_behavior, "seam": "advisor intake",
+                "expected": "advisor intake remains valid", "redFailure": marker,
+                "status": "already-satisfied", "evidence": "current intake is preserved",
+                "sourceRefs": source_ref,
+            }]
+            before = self.cli("status").stdout, len(self.history_events())
+            result = self.record_preflight(wid, preflight)
+            after = self.cli("status").stdout, len(self.history_events())
+            outcomes.append((result.returncode, after == before))
+            diagnostics += result.stdout + result.stderr
+        self.assertEqual(outcomes[:2], [(2, True), (2, True)], marker + diagnostics)
+        self.assertEqual(outcomes[2], (0, False), canonical_marker + diagnostics)
+        self.assertEqual(outcomes[3], (0, False), text_marker + diagnostics)
+        self.assertEqual(intake_outcomes[0], (2, True), duplicate_marker + diagnostics)
+        self.assertEqual(intake_outcomes[1], (2, True), invalid_marker + diagnostics)
+
     def test_preflight_proof_reservation_closes_only_after_green_and_reassessment(self) -> None:
         marker, mixed_marker, slug = (
             "PREFLIGHT_PROOF_LIFECYCLE_BROKEN",
@@ -1726,17 +1794,22 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual((json.loads(self.cli("status").stdout), len(self.history_events())), (before_state, before_events), marker)
         accepted = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "accepted-for-proof")))
         self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+        source_ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
         mapped = {"id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding",
             "behavior": "preflight proof closes only after mapped GREEN", "seam": "workflow CLI", "redFailure": marker,
             "expected": "the explicit fixed disposition closes the finding", "status": "pending",
-            "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]}
+            "sourceRefs": source_ref}
+        preserved = {"id": "BM_ADV_PRESERVE", "kind": "preservation", "basis": "advisor finding",
+            "behavior": "preserve advisor intake", "seam": "advisor intake", "redFailure": marker,
+            "expected": "advisor intake remains valid", "status": "already-satisfied",
+            "evidence": "the current advisor intake is preserved", "sourceRefs": source_ref}
         for behavior_map in ([{**mapped, "sourceRefs": []}], [{**mapped, "id": "BM_WRONG"}]):
             document = self.preflight_document()
             document["behaviorMap"] = behavior_map
             rejected = self.record_preflight(wid, document)
             self.assertEqual(rejected.returncode, 2, marker + rejected.stdout + rejected.stderr)
         document = self.preflight_document()
-        document["behaviorMap"] = [mapped]
+        document["behaviorMap"] = [mapped, preserved]
         preflight = self.record_preflight(wid, document)
         self.assertEqual(preflight.returncode, 0, marker + preflight.stdout + preflight.stderr)
         self.assertTrue(json.loads(self.cli("status").stdout)["findingReservations"][0]["consumed"], marker)
@@ -1758,6 +1831,17 @@ class PassLifecycleTests(unittest.TestCase):
         pending = json.loads(self.cli("status").stdout)
         self.assertEqual(pending["findingStates"][0]["status"], "accepted-for-proof", marker)
         self.assertNotIn("fixed", pending["findingReservations"][0], marker)
+        self.rewrite_latest_state(
+            lambda state: state["findingReservations"][0].__setitem__("seam", "different seam")
+        )
+        before_state, before_events = json.loads(self.cli("status").stdout), len(self.history_events())
+        mismatch = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
+        self.assertEqual(mismatch.returncode, 2, marker + mismatch.stdout + mismatch.stderr)
+        self.assertIn("requires Seam", mismatch.stderr, marker)
+        self.assertEqual((json.loads(self.cli("status").stdout), len(self.history_events())), (before_state, before_events), marker)
+        self.rewrite_latest_state(
+            lambda state: state["findingReservations"][0].__setitem__("seam", "workflow CLI")
+        )
         fixed = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
         self.assertEqual(fixed.returncode, 0, mixed_marker + fixed.stdout + fixed.stderr)
         closed = json.loads(fixed.stdout)
@@ -1794,15 +1878,22 @@ class PassLifecycleTests(unittest.TestCase):
         intake_id = json.loads(recorded.stdout)["finalReview"]["intakeEvidence"]
         disposition = self.finding_disposition_document(intake_id)
         self.assertEqual(self.dispose(slug, wid, "final", "addressed", str(disposition)).returncode, 0, marker)
+        source_ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
         mapped = {
             "id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding",
             "behavior": "the workflow opens the mapped proof cycle", "seam": "workflow CLI",
             "expected": "the RED transition is observable", "redFailure": "PROOF_CYCLE_NOT_OPEN",
-            "status": "pending",
-            "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}],
+            "status": "pending", "sourceRefs": source_ref,
+        }
+        preserved = {
+            "id": "BM_ADV_PRESERVE", "kind": "preservation", "basis": "advisor finding",
+            "behavior": "preserve advisor intake", "seam": "advisor intake",
+            "expected": "advisor intake remains valid", "redFailure": "PROOF_CYCLE_NOT_OPEN",
+            "status": "already-satisfied", "evidence": "the current advisor intake is preserved",
+            "sourceRefs": source_ref,
         }
         update = self.tmp / "fixed-reassessment.json"
-        update.write_text(json.dumps({"reassessment": "map final finding", "items": [mapped], "dispositions": []}), encoding="utf-8")
+        update.write_text(json.dumps({"reassessment": "map final finding", "items": [mapped, preserved], "dispositions": []}), encoding="utf-8")
         mapped_result = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
         self.assertEqual(mapped_result.returncode, 0, marker + mapped_result.stdout + mapped_result.stderr)
 
@@ -1819,12 +1910,12 @@ class PassLifecycleTests(unittest.TestCase):
             "--phase", "red", "--behavior-id", "BM_ADV_1", "--",
             sys.executable, "-m", "unittest", "test_cycle_probe",
         ]
-        red = subprocess.run(command, cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
-        self.assertEqual(red.returncode, 0, marker + red.stdout + red.stderr)
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        command[command.index("red")] = "green"
-        green = subprocess.run(command, cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
-        self.assertEqual(green.returncode, 0, marker + green.stdout + green.stderr)
+        phase_index = command.index("red")
+        for phase, value in (("red", 1), ("green", 2)):
+            command[phase_index] = phase
+            (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
+            result = subprocess.run(command, cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, marker + result.stdout + result.stderr)
         update.write_text(json.dumps({
             "sourceBehaviorId": "BM_ADV_1", "reassessment": "no new proof obligations",
             "items": [], "dispositions": [],
@@ -1922,6 +2013,11 @@ class PassLifecycleTests(unittest.TestCase):
                 "id": "BM_ADV_1", "kind": "contract", "basis": "review finding",
                 "behavior": "the reviewed value is corrected", "seam": "app module",
                 "expected": "app.value is 2", "redFailure": marker, "status": "pending",
+                "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]}, {
+                "id": "BM_ADV_PRESERVE", "kind": "preservation", "basis": "review finding",
+                "behavior": "preserve unrelated app behavior", "seam": "app module",
+                "expected": "unrelated app behavior remains unchanged", "redFailure": marker,
+                "status": "already-satisfied", "evidence": "the unrelated app behavior is unchanged",
                 "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]}],
         }), encoding="utf-8")
         mapped = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))

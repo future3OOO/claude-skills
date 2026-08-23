@@ -7,6 +7,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from .behavior_map import IDENTIFIER
 from .state_store import utc_timestamp
 
 JsonObject = dict[str, object]
@@ -393,11 +394,13 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
         if status == "accepted-for-proof":
             extra = {"reservedBehaviorIds", "seam", "preservationObligations"}
             reserved, preserved = item.get("reservedBehaviorIds"), item.get("preservationObligations")
+            canonical_reserved = [str(entry).strip() for entry in reserved] if isinstance(reserved, list) else []
+            canonical_preserved = [str(entry).strip() for entry in preserved] if isinstance(preserved, list) else []
             if not (
                 isinstance(reserved, list) and reserved and all(_text(entry) for entry in reserved)
-                and len(set(reserved)) == len(reserved) and _text(item.get("seam"))
+                and len(set(canonical_reserved)) == len(reserved) and all(IDENTIFIER.fullmatch(entry) for entry in canonical_reserved) and _text(item.get("seam"))
                 and isinstance(preserved, list) and preserved and all(_text(entry) for entry in preserved)
-                and len(set(preserved)) == len(preserved)
+                and len(set(canonical_preserved)) == len(preserved)
             ):
                 raise ValueError(f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations")
             demonstrated = "reproduction" in occurrence or occurrence.get("count", 0) > 0

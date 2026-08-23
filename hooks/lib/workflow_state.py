@@ -396,6 +396,28 @@ def _validate_design_map(
     )
 
 
+def _validate_finding_reservation(
+    reservation: JsonObject, linked: dict[str, JsonObject], finding_id: str,
+) -> set[str]:
+    expected = set(str(identifier).strip() for identifier in reservation["reservedBehaviorIds"])
+    if set(linked) != expected or not expected:
+        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires exactly: "
+                            + ", ".join(sorted(expected)))
+    contract_seams = {
+        str(entry["seam"]) for entry in linked.values() if entry.get("kind") == "contract"
+    }
+    if str(reservation["seam"]).strip() not in contract_seams:
+        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires Seam: {reservation['seam']}")
+    obligations = set(str(value).strip() for value in reservation["preservationObligations"])
+    preserved = {
+        str(entry["behavior"]) for entry in linked.values() if entry.get("kind") == "preservation"
+    }
+    if preserved != obligations:
+        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires preservation obligations: "
+                            + ", ".join(sorted(obligations)))
+    return expected
+
+
 def _consume_finding_reservations(
     transaction: LedgerMutation, state: JsonObject, document: JsonObject, stage: str,
 ) -> None:
@@ -403,7 +425,7 @@ def _consume_finding_reservations(
     reservations = state.get("findingReservations", [])
     if not isinstance(reservations, list):
         raise WorkflowError("recorded finding reservations are corrupt")
-    by_ref: dict[tuple[str, str], set[str]] = {}
+    by_ref: dict[tuple[str, str], dict[str, JsonObject]] = {}
     for entry in items:
         for ref in entry.get("sourceRefs", []):
             if isinstance(ref, dict) and ref.get("type") == "finding":
@@ -414,7 +436,7 @@ def _consume_finding_reservations(
                     str(finding.get("id")) for finding in findings if isinstance(finding, dict)
                 }:
                     raise WorkflowError(f"behavior {entry['id']} finding sourceRef is unrecorded, stale, or foreign")
-                by_ref.setdefault(key, set()).add(str(entry["id"]))
+                by_ref.setdefault(key, {})[str(entry["id"])] = entry
     stage_names = {stage} if stage == "preflight" else {"code-review", "final"}
     pending = [entry for entry in reservations if isinstance(entry, dict)
                and entry.get("stage") in stage_names and not entry.get("consumed")]
@@ -426,12 +448,7 @@ def _consume_finding_reservations(
         raise WorkflowError("Behavior Map carries an unreserved finding sourceRef")
     for reservation in pending:
         key = (str(reservation["intakeEvidenceId"]), str(reservation["findingId"]))
-        expected = set(str(identifier) for identifier in reservation["reservedBehaviorIds"])
-        if by_ref.get(key, set()) != expected:
-            raise WorkflowError(
-                f"accepted-for-proof reservation for {key[1]} requires exactly: "
-                + ", ".join(sorted(expected))
-            )
+        _validate_finding_reservation(reservation, by_ref.get(key, {}), key[1])
     for reservation in pending:
         reservation["consumed"] = True
 
@@ -891,10 +908,12 @@ def _behavioral_finding_closure(
             for ref in entry.get("sourceRefs", [])
         )
     }
-    expected = set(str(identifier) for identifier in reservation["reservedBehaviorIds"])
-    if set(linked) != expected or not expected:
-        raise WorkflowError(f"behavioral fixed requires the exact reserved Behavior Map ids for {finding_id}")
-    not_green = sorted(identifier for identifier, entry in linked.items() if entry.get("status") != "green")
+    expected = _validate_finding_reservation(reservation, linked, str(finding_id))
+    not_green = sorted(
+        identifier for identifier, entry in linked.items()
+        if entry.get("status") != "green"
+        and not (entry.get("kind") == "preservation" and entry.get("status") == "already-satisfied")
+    )
     if not_green:
         raise WorkflowError("behavioral fixed requires linked GREEN item(s): " + ", ".join(not_green))
     pending = tdd_document.get("reassessmentPending") if isinstance(tdd_document, dict) else None
