@@ -67,8 +67,8 @@ intake:
 ```
 
 The delegate proposes findings. The lead verifies them and owns later
-dispositions. Use `{"findings":[]}` when there are none and name remaining proof
-gaps.
+dispositions. A disposition needs current measurement; advisor agreement and
+historical behavior are context, not authorization. Use `{"findings":[]}` when there are none and name remaining proof gaps.
 
 ## Optional continuity summary
 
@@ -77,7 +77,7 @@ Record the intake first. When it contains findings, capture the returned
 lead dispositions:
 
 ```json
-{"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","reservedBehaviorIds":["BM_SPEC_1"]}]}
+{"context":{"workflowId":"<active-workflowId>","candidateTree":"<64-hex tree digest>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"seam":"<real Seam>","reproduction":{"command":"...","result":"..."}},"materialConsequence":{"claim":"...","command":"...","result":"..."},"reservedBehaviorIds":["BM_SPEC_1","BM_SPEC_1_PRESERVE"],"seam":"<real Seam>","preservationObligations":["..."]}]}
 ```
 
 Both documents use the same command:
@@ -89,7 +89,11 @@ Both documents use the same command:
   --review-context-id "<review-context-id>" --input -
 ```
 
-A behavioral finding may reserve exact Behavior Map IDs with
-`accepted-for-proof`; `fixed` then requires those linked items GREEN and
-reassessed. The summary is continuity state, not a certificate or Git
-authorization. Material unresolved findings leave code review pending.
+A false premise records the normalized premise `result` as exactly `false`;
+otherwise rejection requires zero occurrence on a complete domain. `report-only`
+resolves completion without authorizing an edit and is terminal. A behavioral
+finding may reserve exact Behavior Map IDs with `accepted-for-proof`;
+that disposition also names its real Seam and preservation obligations, and
+`fixed` then requires those linked items GREEN and reassessed. The summary is
+continuity state, not a certificate or Git authorization. Material unresolved
+findings leave code review pending.

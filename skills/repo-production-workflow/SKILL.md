@@ -83,13 +83,14 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 ```
 
 The active `workflowId` comes from `workflow.py status`. A disposition is
-bound to that instance and cannot create or alter the immutable advisor intake.
-For strict envelope findings, `--findings addressed --input <document>` carries
-only `intakeEvidenceId` and dispositions. Behavioral `accepted-for-proof`
-reserves exact Behavior Map IDs; later `fixed` requires the consumed reservation,
-those items GREEN, and no pending reassessment. The legacy
-findings-plus-dispositions form remains compatible but cannot reserve proof.
-Refusal mutates nothing. An unavailable consult requires `--reason` with the
+bound to that instance and cannot create or alter immutable advisor intake.
+For strict findings, `--findings addressed --input <document>` carries current
+workflow/candidate context, intake identity, and measured dispositions at either stage.
+Behavioral `accepted-for-proof` reserves exact Behavior Map IDs, a real Seam, and preservation obligations.
+At preflight, `record-preflight` consumes the exact reservation; initial or pre-GREEN `fixed` is invalid,
+while later explicit `fixed` requires consumed GREEN proof and reassessment. `report-only` requires false material consequence.
+The legacy form remains compatible for measured nonbehavioral results but cannot
+reserve proof. Refusal mutates nothing. An unavailable consult requires `--reason` with the
 measured transport failure and needs no disposition.
 
 ### 5. Production preflight
@@ -228,14 +229,18 @@ absent gap instead of evaluating.
 Invoke `code-review` for non-trivial changes. The implementation agent may
 perform it itself in the current session: it is the lead's structured
 Standards/Spec self-check, not an independent review. Review Standards and Spec
-separately, verify every finding, and disposition each one. In this governed workflow `workflow.py record-review` is the required producer for non-trivial review state (`set-phase` cannot record a passed review); outside the governed
+separately, verify every finding, and disposition each one. A disposition is invalid
+without its measurement; advisor agreement is not authorization; historical behavior
+is contextual evidence only — a current Interface claim needs current documentation,
+callers, tests, or another active authority. In this governed workflow `workflow.py record-review` is the required producer for non-trivial review state (`set-phase` cannot record a passed review); outside the governed
 workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
 Record immutable intake first as `{"findings":[...]}` through the unified
 Interface. If it contains findings, capture the returned `summaryId`, then call
-the same command with `{"intakeEvidenceId":"<summaryId>","dispositions":[...]}`.
-A document carrying both forms refuses.
+the same command with `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;
+each disposition carries `kind`, `premise`, `occurrence`, and
+`materialConsequence`. A document carrying both forms refuses.
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
@@ -245,9 +250,13 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 A no-finding intake binds the reviewed tree and passes immediately. A finding
 intake stays pending until its appended dispositions resolve every material
-finding. Before fixing a behavioral finding, reserve its exact Behavior Map IDs
-with `accepted-for-proof`, then drive RED/GREEN and reassessment; nonbehavioral
-corrections record their evidence directly.
+finding. A false premise records normalized `result` exactly `false`; otherwise
+rejection requires zero occurrence on a complete domain. `report-only` resolves
+completion without authorizing an edit and cannot later become `fixed`. Before
+fixing a behavioral finding, reserve its exact
+Behavior Map IDs, real Seam, and preservation obligations with
+`accepted-for-proof`, then drive RED/GREEN and reassessment; nonbehavioral
+corrections record their current-tree evidence directly.
 
 ### 11. Independent final Codex Advisor review
 

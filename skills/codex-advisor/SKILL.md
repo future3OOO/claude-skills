@@ -212,17 +212,17 @@ findings. The strict path carries only the immutable intake evidence identity an
 dispositions; it never restates a finding:
 
 ```json
-{"intakeEvidenceId":"<advisor intake evidence>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","evidence":"verified correction"}]}
+{"context":{"workflowId":"<active-workflowId>","candidateTree":"<64-hex tree digest>","prHead":"<optional HEAD>"},"intakeEvidenceId":"<advisor intake evidence>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","kind":"nonbehavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"domain":"...","count":0,"complete":true,"command":"...","result":"..."},"materialConsequence":{"claim":"...","command":"...","result":"..."},"evidence":"verified correction"}]}
 ```
 
-A behavioral finding may first use `accepted-for-proof` with a non-empty unique
-`reservedBehaviorIds` array. Its later `fixed` disposition is accepted only
-after those exact Behavior Map items consume the reservation, are GREEN, and
-have no pending post-GREEN reassessment. `rejected-with-evidence` and `fixed`
-carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
-findings-plus-dispositions form remains compatible for previously recorded
-advisor results, but cannot create proof reservations. A refusal mutates no
-state. `--findings none` takes no document.
+Every disposition carries `kind`, `premise`, `occurrence`, and `materialConsequence` at both stages.
+A behavioral finding first uses `accepted-for-proof` with unique `reservedBehaviorIds`, its real Seam,
+and preservation obligations. At preflight, `record-preflight` consumes that exact reservation; initial
+or pre-GREEN `fixed` is invalid, while later explicit `fixed` requires those items GREEN and reassessed.
+`report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
+findings-plus-dispositions form remains compatible for measured nonbehavioral
+results, but cannot create proof reservations. A refusal mutates no state.
+`--findings none` takes no document.
 
 For an unavailable consult, record the full
 slug- and instance-bound command; no disposition is needed and final review
