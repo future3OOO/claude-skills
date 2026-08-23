@@ -1,8 +1,10 @@
 """Repository-scoped production workflow policy and transactional commands."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import subprocess
 import uuid
 from typing import Sequence
 
@@ -518,6 +520,27 @@ def annotate_tdd_evidence(
         return _commit(transaction, state, "tdd-annotated", evidence=[write]), write.evidence_id
 
 
+def _candidate_tree(identity: RepoIdentity) -> str:
+    payload = json.dumps(tree_manifest(identity), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_disposition_context(identity: RepoIdentity, state: JsonObject, document: JsonObject) -> None:
+    context = document.get("context")
+    if not isinstance(context, dict) or context.get("workflowId") != state.get("workflowId"):
+        raise WorkflowError("disposition context does not match the active workflow instance")
+    if context.get("candidateTree") != _candidate_tree(identity):
+        raise WorkflowError("disposition candidateTree does not match the current reviewable tree")
+    expected_head = context.get("prHead")
+    if expected_head is not None:
+        result = subprocess.run(
+            ["git", "-C", str(identity.root), "rev-parse", "HEAD"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        if result.returncode or result.stdout.strip() != expected_head:
+            raise WorkflowError("disposition prHead does not match the current HEAD")
+
+
 def _finding_unresolved(entry: JsonObject) -> bool:
     return entry.get("status") in {"pending", "accepted-for-proof"} or (entry.get("status") == "accepted-follow-up" and entry.get("material") is True)
 
@@ -553,6 +576,7 @@ def commit_review(
             else:
                 manifest = _apply_step(identity, state, "code-review", "passed", "none")
         else:
+            _validate_disposition_context(identity, state, summary_doc)
             intake_id = str(summary_doc["intakeEvidenceId"])
             unresolved = _apply_finding_dispositions(
                 transaction, state, intake_id, summary_doc["dispositions"], "code-review", "code-review",
@@ -921,25 +945,33 @@ def _apply_finding_dispositions(
         raise WorkflowError("recorded finding lifecycle is corrupt")
     for disposition in dispositions:
         identifier, status = str(disposition["finding_id"]), str(disposition["status"])
+        kind = str(disposition["kind"])
         finding_state = next((entry for entry in states if isinstance(entry, dict)
                               and entry.get("intakeEvidenceId") == intake_id
                               and entry.get("findingId") == identifier), None)
         if finding_state is None:
             raise WorkflowError(f"finding {identifier} has no immutable intake state")
+        current = finding_state.get("status")
+        if kind != findings[identifier].get("kind"):
+            raise WorkflowError(f"finding {identifier} disposition kind differs from immutable intake")
+        if current in {"fixed", "rejected-with-evidence", "report-only"}:
+            raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
         reservation = next((entry for entry in reservations if isinstance(entry, dict)
                             and entry.get("intakeEvidenceId") == intake_id
                             and entry.get("findingId") == identifier), None)
         if status == "accepted-for-proof":
-            if findings[identifier].get("kind") != "behavioral" or reservation is not None:
+            if kind != "behavioral" or reservation is not None or current != "pending":
                 raise WorkflowError(f"finding {identifier} cannot record accepted-for-proof")
             reservations.append({
                 "stage": stage, "intakeEvidenceId": intake_id, "findingId": identifier,
                 "reservedBehaviorIds": list(disposition["reservedBehaviorIds"]), "consumed": False,
+                "seam": disposition["seam"],
+                "preservationObligations": list(disposition["preservationObligations"]),
             })
         elif reservation is not None and status != "fixed":
             raise WorkflowError(f"accepted-for-proof finding {identifier} can only transition to fixed")
-        elif status == "fixed" and findings[identifier].get("kind") == "behavioral":
-            if reservation is None or finding_state.get("status") != "accepted-for-proof":
+        elif status == "fixed" and kind == "behavioral":
+            if reservation is None or current != "accepted-for-proof":
                 raise WorkflowError(f"behavioral fixed requires prior accepted-for-proof for {identifier}")
             _behavioral_finding_closure(transaction, state, reservation)
             reservation["fixed"] = True
@@ -978,6 +1010,8 @@ def advisor_disposition(
         )
         if not recorded:
             raise WorkflowError("advisor disposition cannot create a result; record the consult first")
+        if document is not None:
+            _validate_disposition_context(identity, state, document)
         if document is not None and "intakeEvidenceId" in document:
             intake_id = str(document["intakeEvidenceId"])
             _apply_finding_dispositions(

@@ -2,6 +2,7 @@
 """Recorder validation tests; these inputs do not prove that a review ran."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -17,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from hooks.tests.support import build_no_change_document, record_context_forge  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import tree_manifest  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
@@ -109,6 +111,44 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return len(json.loads(result.stdout)["events"])
 
+    def disposition_context(self) -> dict[str, str]:
+        manifest = tree_manifest(resolve_repo_identity(self.repo))
+        candidate = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, env=self.env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+        ).stdout.strip()
+        return {"workflowId": self.wid, "candidateTree": candidate, "prHead": head}
+
+    def review_finding(self) -> dict[str, object]:
+        return {
+            "id": "SPEC-1", "axis": "Spec", "severity": "high", "material": True,
+            "kind": "nonbehavioral", "location": "app.py:1", "claim": "wrong value",
+            "evidence": "app.value is 1", "consequence": "the result remains wrong",
+            "smallest_action": "correct the value",
+        }
+
+    def disposition_document(
+        self, intake: str, identifier: str, status: str, *, kind: str = "nonbehavioral",
+        count: int = 1, complete: bool = True, **extra: object,
+    ) -> dict[str, object]:
+        field = "reference" if status == "accepted-follow-up" else "evidence"
+        return {
+            "context": self.disposition_context(), "intakeEvidenceId": intake,
+            "dispositions": [{
+                "finding_id": identifier, "status": status, "kind": kind,
+                "premise": {"claim": "the finding premise holds", "command": "inspect app.py", "result": "value = 1"},
+                "occurrence": {"domain": "the complete fixture repository", "count": count,
+                               "complete": complete, "command": "inspect app.py", "result": f"count={count}"},
+                "materialConsequence": {"claim": "the result is affected", "command": "inspect app.py",
+                                        "result": "the fixture remains incorrect"},
+                field: "issue-1" if field == "reference" else "verified current-tree evidence",
+                **extra,
+            }],
+        }
+
     def record_review(self, path: Path, context: str = "review", model: str = "gpt-5") -> subprocess.CompletedProcess[str]:
         return self.run_script(
             WORKFLOW, "record-review", "--slug", "review-summary", "--workflow-id", self.wid,
@@ -160,9 +200,7 @@ class ReviewSummaryTests(unittest.TestCase):
         second_id = json.loads(self.record_review(path, "fresh-review-2").stdout)["summaryId"]
 
         def disposition(intake: str, identifier: str) -> subprocess.CompletedProcess[str]:
-            path.write_text(json.dumps({"intakeEvidenceId": intake, "dispositions": [{
-                "finding_id": identifier, "status": "fixed", "evidence": "verified correction",
-            }]}), encoding="utf-8")
+            path.write_text(json.dumps(self.disposition_document(intake, identifier, "fixed")), encoding="utf-8")
             return self.record_review(path, "disposition")
 
         recorded = disposition(intake_id, "SPEC-1")
@@ -194,10 +232,97 @@ class ReviewSummaryTests(unittest.TestCase):
             if not material:
                 path.write_text(json.dumps({"findings": []}), encoding="utf-8")
                 self.assertEqual(json.loads(self.record_review(path, "nonmaterial-empty").stdout)["status"], "pending", "NONMATERIAL_INTAKE_BYPASSED")
-            path.write_text(json.dumps({"intakeEvidenceId": intake_id, "dispositions": [{
-                "finding_id": identifier, "status": "accepted-follow-up", "reference": "issue-1"}]}), encoding="utf-8")
+            path.write_text(json.dumps(
+                self.disposition_document(intake_id, identifier, "accepted-follow-up")
+            ), encoding="utf-8")
             status = json.loads(self.record_review(path, f"{identifier}-follow-up").stdout)["status"]
             self.assertEqual(status, expected, "MATERIAL_FOLLOWUP_UNBLOCKED" if material else "NONMATERIAL_FOLLOWUP_BLOCKED")
+
+    def test_disposition_requires_current_measurements(self) -> None:
+        marker = "UNMEASURED_REVIEW_FINDING_DISPOSITION_ACCEPTED"
+        path = self.tmp / "measured-disposition.json"
+        finding = self.review_finding()
+        path.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+        intake = self.record_review(path, "measurement-intake")
+        self.assertEqual(intake.returncode, 0, marker + intake.stdout + intake.stderr)
+        intake_id = json.loads(intake.stdout)["summaryId"]
+        before_events = self.event_count()
+        path.write_text(json.dumps({
+            "context": self.disposition_context(), "intakeEvidenceId": intake_id,
+            "dispositions": [{
+                "finding_id": "SPEC-1", "status": "fixed", "kind": "nonbehavioral",
+                "evidence": "claimed correction",
+            }],
+        }), encoding="utf-8")
+
+        refused = self.record_review(path, "measurement-disposition")
+
+        self.assertEqual(refused.returncode, 2, marker + refused.stdout + refused.stderr)
+        self.assertIn("premise", refused.stderr, marker)
+        self.assertEqual(self.event_count(), before_events, marker)
+
+    def test_false_premise_can_be_rejected_without_zero_occurrence(self) -> None:
+        marker = "PREMISE_FALSE_REJECTION_REFUSED"
+        path = self.tmp / "false-premise-rejection.json"
+        path.write_text(json.dumps({"findings": [self.review_finding()]}), encoding="utf-8")
+        intake_id = json.loads(self.record_review(path, "false-premise-intake").stdout)["summaryId"]
+        document = self.disposition_document(
+            intake_id, "SPEC-1", "rejected-with-evidence", count=1, complete=False,
+        )
+        document["dispositions"][0]["premise"]["result"] = "false"
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+        recorded = self.record_review(path, "false-premise-rejection")
+
+        self.assertEqual(recorded.returncode, 0, marker + recorded.stdout + recorded.stderr)
+        self.assertEqual(json.loads(recorded.stdout)["status"], "passed", marker)
+
+    def test_reviewer_dispositions_bind_context_and_make_report_only_terminal(self) -> None:
+        path = self.tmp / "reviewer-disposition-gates.json"
+        finding = self.review_finding()
+        path.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+        intake_id = json.loads(self.record_review(path, "gate-intake").stdout)["summaryId"]
+
+        incomplete = self.disposition_document(
+            intake_id, "SPEC-1", "rejected-with-evidence", count=0, complete=False,
+        )
+        path.write_text(json.dumps(incomplete), encoding="utf-8")
+        refused = self.record_review(path, "incomplete-domain")
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("complete domain", refused.stderr)
+
+        for field, value, diagnostic in (
+            ("candidateTree", "0" * 64, "candidateTree"),
+            ("prHead", "0" * 40, "prHead"),
+        ):
+            stale = self.disposition_document(intake_id, "SPEC-1", "report-only")
+            stale["dispositions"][0]["materialConsequence"]["result"] = "false"
+            stale["context"][field] = value
+            path.write_text(json.dumps(stale), encoding="utf-8")
+            refused = self.record_review(path, f"stale-{field}")
+            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+            self.assertIn(diagnostic, refused.stderr)
+
+        unlinked = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
+        path.write_text(json.dumps(unlinked), encoding="utf-8")
+        refused = self.record_review(path, "unlinked-proof")
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("ids, Seam, and preservation obligations", refused.stderr)
+
+        report_only = self.disposition_document(intake_id, "SPEC-1", "report-only")
+        path.write_text(json.dumps(report_only), encoding="utf-8")
+        material = self.record_review(path, "material-report-only")
+        self.assertEqual(material.returncode, 2, "MATERIAL_FINDING_REPORTED_ONLY" + material.stdout + material.stderr)
+        report_only["dispositions"][0]["materialConsequence"]["result"] = "false"
+        path.write_text(json.dumps(report_only), encoding="utf-8")
+        resolved = self.record_review(path, "report-only")
+        self.assertEqual(resolved.returncode, 0, resolved.stdout + resolved.stderr)
+        self.assertEqual(json.loads(resolved.stdout)["status"], "passed")
+
+        path.write_text(json.dumps(self.disposition_document(intake_id, "SPEC-1", "fixed")), encoding="utf-8")
+        relabel = self.record_review(path, "relabel-fixed")
+        self.assertEqual(relabel.returncode, 2, relabel.stdout + relabel.stderr)
+        self.assertIn("terminal disposition report-only", relabel.stderr)
 
     def test_a_shell_mutation_after_the_recorded_review_stops_the_consult_before_it_is_spent(self) -> None:
         path = self.tmp / "review.json"
@@ -240,13 +365,13 @@ class ReviewSummaryTests(unittest.TestCase):
         intake_id = json.loads(intake.stdout)["summaryId"]
         before_events = self.event_count()
 
-        for disposition, diagnostic in (
-            ({"finding_id": [], "status": "fixed", "evidence": "x"}, "must reference a finding"),
-            ({"finding_id": "F1", "status": {}, "evidence": "x"}, "invalid or duplicate disposition"),
+        for field, value, diagnostic in (
+            ("finding_id", [], "must reference a finding"),
+            ("status", {}, "invalid or duplicate disposition"),
         ):
-            path.write_text(json.dumps({
-                "intakeEvidenceId": intake_id, "dispositions": [disposition],
-            }), encoding="utf-8")
+            document = self.disposition_document(intake_id, "F1", "fixed")
+            document["dispositions"][0][field] = value
+            path.write_text(json.dumps(document), encoding="utf-8")
             refused = self.record_review(path, "invalid-disposition")
             self.assertEqual(refused.returncode, 2, "an unhashable disposition member crashed")
             self.assertIn(diagnostic, refused.stderr)

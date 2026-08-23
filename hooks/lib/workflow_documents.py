@@ -10,8 +10,10 @@ from pathlib import Path
 from .state_store import utc_timestamp
 
 JsonObject = dict[str, object]
-RESOLVED_REVIEW = {"fixed", "rejected-with-evidence"}
-DISPOSITIONS = RESOLVED_REVIEW | {"accepted-follow-up", "accepted-for-proof"}
+REVIEWER_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
+REVIEWER_DISPOSITIONS = REVIEWER_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
+ADVISOR_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
+ADVISOR_DISPOSITIONS = ADVISOR_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
 
 
 def load_json(path: str, *, label: str) -> JsonObject:
@@ -332,34 +334,108 @@ def graph_evidence_document(
     return document
 
 
-def _finding_disposition(value: JsonObject) -> tuple[str, list[JsonObject]]:
-    if set(value) != {"intakeEvidenceId", "dispositions"}:
-        raise ValueError("disposition requires only intakeEvidenceId and dispositions")
-    intake_id, dispositions = value.get("intakeEvidenceId"), value.get("dispositions")
-    if not _text(intake_id) or not isinstance(dispositions, list) or not dispositions:
-        raise ValueError("disposition requires an intakeEvidenceId and non-empty dispositions array")
+def _measurement(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict) or set(value) != {"claim", "command", "result"}:
+        raise ValueError(f"{label} requires only claim, command, and result")
+    if not all(_text(value.get(field)) for field in ("claim", "command", "result")):
+        raise ValueError(f"{label} requires claim, command, and result")
+    return dict(value)
+
+
+def _occurrence(value: object) -> JsonObject:
+    if not isinstance(value, dict):
+        raise ValueError("occurrence must be an object")
+    if set(value) == {"domain", "count", "complete", "command", "result"}:
+        if not all(_text(value.get(field)) for field in ("domain", "command", "result")):
+            raise ValueError("counted occurrence requires domain, command, and result")
+        if type(value.get("count")) is not int or value["count"] < 0 or not isinstance(value.get("complete"), bool):
+            raise ValueError("counted occurrence requires a non-negative count and complete boolean")
+        return dict(value)
+    if set(value) == {"seam", "reproduction"} and _text(value.get("seam")):
+        reproduction = value.get("reproduction")
+        if isinstance(reproduction, dict) and set(reproduction) == {"command", "result"} and all(
+            _text(reproduction.get(field)) for field in ("command", "result")
+        ):
+            return {"seam": value["seam"], "reproduction": dict(reproduction)}
+    raise ValueError("occurrence requires a counted domain or real-Seam reproduction")
+
+
+def _disposition_context(value: object) -> JsonObject:
+    if not isinstance(value, dict) or set(value) not in ({"workflowId", "candidateTree"}, {"workflowId", "candidateTree", "prHead"}):
+        raise ValueError("disposition context requires workflowId, candidateTree, and optional prHead")
+    if not _text(value.get("workflowId")) or not isinstance(value.get("candidateTree"), str) or not re.fullmatch(r"[0-9a-f]{64}", value["candidateTree"]):
+        raise ValueError("disposition context requires workflowId and a 64-hex candidateTree")
+    if "prHead" in value and (not isinstance(value["prHead"], str) or not re.fullmatch(r"[0-9a-f]{40}", value["prHead"])):
+        raise ValueError("disposition context prHead must be a 40-hex commit")
+    return dict(value)
+
+
+def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("disposition requires a non-empty dispositions array")
     typed: list[JsonObject] = []
+    dispositions = value
     seen: set[str] = set()
+    common = {"finding_id", "status", "kind", "premise", "occurrence", "materialConsequence"}
     for item in dispositions:
         if not isinstance(item, dict):
             raise ValueError("each disposition must be an object")
-        identifier, status = item.get("finding_id"), item.get("status")
+        identifier, status, kind = item.get("finding_id"), item.get("status"), item.get("kind")
         if not _text(identifier):
             raise ValueError("each disposition must reference a finding")
-        if identifier in seen or not isinstance(status, str) or status not in DISPOSITIONS:
+        if identifier in seen or not isinstance(status, str) or status not in allowed:
             raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
-        field = "reservedBehaviorIds" if status == "accepted-for-proof" else "reference" if status == "accepted-follow-up" else "evidence"
-        supplied = item.get(field)
-        valid = (
-            isinstance(supplied, list) and bool(supplied)
-            and all(_text(entry) for entry in supplied) and len(set(supplied)) == len(supplied)
-            if field == "reservedBehaviorIds" else _text(supplied)
-        )
-        if set(item) != {"finding_id", "status", field} or not valid:
-            raise ValueError(f"finding {identifier} {status} requires only {field}")
+        if kind not in {"behavioral", "nonbehavioral"}:
+            raise ValueError(f"finding {identifier} kind must be behavioral or nonbehavioral")
+        premise = _measurement(item.get("premise"), f"finding {identifier} premise")
+        occurrence = _occurrence(item.get("occurrence"))
+        consequence = _measurement(item.get("materialConsequence"), f"finding {identifier} materialConsequence")
+        if status == "accepted-for-proof":
+            extra = {"reservedBehaviorIds", "seam", "preservationObligations"}
+            reserved, preserved = item.get("reservedBehaviorIds"), item.get("preservationObligations")
+            if not (
+                isinstance(reserved, list) and reserved and all(_text(entry) for entry in reserved)
+                and len(set(reserved)) == len(reserved) and _text(item.get("seam"))
+                and isinstance(preserved, list) and preserved and all(_text(entry) for entry in preserved)
+                and len(set(preserved)) == len(preserved)
+            ):
+                raise ValueError(f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations")
+            demonstrated = "reproduction" in occurrence or occurrence.get("count", 0) > 0
+            if not demonstrated:
+                raise ValueError(f"finding {identifier} accepted-for-proof requires demonstrated occurrence")
+            if consequence["result"].strip().lower() == "false":
+                raise ValueError(f"finding {identifier} accepted-for-proof requires material consequence")
+        else:
+            field = "reference" if status == "accepted-follow-up" else "evidence"
+            extra = {field}
+            if not _text(item.get(field)):
+                raise ValueError(f"finding {identifier} {status} requires {field}")
+        if set(item) != common | extra:
+            raise ValueError(f"finding {identifier} {status} has unknown or missing fields")
+        if status == "rejected-with-evidence" and not (
+            premise["result"].strip().lower() == "false"
+            or occurrence.get("count") == 0 and occurrence.get("complete") is True
+        ):
+            raise ValueError(
+                f"finding {identifier} rejected-with-evidence requires a false premise "
+                "or zero occurrence on a complete domain"
+            )
+        if status == "report-only" and consequence["result"].strip().lower() != "false":
+            raise ValueError(f"finding {identifier} report-only requires no material consequence")
         seen.add(str(identifier))
-        typed.append(dict(item))
-    return str(intake_id), typed
+        typed.append({**dict(item), "premise": premise, "occurrence": occurrence, "materialConsequence": consequence})
+    return typed
+
+
+def _reviewer_finding_disposition(value: JsonObject) -> tuple[str, JsonObject, list[JsonObject]]:
+    if set(value) != {"context", "intakeEvidenceId", "dispositions"}:
+        raise ValueError("disposition requires only context, intakeEvidenceId, and dispositions")
+    intake_id = value.get("intakeEvidenceId")
+    if not _text(intake_id):
+        raise ValueError("disposition requires an intakeEvidenceId")
+    return str(intake_id), _disposition_context(value.get("context")), _finding_dispositions(
+        value.get("dispositions"), REVIEWER_DISPOSITIONS,
+    )
 
 
 def review_summary(
@@ -406,8 +482,8 @@ def review_summary(
             seen.add(str(identifier))
         status = "pending" if findings else "passed"
         return {**common, "kind": "intake", "status": status, "findings": findings}, status, "pending" if findings else "none"
-    intake_id, dispositions = _finding_disposition(value)
-    return {**common, "kind": "disposition", "status": "pending", "intakeEvidenceId": intake_id, "dispositions": dispositions}, "pending", "pending"
+    intake_id, context, dispositions = _reviewer_finding_disposition(value)
+    return {**common, "kind": "disposition", "status": "pending", "context": context, "intakeEvidenceId": intake_id, "dispositions": dispositions}, "pending", "pending"
 
 
 def advisor_disposition_document(
@@ -418,13 +494,21 @@ def advisor_disposition_document(
     stage: str,
 ) -> JsonObject:
     value = load_json(path, label="disposition")
+    context = _disposition_context(value.get("context"))
+    allowed = ADVISOR_DISPOSITIONS
     common: JsonObject = {
         "schemaVersion": 1, "slug": slug, "workflowId": workflow_id,
-        "stage": stage, "recordedAt": utc_timestamp(),
+        "stage": stage, "recordedAt": utc_timestamp(), "context": context,
     }
-    if set(value) == {"intakeEvidenceId", "dispositions"}:
-        intake_id, typed = _finding_disposition(value)
-        return {**common, "intakeEvidenceId": intake_id, "dispositions": typed}
+    if set(value) == {"context", "intakeEvidenceId", "dispositions"}:
+        intake_id = value.get("intakeEvidenceId")
+        if not _text(intake_id):
+            raise ValueError("disposition requires an intakeEvidenceId")
+        return {**common, "intakeEvidenceId": str(intake_id), "dispositions": _finding_dispositions(
+            value.get("dispositions"), allowed,
+        )}
+    if set(value) != {"context", "findings", "dispositions"}:
+        raise ValueError("disposition document requires context, findings, and dispositions")
     findings, dispositions = value.get("findings"), value.get("dispositions")
     if not isinstance(findings, list) or not isinstance(dispositions, list):
         raise ValueError("disposition document requires findings and dispositions arrays")
@@ -440,18 +524,11 @@ def advisor_disposition_document(
         if set(item) != {"id", "claim"} or not _text(item.get("claim")):
             raise ValueError(f"finding {identifier} requires a claim")
         claims.add(identifier)
-    answered: set[str] = set()
-    for item in dispositions:
-        if not isinstance(item, dict) or not isinstance(item.get("finding_id"), str) or item.get("finding_id") not in claims:
-            raise ValueError("each disposition must reference a finding")
-        identifier, status = str(item["finding_id"]), item.get("status")
-        if identifier in answered or not isinstance(status, str) or status not in RESOLVED_REVIEW | {"accepted-follow-up"}:
-            raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
-        field = "reference" if status == "accepted-follow-up" else "evidence"
-        if set(item) != {"finding_id", "status", field} or not _text(item.get(field)):
-            requirement = "follow-up requires a reference" if field == "reference" else "requires evidence"
-            raise ValueError(f"finding {identifier} {requirement}")
-        answered.add(identifier)
-    if answered != claims:
+    typed = _finding_dispositions(dispositions, allowed - {"accepted-for-proof"})
+    if any(str(item["finding_id"]) not in claims for item in typed):
+        raise ValueError("each disposition must reference a finding")
+    if {str(item["finding_id"]) for item in typed} != claims:
         raise ValueError("every finding requires one lead disposition")
-    return {**common, "findings": findings, "dispositions": dispositions}
+    if any(item["status"] == "fixed" and item["kind"] == "behavioral" for item in typed):
+        raise ValueError("behavioral advisor findings require immutable intake and accepted-for-proof")
+    return {**common, "findings": findings, "dispositions": typed}
