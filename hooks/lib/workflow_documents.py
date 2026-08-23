@@ -531,6 +531,6 @@ def advisor_disposition_document(
         raise ValueError("each disposition must reference a finding")
     if {str(item["finding_id"]) for item in typed} != claims:
         raise ValueError("every finding requires one lead disposition")
-    if any(item["status"] == "fixed" and item["kind"] == "behavioral" for item in typed):
+    if any(item["kind"] == "behavioral" for item in typed):
         raise ValueError("behavioral advisor findings require immutable intake and accepted-for-proof")
     return {**common, "findings": findings, "dispositions": typed}

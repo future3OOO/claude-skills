@@ -1619,6 +1619,25 @@ class PassLifecycleTests(unittest.TestCase):
         preflight = self.record_preflight(wid, self.preflight_document())
         self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
 
+    def test_legacy_behavioral_disposition_requires_immutable_intake(self) -> None:
+        marker, slug = "LEGACY_BEHAVIORAL_DISPOSITION_ACCEPTED_OR_MUTATED_STATE", "legacy-behavioral"
+        wid = self.begin_slug(slug)
+        self.advance_to_context_forge()
+        self.rewrite_latest_state(
+            lambda state: state.__setitem__("advisorPreflight", {"source": "codex-advisor", "status": "completed"})
+        )
+        path = Path(self.disposition_document("accepted-follow-up"))
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["dispositions"][0]["kind"] = "behavioral"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        before = self.cli("status").stdout, len(self.history_events())
+
+        refused = self.dispose(slug, wid, "preflight", "addressed", str(path))
+
+        after = self.cli("status").stdout, len(self.history_events())
+        self.assertEqual((refused.returncode, after), (2, before), marker + refused.stdout + refused.stderr)
+        self.assertIn("immutable intake and accepted-for-proof", refused.stderr, marker)
+
     def test_legacy_preflight_state_requires_an_explicit_findings_disposition(self) -> None:
         wid = self.begin_slug("legacy-advisor-state")
         self.advance_to_context_forge()
