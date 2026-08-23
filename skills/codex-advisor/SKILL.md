@@ -219,7 +219,7 @@ Every disposition carries `kind`, `premise`, `occurrence`, and `materialConseque
 A behavioral finding first uses `accepted-for-proof` with unique `reservedBehaviorIds`, its real Seam,
 and preservation obligations. At preflight, `record-preflight` consumes that exact reservation; initial
 or pre-GREEN `fixed` is invalid, while later explicit `fixed` requires those items GREEN and reassessed.
-`report-only` requires a false material consequence. `rejected-with-evidence` and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
+`report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
 findings-plus-dispositions form remains compatible for measured nonbehavioral
 results, but cannot create proof reservations. A refusal mutates no state.
 `--findings none` takes no document.

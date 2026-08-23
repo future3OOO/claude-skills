@@ -249,6 +249,21 @@ class PassLifecycleTests(unittest.TestCase):
             "command": "run proof", "result": consequence}, **owed}]}), encoding="utf-8")
         return path
 
+    def mixed_finding_disposition_document(self, intake_id: str, status: str) -> Path:
+        path = self.finding_disposition_document(intake_id, status)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["dispositions"].append({
+            "finding_id": "SPEC-2", "status": "report-only", "kind": "nonbehavioral",
+            "premise": {"claim": "documentation is incomplete", "command": "inspect docs", "result": "true"},
+            "occurrence": {"domain": "advisor documentation", "count": 1, "complete": True,
+                           "command": "inspect docs", "result": "one incomplete statement"},
+            "materialConsequence": {"claim": "runtime behavior changes", "command": "inspect runtime",
+                                    "result": "false"},
+            "evidence": "documentation-only finding retained unchanged",
+        })
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
     def review_finding_disposition_document(self, intake_id: str, status: str) -> Path:
         self.documents += 1
         path = self.tmp / f"review-finding-disposition-{self.documents}.json"
@@ -1590,7 +1605,15 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(copied.returncode, 2, stale_marker + copied.stdout + copied.stderr)
         self.git("checkout", "--", "app.py")
 
-        self.assertEqual(self.dispose("advisor-preflight-contract", wid, "preflight", "addressed", self.disposition_document()).returncode, 2, "PREFLIGHT_FIXED_ACCEPTED")
+        initial_fixed = self.dispose(
+            "advisor-preflight-contract", wid, "preflight", "addressed",
+            self.disposition_document(occurrence={
+                "domain": "the complete current workflow", "count": 0, "complete": True,
+                "command": "inspect current workflow", "result": "count=0",
+            }),
+        )
+        self.assertEqual(initial_fixed.returncode, 2, "PREFLIGHT_FIXED_ACCEPTED")
+        self.assertIn("immutable finding intake", initial_fixed.stderr, "PREFLIGHT_FIXED_ACCEPTED")
         addressed = self.dispose("advisor-preflight-contract", wid, "preflight", "addressed", self.disposition_document("report-only", "false"))
         self.assertEqual(addressed.returncode, 0, "ADVISOR_REPORT_ONLY_REFUSED" + addressed.stdout + addressed.stderr)
         preflight = self.record_preflight(wid, self.preflight_document())
@@ -1662,20 +1685,27 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(self.evidence(disposition_id)["stage"], "preflight")
 
     def test_preflight_proof_reservation_closes_only_after_green_and_reassessment(self) -> None:
-        marker, slug = "PREFLIGHT_PROOF_LIFECYCLE_BROKEN", "accepted-proof"
+        marker, mixed_marker, slug = (
+            "PREFLIGHT_PROOF_LIFECYCLE_BROKEN",
+            "MIXED_INTAKE_FIXED_CLOSURE_BLOCKED",
+            "accepted-proof",
+        )
         wid = self.begin_slug(slug)
         self.advance_to_context_forge()
         envelope = self.tmp / "advisor-envelope.json"
-        envelope.write_text('{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"proof is missing","material":true,"kind":"behavioral"}],"verdict":"completed"}', encoding="utf-8")
+        envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [
+            {"id": "SPEC-1", "claim": "proof is missing", "material": True, "kind": "behavioral"},
+            {"id": "SPEC-2", "claim": "documentation is incomplete", "material": True, "kind": "nonbehavioral"},
+        ], "verdict": "completed"}), encoding="utf-8")
         recorded = self.cli("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
                             "--source", "codex-advisor", "--input", str(envelope))
         self.assertEqual(recorded.returncode, 0, marker + recorded.stdout + recorded.stderr)
         intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
         before_state, before_events = json.loads(self.cli("status").stdout), len(self.history_events())
-        refused = self.dispose(slug, wid, "preflight", "addressed", str(self.finding_disposition_document(intake_id, "fixed")))
+        refused = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
         self.assertEqual(refused.returncode, 2, marker + refused.stdout + refused.stderr)
         self.assertEqual((json.loads(self.cli("status").stdout), len(self.history_events())), (before_state, before_events), marker)
-        accepted = self.dispose(slug, wid, "preflight", "addressed", str(self.finding_disposition_document(intake_id)))
+        accepted = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "accepted-for-proof")))
         self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
         mapped = {"id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding",
             "behavior": "preflight proof closes only after mapped GREEN", "seam": "workflow CLI", "redFailure": marker,
@@ -1691,7 +1721,7 @@ class PassLifecycleTests(unittest.TestCase):
         preflight = self.record_preflight(wid, document)
         self.assertEqual(preflight.returncode, 0, marker + preflight.stdout + preflight.stderr)
         self.assertTrue(json.loads(self.cli("status").stdout)["findingReservations"][0]["consumed"], marker)
-        early = self.dispose(slug, wid, "preflight", "addressed", str(self.finding_disposition_document(intake_id, "fixed")))
+        early = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
         self.assertEqual(early.returncode, 2, marker + early.stdout + early.stderr)
         (self.repo / "test_preflight_proof.py").write_text("import app, unittest\nclass Proof(unittest.TestCase):\n"
             f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
@@ -1709,8 +1739,8 @@ class PassLifecycleTests(unittest.TestCase):
         pending = json.loads(self.cli("status").stdout)
         self.assertEqual(pending["findingStates"][0]["status"], "accepted-for-proof", marker)
         self.assertNotIn("fixed", pending["findingReservations"][0], marker)
-        fixed = self.dispose(slug, wid, "preflight", "addressed", str(self.finding_disposition_document(intake_id, "fixed")))
-        self.assertEqual(fixed.returncode, 0, marker + fixed.stdout + fixed.stderr)
+        fixed = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
+        self.assertEqual(fixed.returncode, 0, mixed_marker + fixed.stdout + fixed.stderr)
         closed = json.loads(fixed.stdout)
         self.assertEqual((closed["findingStates"][0]["status"], closed["findingReservations"][0]["fixed"]), ("fixed", True), marker)
         self.record_real_gate(wid)
@@ -1808,17 +1838,11 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(superseded.returncode, 2, completion_marker + superseded.stdout + superseded.stderr)
         self.assertEqual(json.loads(self.cli("status").stdout), before_state, completion_marker)
         self.assertEqual(len(self.history_events()), before_events, completion_marker)
-        for status, detail in (
-            ("rejected-with-evidence", {"evidence": "later rejection"}),
-            ("accepted-follow-up", {"reference": "issue-1"}),
-        ):
-            disposition.write_text(json.dumps({
-                "intakeEvidenceId": intake_id, "dispositions": [{
-                    "finding_id": "SPEC-1", "status": status, **detail,
-                }],
-            }), encoding="utf-8")
+        for status in ("rejected-with-evidence", "accepted-follow-up"):
+            disposition = self.finding_disposition_document(intake_id, status)
             refused = self.dispose(slug, wid, "final", "addressed", str(disposition))
             self.assertEqual(refused.returncode, 2, completion_marker + refused.stdout + refused.stderr)
+            self.assertIn("already has terminal disposition fixed", refused.stderr, completion_marker)
             self.assertEqual(json.loads(self.cli("status").stdout), before_state, completion_marker)
             self.assertEqual(len(self.history_events()), before_events, completion_marker)
         unrelated = json.loads(update.read_text(encoding="utf-8"))
@@ -2576,8 +2600,20 @@ class PassLifecycleTests(unittest.TestCase):
             self.assertEqual((refused.returncode, json.loads(self.cli("status").stdout), len(self.history_events())), (2, *before), marker + refused.stdout + refused.stderr)
         self.assertEqual(self.cli("advisor-result", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready").returncode, 0)
         self.assertEqual(self.cli("complete").returncode, 2, "undispositioned final review completed")
-        disposed = self.dispose("completion-contract", wid, "final", "addressed", self.disposition_document())
-        self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
+        disposed = self.dispose(
+            "completion-contract", wid, "final", "addressed",
+            self.disposition_document(occurrence={
+                "domain": "the complete current completion workflow",
+                "count": 0,
+                "complete": True,
+                "command": "inspect current completion workflow",
+                "result": "count=0",
+            }),
+        )
+        self.assertEqual(
+            disposed.returncode, 0,
+            "COMPLETION_FIXED_MEASUREMENT_STALE" + disposed.stdout + disposed.stderr,
+        )
         self.assertEqual(self.cli("complete").returncode, 0)
 
 

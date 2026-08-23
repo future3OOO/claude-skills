@@ -132,7 +132,7 @@ class ReviewSummaryTests(unittest.TestCase):
 
     def disposition_document(
         self, intake: str, identifier: str, status: str, *, kind: str = "nonbehavioral",
-        count: int = 1, complete: bool = True, **extra: object,
+        count: int = 0, complete: bool = True, **extra: object,
     ) -> dict[str, object]:
         field = "reference" if status == "accepted-follow-up" else "evidence"
         return {
@@ -276,6 +276,24 @@ class ReviewSummaryTests(unittest.TestCase):
 
         self.assertEqual(recorded.returncode, 0, marker + recorded.stdout + recorded.stderr)
         self.assertEqual(json.loads(recorded.stdout)["status"], "passed", marker)
+
+    def test_fixed_requires_false_premise_or_complete_zero_occurrence(self) -> None:
+        marker = "POSITIVE_CURRENT_OCCURRENCE_FIXED"
+        path = self.tmp / "fixed-occurrence.json"
+        path.write_text(json.dumps({"findings": [self.review_finding()]}), encoding="utf-8")
+        intake_id = json.loads(self.record_review(path, "fixed-occurrence-intake").stdout)["summaryId"]
+
+        positive = self.disposition_document(intake_id, "SPEC-1", "fixed", count=1)
+        path.write_text(json.dumps(positive), encoding="utf-8")
+        refused = self.record_review(path, "positive-occurrence-fixed")
+        self.assertEqual(refused.returncode, 2, marker + refused.stdout + refused.stderr)
+        self.assertIn("false premise or zero occurrence", refused.stderr, marker)
+
+        positive["dispositions"][0]["premise"]["result"] = "false"
+        path.write_text(json.dumps(positive), encoding="utf-8")
+        accepted = self.record_review(path, "false-premise-fixed")
+        self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+        self.assertEqual(json.loads(accepted.stdout)["status"], "passed", marker)
 
     def test_reviewer_dispositions_bind_context_and_make_report_only_terminal(self) -> None:
         path = self.tmp / "reviewer-disposition-gates.json"

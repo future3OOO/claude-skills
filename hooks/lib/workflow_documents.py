@@ -412,12 +412,12 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
                 raise ValueError(f"finding {identifier} {status} requires {field}")
         if set(item) != common | extra:
             raise ValueError(f"finding {identifier} {status} has unknown or missing fields")
-        if status == "rejected-with-evidence" and not (
+        if status in {"fixed", "rejected-with-evidence"} and not (
             premise["result"].strip().lower() == "false"
             or occurrence.get("count") == 0 and occurrence.get("complete") is True
         ):
             raise ValueError(
-                f"finding {identifier} rejected-with-evidence requires a false premise "
+                f"finding {identifier} {status} requires a false premise "
                 "or zero occurrence on a complete domain"
             )
         if status == "report-only" and consequence["result"].strip().lower() != "false":
@@ -525,6 +525,8 @@ def advisor_disposition_document(
             raise ValueError(f"finding {identifier} requires a claim")
         claims.add(identifier)
     typed = _finding_dispositions(dispositions, allowed - {"accepted-for-proof"})
+    if stage == "preflight" and any(item["status"] == "fixed" for item in typed):
+        raise ValueError("legacy preflight fixed requires immutable finding intake")
     if any(str(item["finding_id"]) not in claims for item in typed):
         raise ValueError("each disposition must reference a finding")
     if {str(item["finding_id"]) for item in typed} != claims:

@@ -955,6 +955,8 @@ def _apply_finding_dispositions(
         if kind != findings[identifier].get("kind"):
             raise WorkflowError(f"finding {identifier} disposition kind differs from immutable intake")
         if current in {"fixed", "rejected-with-evidence", "report-only"}:
+            if status == current:
+                continue
             raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
         reservation = next((entry for entry in reservations if isinstance(entry, dict)
                             and entry.get("intakeEvidenceId") == intake_id
