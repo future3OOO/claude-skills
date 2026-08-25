@@ -213,7 +213,16 @@ class RepoForgeWorkflowTests(unittest.TestCase):
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_a_packet_that_planned_no_checks_still_records_its_resolved_result(self) -> None:
         """How many checks a packet plans is the producer's call, not a refusal here."""
-        recorded = self.bootstrap(gitnexus_mode="auto", timeout=600)
+        # The producer plans a file_context check for any content-bearing file and
+        # blocks an intent that matches no symbol, so a zero-check packet needs a
+        # .gitignore-only tree in repo mode. Committing the .gitnexus/ ignore rule
+        # keeps GitNexus's own ignore write from mutating the analysis candidate.
+        (self.repo / ".gitignore").write_text(".gitnexus/\n", encoding="utf-8")
+        self.git("rm", "-q", "app.py", "caller.py")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "zero-checkable surface")
+
+        recorded = self.bootstrap(mode="repo", intent="", gitnexus_mode="auto", timeout=600)
 
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         state = self.status()
