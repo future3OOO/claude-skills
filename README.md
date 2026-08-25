@@ -225,7 +225,7 @@ Expected paths, all hardcoded somewhere in the estate:
 
 ```
 /home/prop_/projects/GitNexus-pr1-review      GitNexus checkout (built to gitnexus/dist)
-/home/prop_/projects/repo-context-forge       hardcoded as SOURCE_ROOT in the RCF skill
+/home/prop_/.local/share/repo-context-forge/current   RCF runtime; SOURCE_ROOT resolves through this snapshot pointer
 /home/prop_/soulforge                         via ~/.local/bin/soulforge
 ~/.local/bin/gitnexus  -> /home/prop_/projects/GitNexus-pr1-review/gitnexus/dist/cli/index.js
 ~/.local/bin/fff-mcp                          static binary

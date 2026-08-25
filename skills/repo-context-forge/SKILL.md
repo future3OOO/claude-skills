@@ -224,7 +224,7 @@ When the assistant materially changes context during a longer task, record it
 before refreshing the packet. Start a task context with an explicit task id:
 
 ```bash
-SOURCE=/home/prop_/projects/repo-context-forge
+SOURCE=/home/prop_/.local/share/repo-context-forge/current
 python3 "$SOURCE/repo_context_forge.py" context-start --repo "$PWD" --task-id <id>
 python3 "$SOURCE/repo_context_forge.py" context-record-read --repo "$PWD" --task-id <id> <path>
 python3 "$SOURCE/repo_context_forge.py" context-record-search --repo "$PWD" --task-id <id> <path>
