@@ -26,7 +26,7 @@ from hooks.lib.workflow_state import (  # noqa: E402
     safe_slug,
 )
 
-SOURCE_ROOT = Path("/home/prop_/projects/repo-context-forge")
+SOURCE_ROOT = Path("/home/prop_/.local/share/repo-context-forge/current")
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
 
 
