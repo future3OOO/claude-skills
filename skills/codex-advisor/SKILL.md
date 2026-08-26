@@ -222,6 +222,8 @@ or pre-GREEN `fixed` is invalid, while later explicit `fixed` requires those ite
 `report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
 findings-plus-dispositions form remains compatible for measured nonbehavioral
 results, but cannot create proof reservations. A refusal mutates no state.
+Print the canonical disposition and governed-design shape table, generated from
+its installed validator declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
 `--findings none` takes no document.
 
 For an unavailable consult, record the full

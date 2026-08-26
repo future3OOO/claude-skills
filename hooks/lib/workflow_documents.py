@@ -15,6 +15,21 @@ REVIEWER_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
 REVIEWER_DISPOSITIONS = REVIEWER_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
 ADVISOR_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
 ADVISOR_DISPOSITIONS = ADVISOR_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
+MEASUREMENT_SHAPE = '{"claim":non-empty text,"command":non-empty text,"result":non-empty text}'
+COUNTED_OCCURRENCE_SHAPE = '{"domain":non-empty text,"count":int>=0,"complete":bool,"command":non-empty text,"result":non-empty text}'
+SEAM_OCCURRENCE_SHAPE = '{"seam":non-empty text,"reproduction":{"command":non-empty text,"result":non-empty text}}'
+DISPOSITION_REQUIREMENTS = {
+    "fixed": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
+    "rejected-with-evidence": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
+    "report-only": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; materialConsequence.result strips and lowercases to false",
+    "accepted-follow-up": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; reference=non-empty text",
+    "accepted-for-proof": f"premise={MEASUREMENT_SHAPE}; occurrence={SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE} with result not stripping/lowercasing to false; reservedBehaviorIds=[unique BM ids]; seam=non-empty text equal to occurrence.seam after trimming; preservationObligations=[unique non-empty text values]",
+}
+DISPOSITION_SHAPES = {status: f'{{"finding_id":non-empty text,"status":"{status}","kind":"behavioral" or "nonbehavioral"}} plus {requirements}' for status, requirements in DISPOSITION_REQUIREMENTS.items()}
+
+
+def _disposition_error(status: str, message: str) -> str:
+    return f"{message}; {status} expected shape: {DISPOSITION_SHAPES[status]}"
 
 
 def load_json(path: str, *, label: str) -> JsonObject:
@@ -91,6 +106,15 @@ FINAL_ENVELOPE_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatc
 DESIGN_MARKER = "<!-- governed-design-labels:v1 -->"
 DESIGN_ID = re.compile(r"^(?:PRES|ASSUMP)-[1-9][0-9]*$")
 RESERVED_DESIGN_TOKEN = re.compile(r"(?<![A-Z0-9-])(?:PRES|ASSUMP)-[0-9]+(?![A-Z0-9-])")
+DESIGN_FILE_SHAPE = (f'{DESIGN_MARKER} followed by ```json and '
+    '{"schemaVersion":1,"labels":[{"id":"PRES-n","kind":"preservation"},{"id":"ASSUMP-n","kind":"assumption","behavioral":bool}]}; '
+    "reserved tokens in prose must equal catalogue ids")
+DOCUMENT_SHAPES = {**DISPOSITION_SHAPES, "governed-design": DESIGN_FILE_SHAPE}
+DOCUMENT_SHAPE_TABLE = "\n".join(["| Surface | Expected shape |", "|---|---|", *(f"| `{name}` | {shape} |" for name, shape in DOCUMENT_SHAPES.items())])
+
+
+def _design_file_error(message: str) -> str:
+    return f"{message}; governed-design expected shape: {DESIGN_FILE_SHAPE}"
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> JsonObject:
@@ -170,15 +194,17 @@ def design_file_declaration(path: str) -> JsonObject:
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"cannot read governed design: {exc}") from exc
     if text.count(DESIGN_MARKER) != 1:
-        raise ValueError("governed design requires exactly one labels marker")
+        raise ValueError(_design_file_error("governed design requires exactly one labels marker"))
     tail = text.split(DESIGN_MARKER, 1)[1]
     match = re.match(r"\s*```json[ \t]*\r?\n(.*?)\r?\n```", tail, re.DOTALL)
     if match is None:
-        raise ValueError("governed design marker must be followed by one fenced json block")
+        raise ValueError(_design_file_error("governed design marker must be followed by one fenced json block"))
     try:
         catalogue = _catalogue(json.loads(match.group(1), object_pairs_hook=_unique_object))
     except json.JSONDecodeError as exc:
-        raise ValueError(f"cannot parse governed design catalogue JSON: {exc}") from exc
+        raise ValueError(_design_file_error(f"cannot parse governed design catalogue JSON: {exc}")) from exc
+    except ValueError as exc:
+        raise ValueError(_design_file_error(str(exc))) from exc
     declared = {str(label["id"]) for label in catalogue["labels"]}
     reserved = set(RESERVED_DESIGN_TOKEN.findall(text[: text.index(DESIGN_MARKER)]))
     reserved.update(RESERVED_DESIGN_TOKEN.findall(tail[match.end():]))
@@ -189,7 +215,9 @@ def design_file_declaration(path: str) -> JsonObject:
             "uncatalogued: " + ", ".join(missing) if missing else "",
             "catalogue-only: " + ", ".join(unused) if unused else "",
         )))
-        raise ValueError("governed design reserved tokens must equal catalogue ids" + (f": {details}" if details else ""))
+        raise ValueError(_design_file_error(
+            "governed design reserved tokens must equal catalogue ids" + (f": {details}" if details else ""),
+        ))
     return {
         "schemaVersion": 1,
         "status": "present",
@@ -383,14 +411,19 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
             raise ValueError("each disposition must be an object")
         identifier, status, kind = item.get("finding_id"), item.get("status"), item.get("kind")
         if not _text(identifier):
-            raise ValueError("each disposition must reference a finding")
-        if identifier in seen or not isinstance(status, str) or status not in allowed:
+            raise ValueError(_disposition_error(status, "each disposition must reference a finding") if isinstance(status, str) and status in allowed else "each disposition must reference a finding")
+        if not isinstance(status, str) or status not in allowed:
             raise ValueError(f"finding {identifier} has an invalid or duplicate disposition")
+        if identifier in seen:
+            raise ValueError(_disposition_error(status, f"finding {identifier} has a duplicate disposition"))
         if kind not in {"behavioral", "nonbehavioral"}:
-            raise ValueError(f"finding {identifier} kind must be behavioral or nonbehavioral")
-        premise = _measurement(item.get("premise"), f"finding {identifier} premise")
-        occurrence = _occurrence(item.get("occurrence"))
-        consequence = _measurement(item.get("materialConsequence"), f"finding {identifier} materialConsequence")
+            raise ValueError(_disposition_error(status, f"finding {identifier} kind must be behavioral or nonbehavioral"))
+        try:
+            premise = _measurement(item.get("premise"), f"finding {identifier} premise")
+            occurrence = _occurrence(item.get("occurrence"))
+            consequence = _measurement(item.get("materialConsequence"), f"finding {identifier} materialConsequence")
+        except ValueError as exc:
+            raise ValueError(_disposition_error(status, str(exc))) from exc
         if status == "accepted-for-proof":
             extra = {"reservedBehaviorIds", "seam", "preservationObligations"}
             reserved, preserved = item.get("reservedBehaviorIds"), item.get("preservationObligations")
@@ -402,30 +435,29 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
                 and isinstance(preserved, list) and preserved and all(_text(entry) for entry in preserved)
                 and len(set(canonical_preserved)) == len(preserved)
             ):
-                raise ValueError(f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations")
+                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations"))
             demonstrated = ("reproduction" in occurrence
                 and occurrence.get("seam", "").strip() == str(item["seam"]).strip())
             if not demonstrated:
-                raise ValueError(f"finding {identifier} accepted-for-proof requires demonstrated occurrence at its Seam")
+                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires demonstrated occurrence at its Seam"))
             if consequence["result"].strip().lower() == "false":
-                raise ValueError(f"finding {identifier} accepted-for-proof requires material consequence")
+                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires material consequence"))
         else:
             field = "reference" if status == "accepted-follow-up" else "evidence"
             extra = {field}
             if not _text(item.get(field)):
-                raise ValueError(f"finding {identifier} {status} requires {field}")
+                raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
         if set(item) != common | extra:
-            raise ValueError(f"finding {identifier} {status} has unknown or missing fields")
+            raise ValueError(_disposition_error(status, f"finding {identifier} {status} has unknown or missing fields"))
         if status in {"fixed", "rejected-with-evidence"} and not (
             premise["result"].strip().lower() == "false"
             or occurrence.get("count") == 0 and occurrence.get("complete") is True
         ):
-            raise ValueError(
-                f"finding {identifier} {status} requires a false premise "
-                "or zero occurrence on a complete domain"
-            )
+            raise ValueError(_disposition_error(
+                status, f"finding {identifier} {status} requires a false premise or zero occurrence on a complete domain",
+            ))
         if status == "report-only" and consequence["result"].strip().lower() != "false":
-            raise ValueError(f"finding {identifier} report-only requires no material consequence")
+            raise ValueError(_disposition_error(status, f"finding {identifier} report-only requires no material consequence"))
         seen.add(str(identifier))
         typed.append({**dict(item), "premise": premise, "occurrence": occurrence, "materialConsequence": consequence})
     return typed

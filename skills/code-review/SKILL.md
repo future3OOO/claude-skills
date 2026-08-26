@@ -80,6 +80,9 @@ lead dispositions:
 {"context":{"workflowId":"<active-workflowId>","candidateTree":"<64-hex tree digest>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"seam":"<real Seam>","reproduction":{"command":"...","result":"..."}},"materialConsequence":{"claim":"...","command":"...","result":"..."},"reservedBehaviorIds":["BM_SPEC_1","BM_SPEC_1_PRESERVE"],"seam":"<real Seam>","preservationObligations":["..."]}]}
 ```
 
+Print the canonical disposition and governed-design shape table, generated from
+its installed validator declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
+
 Both documents use the same command:
 
 ```bash
