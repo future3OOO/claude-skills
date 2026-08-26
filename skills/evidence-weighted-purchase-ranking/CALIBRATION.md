@@ -1,18 +1,6 @@
 # Calibration
 
-Read this file when population baselines are unavailable, seller fields use unusual scopes/scales, or historical outcomes exist that can replace the defaults in `SKILL.md`.
-
-## Default parameters
-
-| Parameter | Default | Meaning |
-| --- | ---: | --- |
-| `k` | `20` | prior review strength for Bayesian shrinkage |
-| quality share | `0.58` | rating-quality share of the seller-confidence model |
-| evidence share | `0.42` | volume-evidence share of the seller-confidence model |
-| review share of evidence | `0.70` | weight on review/feedback volume |
-| sales share of evidence | `0.30` | weight on seller sales/transactions |
-
-These are defaults, not constants of nature. Preserve the model shape unless better outcome data justifies changing it.
+Read this file when population baselines are unavailable, seller fields use unusual scopes/scales, or historical outcomes can replace the runtime defaults owned by `SKILL.md`.
 
 ## Choose `mu`, `Nr`, and `Ns`
 
@@ -46,40 +34,33 @@ Volume is evidence with diminishing returns. The difference between 2 and 20 obs
 
 Do not rank directly on raw review or sales counts.
 
-## Why 58/42
+## Research basis for quality versus evidence
 
 Qiu and Zhang's 2024 meta-analysis covered 156 studies, 214 effect sizes, and 69,006 observations. It reports combined correlations with purchase intention of:
 
 - review rating: `r = 0.443`
 - review volume: `r = 0.317`
 
-Normalizing those two magnitudes gives:
-
-```text
-0.443 / (0.443 + 0.317) = 0.583
-0.317 / (0.443 + 0.317) = 0.417
-```
-
-That motivates the default `0.58/0.42` quality/evidence split. It does **not** prove those values are optimal ranking coefficients: the study aggregates correlations across heterogeneous contexts, not coefficients from this seller-ranking model.
+Normalizing those two magnitudes gives approximately `0.583` and `0.417`. That motivates the rounded quality/evidence split defined in `SKILL.md`. It does **not** prove those values are optimal ranking coefficients: the study aggregates correlations across heterogeneous contexts, not coefficients from this seller-ranking model.
 
 Source: Keda Qiu & Liyi Zhang, *How online reviews affect purchase intention: A meta-analysis across contextual and cultural factors*, Data and Information Management 8(2), 2024, DOI `10.1016/j.dim.2023.100058`.
 
-## Why reviews outweigh sales inside evidence
+## Why review evidence outweighs sales evidence
 
-The `0.70/0.30` review/sales split is a design prior, not a published causal estimate.
+The review-heavy evidence split defined in `SKILL.md` is a design prior, not a published causal estimate.
 
-Review count directly supports the displayed rating and has independent empirical evidence as a purchase-intention cue. Seller sales add useful experience/popularity evidence but are often correlated with review count, so giving sales equal weight would double-count scale more aggressively.
+Review count directly supports the displayed rating and has independent empirical evidence as a purchase-intention cue. Seller sales add useful experience/popularity evidence but are often correlated with review count, so giving sales equal influence would double-count scale more aggressively.
 
-eBay's buyer guidance explicitly tells buyers to consider seller rating, feedback score/count, and number of items sold when judging seller reputation. Its Top Rated program also requires an established sales history, including at least 100 transactions over the relevant 12-month period on ebay.com. These are supporting signals that transaction volume matters, not evidence for a universal `0.30` coefficient.
+eBay's buyer guidance explicitly tells buyers to consider seller rating, feedback score/count, and number of items sold when judging seller reputation. Its Top Rated program also requires an established sales history, including at least 100 transactions over the relevant 12-month period on ebay.com. These are supporting signals that transaction volume matters, not evidence for any universal sales coefficient.
 
 Sources:
 
 - https://www.ebay.com/help/buying/resolving-issues-sellers/seller-ratings?id=4023
 - https://www.ebay.com/help/policies/seller-performance/seller-performance-standards?id=4347
 
-## Prior strength `k`
+## Prior strength
 
-`k=20` means a seller's observed rating carries the same weight as the prior after roughly 20 supporting reviews. It is a pragmatic shrinkage default, not a research-derived optimum.
+The fallback prior strength is owned by `SKILL.md`. It controls how quickly a thin observed rating escapes shrinkage toward `mu`; it is a pragmatic default, not a research-derived optimum.
 
 If enough marketplace data exists, replace it with an empirical-Bayes prior strength estimated from between-seller variation and within-seller review uncertainty. Keep the prior category/platform-specific when rating distributions differ materially.
 
@@ -104,7 +85,7 @@ Vs  = log-normalized sales evidence
 
 Include item-level features separately from seller features. Evaluate on held-out future periods or sellers, not the same observations used to fit. Prefer a simpler model when its out-of-sample ranking quality is indistinguishable from a more complex one.
 
-Replace default coefficients only when the learned model improves the chosen held-out ranking metric or expected utility and remains directionally sane: better rating quality, more supporting reviews, and more seller transactions must not become penalties without a separately identified adverse signal.
+Replace runtime coefficients only when the learned model improves the chosen held-out ranking metric or expected utility and remains directionally sane: better rating quality, more supporting reviews, and more seller transactions must not become penalties without a separately identified adverse signal.
 
 ## Scope and anomaly checks
 
