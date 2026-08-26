@@ -2,12 +2,12 @@
 
 ## Status
 
-- current state: governing artifact created on `simpbitch/issue-152-pr-a`; PR A diagnosis and preflight are next
+- current state: PR A changed-candidate appeal recovery is fixed and pre-stabilization source/RCF/typed gates are green at 697 net human-authored lines; this reconciliation triggers one final exact-candidate gate pass before no-finding lead review and final advisor
 - governing artifact: this document
 - trusted checkout: `/home/prop_/projects/simpbitch-152`
 - trusted base: `origin/main` at `0c5fec84c65ec9ad4ca5b368a9e6b9ae0a8a9b79`
 - active workflow: `issue-152-pr-a` / `7e90a919dc7c4091838fcc47ac9ba17e`
-- last updated: 2026-08-26
+- last updated: 2026-08-27
 
 ## Objective
 
@@ -186,7 +186,8 @@ This work is transaction-sensitive because it changes workflow state transitions
 - #143 premise, occurrence, consequence, and status-specific validation remains unchanged;
 - the first disposition for an intake is all-findings and atomic; later subset documents cannot leave an initially unclassified finding;
 - an accepted-for-proof correction never weakens linked Behavior Map closure;
-- pending classification, correction, reservation, GREEN, reassessment, appeal, or disagreement blocks generic verification, typed gate, lead review, and completion;
+- pending classification, correction, reservation, GREEN, reassessment, or disagreement blocks generic verification, typed gate, lead review, and completion;
+- a pending appeal always blocks completion; an unchanged fully bound appeal also blocks broad gate/review reruns, while candidate invalidation permits only its missing generic, typed-gate, and lead-review bindings to refresh before the one response;
 - targeted RED/GREEN and changed-Seam probes remain available during correction;
 - one successful typed gate follows candidate stabilization; later edits make it stale;
 - a provider result records only against the current context-matched candidate;
@@ -372,9 +373,9 @@ Proof labels: `CLI` real workflow CLI over real Git repositories; `RCF` installe
 
 | Status | ID | Owner | Contract | Proof |
 |---|---|---|---|---|
-| [ ] | F1 | A | one multi-finding final envelope creates one correction batch and every finding is initially classified before gate/review | CLI |
-| [ ] | F2 | A | typed gate is blocked before stabilization; failure reopens; one current success follows final edit; later change stales it | CLI + real typed gate |
-| [ ] | F3 | A | open batch routes to correction/TDD/reassessment, not generic verification, gate, or lead review | CLI |
+| [x] | F1 | A | one multi-finding final envelope creates one correction batch and every finding is initially classified before gate/review | `test_final_rejections_use_one_context_matched_appeal_and_effective_readiness` |
+| [x] | F2 | A | typed gate is blocked before stabilization; failure reopens; one current success follows final edit; later change stales it | `test_open_correction_batch_blocks_broad_gates_and_routes_tdd_reassessment`; typed gate `evidence-282b13b7d9d192a3d7523292f30e079e` |
+| [x] | F3 | A | open batch routes to correction/TDD/reassessment, not generic verification, gate, or lead review | `test_open_correction_batch_blocks_broad_gates_and_routes_tdd_reassessment` |
 | [ ] | F4 | A+B | CI invokes `hooks/tests/run.sh` once per current pushed head; failure starts a new measured pass | CI logs on both PRs |
 
 ### Challenge matrix
@@ -392,25 +393,25 @@ Proof labels: `CLI` real workflow CLI over real Git repositories; `RCF` installe
 
 | Status | ID | Owner | Contract | Proof |
 |---|---|---|---|---|
-| [ ] | A1 | A | current-tree rejection remains pending before appeal | CLI |
-| [ ] | A2 | A+B | one appeal response is consumed; rejection delta resumes the same SID once; fresh SID and second appeal refuse | A lifecycle CLI + B CAP/LIVE transport |
-| [ ] | A3 | A | omission or same-ID nonmaterial response terminalizes rejection while new IDs form their own intake | CLI |
-| [ ] | A4 | A | material same-ID re-raise records persistent disagreement and blocks lead-only completion | CLI |
-| [ ] | A5 | A | context mismatch changes no readiness, appeal consumption, or completion and requires re-consultation | CLI history/state |
-| [ ] | A6 | A | late Behavior Map item/reservation batch remains closable before terminalization | CLI |
-| [ ] | A7 | A | incorrect terminal `accepted-follow-up` is corrected only by linked append-only supersession with original history visible | CLI history/evidence |
-| [ ] | A8 | A | later closure names only changed findings; untouched terminal findings remain terminal without re-copy | CLI |
-| [ ] | A9 | A | dirty candidate and same-tree local commit continue under one workflow ID and one `begin`; only stale bindings reopen | CLI over real Git repo |
+| [x] | A1 | A | current-tree rejection remains pending before appeal | `test_final_rejections_use_one_context_matched_appeal_and_effective_readiness` |
+| [ ] | A2 | A+B | one appeal response is consumed; rejection delta resumes the same SID once; fresh SID and second appeal refuse | A lifecycle CLI green; B CAP/LIVE transport pending |
+| [x] | A3 | A | omission or same-ID nonmaterial response terminalizes rejection while new IDs form their own intake | `test_final_rejections_use_one_context_matched_appeal_and_effective_readiness` |
+| [x] | A4 | A | material same-ID re-raise records persistent disagreement and blocks lead-only completion | `test_final_rejections_use_one_context_matched_appeal_and_effective_readiness` |
+| [x] | A5 | A | context mismatch changes no readiness, appeal consumption, or completion and requires re-consultation | `test_final_rejections_use_one_context_matched_appeal_and_effective_readiness` history/state assertions |
+| [x] | A6 | A | late Behavior Map item/reservation batch remains closable before terminalization | `test_open_correction_batch_blocks_broad_gates_and_routes_tdd_reassessment` and `test_review_finding_reservation_is_consumed_by_tdd_map_and_green_closes_fixed` |
+| [x] | A7 | A | incorrect terminal `accepted-follow-up` is corrected only by linked append-only supersession with original history visible | `test_later_disposition_closes_only_changed_findings_and_links_history` |
+| [x] | A8 | A | later closure names only changed findings; untouched terminal findings remain terminal without re-copy | `test_later_disposition_closes_only_changed_findings_and_links_history` |
+| [x] | A9 | A | dirty candidate and same-tree local commit continue under one workflow ID and one `begin`; only stale bindings reopen | `test_begin_binds_pass_start_and_candidate_identity_to_content` and `test_workflow_completion_survives_a_same_tree_review_commit` |
 
 ### Dual base
 
 | Status | ID | Owner | Contract | Proof |
 |---|---|---|---|---|
-| [ ] | D1 | A | `baseOid` remains fork point for branch-cumulative quality/merge checks | CLI + typed gate |
-| [ ] | D2 | A | `passStartOid` is successful-begin HEAD and never moves | CLI history/state |
+| [x] | D1 | A | `baseOid` remains fork point for branch-cumulative quality/merge checks | typed gate `evidence-282b13b7d9d192a3d7523292f30e079e` used recorded `0c5fec84…` and measured 648 net human-authored lines |
+| [x] | D2 | A | `passStartOid` is successful-begin HEAD and never moves | `test_begin_binds_pass_start_and_candidate_identity_to_content` history/state assertions |
 | [ ] | D3 | B | final advisor receives direct pass-start-tree to active-candidate-tree delta on a pre-existing PR | CLI + CAP + LIVE |
-| [ ] | D4 | A+B | same-tree local commit preserves candidate/workflow state and leaves advisor delta unchanged | A CLI + B CAP |
-| [ ] | D5 | A+B | missing/stale pass-start or candidate refuses and callers cannot select/reuse fork-point as advisor anchor | A CLI + B wrapper refusal |
+| [ ] | D4 | A+B | same-tree local commit preserves candidate/workflow state and leaves advisor delta unchanged | A CLI green; B CAP pending |
+| [ ] | D5 | A+B | missing/stale pass-start or candidate refuses and callers cannot select/reuse fork-point as advisor anchor | A CLI green; B wrapper refusal pending |
 
 ## Verification Plan
 
@@ -508,21 +509,21 @@ No `docs/agents/reviewers.md` exists in this checkout; live GitHub signals and r
 ### PR A
 
 - [~] active workflow `issue-152-pr-a`
-- [ ] current CLI defects reproduced and root causes traced
-- [ ] Codex Advisor preflight completed and findings dispositioned
-- [ ] production preflight/Behavior Map recorded
-- [ ] mapped RED established at the workflow CLI Seam
-- [ ] production-code baseline recorded
-- [ ] A1 implemented and GREEN/reassessment recorded
-- [ ] A2 implemented and GREEN/reassessment recorded
-- [ ] A3 implemented and GREEN/reassessment recorded
-- [ ] focused verification and changed-Seam probes green
-- [ ] post-edit RCF/GitNexus evidence refreshed
-- [ ] one current typed quality gate green
-- [ ] lead structured code review complete
-- [ ] final advisor commit-ready with findings terminal
+- [x] current CLI defects reproduced and root causes traced
+- [x] Codex Advisor preflight completed and findings dispositioned
+- [x] production preflight/Behavior Map recorded
+- [x] mapped RED established at the workflow CLI Seam
+- [x] production-code baseline recorded
+- [x] A1 implemented and GREEN/reassessment recorded
+- [x] A2 implemented and GREEN/reassessment recorded
+- [x] A3 implemented and GREEN/reassessment recorded
+- [~] latest targeted appeal lifecycle proof is green; full exact-candidate source verification remains pending after final governing reconciliation
+- [~] post-fix RCF/GitNexus evidence `evidence-f381e3ffba2859148b09e29252626537` is green; final governing reconciliation requires one exact-candidate refresh
+- [~] standalone gate is green with zero errors at exactly 700 net lines; typed exact-candidate gate remains pending
+- [x] final-advisor SPEC-1/SPEC-2 are fixed in `evidence-4e5a0b1f6ef3510657697e37ba9ee3a5`; refreshed no-finding lead review pending
+- [~] candidate-binding drift, contradictory-map, appeal-race, changed-candidate recovery, ordinary-appeal gate bypass, and terminal map contradiction findings are fixed; fresh exact-candidate final review pending
 - [ ] workflow complete
-- [ ] candidate cleaned and measured within 700-net hard ceiling
+- [~] current human-authored net growth is exactly the 700 hard ceiling; clone-local scratch removal remains
 - [ ] commits pushed to `simpbitch/issue-152-pr-a`
 - [ ] `[SimpBitch] Make advisor findings append-only and candidate-bound` PR open
 - [ ] scoped installed path set recorded and installed checks green
@@ -561,3 +562,13 @@ No `docs/agents/reviewers.md` exists in this checkout; live GitHub signals and r
 
 - 2026-08-26: created from issue #152, all owner comments, packet/GitNexus intake, three planning delegates, and independent critique.
 - 2026-08-26: assigned joint ownership to A2, C5, D4, and D5; made same-ID `material:false` an advisor concession; removed local full-suite gating before resumed advisor; made PR B execution wait for PR A's reviewer-completion gate; restored ~500 as PR A's target with 700 as the hard ceiling.
+- 2026-08-26: PR A mapped rows reached GREEN and reassessment (`evidence-9f716826acd020045e0090e0943bf189`, `evidence-27db66fe2a8d7ea401235f3cfeeb0844`, `evidence-6e569ba98db77f4e7b99745f9de20b97`, `evidence-d4185cce1f41a51ae0443666a1f88172`); all eight rows are terminal in `evidence-2c10f8418197b1e4c4f356bc2b3c6eea`, preflight reservations closed in `evidence-a16b77df6d2f8a53ec6d1928e424aa3b`, and the final post-edit reassessment is `evidence-1e7d8cbb633c60e2f4bb000ea69f7e2e`.
+- 2026-08-26: pre-review PR A verification passed 163 workflow/lifecycle tests and 88 quality-gate tests; dirty-candidate RCF/GitNexus binding matched the canonical candidate, and the typed gate passed with zero errors at 616 net human-authored lines (500 target exceeded, 700 hard ceiling preserved).
+- 2026-08-27: lead review intake `evidence-3336788732ea45f99c97203223318ad7` found strict-envelope admission and stale context-mismatch invalidation routing defects. Real workflow CLI/hook REDs reached GREEN, the corrected terminal map is `evidence-1b9fe9557cbaa21a8312b04a58e0e816`, and subset fixed dispositions are `evidence-346f4daf622f77e8fc732428798b230c`.
+- 2026-08-27: stabilized code verification passed 165 workflow/lifecycle tests (`evidence-1903d33e58b2ad2909d899988758df01`), 88 quality-gate tests (`evidence-de1ce68257b6931fa3ccfedb71390d0f`), and bootstrap compilation (`evidence-d15bf5866e17868f8faca32d60aa1099`). RCF/GitNexus evidence `evidence-d5fd8895c96fe7d2920426b49bfcd967` bound the candidate; typed gate `evidence-282b13b7d9d192a3d7523292f30e079e` passed with zero errors at 648 net human-authored lines.
+- 2026-08-27: cleanup removed the obsolete duplicate context-mismatch routing branch created by the earlier priority fix. The refreshed 165-test workflow suite is `evidence-a2ade7f270d79c8f2b585dc278f8347f` and the refreshed 88-test quality-gate suite is `evidence-ed66dda7eb4656f6ac6001913f0fc64b`.
+- 2026-08-27: final-advisor SPEC-1/SPEC-3 reached fixed disposition `evidence-fe96aa7a86f78247d2ec8533d7dce162` and SPEC-2's appeal conceded in `evidence-5b842674febee99c3239d2329636147e`. Lead review intake `evidence-7e2f8ded74ebe111539a329789d3043c` then found second-appeal and same-tree-review defects; GREEN/reassessment pairs `evidence-c9f08d673e45948641ade67f38c5a327`/`evidence-e8ee9118070547f1bdcc0dd69df2cc12` and `evidence-60f13320cc84cdd7be786e199308c1c7`/`evidence-a60043f256b8b24b3c4ab76b95e1c115` closed them in `evidence-6598d8f52d16ee8dc63b9e9071aa85c2`.
+- 2026-08-27: exact-candidate final advisor intake `evidence-10640657d8a34e34c62d4a2f9fc28320` reproduced an exhausted-appeal deadlock. The real-CLI RED/GREEN/reassessment `evidence-9dbc08aabca4879438cfbddc15e4815f`/`evidence-565100c3730faa5f6a8ef966fa390999`/`evidence-5166ea78b90fa6185a9f31ded10fb4a2` routes the already-material conflict to human-owner adjudication while preserving the no-event second-response refusal; fixed disposition is `evidence-556646e13cd22c8e5ed003bc17486ac6`. The repaired candidate passed 168 workflow/lifecycle tests (`evidence-c5704d67fab6b984c1d72054be91a50f`) plus 88 quality-gate tests (`evidence-445e8f07a76e751153be0f1ce2b80bfd`) at 699 net lines.
+- 2026-08-27: resumed final advisor intake `evidence-8ddcf1905f7baae01ba9262ee0778dc3` first closed the context-mismatch re-consult deadlock in `evidence-5f53ff0579d188cd16381b49eff47fcc`; intake `evidence-f375d7733e142833ecf5acd6b91e4aef` then closed raw re-consult drift and contradictory GREEN rows in `evidence-6d65ea216430540927ebfabe1e6b6034`. Intake `evidence-7b615856255544b567839262610abc8e` reproduced stale-candidate appeal consumption; sharp RED/GREEN/reassessment `evidence-101592e77991c502a46095659527f067`/`evidence-9f0e5a4a742007fa5ecc022ea1a9580e`/`evidence-f32f0f8cbe215fcacb796e2298e0ada5` made every final result revalidate current review and quality bindings while preserving unchanged appeal/re-consult transport, fixed in `evidence-ef6beff57262e24480c9ceda50bfa0af`. Refreshed source verification passed 168 workflow/lifecycle tests (`evidence-30f253beaa37244775b659a2a3b2bc9f`) plus 88 quality-gate tests (`evidence-3332c17e4878e05e229459a49e02e11c`) at 698 net lines.
+- 2026-08-27: final advisor intake `evidence-ea27d573f14088e05c6956717453fc58` then reproduced an unrecoverable changed-candidate appeal after the new binding checks. Real CLI and production PostToolUse proof established stale refusal and preserved non-appeal correction gates in `evidence-7072578dca72160af99813a3da817020` and `evidence-ba796745c6e995542e04995eb794206a`; RED/GREEN/reassessment `evidence-aea2e213185a81f84678248be1d2036d`/`evidence-52b700308e6f34268984ff5f878ee61d`/`evidence-b595264e7ed6a8b2836f3c52b2776ac8` now permits only appeal-final-review recovery to refresh verification and lead-review bindings. Fixed disposition `evidence-1a11fd3fbd05c2fb9ed41a6a2baa0886` closes the finding at 697 net lines. Pre-stabilization verification passed 168 workflow/lifecycle tests (`evidence-ef769966c17e318458a88f08a4c5e22c`) plus 88 quality-gate tests (`evidence-220433700fbe981eb1c9932df75a50b3`); RCF `evidence-2a7bbba07c827d0c0dbb766609f28d8c` and typed gate `evidence-bfdf3805c439ebd59dc14eaa81d3fb14` also passed with zero hard errors.
+- 2026-08-27: final-advisor intake `evidence-5fb9a57ae1ca53760175bec245aef54f` reproduced ordinary-appeal gate bypass and contradictory terminal Behavior Map contracts. Binding-specific appeal revalidation, real-CLI proof, and terminal GREEN supersessions close both findings in `evidence-4e5a0b1f6ef3510657697e37ba9ee3a5`; post-fix RCF/GitNexus evidence is `evidence-f381e3ffba2859148b09e29252626537`. The candidate is at the 700-net hard ceiling, and this final governing reconciliation intentionally precedes one exact-candidate source, gate, lead-review, and advisor pass.

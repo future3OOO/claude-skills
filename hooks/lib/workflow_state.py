@@ -1,7 +1,6 @@
 """Repository-scoped production workflow policy and transactional commands."""
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import subprocess
@@ -24,6 +23,7 @@ from ._workflow_db import (
 )
 from .repo_identity import RepoIdentity
 from .state_store import (
+    _active_candidate_tree,
     is_governance_path,
     is_reviewable_path,
     is_test_path,
@@ -167,7 +167,8 @@ def _allows_next(state: JsonObject, phase: str) -> bool:
         return (
             isinstance(review, dict)
             and review.get("source") in REVIEW_SOURCES
-            and review.get("status") == "commit-ready"
+            and review.get("status") in {"commit-ready", "fix-before-commit"}
+            and (review.get("status") == "commit-ready" or bool(review.get("intakeEvidence")))
             and review.get("findings") in {"none", "addressed"}
         )
     return False
@@ -186,7 +187,37 @@ def _next_incomplete_phase(state: JsonObject) -> str:
     )
 
 
-def _derive_next_action(state: JsonObject) -> str:
+def _derive_next_action(state: JsonObject, tdd_document: JsonObject | None = None) -> str:
+    finding_states = state.get("findingStates", [])
+    correction = [
+        entry for entry in finding_states
+        if isinstance(entry, dict) and entry.get("stage") in {"code-review", "final"}
+    ] if isinstance(finding_states, list) else []
+    if any(entry.get("appealStatus") == "disagreement" for entry in correction):
+        return "needs-human-owner-adjudication"
+    if state.get("finalReviewContextMismatchEvidence"):
+        return "re-consult-final-review"
+    if any(entry.get("status") == "pending" for entry in correction):
+        return "classify-current-findings"
+    accepted = any(
+        entry.get("status") == "accepted-for-proof"
+        or (entry.get("status") == "accepted-follow-up" and entry.get("material") is True)
+        for entry in correction
+    )
+    if accepted:
+        if isinstance(tdd_document, dict) and (
+            tdd_document.get("reassessmentPending") or tdd_document.get("postEditReassessment")
+        ):
+            return "reassess-behavior-map"
+        if state.get("tdd") == "in-progress":
+            return "run-mapped-tdd"
+        return "close-current-findings"
+    if isinstance(tdd_document, dict) and (
+        tdd_document.get("reassessmentPending") or tdd_document.get("postEditReassessment")
+    ):
+        return "reassess-behavior-map"
+    if any(entry.get("appealStatus") == "pending" for entry in correction):
+        return "appeal-final-review"
     phase = _next_incomplete_phase(state)
     if phase == "advisor-preflight":
         advisor = state.get("advisorPreflight")
@@ -204,11 +235,16 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
     if normalized == "unnamed-workflow":
         raise ValueError("workflow requires a non-empty slug")
     now = utc_timestamp()
+    head = _head_oid(identity)
+    if head is None:
+        raise WorkflowError("workflow begin requires HEAD^{commit}")
     state: JsonObject = {
         "schemaVersion": 1,
         "repo": identity.as_dict(),
         "slug": normalized,
         "workflowId": uuid.uuid4().hex,
+        "passStartOid": head,
+        "activeCandidateTree": _active_candidate_tree(identity),
         "intent": intent,
         "phase": "intake",
         "nextAction": "repo-context-forge",
@@ -295,8 +331,6 @@ def _binding_drift(
         "review": ("reviewManifestId", MANIFEST_MISSING, MANIFEST_STALE),
         "quality-gate": ("qualityGateManifestId", QUALITY_GATE_MISSING, QUALITY_GATE_STALE),
     }[binding]
-    if binding == "review" and isinstance(head := state.get("reviewHead"), str):
-        if _head_oid(identity) != head: return f"{stale}: HEAD changed after lead review"
     return _tree_drift(
         identity, state, field=field, missing=missing, stale=stale, transaction=transaction,
     )
@@ -353,6 +387,22 @@ def _apply_step(
     return manifest
 
 
+def appeal_revalidation_open(
+    identity: RepoIdentity, state: JsonObject, phase: str, *,
+    quality_gate: bool = False, transaction: LedgerMutation | None = None,
+) -> bool:
+    if state.get("nextAction") != "appeal-final-review":
+        return False
+    if phase == "verification":
+        bindings = ("quality-gate",) if quality_gate else ("review", "quality-gate")
+        incomplete = not state.get("qualityGateEvidence") if quality_gate else state.get("verification") != "passed"
+        return incomplete or any(_binding_drift(identity, state, binding, transaction) for binding in bindings)
+    review = state.get("codeReview")
+    return phase == "code-review" and (
+        not isinstance(review, dict) or review.get("status") not in {"passed", "not-required"}
+        or bool(_binding_drift(identity, state, "review", transaction)))
+
+
 def set_phase(
     identity: RepoIdentity,
     phase: str,
@@ -365,6 +415,8 @@ def set_phase(
     with mutation(identity) as transaction:
         state = _require_state(transaction.state)
         _require_instance(state, slug, workflow_id)
+        if phase == "code-review" and not appeal_revalidation_open(identity, state, phase, transaction=transaction) and (blockers := _transaction_correction_blockers(transaction, state)):
+            raise WorkflowError("correction batch remains open: " + "; ".join(blockers))
         manifest = _apply_step(identity, state, phase, status, findings)
         return _commit(
             transaction,
@@ -518,7 +570,7 @@ def commit_tdd(
         else:
             state["tdd"] = action
             state["phase"] = "tdd"
-            state["nextAction"] = _derive_next_action(state)
+            state["nextAction"] = _derive_next_action(state, summary_doc)
         return _commit(transaction, state, f"tdd-{action}", evidence=writes), evidence_id
 
 
@@ -542,13 +594,12 @@ def annotate_tdd_evidence(
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
         write = evidence_write(str(state["workflowId"]), "tdd", summary_doc)
         state["tddEvidence"] = write.evidence_id
+        state["nextAction"] = _derive_next_action(state, summary_doc)
         return _commit(transaction, state, "tdd-annotated", evidence=[write]), write.evidence_id
 
 
-def _candidate_tree(identity: RepoIdentity, manifest: dict[str, str] | None = None) -> str:
-    payload = json.dumps(manifest if manifest is not None else tree_manifest(identity),
-                         sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+def _candidate_tree(identity: RepoIdentity) -> str:
+    return _active_candidate_tree(identity)
 
 
 def _validate_disposition_context(identity: RepoIdentity, state: JsonObject, document: JsonObject) -> tuple[dict[str, str], str | None]:
@@ -556,16 +607,17 @@ def _validate_disposition_context(identity: RepoIdentity, state: JsonObject, doc
     if not isinstance(context, dict) or context.get("workflowId") != state.get("workflowId"):
         raise WorkflowError("disposition context does not match the active workflow instance")
     manifest = tree_manifest(identity)
-    if context.get("candidateTree") != _candidate_tree(identity, manifest):
+    if context.get("candidateTree") != _candidate_tree(identity):
         raise WorkflowError("disposition candidateTree does not match the current reviewable tree")
-    expected_head, head = context.get("prHead"), _head_oid(identity)
-    if expected_head is not None and head != expected_head:
-        raise WorkflowError("disposition prHead does not match the current HEAD")
-    return manifest, head
+    return manifest, _head_oid(identity)
 
 
 def _finding_unresolved(entry: JsonObject) -> bool:
-    return entry.get("status") in {"pending", "accepted-for-proof"} or (entry.get("status") == "accepted-follow-up" and entry.get("material") is True)
+    return (
+        entry.get("status") in {"pending", "accepted-for-proof"}
+        or (entry.get("status") == "accepted-follow-up" and entry.get("material") is True)
+        or entry.get("appealStatus") in {"pending", "disagreement"}
+    )
 
 
 def commit_review(
@@ -575,7 +627,10 @@ def commit_review(
     """Commit immutable review intake or an appended disposition."""
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
-        _require_predecessor(state, "code-review")
+        if summary_doc.get("kind") == "intake":
+            if not appeal_revalidation_open(identity, state, "code-review", transaction=transaction) and (blockers := _transaction_correction_blockers(transaction, state)):
+                raise WorkflowError("correction batch remains open: " + "; ".join(blockers))
+            _require_predecessor(state, "code-review")
         write = evidence_write(str(state["workflowId"]), "code-review", summary_doc)
         manifest: ManifestWrite | None = None
         if summary_doc.get("kind") == "intake":
@@ -600,12 +655,22 @@ def commit_review(
                 manifest = _apply_step(identity, state, "code-review", "passed", "none")
         else:
             review_manifest, review_head = _validate_disposition_context(identity, state, summary_doc)
+            summary_doc = _linked_disposition_document(state, summary_doc, "code-review", "code-review")
+            write = evidence_write(str(state["workflowId"]), "code-review", summary_doc)
             intake_id = str(summary_doc["intakeEvidenceId"])
             unresolved = _apply_finding_dispositions(
                 transaction, state, intake_id, summary_doc["dispositions"], "code-review", "code-review",
+                write.evidence_id,
             )
             status, findings = ("pending", "pending") if unresolved else ("passed", "addressed")
-            manifest = _apply_step(identity, state, "code-review", status, findings, review_manifest, review_head)
+            if _allows_next(state, "verification"):
+                manifest = _apply_step(
+                    identity, state, "code-review", status, findings, review_manifest, review_head,
+                )
+            else:
+                status, findings = "pending", "pending"
+                state["codeReview"] = {"status": status, "findings": findings}
+                state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
         state["codeReviewEvidence"] = write.evidence_id
         state["nextAction"] = _derive_next_action(state)
         return _commit(transaction, state, "record-code-review", evidence=[write],
@@ -682,10 +747,13 @@ def commit_verification(
     expected_evidence_id: str | None,
     quality_gate_tree: dict[str, str] | None,
     quality_gate_green: bool,
+    quality_gate_run: bool,
 ) -> tuple[JsonObject, str]:
     """Commit typed verification, preserving or replacing its final-tree binding."""
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
+        if not appeal_revalidation_open(identity, state, "verification", quality_gate=quality_gate_run, transaction=transaction) and (blockers := _transaction_correction_blockers(transaction, state)):
+            raise WorkflowError("correction batch remains open: " + "; ".join(blockers))
         if state.get("verificationLatestEvidence") != expected_evidence_id:
             raise WorkflowError("verification evidence changed during the run; re-read and re-run the command")
         prior_manifest_id = state.get("qualityGateManifestId")
@@ -734,6 +802,23 @@ def evidence_record(identity: RepoIdentity, evidence_id: str) -> JsonObject | No
     return read_evidence(identity, evidence_id)
 
 
+def _register_finding_intake(
+    state: JsonObject, intake_id: str, findings: list[JsonObject], stage: str, source: str,
+) -> None:
+    finding_states = state.setdefault("findingStates", [])
+    if not isinstance(finding_states, list):
+        raise WorkflowError("recorded finding states are corrupt")
+    finding_states.extend({
+        "producer": source,
+        "stage": stage,
+        "intakeEvidenceId": intake_id,
+        "findingId": item["id"],
+        "material": item["material"],
+        "kind": item["kind"],
+        "status": "pending",
+    } for item in findings)
+
+
 def record_advisor_result(
     identity: RepoIdentity,
     slug: str,
@@ -751,29 +836,17 @@ def record_advisor_result(
         raise ValueError(f"unsupported reviewer source: {source}")
     if findings not in {None, "pending"}:
         raise ValueError("advisor-result records findings=pending; disposition findings with advisor-disposition")
+    if stage == "final" and verdict == "context-mismatch" and intake is None:
+        raise ValueError("final context-mismatch requires the advisor finding envelope")
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
         writes: list[EvidenceWrite] = []
         intake_write: EvidenceWrite | None = None
-        if intake is not None:
-            if any(intake.get(field) != expected for field, expected in (
-                ("workflowId", state["workflowId"]), ("stage", stage), ("producer", source), ("verdict", verdict),
-            )):
-                raise WorkflowError("advisor finding intake does not match this workflow result")
-            intake_write = evidence_write(str(state["workflowId"]), f"finding-intake-{stage}", intake)
-            writes.append(intake_write)
-            finding_states = state.setdefault("findingStates", [])
-            if not isinstance(finding_states, list):
-                raise WorkflowError("recorded finding states are corrupt")
-            finding_states.extend({
-                "producer": source,
-                "stage": stage,
-                "intakeEvidenceId": intake_write.evidence_id,
-                "findingId": item["id"],
-                "material": item["material"],
-                "kind": item["kind"],
-                "status": "pending",
-            } for item in intake["findings"])
+        if intake is not None and any(intake.get(field) != expected for field, expected in (
+            ("workflowId", state["workflowId"]), ("stage", stage),
+            ("producer", source), ("verdict", verdict),
+        )):
+            raise WorkflowError("advisor finding intake does not match this workflow result")
         replayed_design = False
         if design is not None:
             candidate = evidence_write(str(state["workflowId"]), "governed-design", design)
@@ -808,6 +881,14 @@ def record_advisor_result(
             if verdict == "unavailable" and not measured_reason:
                 raise ValueError("preflight unavailable requires --reason")
             recorded_reason = measured_reason if verdict == "unavailable" else None
+            if intake is not None:
+                intake_write = evidence_write(
+                    str(state["workflowId"]), "finding-intake-preflight", intake,
+                )
+                writes.append(intake_write)
+                _register_finding_intake(
+                    state, intake_write.evidence_id, intake["findings"], stage, source,
+                )
             current = state.get("advisorPreflight")
             if intake is None and replayed_design and isinstance(current, dict) and all((
                 current.get("findings") == "pending",
@@ -827,18 +908,89 @@ def record_advisor_result(
             state["phase"] = "advisor-preflight"
         elif stage == "final":
             state.pop("paused", None)
-            _require_predecessor(state, "final-review")
-            if verdict not in FINAL_VERDICTS:
-                raise ValueError(f"unsupported final-review verdict: {verdict}")
+            if state.get("nextAction") != "appeal-final-review":
+                _require_predecessor(state, "final-review")
             if drift := _binding_drift(identity, state, "review", transaction):
                 raise WorkflowError(f"the reviewed tree changed after the lead review: {drift}")
             if drift := _binding_drift(identity, state, "quality-gate", transaction):
                 raise WorkflowError(f"the quality gate did not cover the current tree: {drift}")
-            state["finalReview"] = {
-                "source": source, "status": verdict, "findings": "pending",
-                **({"intakeEvidence": intake_write.evidence_id} if intake_write is not None else {}),
-            }
-            state["phase"] = "final-review"
+            if verdict not in FINAL_VERDICTS:
+                raise ValueError(f"unsupported final-review verdict: {verdict}")
+            if verdict == "context-mismatch":
+                if intake is not None:
+                    mismatch = evidence_write(
+                        str(state["workflowId"]), "finding-context-mismatch-final", intake,
+                    )
+                    writes.append(mismatch)
+                    state["finalReviewContextMismatchEvidence"] = mismatch.evidence_id
+            else:
+                record = state.get("finalReview")
+                finding_states = state.setdefault("findingStates", [])
+                if not isinstance(finding_states, list):
+                    raise WorkflowError("recorded finding states are corrupt")
+                rejected = [
+                    entry for entry in finding_states
+                    if isinstance(entry, dict)
+                    and entry.get("stage") == "final"
+                    and entry.get("producer") == source
+                    and entry.get("status") == "rejected-with-evidence"
+                    and entry.get("appealStatus") == "pending"
+                ]
+                if state.get("finalAppealConsumed") and (
+                    rejected or isinstance(record, dict) and record.get("status") != "pending"
+                ):
+                    raise WorkflowError("final appeal already consumed")
+                if rejected:
+                    if intake is None:
+                        raise WorkflowError("final appeal requires the advisor finding envelope")
+                    appeal_write = evidence_write(str(state["workflowId"]), "finding-appeal-final", intake)
+                    writes.append(appeal_write)
+                    responses = {str(item["id"]): item for item in intake["findings"]}
+                    rejected_ids = {str(entry["findingId"]) for entry in rejected}
+                    for entry in rejected:
+                        response = responses.get(str(entry["findingId"]))
+                        entry["appealStatus"] = "disagreement" if response is not None and response.get("material") is True else "conceded"
+                        entry["appealEvidenceId"] = appeal_write.evidence_id
+                    new_findings = [item for item in intake["findings"] if str(item["id"]) not in rejected_ids]
+                    if new_findings:
+                        derived_intake: JsonObject = {
+                            "schemaVersion": 1, "workflowId": state["workflowId"], "stage": stage,
+                            "producer": source, "verdict": verdict, "findings": new_findings,
+                            "sourceAppealEvidenceId": appeal_write.evidence_id,
+                        }
+                        intake_write = evidence_write(str(state["workflowId"]), "finding-intake-final", derived_intake)
+                        writes.append(intake_write)
+                        _register_finding_intake(state, intake_write.evidence_id, new_findings, stage, source)
+                    if not isinstance(record, dict):
+                        raise WorkflowError("final appeal review state is corrupt")
+                    original = transaction.evidence(str(rejected[0]["intakeEvidenceId"]))
+                    if not isinstance(original, dict): raise WorkflowError("final appeal intake is corrupt")
+                    record.update({"source": source, "status": original["verdict"], "intakeEvidence": rejected[0]["intakeEvidenceId"],
+                                   "appealEvidence": appeal_write.evidence_id, "appealVerdict": verdict})
+                    if intake_write is not None:
+                        record["intakeEvidence"] = intake_write.evidence_id
+                    record["findings"] = "pending" if any(
+                        isinstance(entry, dict) and entry.get("stage") == "final"
+                        and entry.get("producer") == source and _finding_unresolved(entry)
+                        for entry in finding_states
+                    ) else "addressed"
+                    state["finalAppealConsumed"] = True
+                else:
+                    if intake is not None:
+                        intake_write = evidence_write(
+                            str(state["workflowId"]), "finding-intake-final", intake,
+                        )
+                        writes.append(intake_write)
+                        _register_finding_intake(
+                            state, intake_write.evidence_id, intake["findings"], stage, source,
+                        )
+                    state.pop("finalAppealConsumed", None)
+                    state["finalReview"] = {
+                        "source": source, "status": verdict, "findings": "pending",
+                        **({"intakeEvidence": intake_write.evidence_id} if intake_write is not None else {}),
+                    }
+                state.pop("finalReviewContextMismatchEvidence", None)
+                state["phase"] = "final-review"
         else:
             raise ValueError(f"unsupported advisor stage: {stage}")
         state["nextAction"] = _derive_next_action(state)
@@ -917,7 +1069,7 @@ def _behavioral_finding_closure(
     expected = _validate_finding_reservation(reservation, linked, str(finding_id))
     not_green = sorted(
         identifier for identifier, entry in linked.items()
-        if entry.get("status") != "green"
+        if identifier in behavior_map.unresolved(items) or entry.get("status") not in {"green", "superseded"}
         and not (entry.get("kind") == "preservation" and entry.get("status") == "already-satisfied")
     )
     if not_green:
@@ -927,25 +1079,19 @@ def _behavioral_finding_closure(
         raise WorkflowError("behavioral fixed requires post-GREEN reassessment")
 
 
-def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject) -> list[str]:
-    states = state.get("findingStates", [])
-    reservations = state.get("findingReservations", [])
+def _finding_state_blockers(state: JsonObject) -> list[str]:
+    states, reservations = state.get("findingStates", []), state.get("findingReservations", [])
     if not isinstance(states, list) or not isinstance(reservations, list):
         return ["finding lifecycle evidence is corrupt"]
-    for reservation in reservations:
-        if isinstance(reservation, dict) and reservation.get("fixed"):
-            _behavioral_finding_closure(transaction, state, reservation)
-    unresolved = [
-        f"{entry.get('stage')}:{entry.get('findingId')}"
-        for entry in states
-        if isinstance(entry, dict) and _finding_unresolved(entry)
-    ]
-    dangling = [
-        f"{entry.get('stage')}:{entry.get('findingId')}"
-        for entry in reservations
-        if isinstance(entry, dict) and (not entry.get("consumed") or not entry.get("fixed"))
-    ]
-    result: list[str] = []
+    unresolved = [f"{entry.get('stage')}:{entry.get('findingId')}" for entry in states
+                  if isinstance(entry, dict) and _finding_unresolved(entry)]
+    dangling = [f"{entry.get('stage')}:{entry.get('findingId')}" for entry in reservations
+                if isinstance(entry, dict) and (not entry.get("consumed") or not entry.get("fixed"))]
+    result = (["needs-human-owner-adjudication"] if any(
+        isinstance(entry, dict) and entry.get("appealStatus") == "disagreement" for entry in states
+    ) else [])
+    if state.get("finalReviewContextMismatchEvidence"):
+        result.append("final-review context mismatch requires re-consultation")
     if unresolved:
         result.append("pending findings: " + ", ".join(unresolved))
     if dangling:
@@ -953,9 +1099,71 @@ def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject)
     return result
 
 
+def correction_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
+    tdd = evidence_document(identity, state.get("tddEvidence"))
+    preflight = evidence_document(identity, state.get("preflightEvidence"))
+    return behavior_map.closure_blockers(tdd, preflight) + _finding_state_blockers(state)
+
+
+def _transaction_correction_blockers(transaction: LedgerMutation, state: JsonObject) -> list[str]:
+    return behavior_map.closure_blockers(
+        transaction.evidence(state.get("tddEvidence")),
+        transaction.evidence(state.get("preflightEvidence")),
+    ) + _finding_state_blockers(state)
+
+
+def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject) -> list[str]:
+    reservations = state.get("findingReservations", [])
+    if not isinstance(reservations, list):
+        return ["finding lifecycle evidence is corrupt"]
+    for reservation in reservations:
+        if isinstance(reservation, dict) and reservation.get("fixed"):
+            _behavioral_finding_closure(transaction, state, reservation)
+    return _finding_state_blockers(state)
+
+
+def _disposition_evidence(
+    state: JsonObject, finding_state: JsonObject, stage: str, producer: str,
+) -> str | None:
+    current = finding_state.get("dispositionEvidenceId")
+    if isinstance(current, str) and current:
+        return current
+    if producer == "code-review":
+        legacy = state.get("codeReviewEvidence")
+    else:
+        field = "advisorPreflight" if stage == "preflight" else "finalReview"
+        record = state.get(field)
+        legacy = record.get("dispositionEvidence") if isinstance(record, dict) else None
+    return legacy if isinstance(legacy, str) and legacy else None
+
+
+def _linked_disposition_document(
+    state: JsonObject, document: JsonObject, stage: str, producer: str,
+) -> JsonObject:
+    intake_id = str(document["intakeEvidenceId"])
+    states = state.get("findingStates", [])
+    if not isinstance(states, list):
+        raise WorkflowError("recorded finding states are corrupt")
+    prior = {
+        evidence_id
+        for disposition in document["dispositions"]
+        for finding_state in states
+        if isinstance(finding_state, dict)
+        and finding_state.get("intakeEvidenceId") == intake_id
+        and finding_state.get("findingId") == disposition["finding_id"]
+        and finding_state.get("status") != "pending"
+        and (evidence_id := _disposition_evidence(state, finding_state, stage, producer))
+    }
+    linked = json.loads(json.dumps(document))
+    if prior:
+        linked["supersedesEvidenceIds"] = sorted(prior)
+    return linked
+
+
 def _apply_finding_dispositions(
     transaction: LedgerMutation, state: JsonObject, intake_id: str,
     dispositions: list[JsonObject], stage: str, producer: str,
+    disposition_evidence_id: str,
 ) -> bool:
     intake = transaction.evidence(intake_id)
     if not isinstance(intake, dict) or any(intake.get(field) != expected for field, expected in (
@@ -963,11 +1171,23 @@ def _apply_finding_dispositions(
     )):
         raise WorkflowError("disposition references an unrecorded, stale, or foreign finding intake")
     findings = {str(item["id"]): item for item in intake.get("findings", []) if isinstance(item, dict)}
-    if {str(item["finding_id"]) for item in dispositions} != set(findings):
-        raise WorkflowError("dispositions must reference every finding in the intake exactly once")
+    selected = {str(item["finding_id"]) for item in dispositions}
+    if not selected or not selected <= set(findings):
+        raise WorkflowError("dispositions reference a finding outside the immutable intake")
     reservations, states = state.setdefault("findingReservations", []), state.get("findingStates", [])
     if not isinstance(reservations, list) or not isinstance(states, list):
         raise WorkflowError("recorded finding lifecycle is corrupt")
+    intake_states = {
+        str(entry["findingId"]): entry
+        for entry in states
+        if isinstance(entry, dict) and entry.get("intakeEvidenceId") == intake_id
+    }
+    if set(intake_states) != set(findings):
+        raise WorkflowError("recorded finding lifecycle does not match immutable intake")
+    pending = {identifier for identifier, entry in intake_states.items() if entry.get("status") == "pending"}
+    if pending:
+        if pending != set(findings) or selected != set(findings):
+            raise WorkflowError("initial dispositions must reference every finding in the intake exactly once")
     for disposition in dispositions:
         identifier, status = str(disposition["finding_id"]), str(disposition["status"])
         kind = str(disposition["kind"])
@@ -979,9 +1199,9 @@ def _apply_finding_dispositions(
         current = finding_state.get("status")
         if kind != findings[identifier].get("kind"):
             raise WorkflowError(f"finding {identifier} disposition kind differs from immutable intake")
+        if status == current:
+            raise WorkflowError(f"finding {identifier} disposition does not change effective state")
         if current in {"fixed", "rejected-with-evidence", "report-only"}:
-            if status == current:
-                continue
             raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
         reservation = next((entry for entry in reservations if isinstance(entry, dict)
                             and entry.get("intakeEvidenceId") == intake_id
@@ -1002,7 +1222,24 @@ def _apply_finding_dispositions(
                 raise WorkflowError(f"behavioral fixed requires prior accepted-for-proof for {identifier}")
             _behavioral_finding_closure(transaction, state, reservation)
             reservation["fixed"] = True
+        if current != "pending":
+            prior = _disposition_evidence(state, finding_state, stage, producer)
+            if prior is None:
+                raise WorkflowError(f"finding {identifier} has no effective disposition evidence")
+            history = finding_state.setdefault("dispositionHistory", [])
+            if not isinstance(history, list):
+                raise WorkflowError(f"finding {identifier} disposition history is corrupt")
+            history.append({
+                "evidenceId": prior,
+                "status": current,
+                "supersededBy": disposition_evidence_id,
+            })
         finding_state["status"] = status
+        finding_state["dispositionEvidenceId"] = disposition_evidence_id
+        if stage == "final" and status == "rejected-with-evidence":
+            finding_state["appealStatus"] = (
+                "disagreement" if state.get("finalAppealConsumed") else "pending"
+            )
     return any(_finding_unresolved(entry) for entry in states if isinstance(entry, dict) and entry.get("stage") == stage and entry.get("producer") == producer)
 
 
@@ -1035,29 +1272,43 @@ def advisor_disposition(
             and record.get("source") in REVIEW_SOURCES
             and (record.get("status") == "completed" if stage == "preflight" else record.get("status") in FINAL_VERDICTS)
         )
-        if not recorded:
+        source = record.get("source") if isinstance(record, dict) else None
+        historical = False
+        if not recorded and stage == "final" and isinstance(document, dict):
+            intake = transaction.evidence(document.get("intakeEvidenceId"))
+            historical = isinstance(intake, dict) and all((
+                intake.get("workflowId") == state.get("workflowId"),
+                intake.get("stage") == stage,
+                intake.get("producer") in REVIEW_SOURCES,
+            ))
+            source = intake.get("producer") if historical else None
+        if not recorded and not historical:
             raise WorkflowError("advisor disposition cannot create a result; record the consult first")
+        writes: list[EvidenceWrite] = []
         if document is not None:
             _validate_disposition_context(identity, state, document)
-        if document is not None and "intakeEvidenceId" in document:
-            intake_id = str(document["intakeEvidenceId"])
-            _apply_finding_dispositions(
-                transaction, state, intake_id, document["dispositions"], stage, str(record["source"]),
-            )
+            if "intakeEvidenceId" in document:
+                document = _linked_disposition_document(state, document, stage, str(source))
+            write = evidence_write(str(state["workflowId"]), f"advisor-disposition-{stage}", document)
+            writes.append(write)
+            if "intakeEvidenceId" in document:
+                intake_id = str(document["intakeEvidenceId"])
+                _apply_finding_dispositions(
+                    transaction, state, intake_id, document["dispositions"], stage,
+                    str(source), write.evidence_id,
+                )
         states = state.get("findingStates", [])
         if not isinstance(states, list):
             raise WorkflowError("recorded finding states are corrupt")
         unresolved = any(isinstance(entry, dict) and entry.get("stage") == stage and
-                         entry.get("producer") == record["source"] and _finding_unresolved(entry) and (stage != "preflight" or entry.get("status") != "accepted-for-proof") for entry in states)
+                         entry.get("producer") == source and _finding_unresolved(entry) and (stage != "preflight" or entry.get("status") != "accepted-for-proof") for entry in states)
         if findings == "none" and unresolved:
             raise WorkflowError("findings none conflicts with an undispositioned finding intake")
-        writes: list[EvidenceWrite] = []
-        record["findings"] = "pending" if unresolved else findings
-        if document is not None:
-            write = evidence_write(str(state["workflowId"]), f"advisor-disposition-{stage}", document)
-            writes.append(write)
-            record["dispositionEvidence"] = write.evidence_id
-        state["phase"] = "advisor-preflight" if stage == "preflight" else "final-review"
+        if not historical:
+            record["findings"] = "pending" if unresolved else findings
+            if document is not None:
+                record["dispositionEvidence"] = write.evidence_id
+            state["phase"] = "advisor-preflight" if stage == "preflight" else "final-review"
         state["nextAction"] = _derive_next_action(state)
         return _commit(transaction, state, f"advisor-{stage}-disposition", evidence=writes)
 
@@ -1118,6 +1369,7 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
     )
     missing = [name for name, ready in requirements if not ready]
     if phase == "final-review":
+        missing.extend(() if state.get("nextAction") in ("appeal-final-review", "re-consult-final-review") else correction_blockers(identity, state))
         if drift := _binding_drift(identity, state, "review"):
             missing.append(drift)
         if drift := _binding_drift(identity, state, "quality-gate"):
@@ -1168,6 +1420,7 @@ def _reset_downstream(state: JsonObject) -> None:
     _clear_verification(state)
     state["codeReview"] = {"status": "pending", "findings": "pending"}
     state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
+    state.pop("finalReviewContextMismatchEvidence", None)
     state["nextAction"] = _derive_next_action(state)
 
 
@@ -1215,7 +1468,7 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
     return not missing, missing
 
 
-def public_status(state: JsonObject) -> JsonObject:
+def public_status(state: JsonObject, identity: RepoIdentity | None = None) -> JsonObject:
     """The schemaVersion 1 status projection.
 
     A Repo Context Forge pass is only as good as its producer evidence, so a stored
@@ -1232,6 +1485,7 @@ def public_status(state: JsonObject) -> JsonObject:
     stored = state.get("repoContextForge")
     return {
         **state,
+        **({"activeCandidateTree": _active_candidate_tree(identity)} if identity is not None else {}),
         "repoContextForge": stored if ready or stored != "passed" else "pending",
         "gitnexus": "passed" if ready else "pending",
     }

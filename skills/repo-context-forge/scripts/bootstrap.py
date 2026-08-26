@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import _active_candidate_tree  # noqa: E402
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     NO_INSTANCE_ID,
@@ -117,27 +118,13 @@ def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> tuple[str
 
 
 def _worktree_snapshot(root: Path) -> tuple[str, str]:
-    """The worktree content as one tree OID in the repository's object store.
-
-    Captured the way the quality gate captures its candidate — a temporary
-    index seeded from HEAD with everything re-added — so equal content yields
-    the equal OID the gate's binding check later resolves. Returns the OID and
-    the failure reason ("" on success).
-    """
-    handle = tempfile.NamedTemporaryFile(prefix="repo-context-forge-index-", delete=False)
-    handle.close()
-    env = {"GIT_INDEX_FILE": handle.name}
+    """The canonical candidate tree and its measured failure, if any."""
     try:
-        _, missing_head = _git(root, "rev-parse", "--verify", "HEAD^{commit}")
-        seed = ["read-tree", "--empty"] if missing_head else ["read-tree", "HEAD"]
-        for args in (seed, ["add", "-A", "."]):
-            _, failure = _git(root, *args, env=env)
-            if failure:
-                return "", f"git {args[0]}: {failure}"
-        tree, failure = _git(root, "write-tree", env=env)
-        return ("", f"git write-tree: {failure}") if failure else (tree.strip(), "")
-    finally:
-        Path(handle.name).unlink(missing_ok=True)
+        return _active_candidate_tree(resolve_repo_identity(root)), ""
+    except (OSError, RepoIdentityError) as exc:
+        reason = str(exc)
+        prefix = "candidate capture failed at "
+        return "", reason[len(prefix):] if reason.startswith(prefix) else reason
 
 
 def _same_content(source: Path, target: Path) -> bool:

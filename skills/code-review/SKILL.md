@@ -77,7 +77,7 @@ Record the intake first. When it contains findings, capture the returned
 lead dispositions:
 
 ```json
-{"context":{"workflowId":"<active-workflowId>","candidateTree":"<64-hex tree digest>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"seam":"<real Seam>","reproduction":{"command":"...","result":"..."}},"materialConsequence":{"claim":"...","command":"...","result":"..."},"reservedBehaviorIds":["BM_SPEC_1","BM_SPEC_1_PRESERVE"],"seam":"<real Seam>","preservationObligations":["..."]}]}
+{"context":{"workflowId":"<active-workflowId>","candidateTree":"<40-hex Git tree>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"seam":"<real Seam>","reproduction":{"command":"...","result":"..."}},"materialConsequence":{"claim":"...","command":"...","result":"..."},"reservedBehaviorIds":["BM_SPEC_1","BM_SPEC_1_PRESERVE"],"seam":"<real Seam>","preservationObligations":["..."]}]}
 ```
 
 Print the canonical disposition and governed-design shape table, generated from
@@ -97,6 +97,10 @@ otherwise rejection requires zero occurrence on a complete domain. `report-only`
 resolves completion without authorizing an edit and is terminal. A behavioral
 finding may reserve exact Behavior Map IDs with `accepted-for-proof`;
 that disposition also names its real Seam and preservation obligations, and
-`fixed` then requires those linked items GREEN and reassessed. The summary is
-continuity state, not a certificate or Git authorization. Material unresolved
-findings leave code review pending.
+`fixed` then requires those linked items GREEN and reassessed. The first
+disposition classifies the complete intake; later closure names only changed
+findings and links the prior effective evidence. While that correction batch is
+open, generic verification, the typed gate, and a new lead-review intake refuse;
+targeted TDD and changed-Seam probes remain available. The summary is continuity
+state, not a certificate or Git authorization. Material unresolved findings
+leave code review pending.

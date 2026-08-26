@@ -2,7 +2,6 @@
 """Recorder validation tests; these inputs do not prove that a review ran."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -18,9 +17,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.tests.support import build_no_change_document, record_context_forge  # noqa: E402
-from hooks.lib._workflow_db import read_manifest  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import tree_manifest  # noqa: E402
+from hooks.lib.state_store import _active_candidate_tree  # noqa: E402
 from hooks.lib.workflow_state import advisor_disposition, read_workflow, record_advisor_result, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
@@ -114,11 +112,10 @@ class ReviewSummaryTests(unittest.TestCase):
         return len(json.loads(result.stdout)["events"])
 
     def disposition_context(self) -> dict[str, str]:
-        payload = json.dumps(tree_manifest(resolve_repo_identity(self.repo)),
-                             sort_keys=True, separators=(",", ":")).encode()
+        candidate = _active_candidate_tree(resolve_repo_identity(self.repo))
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo,
                                        env=self.env, text=True).strip()
-        return {"workflowId": self.wid, "candidateTree": hashlib.sha256(payload).hexdigest(), "prHead": head}
+        return {"workflowId": self.wid, "candidateTree": candidate, "prHead": head}
 
     def review_finding(self) -> dict[str, object]:
         return {"id": "SPEC-1", "axis": "Spec", "severity": "high", "material": True,
@@ -169,8 +166,8 @@ class ReviewSummaryTests(unittest.TestCase):
         intake_id = json.loads(intake.stdout)["summaryId"]
         path.write_text(json.dumps({"findings": []}), encoding="utf-8")
         empty = self.record_review(path, "empty-rerun")
-        self.assertEqual(json.loads(empty.stdout)["status"], "pending",
-                         "an empty rerun hid an earlier material finding")
+        self.assertEqual(empty.returncode, 2, "an open correction admitted another lead review")
+        self.assertIn("correction batch remains open", empty.stderr)
 
         before_events = self.event_count()
         for invalid in (
@@ -185,10 +182,6 @@ class ReviewSummaryTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 2, "a disposition restated immutable intake")
             self.assertEqual(self.event_count(), before_events, "a refused disposition appended an event")
 
-        second = {**finding, "id": "SPEC-2", "claim": "second wrong value"}
-        path.write_text(json.dumps({"findings": [second]}), encoding="utf-8")
-        second_id = json.loads(self.record_review(path, "fresh-review-2").stdout)["summaryId"]
-
         def disposition(intake: str, identifier: str) -> subprocess.CompletedProcess[str]:
             path.write_text(json.dumps(self.disposition_document(intake, identifier, "fixed")), encoding="utf-8")
             return self.record_review(path, "disposition")
@@ -197,11 +190,58 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         self.assertNotIn("findings", self.evidence(json.loads(recorded.stdout)["summaryId"]),
                          "a disposition rewrote immutable finding intake")
-        self.assertEqual(json.loads(recorded.stdout)["status"], "pending",
-                         "disposing an older intake hid a newer material finding")
+        self.assertEqual(json.loads(recorded.stdout)["status"], "passed")
+        second = {**finding, "id": "SPEC-2", "claim": "second wrong value"}
+        path.write_text(json.dumps({"findings": [second]}), encoding="utf-8")
+        second_id = json.loads(self.record_review(path, "fresh-review-2").stdout)["summaryId"]
         final = disposition(second_id, "SPEC-2")
         self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
         self.assertEqual(json.loads(final.stdout)["status"], "passed")
+
+    def test_later_disposition_closes_only_changed_findings_and_links_history(self) -> None:
+        marker = "FINDING_CLOSURE_OVERWROTE_HISTORY"
+        path = self.tmp / "partial-finding-closure.json"
+        first = self.review_finding()
+        second = {**first, "id": "SPEC-2", "material": False, "claim": "minor follow-up"}
+        path.write_text(json.dumps({"findings": [first, second]}), encoding="utf-8")
+        intake_id = json.loads(self.record_review(path, "partial-intake").stdout)["summaryId"]
+
+        initial = self.disposition_document(intake_id, "SPEC-1", "accepted-follow-up", count=1)
+        follow_up = self.disposition_document(intake_id, "SPEC-2", "report-only", count=1)["dispositions"][0]
+        follow_up["materialConsequence"]["result"] = "false"
+        initial["dispositions"].append(follow_up)
+        path.write_text(json.dumps(initial), encoding="utf-8")
+        classified = self.record_review(path, "partial-initial")
+        self.assertEqual(classified.returncode, 0, marker + classified.stdout + classified.stderr)
+        first_disposition_id = json.loads(classified.stdout)["summaryId"]
+        self.assertEqual(json.loads(classified.stdout)["status"], "pending", marker)
+
+        closure = self.disposition_document(intake_id, "SPEC-1", "report-only")
+        closure["dispositions"][0]["materialConsequence"]["result"] = "false"
+        path.write_text(json.dumps(closure), encoding="utf-8")
+        closed = self.record_review(path, "partial-closure")
+        self.assertEqual(closed.returncode, 0, marker + closed.stdout + closed.stderr)
+        closed_payload = json.loads(closed.stdout)
+        self.assertEqual(closed_payload["status"], "passed", marker)
+        second_disposition_id = closed_payload["summaryId"]
+
+        states = {
+            entry["findingId"]: entry
+            for entry in read_workflow(resolve_repo_identity(self.repo))["findingStates"]
+        }
+        self.assertEqual(states["SPEC-2"]["status"], "report-only", marker)
+        self.assertEqual(states["SPEC-1"]["status"], "report-only", marker)
+        self.assertEqual(states["SPEC-1"]["dispositionEvidenceId"], second_disposition_id, marker)
+        self.assertEqual(states["SPEC-1"]["dispositionHistory"], [{
+            "evidenceId": first_disposition_id,
+            "status": "accepted-follow-up",
+            "supersededBy": second_disposition_id,
+        }], marker)
+        self.assertEqual(
+            self.evidence(second_disposition_id)["supersedesEvidenceIds"],
+            [first_disposition_id],
+            marker,
+        )
 
     def test_legacy_empty_document_is_a_no_finding_intake(self) -> None:
         path = self.tmp / "legacy-empty.json"
@@ -221,7 +261,8 @@ class ReviewSummaryTests(unittest.TestCase):
             intake_id = json.loads(self.record_review(path, f"{identifier}-intake").stdout)["summaryId"]
             if not material:
                 path.write_text(json.dumps({"findings": []}), encoding="utf-8")
-                self.assertEqual(json.loads(self.record_review(path, "nonmaterial-empty").stdout)["status"], "pending", "NONMATERIAL_INTAKE_BYPASSED")
+                refused = self.record_review(path, "nonmaterial-empty")
+                self.assertEqual(refused.returncode, 2, "NONMATERIAL_INTAKE_BYPASSED")
             path.write_text(json.dumps(self.disposition_document(
                 intake_id, identifier, "accepted-follow-up")), encoding="utf-8")
             status = json.loads(self.record_review(path, f"{identifier}-follow-up").stdout)["status"]
@@ -337,17 +378,15 @@ class ReviewSummaryTests(unittest.TestCase):
         refused = self.record_review(path, "incomplete-domain")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
         self.assertIn("complete domain", refused.stderr)
-        for field, value, diagnostic in (
-            ("candidateTree", "0" * 64, "candidateTree"),
-            ("prHead", "0" * 40, "prHead"),
-        ):
-            stale = self.disposition_document(intake_id, "SPEC-1", "report-only")
-            stale["dispositions"][0]["materialConsequence"]["result"] = "false"
-            stale["context"][field] = value
-            path.write_text(json.dumps(stale), encoding="utf-8")
-            refused = self.record_review(path, f"stale-{field}")
-            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-            self.assertIn(diagnostic, refused.stderr)
+        stale = self.disposition_document(intake_id, "SPEC-1", "report-only")
+        stale["dispositions"][0]["materialConsequence"]["result"] = "false"
+        stale["context"]["candidateTree"] = "0" * 40
+        path.write_text(json.dumps(stale), encoding="utf-8")
+        refused = self.record_review(path, "stale-candidate")
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("candidateTree", refused.stderr)
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "same tree"],
+                       cwd=self.repo, env=self.env, check=True)
         unlinked = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
         path.write_text(json.dumps(unlinked), encoding="utf-8")
         refused = self.record_review(path, "unlinked-proof")
@@ -373,32 +412,30 @@ class ReviewSummaryTests(unittest.TestCase):
         path = self.tmp / "race.json"
         path.write_text(json.dumps({"findings": [self.review_finding()]}), encoding="utf-8")
         intake = json.loads(self.record_review(path, "race-intake").stdout)["summaryId"]
-        validated = tree_manifest(resolve_repo_identity(self.repo))
-        document = self.disposition_document(intake, "SPEC-1", "fixed"); validated_head = document["context"]["prHead"]
+        document = self.disposition_document(intake, "SPEC-1", "fixed")
         path.write_text(json.dumps(document), encoding="utf-8")
+        before_events = self.event_count()
         process = subprocess.Popen([sys.executable, str(WORKFLOW), "record-review", "--slug", "review-summary",
             "--workflow-id", self.wid, "--resolved-model", "gpt-5", "--review-context-id", "race",
             "--input", str(path), "--repo", str(self.repo)], cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        saw_hash = mutated = saw_head = head_changed = False; deadline = time.monotonic() + 30
+        saw_hash = mutated = False
+        deadline = time.monotonic() + 30
         while process.poll() is None and time.monotonic() < deadline:
             try:
                 children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
                 commands = [Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ") for pid in children]
             except OSError:
                 continue
-            hashing = any(b"hash-object --no-filters" in command for command in commands); checking_head = any(b"rev-parse HEAD" in command for command in commands)
-            if hashing: saw_hash = True
-            elif saw_hash and not mutated: (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8"); mutated = True
-            if checking_head: saw_head = True
-            elif saw_head and not head_changed: subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "concurrent HEAD"], cwd=self.repo, env=self.env, check=True); head_changed = True; break
+            if any(b"hash-object --no-filters" in command for command in commands):
+                saw_hash = True
+            elif saw_hash and not mutated:
+                (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+                mutated = True
         stdout, stderr = process.communicate(timeout=30)
-        self.assertTrue(saw_hash and mutated and saw_head and head_changed, "did not control both validation gaps")
-        self.assertEqual(process.returncode, 0, stdout + stderr)
-        state = json.loads(self.run_script(WORKFLOW, "status").stdout); identity = resolve_repo_identity(self.repo); checkpoint = json.loads(self.run_script(WORKFLOW, "checkpoint", "--phase", "final-review").stdout)
-        bound, current = read_manifest(identity, state["reviewManifestId"]), tree_manifest(identity)
-        self.assertEqual((bound["app.py"], state["reviewHead"]), (validated["app.py"], validated_head))
-        self.assertNotEqual(bound["app.py"], current["app.py"], "concurrent mutation replaced the validated snapshot")
-        self.assertIn("review-manifest-stale: HEAD changed after lead review", checkpoint["missing"])
+        self.assertTrue(saw_hash and mutated, "did not mutate after raw-manifest validation")
+        self.assertEqual(process.returncode, 2, stdout + stderr)
+        self.assertIn("candidateTree", stderr)
+        self.assertEqual(self.event_count(), before_events, "a stale candidate appended review evidence")
 
     def test_unhashable_membership_fields_are_refused_not_crashed(self) -> None:
         finding = {

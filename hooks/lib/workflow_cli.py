@@ -7,6 +7,7 @@ import os
 import shlex
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from ._workflow_db import LedgerError, history
@@ -14,7 +15,7 @@ from .preflight_document import validated_document
 from .command_runner import emit_json as _emit_json, print_output as _print_output, run as _run, run_entry as _run_entry
 from .repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity
 from .state_prune import prune
-from .state_store import tree_manifest, utc_timestamp
+from .state_store import _active_candidate_tree, tree_manifest, utc_timestamp
 from .workflow_documents import (
     advisor_disposition_document,
     advisor_envelope,
@@ -34,6 +35,8 @@ from .workflow_state import (
     commit_review,
     commit_verification,
     complete,
+    correction_blockers,
+    appeal_revalidation_open,
     evidence_document,
     evidence_record,
     instance_id,
@@ -194,12 +197,12 @@ def _intent(args: argparse.Namespace) -> str:
     return text
 
 
-def _emit_state(value: dict[str, object]) -> None:
-    """Every full-state emission goes out as the one schemaVersion 1 projection.
-
-    `history` deliberately does not: recorded events are read back verbatim.
-    """
-    _emit_json(public_status(value))
+def _emit_mutation(
+    identity: RepoIdentity, operation: Callable[[], dict[str, object]],
+) -> None:
+    """Bind full-state output before its mutation can commit."""
+    candidate = _active_candidate_tree(identity)
+    _emit_json(public_status({**operation(), "activeCandidateTree": candidate}))
 
 
 def _state(identity: RepoIdentity) -> dict[str, object]:
@@ -227,6 +230,8 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     workflow_id = _workflow_id(state)
     if state.get("implementation") != "passed":
         raise WorkflowError("verification requires implementation")
+    if not appeal_revalidation_open(identity, state, "verification", quality_gate=args.kind == "quality-gate") and (blockers := correction_blockers(identity, state)):
+        raise WorkflowError("correction batch remains open: " + "; ".join(blockers))
 
     existing_id = state.get("verificationLatestEvidence") if isinstance(state.get("verificationLatestEvidence"), str) else None
     existing = evidence_document(identity, existing_id)
@@ -369,6 +374,7 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         expected_evidence_id=existing_id,
         quality_gate_tree=quality_tree,
         quality_gate_green=quality_gate_green,
+        quality_gate_run=args.kind == "quality-gate",
     )
 
     _print_output(raw)
@@ -411,9 +417,9 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     identity = resolve_repo_identity(args.repo)
     if args.command == "begin":
-        _emit_state(begin(identity, args.slug, _intent(args)))
+        _emit_json(public_status(begin(identity, args.slug, _intent(args))))
     elif args.command == "status":
-        _emit_state(_state(identity))
+        _emit_json(public_status(_state(identity), identity))
     elif args.command == "summary":
         print(summary(identity))
     elif args.command == "history":
@@ -431,7 +437,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             raise ValueError("set-phase is lead-owned only for implementation and code-review not-required")
         if phase == "code-review" and (args.status != "not-required" or args.findings != "none"):
             raise ValueError("code-review passed is recorder-owned; lead-owned set-phase permits only not-required with findings none")
-        _emit_state(set_phase(
+        _emit_mutation(identity, lambda: set_phase(
             identity,
             phase,
             args.status,
@@ -454,7 +460,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif verdict is None:
             raise ValueError("advisor-result requires --input or legacy --verdict")
-        _emit_state(record_advisor_result(
+        _emit_mutation(identity, lambda: record_advisor_result(
             identity,
             args.slug,
             args.workflow_id,
@@ -477,7 +483,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             workflow_id=args.workflow_id,
             stage=args.stage,
         ) if args.input else None
-        _emit_state(advisor_disposition(
+        _emit_mutation(identity, lambda: advisor_disposition(
             identity,
             args.slug,
             args.workflow_id,
@@ -486,7 +492,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             document=document,
         ))
     elif args.command == "pause":
-        _emit_state(pause(identity, args.slug, args.workflow_id, args.reason))
+        _emit_mutation(identity, lambda: pause(identity, args.slug, args.workflow_id, args.reason))
     elif args.command == "checkpoint":
         _emit_json(checkpoint(identity, args.phase))
     elif args.command == "complete":
@@ -496,7 +502,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             blockers = completion_blockers(identity, blocked_state)
             if blockers:
                 raise WorkflowError("workflow incomplete: " + "; ".join(blockers))
-        _emit_state(complete(identity, slug=args.slug, workflow_id=args.workflow_id))
+        _emit_mutation(identity, lambda: complete(identity, slug=args.slug, workflow_id=args.workflow_id))
     elif args.command == "record-preflight":
         return _record_phase(args, identity, "preflight", "document", validated_document(args.input))
     elif args.command == "record-production-code":

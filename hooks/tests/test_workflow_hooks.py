@@ -438,7 +438,7 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
         state = json.loads(status.stdout)
         self.assertEqual(state["phase"], "implementation")
-        self.assertEqual(state["nextAction"], "implementation")
+        self.assertEqual(state["nextAction"], "reassess-behavior-map")
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 

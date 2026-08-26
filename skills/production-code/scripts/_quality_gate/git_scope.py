@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
 from pathlib import Path
+
+from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity
+from hooks.lib.state_store import _active_candidate_tree
 
 from .findings import Numstat
 
@@ -134,40 +136,11 @@ def _resolve_base(repo: Path, base_ref: str | None) -> tuple[str, str, list[str]
 
 
 def _capture_worktree(repo: Path) -> tuple[str, list[str]]:
-    """Capture the worktree as one tree OID, or report that it would not hold still.
-
-    Two captures of a settled worktree produce the same OID, so a disagreement
-    is drift — reported rather than evaluated, because a candidate nobody can
-    reproduce is not a candidate.
-    """
-    first, errors = _write_worktree_tree(repo)
-    if errors or not first:
-        return "", errors
-    second, errors = _write_worktree_tree(repo)
-    if errors or not second:
-        return "", errors
-    if first != second:
-        return "", [f"candidate capture drift: worktree changed during capture ({first[:12]} then {second[:12]})"]
-    return first, []
-
-
-def _write_worktree_tree(repo: Path) -> tuple[str, list[str]]:
-    """One capture pass over the worktree (tracked, staged, and untracked)."""
-    handle = tempfile.NamedTemporaryFile(prefix="quality-gate-index-", delete=False)
-    handle.close()
-    env = {"GIT_INDEX_FILE": handle.name}
+    """Capture the worktree as one tree OID, or report why it was unstable."""
     try:
-        seed = ["read-tree", "HEAD"] if git_ok(repo, ["rev-parse", "--verify", "HEAD^{commit}"]) else ["read-tree", "--empty"]
-        for args in (seed, ["add", "-A", "."]):
-            res = run_git(repo, args, env=env)
-            if res.returncode != 0:
-                return "", [f"candidate capture failed at git {args[0]}: {res.stderr.strip() or res.returncode}"]
-        tree = run_git(repo, ["write-tree"], env=env)
-        if tree.returncode != 0:
-            return "", [f"candidate capture failed at git write-tree: {tree.stderr.strip() or tree.returncode}"]
-        return tree.stdout.strip(), []
-    finally:
-        Path(handle.name).unlink(missing_ok=True)
+        return _active_candidate_tree(resolve_repo_identity(repo)), []
+    except (OSError, RepoIdentityError) as exc:
+        return "", [str(exc)]
 
 
 def _diff_scope(repo: Path, base: str, tree: str) -> tuple[set[str], dict[str, str], str, list[Numstat], list[str]]:

@@ -10,11 +10,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("code_quality_gate.py")
 SCRIPT_DIR = Path(__file__).parent
+ROOT = SCRIPT_DIR.parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # The last commit before #75 reshaped classification. Its shipped predicate is
 # the oracle for the standalone truth workflow state still depends on.

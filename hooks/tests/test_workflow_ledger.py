@@ -419,6 +419,8 @@ class WorkflowLedgerTests(unittest.TestCase):
         # Context Forge claim itself publishes as pending until the bootstrap reruns.
         self.assertEqual((legacy["gitnexus"], legacy["repoContextForge"]), ("passed", "passed"))
         expected["gitnexus"] = expected["repoContextForge"] = "pending"
+        expected["activeCandidateTree"] = state["activeCandidateTree"]
+        self.assertRegex(str(state["activeCandidateTree"]), r"^[0-9a-f]{40}$")
         self.assertEqual(state, expected)
         self.assertEqual((self.slot / "workflow.json").read_bytes(), legacy_bytes)
         self.assertEqual(evidence_path.read_bytes(), evidence_bytes)

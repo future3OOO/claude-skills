@@ -208,7 +208,12 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _git(identity: RepoIdentity, *args: str, stdin: bytes | None = None) -> bytes:
+def _git(
+    identity: RepoIdentity,
+    *args: str,
+    stdin: bytes | None = None,
+    env: dict[str, str] | None = None,
+) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(identity.root), *args],
         input=stdin,
@@ -216,11 +221,46 @@ def _git(identity: RepoIdentity, *args: str, stdin: bytes | None = None) -> byte
         stderr=subprocess.PIPE,
         timeout=30,
         check=False,
+        env={**os.environ, **env} if env else None,
     )
     if result.returncode:
         message = (result.stderr or result.stdout or b"git command failed").decode("utf-8", errors="replace").strip()
         raise RuntimeError(message)
     return result.stdout
+
+
+def _write_candidate_tree(identity: RepoIdentity) -> str:
+    handle = tempfile.NamedTemporaryFile(prefix="workflow-candidate-index-", delete=False)
+    handle.close()
+    env = {"GIT_INDEX_FILE": handle.name}
+    try:
+        try:
+            _git(identity, "rev-parse", "--verify", "HEAD^{commit}")
+            seed = ("read-tree", "HEAD")
+        except RuntimeError:
+            seed = ("read-tree", "--empty")
+        for args in (seed, ("add", "-A", ".")):
+            try:
+                _git(identity, *args, env=env)
+            except RuntimeError as exc:
+                raise OSError(f"candidate capture failed at git {args[0]}: {exc}") from exc
+        try:
+            return _git(identity, "write-tree", env=env).decode("utf-8").strip()
+        except RuntimeError as exc:
+            raise OSError(f"candidate capture failed at git write-tree: {exc}") from exc
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
+
+
+def _active_candidate_tree(identity: RepoIdentity) -> str:
+    first = _write_candidate_tree(identity)
+    second = _write_candidate_tree(identity)
+    if first != second:
+        raise OSError(
+            "candidate capture drift: worktree changed during capture "
+            f"({first[:12]} then {second[:12]})"
+        )
+    return first
 
 
 def _paths(identity: RepoIdentity, *args: str) -> list[str]:
