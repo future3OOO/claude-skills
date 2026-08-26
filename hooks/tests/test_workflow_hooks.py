@@ -438,7 +438,9 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
         state = json.loads(status.stdout)
         self.assertEqual(state["phase"], "implementation")
-        self.assertEqual(state["nextAction"], "implementation")
+        # The edit flagged the resolved map, so the pass owes its reassessment and
+        # says so; review readiness is still reset ahead of the failed feedback.
+        self.assertEqual(state["nextAction"], "tdd", "POST_EDIT_REASSESSMENT_NOT_MIRRORED")
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 

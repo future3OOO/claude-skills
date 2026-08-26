@@ -205,7 +205,7 @@ def validate_items(
         result.append(item)
     whole = [*existing, *result]
     for entry in whole:
-        _terminal(whole, entry)
+        terminal(whole, entry)
     if not allow_runtime and any(
         entry["status"] == "pending" for entry in whole
     ) and not any(entry.get("kind") == "contract" for entry in whole):
@@ -301,7 +301,7 @@ def item(items: list[JsonObject], identifier: str) -> JsonObject:
         raise ValueError(f"behavior id is not in the recorded map: {identifier}") from exc
 
 
-def _terminal(items: list[JsonObject], entry: JsonObject) -> JsonObject:
+def terminal(items: list[JsonObject], entry: JsonObject) -> JsonObject:
     """The item a superseded entry finally defers to; self-reference, cycles, and missing targets refuse."""
     seen = {entry["id"]}
     while entry.get("status") == "superseded":
@@ -351,6 +351,11 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
             raise ValueError(f"behavior {identifier} disposition requires evidence")
         mapped = item(items, identifier)
         if status == "superseded":
+            # A pending obligation measurement has retired is superseded like a GREEN
+            # one: the alternative is abandoning the instance and replaying the pass,
+            # which reclassifies its own prior fixes as pre-instance work. Closure is
+            # not weakened - the replacement must still reach GREEN terminally - and a
+            # settled item has nothing left to supersede.
             if mapped.get("status") != "green":
                 raise ValueError(
                     f"behavior {identifier} is {mapped.get('status')}; only a GREEN item can be superseded"
@@ -376,7 +381,7 @@ def unresolved(items: list[JsonObject]) -> list[str]:
         if entry.get("status") in {"pending", "red"}
         or (
             entry.get("status") == "superseded"
-            and _terminal(items, entry).get("status") != "green"
+            and terminal(items, entry).get("status") != "green"
         )
     ]
 

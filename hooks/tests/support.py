@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from hooks.lib.behavior_map import no_change_item
@@ -21,6 +23,18 @@ from hooks.lib.workflow_state import (
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
+
+
+def workflow_cli(environ: Mapping[str, str] | None = None) -> Path:
+    """The workflow entrypoint the lifecycle suite drives as a subprocess.
+
+    The checkout copy is the default because that is what CI runs. Installed
+    proof is the same suite pointed at the estate, so the path is an operator
+    selection rather than a constant: a same-named file under another root is a
+    different implementation, and only running it proves the installed one.
+    """
+    selected = (environ if environ is not None else os.environ).get("CLAUDE_WORKFLOW_CLI")
+    return Path(selected) if selected else WORKFLOW
 
 
 def pending_behavior(

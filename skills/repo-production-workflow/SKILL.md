@@ -268,6 +268,14 @@ wrapper leaves final findings pending; the lead explicitly records `none` or
 `addressed` only after validating the output. Any production edit repeats
 verification, code review where required, and final review.
 
+A material finding the lead closes itself - fixed, rejected-with-evidence, or
+report-only - opens one appeal that only a strict advisor envelope answers; a
+bare verdict does not. Omission accepts it, a material re-raise blocks on
+`needs-human-owner-adjudication`, and a `context-mismatch` envelope answers
+nothing. While the batch is open, `nextAction` names the correction it owes and
+withholds verification, the typed gate, and lead review. Correct an erroneous
+settled record with an appended supersession, not a rewrite.
+
 ### 12. Complete the workflow
 
 ```bash
