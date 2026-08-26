@@ -1616,6 +1616,44 @@ class PassLifecycleTests(unittest.TestCase):
         preflight = self.record_preflight(wid, self.preflight_document())
         self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
 
+    def test_advisor_refusals_name_each_disposition_shape_atomically(self) -> None:
+        marker = "DISPOSITION_SHAPE_GUIDANCE_MISSING"
+        for status in ("fixed", "rejected-with-evidence", "report-only", "accepted-follow-up", "accepted-for-proof"):
+            slug = f"shape-{status}"
+            wid = self.begin_slug(slug)
+            self.advance_to_context_forge()
+            envelope = self.tmp / f"{slug}-envelope.json"
+            kind = "behavioral" if status == "accepted-for-proof" else "nonbehavioral"
+            envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [{
+                "id": "SPEC-1", "claim": "shape is wrong", "material": True, "kind": kind,
+            }], "verdict": "completed"}), encoding="utf-8")
+            recorded = self.cli("advisor-result", "--slug", slug, "--workflow-id", wid,
+                                "--stage", "preflight", "--source", "codex-advisor", "--input", str(envelope))
+            intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
+            path = self.finding_disposition_document(
+                intake_id, status, kind, "false" if status == "report-only" else "material",
+            )
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if status == "fixed":
+                document["dispositions"].append(dict(document["dispositions"][0]))
+            elif status == "rejected-with-evidence": document["dispositions"][0]["finding_id"] = "   "
+            else:
+                document["dispositions"][0]["premise"]["claim"] = "   "
+            path.write_text(json.dumps(document), encoding="utf-8")
+            before = self.cli("status").stdout, len(self.history_events())
+            refused = self.dispose(slug, wid, "preflight", "addressed", str(path))
+            self.assertEqual((refused.returncode, (self.cli("status").stdout, len(self.history_events()))),
+                             (2, before), marker + refused.stdout + refused.stderr)
+            self.assertIn(f"{status} expected shape", refused.stderr, "DUPLICATE_DISPOSITION_SHAPE_MISSING" if status == "fixed" else "BLANK_FINDING_ID_SHAPE_MISSING" if status == "rejected-with-evidence" else marker)
+            self.assertIn("non-empty text", refused.stderr, "DISPOSITION_TEXT_SHAPE_INCOMPLETE")
+            if status == "fixed":
+                self.assertIn("strips and lowercases to false", refused.stderr, "DISPOSITION_NORMALIZATION_SHAPE_MISMATCH")
+            path = self.finding_disposition_document(
+                intake_id, status, kind, "false" if status == "report-only" else "material",
+            )
+            accepted = self.dispose(slug, wid, "preflight", "addressed", str(path))
+            self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+
     def test_legacy_behavioral_disposition_requires_immutable_intake(self) -> None:
         marker, slug = "LEGACY_BEHAVIORAL_DISPOSITION_ACCEPTED_OR_MUTATED_STATE", "legacy-behavioral"
         wid = self.begin_slug(slug)
@@ -2128,7 +2166,7 @@ class PassLifecycleTests(unittest.TestCase):
             malformed.write_text(json.dumps(body), encoding="utf-8")
             rejected = self.dispose("disposition-document", wid, "preflight", "addressed", str(malformed))
             self.assertEqual(rejected.returncode, 2, f"a malformed document was accepted ({reason})")
-            self.assertIn(reason, rejected.stderr)
+            self.assertIn(reason, rejected.stderr, "INVALID_STATUS_DIAGNOSTIC_CHANGED" if reason == "invalid or duplicate disposition" else reason)
             self.assertNotIn(
                 "dispositionEvidence", json.loads(self.cli("status").stdout)["advisorPreflight"],
                 f"a document rejected for {reason} was still written",
@@ -2211,6 +2249,41 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(self.evidence(preflight_id), kept,
                          "begin deleted retained history instead of merely deactivating it")
+
+    def test_design_wrapper_refusals_name_complete_corrective_shape(self) -> None:
+        marker = "DESIGN_SHAPE_GUIDANCE_MISSING"
+        repo = self.tmp / "design-shape-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, env=self.env, check=True)
+        wrapper = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
+
+        def run(path: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([
+                str(wrapper), "--slug", "shape", "--phase", "preflight-advice",
+                "--design-file", str(path), "--cwd", str(repo), "--", "q",
+            ], cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+
+        cases = {
+            "marker": "Decision only.\n",
+            "fence": "<!-- governed-design-labels:v1 -->\n",
+            "schema": "<!-- governed-design-labels:v1 -->\n```json\n{\"schemaVersion\":1}\n```\n",
+            "uncatalogued": "ASSUMP-1\n<!-- governed-design-labels:v1 -->\n```json\n{\"schemaVersion\":1,\"labels\":[]}\n```\n",
+            "catalogue-only": "<!-- governed-design-labels:v1 -->\n```json\n{\"schemaVersion\":1,\"labels\":[{\"id\":\"PRES-1\",\"kind\":\"preservation\"}]}\n```\n",
+        }
+        for name, text in cases.items():
+            design = self.tmp / f"{name}.md"
+            design.write_text(text, encoding="utf-8")
+            refused = run(design)
+            self.assertEqual(refused.returncode, 1, marker + refused.stdout + refused.stderr)
+            for expected in ("<!-- governed-design-labels:v1 -->", "```json", '"schemaVersion":1', '"labels"', "reserved tokens in prose must equal catalogue ids"):
+                self.assertIn(expected, refused.stderr, marker)
+
+        corrected = self.tmp / "corrected.md"
+        corrected.write_text("PRES-1\n<!-- governed-design-labels:v1 -->\n```json\n"
+            '{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"}]}\n```\n', encoding="utf-8")
+        accepted = run(corrected)
+        self.assertEqual(accepted.returncode, 2, marker + accepted.stdout + accepted.stderr)
+        self.assertIn("requires an active workflow", accepted.stderr, marker)
 
     def test_governed_design_rejects_catalogue_only_label(self) -> None:
         design = self.tmp / "catalogue-only-design.md"

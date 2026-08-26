@@ -276,6 +276,56 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
         self.assertEqual(json.loads(accepted.stdout)["status"], "passed", marker)
 
+    def test_shape_table_is_generated_and_referenced_by_author_skills(self) -> None:
+        marker = "DOCUMENT_SHAPE_TABLE_DRIFTED"
+        from hooks.lib import workflow_documents
+        shapes = workflow_documents.DOCUMENT_SHAPES
+        table = workflow_documents.DOCUMENT_SHAPE_TABLE
+        self.assertEqual(list(shapes), ["fixed", "rejected-with-evidence", "report-only", "accepted-follow-up", "accepted-for-proof", "governed-design"], marker)
+        for name, shape in shapes.items():
+            self.assertIn(f"| `{name}` | {shape} |", table, marker)
+            self.assertEqual(f"| `{name}` | {shape} |".count("|"), 3, "DOCUMENT_SHAPE_TABLE_HAS_EXTRA_COLUMN")
+        command = 'python3 -I -c \'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)\''
+        for relative in ("skills/codex-advisor/SKILL.md", "skills/code-review/SKILL.md"):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn(command, text, "AUTHOR_TABLE_COMMAND_USED_CALLER_PATH")
+            self.assertNotIn("| `fixed` |", text, marker)
+        (self.tmp / ".claude").symlink_to(ROOT, target_is_directory=True)
+        rendered = subprocess.run(["python3", "-I", "-c", command.removeprefix("python3 -I -c '").removesuffix("'")], cwd=self.repo, env={**os.environ, "HOME": str(self.tmp)},
+            text=True, capture_output=True, check=False)
+        self.assertEqual((rendered.returncode, rendered.stdout.strip()), (0, table), "AUTHOR_TABLE_COMMAND_USED_CALLER_PATH" + rendered.stderr)
+
+    def test_record_review_refusal_names_shape_and_preserves_state(self) -> None:
+        marker = "REVIEW_SHAPE_GUIDANCE_MISSING"
+        finding = {**self.review_finding(), "kind": "behavioral"}
+        path = self.tmp / "review-shape.json"
+        path.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+        intake = self.record_review(path, "review-shape-intake")
+        intake_id = json.loads(intake.stdout)["summaryId"]
+        corrected = self.disposition_document(
+            intake_id, "SPEC-1", "accepted-for-proof", kind="behavioral",
+            reservedBehaviorIds=["BM_SPEC_1"], seam="workflow CLI",
+            preservationObligations=["preserve review state"],
+        )
+        item = corrected["dispositions"][0]
+        item.pop("evidence")
+        item["occurrence"] = {"seam": "workflow CLI", "reproduction": {
+            "command": "run record-review", "result": "wrong shape refused",
+        }}
+        wrong = json.loads(json.dumps(corrected))
+        wrong["dispositions"][0]["occurrence"] = {}
+        path.write_text(json.dumps(wrong), encoding="utf-8")
+        before = self.run_script(WORKFLOW, "status").stdout, self.event_count()
+        refused = self.record_review(path, "review-shape-refusal")
+        self.assertEqual((refused.returncode, (self.run_script(WORKFLOW, "status").stdout, self.event_count())),
+                         (2, before), marker + refused.stdout + refused.stderr)
+        self.assertIn("accepted-for-proof expected shape", refused.stderr, marker)
+        self.assertIn('"finding_id"', refused.stderr, marker)
+        self.assertIn('"kind"', refused.stderr, marker)
+        path.write_text(json.dumps(corrected), encoding="utf-8")
+        accepted = self.record_review(path, "review-shape-corrected")
+        self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+
     def test_reviewer_dispositions_bind_context_and_make_report_only_terminal(self) -> None:
         path = self.tmp / "reviewer-disposition-gates.json"
         path.write_text(json.dumps({"findings": [self.review_finding()]}), encoding="utf-8")
