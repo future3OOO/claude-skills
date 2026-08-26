@@ -167,6 +167,51 @@ These were settled by measurement and one adversarial critique pass. Re-open one
 - **Row-specific diagnostics (#155 replay, row C3).** Where one combined proof could pass for a neighbouring row's reason, that row gets a row-specific diagnostic, and where detection itself is unproven the smallest **disposable fault-removal probe** demonstrates the diagnostic fires and is deleted before candidate binding. Named instance in PR A: the readiness rows for `fixed` / `rejected-with-evidence` / `report-only` share one completion surface and would otherwise pass for each other's reason.
 
 
+## Governed Design Labels
+
+Stable handoff labels for Behavior Map `sourceRefs`, advisor consults, and preflight reconciliation.
+
+### Preservation obligations
+
+- **PRES-1** — `hooks/code-quality-gate.py:114` keeps passing `baseOid`, never `passStartOid`, as the gate's `--base-ref`, so per-edit growth stays branch-cumulative.
+- **PRES-2** — #143's premise/occurrence disposition validator keeps its semantics and refusal messages unchanged; only the **final** stage gains appeal semantics, and preflight and code-review lifecycles are untouched.
+- **PRES-3** — `checkpoint` stays read-only: no state mutation and no appended ledger event.
+- **PRES-4** — every refusal stays exit 2 with a named cause on stderr, zero state mutation, and zero appended ledger event.
+- **PRES-5** — the ledger stays append-only: no `UPDATE` on `workflow_events`, `evidence`, or `review_manifests`, and `STATE_SCHEMA_VERSION` stays exactly `1`.
+- **PRES-6** — `begin`'s redundancy semantics are unchanged: a second `begin` still supersedes, keeping `test_workflow_ledger.py:234` and `:703` green.
+- **PRES-7** — the review and quality-gate manifest drift chain (`_bind_review_to_tree`, `_binding_drift`, `_tree_drift`) is unchanged.
+- **PRES-8** — legacy paths keep working: `_normalise`, `_legacy_evidence`, the `legacy` branch of `_validate_finding_reservation`, and the legacy `{context, findings, dispositions}` advisor document shape.
+
+### Load-bearing assumptions
+
+- **ASSUMP-1** *(behavioral)* — a material final finding dispositioned `rejected-with-evidence` or `report-only` requires no candidate edit, so nothing resets `finalReview`; without an appeal blocker the lead would reach completion readiness with no further advisor round. Falsified by the three-label lead-only-completion probe.
+- **ASSUMP-2** *(behavioral)* — a material final finding dispositioned `fixed` necessarily changes the candidate, so `invalidate_after_edit` resets `finalReview` to pending and a fresh envelope is forced without an appeal. Falsified by attempting `fixed` with no intervening edit.
+- **ASSUMP-3** *(behavioral)* — relaxing the whole-intake set equality to a subset leaves readiness correct, because the existing unresolved recompute — not document shape — decides whether findings remain open.
+- **ASSUMP-4** *(non-behavioral)* — `passStartOid` captured at `begin` through `_head_oid` records honest absence rather than failing when HEAD does not resolve, matching `baseOid`'s precedent.
+- **ASSUMP-5** *(behavioral)* — correction-batch state must survive `invalidate_after_edit` and `_reset_downstream`, or `nextAction` reverts to `verification` after the first correction edit and defect 3 reappears.
+
+<!-- governed-design-labels:v1 -->
+```json
+{
+  "schemaVersion": 1,
+  "labels": [
+    {"id": "PRES-1", "kind": "preservation"},
+    {"id": "PRES-2", "kind": "preservation"},
+    {"id": "PRES-3", "kind": "preservation"},
+    {"id": "PRES-4", "kind": "preservation"},
+    {"id": "PRES-5", "kind": "preservation"},
+    {"id": "PRES-6", "kind": "preservation"},
+    {"id": "PRES-7", "kind": "preservation"},
+    {"id": "PRES-8", "kind": "preservation"},
+    {"id": "ASSUMP-1", "kind": "assumption", "behavioral": true},
+    {"id": "ASSUMP-2", "kind": "assumption", "behavioral": true},
+    {"id": "ASSUMP-3", "kind": "assumption", "behavioral": true},
+    {"id": "ASSUMP-4", "kind": "assumption", "behavioral": false},
+    {"id": "ASSUMP-5", "kind": "assumption", "behavioral": true}
+  ]
+}
+```
+
 ## Acceptance Row Ownership Map
 
 Every checkbox in #152's Acceptance Proof, with its owner. An unowned row is a plan defect; there are none.
