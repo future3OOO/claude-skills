@@ -54,18 +54,20 @@ Vs = min(1, ln(s + 1) / ln(Ns + 1))
 
 `Nr` and `Ns` are reference counts for the relevant marketplace/category. Prefer same-scope population P95 values. If those baselines are unavailable, read [CALIBRATION.md](CALIBRATION.md) before scoring.
 
-Combine observed evidence dimensions only:
+Combine the available evidence:
 
 ```text
 E = weighted_mean(observed=[Vr, Vs], weights=[0.70, 0.30])
 SellerScore = 100 * q * (0.58 + 0.42*E)
 ```
 
-If a count is missing, omit that evidence dimension and renormalize the remaining weights. Do not convert missing to zero. If `n` is missing, do not pretend the displayed rating has known statistical support: use `q = mu` until a defensible review count is found.
+If an evidence dimension is structurally unavailable for the whole comparison set, omit it and renormalize the remaining evidence weights. If a field is expected but missing for only some candidates, do not reward that absence by renormalizing as though the candidate had complete evidence: mark the score partial/not directly comparable, or use an explicit calibrated imputation from [CALIBRATION.md](CALIBRATION.md). Do not convert missing to zero.
+
+If `n` is missing, do not pretend the displayed rating has known statistical support: use `q = mu` only as a prior estimate and mark the SellerScore partial until a defensible review count is found.
 
 Round `SellerScore` only for presentation, never during intermediate calculations.
 
-**Complete when:** every retained listing has either a reproducible SellerScore from scope-compatible evidence or an explicit reason the score cannot be computed defensibly.
+**Complete when:** every retained listing has either a reproducible, scope-compatible SellerScore, a clearly marked partial score, or an explicit reason the score cannot be computed defensibly.
 
 ## 4. Make the purchase recommendation
 
@@ -85,16 +87,17 @@ When listing-level sales are available, use them as item-popularity evidence alo
 
 Run these invariants before presenting the result:
 
-- Holding everything else fixed, a higher rating cannot lower SellerScore.
-- Holding everything else fixed, more reviews or sales cannot lower SellerScore.
+- Holding evidence counts fixed, a higher rating cannot lower SellerScore.
+- Holding rating and review count fixed, more seller sales cannot lower SellerScore.
+- At `r >= mu`, more supporting reviews cannot lower SellerScore. At `r < mu`, more reviews may lower it by confirming below-prior quality; that is expected, not a failure.
 - Additional volume has diminishing, not linear, impact.
 - A tiny perfect-rating sample does not automatically outrank a slightly lower rating backed by substantial evidence.
 - Item price, specification, and condition never alter SellerScore itself.
-- Missing evidence is never treated as observed failure.
+- Missing evidence is never treated as observed failure or silently promoted to complete evidence.
 
 If any invariant fails, fix the inputs, scope alignment, normalization, or calculation before recommending.
 
-**Complete when:** every invariant holds for the scored candidate set.
+**Complete when:** every applicable invariant holds for the scored candidate set.
 
 ## Calibration boundary
 
