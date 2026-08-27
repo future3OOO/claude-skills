@@ -729,6 +729,26 @@ def commit_review(
 _NO_CAS = object()
 
 
+def _bind_projection(state: JsonObject, evidence_doc: JsonObject) -> None:
+    """Refuse a producer projection that describes another candidate.
+
+    The serializer validates the projection's own shape but sees no workflow
+    state, so it cannot know which candidate this pass is recording. The
+    comparison lives here, against the binding the adapter measured for the same
+    run; a pass whose adapter could not measure one records the gap instead and
+    has nothing to compare.
+    """
+    projection = evidence_doc.get("advisorProjection")
+    gate = evidence_doc.get("gateContext")
+    if not isinstance(projection, dict) or not isinstance(gate, dict):
+        return
+    candidate = str(projection.get("expectedCandidateTree"))
+    if candidate != str(gate.get("candidate")):
+        raise WorkflowError(
+            f"the advisorProjection describes candidate {candidate}, not this pass's {gate.get('candidate')}"
+        )
+
+
 def commit_evidence_phase(
     identity: RepoIdentity,
     slug: str,
@@ -746,6 +766,8 @@ def commit_evidence_phase(
         latest_field = f"{field}LatestEvidence"
         if expected_evidence_id is not _NO_CAS and state.get(latest_field) != expected_evidence_id:
             raise WorkflowError(f"{phase} evidence changed during the run; re-read and re-run the command")
+        if phase == "repo-context-forge":
+            _bind_projection(state, evidence_doc)
         if phase == "preflight":
             _validate_design_map(
                 transaction, state, evidence_doc, require_coverage=True,
@@ -1303,6 +1325,13 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         if drift := _binding_drift(identity, state, "quality-gate"):
             missing.append(drift)
     review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
+    # The wrapper derives no identity of its own: base, pass start, candidate and
+    # the recorded projection are all facts the pass already owns, and a consumer
+    # that reconstructs them can disagree with the pass about what is under review.
+    recorded = state.get("repoContextForgeEvidence")
+    projection = (evidence_document(identity, recorded) or {}) if isinstance(recorded, str) else {}
+    advisor = projection.get("advisorProjection") if isinstance(projection, dict) else None
+    gate = projection.get("gateContext") if isinstance(projection, dict) else None
     return {
         "phase": phase,
         "ready": not missing,
@@ -1311,6 +1340,27 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         "workflowId": state.get("workflowId"),
         "tdd": state.get("tdd"),
         "codeReviewStatus": review.get("status"),
+        "baseOid": state.get("baseOid"),
+        "passStartOid": state.get("passStartOid"),
+        "activeCandidateTree": (advisor or {}).get("expectedCandidateTree") or (gate or {}).get("candidate"),
+        "projectionEvidence": recorded if isinstance(recorded, str) else None,
+        "reviewBinding": {"manifestId": state.get("reviewManifestId"), "head": state.get("reviewHead")},
+        # The stage-scoped references the consult attaches. They travel with the
+        # readiness that admits them, so a consumer cannot assemble a consult from
+        # references this checkpoint never gated.
+        "evidence": {
+            "tdd": state.get("tddEvidence"),
+            "codeReview": state.get("codeReviewEvidence"),
+            "preflight": state.get("preflightEvidence"),
+            "repoContextForge": recorded if isinstance(recorded, str) else None,
+            "governedDesign": state.get("governedDesignEvidence"),
+            "verification": state.get("verificationLatestEvidence"),
+        },
+        "intent": state.get("intent"),
+        # The one action this descriptor's reader is owed. Readiness says whether
+        # the consult may run; this says what the pass is waiting on when it may not,
+        # so a consumer never has to re-derive an answer from the missing list.
+        "nextAction": _derive_next_action(state) if missing else phase,
     }
 
 

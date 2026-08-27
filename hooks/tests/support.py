@@ -96,6 +96,18 @@ def graph_packet(root: str) -> dict[str, object]:
     """
     return {
         "target_state": {"source_repo": root},
+        "advisorProjection": {
+            "schemaVersion": 1,
+            "producerRevision": {"commit": "f" * 40, "dirty": False},
+            "sourceRepo": "example.invalid/repo",
+            "sourceBaseOid": "a" * 40,
+            "committedHeadOid": "b" * 40,
+            "expectedCandidateTree": "c" * 40,
+            "indexedCandidateTree": "c" * 40,
+            "targets": [],
+            "graph": {"status": "resolved", "references": [], "requiredOmissions": [], "optionalOmissionCount": 998},
+            "coverageGaps": [{"kind": "absent_symbol", "reference": "a symbol the intent named"}],
+        },
         "gitnexus": {
             "analysis": {
                 "status": "resolved",

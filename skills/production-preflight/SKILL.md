@@ -243,6 +243,15 @@ Record a non-empty JSON array. Every item has these eight required fields:
 - A contract item starts `pending`: it is never `omitted`, and only `tdd --phase red` passing its exact mapped surface pre-edit records it `already-satisfied`. A preservation item starts `pending`, `already-satisfied`, or `omitted`; `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
 - Map every declared success/failure, meaningful state transition, material guarantee at a wrapped or rerouted Seam, visible interaction, and known architecture assumption needing falsification.
 - Split independently-failable outcomes.
+- Cover the whole Interface, not the happy path. Walk these challenge categories and
+  keep a row for each one the change can reach: every state and the transitions
+  between them; legacy and pre-migration shapes the Interface still admits;
+  normalization of equivalent inputs; relationships that span fields, so one field
+  is constrained by another; persistence and replay, where a value written now is
+  read back later by different code; atomicity, where a refusal must leave nothing
+  behind; the examples the documentation promises; and the no-change consumers that
+  must stay green. A category the change cannot reach earns no row; a category it
+  reaches with no row is a coverage gap, not a judgement call.
 - Proof gaps stay in `openQuestions`; they are not omissions.
 
 ## Execution Gate

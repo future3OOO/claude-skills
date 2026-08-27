@@ -26,6 +26,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
+from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+from hooks.lib.workflow_state import WorkflowError, begin, commit_evidence_phase, instance_id  # noqa: E402
 from hooks.tests.support import build_no_change_document, graph_packet  # noqa: E402
 
 
@@ -713,6 +715,114 @@ class GraphEvidenceContractTests(unittest.TestCase):
         return graph_evidence_document(
             str(path), slug="contract", workflow_id="wid", source_root=str(self.root), **binding,
         )
+
+    def test_the_recorded_document_retains_the_producers_projection(self) -> None:
+        """The projection is the advisor's view of the packet, so the pass keeps it.
+
+        The producer emits it only into the machine packet, never the rendered
+        prompt, and the evidence serializer already receives that packet path --
+        so retaining it costs no adapter change and no re-install.
+        """
+        marker = "PROJECTION_NOT_RETAINED"
+        packet = graph_packet(str(self.root))
+        document = self.document_for(packet)
+        self.assertEqual(document.get("advisorProjection"), packet["advisorProjection"], marker)
+
+    def test_a_bool_schema_version_is_not_the_integer_one(self) -> None:
+        """`True == 1` in Python, so an equality guard alone admits the wrong type."""
+        marker = "BOOL_SCHEMA_VERSION_ACCEPTED"
+        packet = graph_packet(str(self.root))
+        packet["advisorProjection"]["schemaVersion"] = True
+        path = self.root.parent / "bool-schema-packet.json"
+        path.write_text(json.dumps(packet), encoding="utf-8")
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            graph_evidence_document(str(path), slug="bool-schema", workflow_id="w", source_root=str(self.root))
+        self.assertIn("schemaVersion", str(refusal.exception), marker)
+
+    def test_an_unusable_projection_is_refused_before_it_is_recorded(self) -> None:
+        """A projection the advisor cannot trust is worse than none, so it refuses.
+
+        Each row breaks exactly one thing the consumer relies on: the compatibility
+        key, its provenance, the candidate binding both trees express, and the
+        promise that the planned graph checks actually ran.
+        """
+        marker = "INVALID_PROJECTION_RECORDED"
+        for mutate, names in (
+            (lambda p: p.pop("advisorProjection"), "no advisorProjection"),
+            (lambda p: p["advisorProjection"].__setitem__("schemaVersion", 2), "schemaVersion"),
+            (lambda p: p["advisorProjection"].__setitem__("producerRevision", {"dirty": False}), "producer revision"),
+            (lambda p: p["advisorProjection"].__setitem__(
+                "expectedCandidateTree", {"gap": "expected_candidate_tree_unavailable"}), "bound candidate tree"),
+            (lambda p: p["advisorProjection"].__setitem__("indexedCandidateTree", "d" * 40), "disagree"),
+            (lambda p: p["advisorProjection"]["graph"].__setitem__(
+                "requiredOmissions", [{"kind": "symbol_context", "status": "omitted"}]), "required checks omitted"),
+        ):
+            with self.subTest(names=names):
+                packet = graph_packet(str(self.root))
+                mutate(packet)
+                with self.assertRaises(ValueError, msg=marker) as refusal:
+                    self.document_for(packet)
+                self.assertIn(names, str(refusal.exception), marker)
+
+    def test_a_packet_carrying_coverage_gaps_is_still_recorded(self) -> None:
+        """Coverage gaps are producer-owned breadth, not a consumer refusal.
+
+        The producer publishes no blocking classification for them -- its only
+        blocking predicate covers omitted checks -- and healthy packets emit them
+        routinely, so refusing here would reject good analyses and reinterpret
+        semantics this repository does not own.
+        """
+        marker = "HEALTHY_COVERAGE_GAPS_REFUSED"
+        packet = graph_packet(str(self.root))
+        packet["advisorProjection"]["coverageGaps"] = [
+            {"kind": "absent_symbol", "reference": "a symbol the intent named"},
+            {"kind": "ambiguous_symbol", "reference": "a name two files define"},
+            {"kind": "source_base_unavailable"},
+        ]
+        packet["advisorProjection"]["graph"]["optionalOmissionCount"] = 998
+        try:
+            document = self.document_for(packet)
+        except ValueError as refusal:
+            self.fail(f"{marker}: a healthy packet's coverage gaps were refused: {refusal}")
+        self.assertEqual(document["advisorProjection"]["coverageGaps"], packet["advisorProjection"]["coverageGaps"], marker)
+
+    def write_packet(self, packet: dict[str, object]) -> Path:
+        path = self.tmp / "candidate-packet.json"
+        path.write_text(json.dumps(packet), encoding="utf-8")
+        return path
+
+    def prepare_pass(self):
+        """A real begun pass over a real repository, for the recording-step contract."""
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        for name, value in (("user.email", "t@example.invalid"), ("user.name", "T")):
+            subprocess.run(["git", "-C", str(self.root), "config", name, value], check=True)
+        (self.root / "app.py").write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "app.py"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-q", "-m", "base"], check=True)
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.tmp / "state")
+        identity = resolve_repo_identity(self.root)
+        state = begin(identity, "candidate-binding", "binding probe")
+        return identity, str(state["slug"]), instance_id(state)
+
+    def test_a_projection_for_another_candidate_is_refused(self) -> None:
+        """The projection must describe the candidate this pass is recording.
+
+        The serializer sees the packet and no workflow state, so it cannot know
+        the pass's own candidate; the recording step does, and that is where the
+        binding is enforced rather than recomputed.
+        """
+        marker = "FOREIGN_CANDIDATE_RECORDED"
+        identity, slug, workflow_id = self.prepare_pass()
+        packet = graph_packet(str(identity.root))
+        packet["advisorProjection"]["expectedCandidateTree"] = "e" * 40
+        packet["advisorProjection"]["indexedCandidateTree"] = "e" * 40
+        document = graph_evidence_document(
+            str(self.write_packet(packet)), slug=slug, workflow_id=workflow_id,
+            source_root=str(identity.root), snapshot={"base": "b" * 40, "candidate": "c" * 40},
+        )
+        with self.assertRaises(WorkflowError, msg=marker) as refusal:
+            commit_evidence_phase(identity, slug, workflow_id, "repo-context-forge", document)
+        self.assertIn("candidate", str(refusal.exception), marker)
 
     def test_a_packet_for_another_checkout_is_refused(self) -> None:
         foreign = self.tmp / "elsewhere"

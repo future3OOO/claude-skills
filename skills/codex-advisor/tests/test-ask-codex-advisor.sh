@@ -30,6 +30,15 @@ check() {
   fi
 }
 
+absent() {
+  local name="$1" forbidden="$2" actual="$3"
+  if [[ "$actual" != *"$forbidden"* ]]; then
+    printf 'PASS  %s\n' "$name"; pass=$((pass + 1))
+  else
+    printf 'FAIL  %s\n      expected to be absent: %s\n' "$name" "$forbidden"; fail=$((fail + 1))
+  fi
+}
+
 check_status() {
   local name="$1" expected="$2" actual="$3"
   if [[ "$actual" == "$expected" ]]; then
@@ -150,15 +159,16 @@ else
   printf 'PASS  final findings await lead disposition\n'; pass=$((pass+1))
 fi
 
-out=$("$WRAPPER" --slug t --phase final-review --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "final-review without --base-ref rejected" 2 "$status"
-check "final-review base-ref requirement named" "--base-ref is required" "$out"
-
-out=$("$WRAPPER" --slug t --packet /definitely/not/a/file --cwd "$PWD" -- "q" 2>&1); status=$?
+# The bounded-input gate is measured through --design-file, the remaining caller
+# argument that names a file; --packet was retired with the section it fed.
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file /definitely/not/a/file --cwd "$PWD" -- "q" 2>&1); status=$?
 check_status "unreadable bounded input rejected" 2 "$status"
-out=$("$WRAPPER" --slug t --packet /dev/zero --cwd "$PWD" -- "q" 2>&1); status=$?
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file /dev/zero --cwd "$PWD" -- "q" 2>&1); status=$?
 check_status "non-regular bounded input rejected" 2 "$status"
-check "non-regular packet refusal names the cause" "not a readable regular file" "$out"
+check "non-regular input refusal names the cause" "not a readable regular file" "$out"
+out=$("$WRAPPER" --slug t --packet /tmp --cwd "$PWD" -- "q" 2>&1); status=$?
+check_status "retired packet argument rejected" 2 "$status"
+check "retired packet argument names itself" "unknown argument: --packet" "$out"
 
 printf '== governing-design transport (offline)\n'
 # The design gate is argument-level: it must fire in a stateless scratch repo,
@@ -178,9 +188,9 @@ else
   printf 'PASS  design gate fires before the workflow lookup\n'; pass=$((pass+1))
 fi
 
-out=$("$WRAPPER" --slug t --phase final-review --base-ref HEAD --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
+out=$("$WRAPPER" --slug t --phase final-review --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
 check_status "final-review without a design declaration refused" 2 "$status"
-check "final-review design refusal is the design gate, not base-ref resolution" "--design-file or --design-absent" "$out"
+check "final-review design refusal is the design gate" "--design-file or --design-absent" "$out"
 
 out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/missing.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
 check_status "missing design file refused" 2 "$status"
@@ -280,7 +290,7 @@ w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-r
 w.advisor_disposition(identity, slug, wid, "final", "none")
 w.complete(identity)' completed-pass
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug completed-pass --phase final-review --base-ref HEAD --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
+  "$WRAPPER" --slug completed-pass --phase final-review --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "completed workflow refused before the final-review consult" 2 "$status"
 check "terminal refusal names the closed workflow" "open-workflow" "$out"
 
@@ -341,7 +351,7 @@ offline_invoke "subdir" "$idtmp/repo/sub"
 offline_invoke "relative" "./sub" "$idtmp/repo"
 ln -s "$idtmp/repo" "$idtmp/link"
 offline_invoke "symlink" "$idtmp/link"
-sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+sid_count=$(ls "$idtmp/claude/state/_advisor-sessions"/*.sid 2>/dev/null | wc -l | tr -d ' ')
 check_status "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
 rm -rf "$idtmp"
 
@@ -351,8 +361,8 @@ mkdir -p "$roottmp/home" "$roottmp/repo" "$roottmp/isolated"
 git -C "$roottmp/repo" init -q
 HOME="$roottmp/home" CLAUDE_HOME="$roottmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$roottmp/isolated" \
   "$WRAPPER" --slug root-alignment --cwd "$roottmp/repo" -- "q" >/dev/null 2>&1
-override_sids=$(ls "$roottmp/isolated/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
-fallback_sids=$(ls "$roottmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+override_sids=$(ls "$roottmp/isolated/_advisor-sessions"/*.sid 2>/dev/null | wc -l | tr -d ' ')
+fallback_sids=$(ls "$roottmp/claude/state/_advisor-sessions"/*.sid 2>/dev/null | wc -l | tr -d ' ')
 check_status "sid lands under the workflow state root override" "1" "$override_sids"
 check_status "no sid lands under the CLAUDE_HOME fallback" "0" "$fallback_sids"
 rm -rf "$roottmp"
@@ -407,9 +417,9 @@ out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROO
 check_status "unowned graph evidence refused before the consult" 2 "$status"
 check "unowned refusal instructs a bootstrap rerun" "rerun the Repo Context Forge bootstrap" "$out"
 
-# A graph result far larger than the bound must still be reported within it, and
-# must say how many checks it dropped: an excerpt that quietly exceeds its own
-# limit reads to the delegate as complete evidence while costing unbounded input.
+# A large graph result is resolved and reported, never assembled: the consult reads
+# the recorded evidence through the pass, so the check says what it resolved and
+# costs the same whatever the result's size.
 graph_py 'import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -425,6 +435,14 @@ entry = lambda n: {"kind": "symbol_context", "file": f"module_{n}.py", "target":
                    "callers": [{"identity": f"Function:caller_{n}_{i}.py:run_{i}", "name": f"run_{i}",
                                 "file": f"caller_{n}_{i}.py"} for i in range(40)]}
 packet = {"target_state": {"source_repo": root},
+          "advisorProjection": {"schemaVersion": 1,
+                                "producerRevision": {"commit": "f" * 40, "dirty": False},
+                                "sourceRepo": "example.invalid/repo", "sourceBaseOid": "a" * 40,
+                                "committedHeadOid": "b" * 40, "expectedCandidateTree": "c" * 40,
+                                "indexedCandidateTree": "c" * 40, "targets": [],
+                                "graph": {"status": "resolved", "references": [],
+                                          "requiredOmissions": [], "optionalOmissionCount": 0},
+                                "coverageGaps": []},
           "gitnexus": {"analysis": {"status": "resolved", "entries": [entry(n) for n in range(40)],
                                     "unresolved_checks": [], "elapsed_ms": 1, "process_count": 1,
                                     "graph_call_count": 40, "output_bytes": 1,
@@ -439,19 +457,8 @@ out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROO
   "$WRAPPER" --slug oversized-graph --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
 check_status "an oversized graph result still reaches the consult gate" 2 "$status"
 measured=$(printf '%s' "$out" | sed -n 's/.*codex_advisor_graph_evidence //p')
-bytes=$(printf '%s' "$measured" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
-omitted=$(printf '%s' "$measured" | sed -n 's/.*checks_omitted=\([0-9]*\).*/\1/p')
-check "the wrapper reports what the excerpt actually cost" "checks_total=40" "$measured"
-if [[ -n "$bytes" && "$bytes" -le 9000 ]]; then
-  printf 'PASS  the emitted excerpt honours its own bound (%s bytes)\n' "$bytes"; pass=$((pass + 1))
-else
-  printf 'FAIL  the emitted excerpt honours its own bound\n      expected <=9000 bytes, got: %s\n' "${bytes:-<unreported>}"; fail=$((fail + 1))
-fi
-if [[ -n "$omitted" && "$omitted" -gt 0 ]]; then
-  printf 'PASS  the trimmed excerpt names its omitted checks (%s)\n' "$omitted"; pass=$((pass + 1))
-else
-  printf 'FAIL  the trimmed excerpt names its omitted checks\n      expected >0, got: %s\n' "${omitted:-<unreported>}"; fail=$((fail + 1))
-fi
+check "the check reports every resolved check, whatever the result's size" "checks_total=40" "$measured"
+check "the check reports the resolved status it read" "status=resolved" "$measured"
 
 # Ungoverned consults never had graph evidence to read and must keep working.
 out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
@@ -561,7 +568,10 @@ commit_tdd(identity, str(state["slug"]), workflow_id, {
 # The armH replay: the consult question denies that any governing spec exists. The
 # recorded text has to arrive in the same payload as the denial, so the delegate can
 # see for itself that the premise is false.
-armh_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD --design-absent "intent-custody rig: no plan artifact" \
+# --fresh because this arm measures composition, not continuity: a resumed turn
+# suppresses bodies the session already holds, and the assertion below is about what
+# a payload carries when it is assembled whole.
+armh_payload=$(consult_input --slug intent-custody --phase final-review --fresh --design-absent "intent-custody rig: no plan artifact" \
   -- "There is no governing spec beyond the recorded workflow intent; judge the diff on its merits alone.") || exit 1
 check "final-review carries the recorded intent verbatim" "$intent_text" "$armh_payload"
 check "the armH denial travels in the same payload as the text that refutes it" \
@@ -714,7 +724,7 @@ result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-
     "--workflow-id", str(w.instance_id(state)), "--input", str(path)],
     capture_output=True, text=True)
 assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$intenttmp/repo" || exit 1
-deep_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD \
+deep_payload=$(consult_input --slug intent-custody --phase final-review \
   --design-absent "deep preflight custody check" -- "completion question") || exit 1
 check "a deep preflight section arrives whole" "DEEP-PREFLIGHT-MARKER-BEYOND-4000" "$deep_payload"
 
@@ -816,7 +826,7 @@ result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-
     capture_output=True, text=True)
 assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$finaltmp/repo" "$final_nonce" || exit 1
   live_final_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" "$WRAPPER" \
-    --slug live-final-probe --phase final-review --base-ref HEAD --cwd "$finaltmp/repo" \
+    --slug live-final-probe --phase final-review --cwd "$finaltmp/repo" \
     --design-absent "live final probe" --budget 60 --fresh \
     -- "Return only the required strict final-review JSON envelope with one nonmaterial nonbehavioral finding whose claim quotes the exact PROOF-NONCE value in the recorded production preflight, and verdict commit-ready." 2>"$finaltmp/stderr")
   status=$?
@@ -830,4 +840,5 @@ else
 fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
+
 [[ "$fail" -eq 0 ]]

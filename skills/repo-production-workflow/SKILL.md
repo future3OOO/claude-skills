@@ -262,7 +262,7 @@ corrections record their current-tree evidence directly.
 
 The final Codex Advisor review is the workflow's sole independent reviewer; do
 not spawn a second review agent. Invoke it against the live diff with wrapper
-phase `final-review`, the same slug, and the base ref. It challenges the lead's
+phase `final-review` and the same slug; the wrapper anchors the delta on the pass's own start. It challenges the lead's
 review rather than trusting it. Address and disposition material findings. The
 wrapper leaves final findings pending; the lead explicitly records `none` or
 `addressed` only after validating the output. Any production edit repeats

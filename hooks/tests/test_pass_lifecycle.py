@@ -3596,6 +3596,25 @@ class PassLifecycleTests(unittest.TestCase):
                          marker + f": the owed reassessment named {state['nextAction']!r}")
         self.assertEqual(self.cli("complete").returncode, 2, marker)
 
+    def test_the_checkpoint_carries_every_identity_the_wrapper_needs(self) -> None:
+        """One descriptor, so the wrapper derives no identity of its own.
+
+        Base, pass start, candidate and the recorded projection all live in the
+        pass; a wrapper that reconstructs them can disagree with the pass about
+        what is being reviewed, which is how a fork-point base became an advisor
+        delta anchor.
+        """
+        marker = "CHECKPOINT_OMITS_BINDING"
+        self.begin_slug("checkpoint-binding")
+        self.advance_to_context_forge()
+        descriptor = self.checkpoint("preflight-advice")
+        state = json.loads(self.cli("status").stdout)
+        for field in ("baseOid", "passStartOid", "activeCandidateTree", "projectionEvidence", "reviewBinding"):
+            self.assertIn(field, descriptor, marker + f": the descriptor omits {field}")
+        self.assertEqual(descriptor["passStartOid"], state["passStartOid"], marker)
+        self.assertEqual(descriptor["projectionEvidence"], state["repoContextForgeEvidence"], marker)
+        self.assertTrue(descriptor["activeCandidateTree"], marker + ": no candidate identity")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
