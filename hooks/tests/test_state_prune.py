@@ -657,19 +657,30 @@ class StatePruneTests(unittest.TestCase):
     def test_the_real_wrapper_pointer_reaches_prune_under_a_shared_root(self) -> None:
         """The wrapper's sid, written under the override root, is visible to prune.
 
-        The real wrapper runs offline (it dies at its alias-parse stage, after
-        the pointer is written); nothing may land under the distinct
-        CLAUDE_HOME fallback.
+        The pointer is written once the provider has taken the turn, so the run
+        needs a controlled callee on PATH to reach that point; what is measured
+        here is which root the pointer lands under, and that nothing may land
+        under the distinct CLAUDE_HOME fallback.
         """
         wrapper = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
         repo = self.tmp / "wrapperrepo"
         repo.mkdir()
         subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
         fallback = self.tmp / "fallback-home"
+        home = self.tmp / "home"
+        (home / "bin").mkdir(parents=True, exist_ok=True)
+        (home / ".bashrc").write_text(
+            "alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid "
+            "ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model claude'\n",
+            encoding="utf-8")
+        provider = home / "bin" / "claude"
+        provider.write_text("#!/usr/bin/env bash\ncat >/dev/null\nprintf 'answered\\n'\n", encoding="utf-8")
+        provider.chmod(0o755)
         subprocess.run(
             [str(wrapper), "--slug", "shared-root", "--cwd", str(repo), "--", "q"],
             capture_output=True, text=True,
-            env={**os.environ, "HOME": str(self.tmp / "home"),
+            env={**os.environ, "HOME": str(home),
+                 "PATH": f"{home / 'bin'}:{os.environ['PATH']}",
                  "CLAUDE_HOME": str(fallback),
                  "CLAUDE_WORKFLOW_STATE_ROOT": str(self.root)},
         )

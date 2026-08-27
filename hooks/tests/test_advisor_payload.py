@@ -22,15 +22,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.tests.support import WORKFLOW, graph_packet, record_context_forge  # noqa: E402
+from hooks.tests.support import WORKFLOW, record_context_forge  # noqa: E402
 
 WRAPPER = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
-# The tree this branch is stacked on: the last commit whose recorder wrote graph
-# evidence without an advisorProjection, and therefore the real upgrade boundary.
-BASE_COMMIT = "75c66730ee1316a00cadd0b773b0e5c491cd988e"
+# The callee answers as well as captures: the wrapper persists a session only
+# after a turn actually lands, so a silent provider would leave the run refusing
+# on empty output and nothing to observe about resumption.
 PROVIDER = """#!/usr/bin/env bash
 printf 'ran\\n' >>"$CONSULT_PROVIDER_MARKER"
 cat >"$CONSULT_PROVIDER_CAPTURE"
+printf 'answered\\n'
 """
 
 
@@ -294,34 +295,27 @@ class AdvisorPayloadTests(unittest.TestCase):
 
 
     def record_legacy_graph_evidence(self) -> None:
-        """Record graph evidence the way the tree before this PR recorded it.
+        """Record graph evidence in the shape the tree before this PR recorded it.
 
-        The pre-migration shape is produced by the pre-migration code, extracted
-        from the base commit and run as its own tree, so the upgrade this test
-        describes is the one that actually happens rather than a hand-built
-        document that never crossed a recorder.
+        The document is checked-in versioned data, captured once from the base
+        commit's own recorder, so the suite depends on the checkout rather than on
+        a particular ancestor object surviving in the local clone. It is input, not
+        proof: the refusal below is still driven through the real wrapper.
         """
-        old = self.tmp / "base-tree"
-        old.mkdir()
-        archive = subprocess.run(["git", "-C", str(ROOT), "archive", BASE_COMMIT],
-                                 capture_output=True, check=True)
-        subprocess.run(["tar", "-x", "-C", str(old)], input=archive.stdout, check=True)
-        packet = self.tmp / "legacy-packet.json"
-        packet.write_text(json.dumps(graph_packet(str(self.repo))), encoding="utf-8")
-        script = (
-            "import json, sys\n"
-            "from hooks.lib.repo_identity import resolve_repo_identity\n"
-            "from hooks.lib.workflow_documents import graph_evidence_document\n"
-            "from hooks.lib import workflow_state as w\n"
-            "identity = resolve_repo_identity(sys.argv[1])\n"
-            "state = w.read_workflow(identity)\n"
-            "w.commit_evidence_phase(identity, state['slug'], w.instance_id(state), 'repo-context-forge',\n"
-            "    graph_evidence_document(sys.argv[2], slug=state['slug'],\n"
-            "        workflow_id=str(w.instance_id(state)), source_root=str(identity.root)))\n"
-        )
-        recorded = subprocess.run([sys.executable, "-c", script, str(self.repo), str(packet)],
-                                  cwd=old, env=self.env, text=True, capture_output=True)
-        self.assertEqual(recorded.returncode, 0, f"the base-tree recorder failed: {recorded.stderr}")
+        legacy = json.loads(
+            (ROOT / "hooks" / "tests" / "fixtures" / "legacy-graph-evidence.json")
+            .read_text(encoding="utf-8"))
+        self.assertNotIn("advisorProjection", legacy,
+                         "the fixture is not the pre-migration shape it claims to be")
+        state = json.loads(self.run_workflow("status").stdout)
+        legacy["slug"], legacy["workflowId"] = state["slug"], state["workflowId"]
+        sys.path.insert(0, str(ROOT))
+        from hooks.lib.repo_identity import resolve_repo_identity
+        from hooks.lib import workflow_state as w
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        identity = resolve_repo_identity(str(self.repo))
+        w.commit_evidence_phase(identity, state["slug"], state["workflowId"],
+                                "repo-context-forge", legacy)
 
     def test_graph_evidence_from_before_the_projection_is_refused(self) -> None:
         """An upgraded in-flight pass must not read as carrying evidence it predates."""
@@ -379,6 +373,41 @@ class AdvisorPayloadTests(unittest.TestCase):
             self.assertNotIn(removed, doc, f"{marker}: the doc still promises {removed!r}")
         self.assertIn("resumed session", doc, f"{marker}: the doc describes no resume rule at all")
 
+
+    def test_a_consult_that_never_reached_the_provider_records_nothing(self) -> None:
+        """A phase marker is a claim about what the session received."""
+        marker = "FAILED_SETUP_RECORDED_A_DELIVERED_PHASE"
+        (self.home / ".bashrc").write_text("# no claudex alias\n", encoding="utf-8")
+        run = self.wrapper("--slug", "payload", "--phase", "preflight-advice",
+                           "--design-absent", "payload rig: no plan artifact", "--", "scope question")
+        self.assertEqual(run.returncode, 2, f"{marker}: the setup failure was not refused")
+        sessions = self.tmp / "state" / "_advisor-sessions"
+        left = sorted(path.name for path in sessions.iterdir()) if sessions.exists() else []
+        self.assertEqual(left, [], f"{marker}: a consult the provider never saw left {left}")
+
+
+    def test_the_migration_proof_runs_without_ancestor_objects(self) -> None:
+        """A suite that needs a particular ancestor object is not portable.
+
+        Source archives, shallow clones whose boundary is newer, and squash-merged
+        checkouts all lack it, and the migration proof then errors before reaching
+        the refusal it exists to drive. This runs that proof from a tree with no
+        Git objects at all, which is the strictest of those shapes.
+        """
+        marker = "LEGACY_TEST_NEEDS_AN_ANCESTOR_OBJECT"
+        stripped = self.tmp / "no-objects"
+        shutil.copytree(ROOT / "hooks", stripped / "hooks")
+        shutil.copytree(ROOT / "skills", stripped / "skills")
+        self.assertFalse((stripped / ".git").exists(), "the probe tree still carries Git objects")
+        run = subprocess.run(
+            [sys.executable, "-m", "unittest",
+             "hooks.tests.test_advisor_payload.AdvisorPayloadTests"
+             ".test_graph_evidence_from_before_the_projection_is_refused"],
+            cwd=stripped, env={**os.environ, "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "portable-state")},
+            text=True, capture_output=True, check=False)
+        self.assertEqual(run.returncode, 0,
+                         f"{marker}: the migration proof needs the checkout's history: "
+                         f"{run.stderr.strip()[-300:]!r}")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -728,6 +728,23 @@ class GraphEvidenceContractTests(unittest.TestCase):
         document = self.document_for(packet)
         self.assertEqual(document.get("advisorProjection"), packet["advisorProjection"], marker)
 
+    def test_an_unresolved_graph_status_is_refused(self) -> None:
+        """An empty omission list is not the same claim as a resolved result."""
+        marker = "UNRESOLVED_GRAPH_STATUS_RECORDED"
+        for status in ("unresolved", "failed", None):
+            with self.subTest(status=status):
+                packet = graph_packet(str(self.root))
+                if status is None:
+                    packet["advisorProjection"]["graph"].pop("status")
+                else:
+                    packet["advisorProjection"]["graph"]["status"] = status
+                path = self.root.parent / "unresolved-graph-packet.json"
+                path.write_text(json.dumps(packet), encoding="utf-8")
+                with self.assertRaises(ValueError, msg=marker) as refusal:
+                    graph_evidence_document(str(path), slug="unresolved-graph",
+                                            workflow_id="w", source_root=str(self.root))
+                self.assertIn("resolved", str(refusal.exception), marker)
+
     def test_a_bool_schema_version_is_not_the_integer_one(self) -> None:
         """`True == 1` in Python, so an equality guard alone admits the wrong type."""
         marker = "BOOL_SCHEMA_VERSION_ACCEPTED"

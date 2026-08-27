@@ -365,13 +365,18 @@ new_session_id() { if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/
 # so a fresh id can never inherit another session's claim about what it has seen.
 phase_file="$sid_file.phase"
 recorded_phase=$([[ -f "$phase_file" ]] && cat "$phase_file" || printf '')
+# Neither the id nor the phase is written until the provider has actually taken
+# the turn. Both are claims about what a session received, and a consult that
+# died in setup or transport received nothing: persisting first left a resumable
+# session the provider never opened, and a phase marker that suppressed a rubric
+# the model was never shown.
+created_session=0
 if [[ "$fresh" -eq 1 || ! -s "$sid_file" ]]; then
-  sid=$(new_session_id); temporary="$sid_file.tmp.$$"; printf '%s\n' "$sid" >"$temporary"; chmod 600 "$temporary"; mv "$temporary" "$sid_file"
-  session_args=(--session-id "$sid"); session_mode=create; recorded_phase=""
+  sid=$(new_session_id); session_args=(--session-id "$sid"); session_mode=create
+  recorded_phase=""; created_session=1
 else
   sid=$(cat "$sid_file"); session_args=(--resume "$sid"); session_mode=resume
 fi
-printf '%s' "$phase" >"$phase_file"; chmod 600 "$phase_file"
 
 block=$(sed -n '/^alias claudex=/,/^claude --model/p' "$HOME/.bashrc" 2>/dev/null || :)
 # A missing key is the empty case the next check reports, not a pipeline failure:
@@ -542,6 +547,12 @@ if [[ ! -s "$output_file" ]] || [[ -z "$(tr -d '[:space:]' <"$output_file")" ]];
   printf 'error: codex advisor returned empty output\n' >&2
   exit 2
 fi
+
+# The turn landed, so the session now exists and has been shown this phase.
+if [[ "$created_session" -eq 1 ]]; then
+  temporary="$sid_file.tmp.$$"; printf '%s\n' "$sid" >"$temporary"; chmod 600 "$temporary"; mv "$temporary" "$sid_file"
+fi
+printf '%s' "$phase" >"$phase_file"; chmod 600 "$phase_file"
 
 if [[ -n "$phase" ]]; then
   record_stage=preflight; [[ "$phase" == "final-review" ]] && record_stage=final

@@ -274,6 +274,25 @@ def _head_oid(identity: RepoIdentity) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _gated_candidate(identity: RepoIdentity, state: JsonObject) -> str | None:
+    """The candidate tree the pass's own quality-gate run recorded.
+
+    Reading it back is the point: the alternative is rebuilding a tree here, which
+    makes the checkpoint a second owner of an identity the pass already proved, and
+    a rebuild races any write that lands between the gate and this call.
+    """
+    document = evidence_document(identity, state.get("verificationLatestEvidence"))
+    runs = document.get("runs") if isinstance(document, dict) else None
+    if not isinstance(runs, list):
+        return None
+    for run in reversed(runs):
+        if isinstance(run, dict) and run.get("kind") == "quality-gate":
+            gate = run.get("gate")
+            candidate = gate.get("candidateTree") if isinstance(gate, dict) else None
+            return candidate if isinstance(candidate, str) and candidate else None
+    return None
+
+
 def _bind_review_to_tree(
     identity: RepoIdentity, state: JsonObject, document: dict[str, str] | None = None,
     head: str | None = None,
@@ -1342,7 +1361,18 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         "codeReviewStatus": review.get("status"),
         "baseOid": state.get("baseOid"),
         "passStartOid": state.get("passStartOid"),
-        "activeCandidateTree": (advisor or {}).get("expectedCandidateTree") or (gate or {}).get("candidate"),
+        # At final-review the pass has bound both a reviewed and a gated tree, so the
+        # candidate it names is the one it proved rather than the one Repo Context
+        # Forge recorded before implementation began. Earlier checkpoints have no
+        # such binding and keep the producer's value.
+        # At final-review the pass has already gated a tree, so the candidate it
+        # names is the one its own quality-gate run recorded rather than the one
+        # Repo Context Forge recorded before implementation began. Earlier
+        # checkpoints have gated nothing and keep the producer's value.
+        "activeCandidateTree": (
+            _gated_candidate(identity, state) if phase == "final-review" and not missing
+            else (advisor or {}).get("expectedCandidateTree") or (gate or {}).get("candidate")
+        ),
         "projectionEvidence": recorded if isinstance(recorded, str) else None,
         "reviewBinding": {"manifestId": state.get("reviewManifestId"), "head": state.get("reviewHead")},
         # The stage-scoped references the consult attaches. They travel with the

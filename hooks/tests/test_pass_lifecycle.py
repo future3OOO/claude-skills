@@ -3406,6 +3406,44 @@ class PassLifecycleTests(unittest.TestCase):
                          f"{marker}: a helper resolved the deleted checkout default: "
                          f"{driven.stderr.strip()[-300:]!r}")
 
+    def test_final_review_names_the_candidate_the_pass_proved(self) -> None:
+        """The projection is recorded before implementation and never refreshed by it.
+
+        A pass that edits after Repo Context Forge, verifies, and records its review
+        has bound both a reviewed and a gated tree; exporting the bootstrap-era
+        candidate instead hands the advisor a diff that omits the implementation it
+        was asked to review.
+        """
+        marker = "FINAL_REVIEW_SAW_THE_BOOTSTRAP_TREE"
+        slug = "final-candidate"
+        self.begin_slug(slug)
+        work = self.tmp / "final-candidate-work"
+        work.mkdir()
+        support.advance_to_final_review(self.repo, work)
+        bootstrap = json.loads(self.cli("checkpoint", "--phase", "preflight-advice").stdout)
+        (self.repo / "implemented.py").write_text("value = 7\n", encoding="utf-8")
+        self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0, marker)
+        self.assertEqual(self.cli("verify", "--slug", slug, "--kind", "quality-gate",
+                                  "--base-ref", "HEAD").returncode, 0, marker)
+        self.owner_phase("code-review", "passed", findings="none")
+        descriptor = json.loads(self.cli("checkpoint", "--phase", "final-review").stdout)
+        self.assertTrue(descriptor["ready"], marker + f": {descriptor['missing']}")
+        # Read back, not rebuilt: the named candidate is the object the pass's own
+        # quality-gate run recorded, so a write landing after the gate cannot move it.
+        recorded = json.loads(self.cli("evidence", "--evidence-id",
+                                       json.loads(self.cli("status").stdout)["verificationLatestEvidence"]).stdout)
+        gated = [run["gate"]["candidateTree"] for run in recorded["document"]["runs"]
+                 if run.get("kind") == "quality-gate"][-1]
+        self.assertEqual(descriptor["activeCandidateTree"], gated,
+                         f"{marker}: the descriptor did not name the gated candidate")
+        self.assertNotEqual(descriptor["activeCandidateTree"], bootstrap["activeCandidateTree"],
+                            f"{marker}: the descriptor still names the bootstrap tree")
+        listed = subprocess.run(["git", "-C", str(self.repo), "ls-tree", "-r", "--name-only",
+                                 str(descriptor["activeCandidateTree"])],
+                                text=True, capture_output=True, check=True, env=self.env)
+        self.assertIn("implemented.py", listed.stdout.split(),
+                      f"{marker}: the named candidate does not contain the implementation")
+
     def green_late_preservation(self, slug: str, wid: str, behavior_id: str,
                                 refs: list[dict[str, str]], value: int, failure: str) -> None:
         """Add one preservation obligation after the contract GREEN and prove it.

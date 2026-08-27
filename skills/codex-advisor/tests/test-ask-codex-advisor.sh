@@ -329,23 +329,29 @@ printf '== session identity (offline)\n'
 idtmp=$(mktemp -d)
 mkdir -p "$idtmp/home" "$idtmp/repo/sub"
 git -C "$idtmp/repo" init -q
-# Each invocation must get past SID creation and fail at the later alias-parse stage.
-# Discarding the status instead would let an early death leave the first SID file in
-# place, so the one-file assertion below would pass without proving path equivalence.
+# Each invocation must complete its turn: the pointer is written once the provider
+# has taken it, so a run that dies earlier writes nothing and the one-file assertion
+# below would count an empty directory rather than proving path equivalence.
 # The state root is pinned, not inherited: a surrounding run that exports its
-# own synthetic CLAUDE_WORKFLOW_STATE_ROOT would otherwise take every sid with
-# it and the one-file assertion below would count an empty directory.
+# own synthetic CLAUDE_WORKFLOW_STATE_ROOT would otherwise take every sid with it.
 offline_invoke() { # label, wrapper --cwd value, optional directory to run from
   local out status
   if [[ -n "${3:-}" ]]; then
-    out=$(cd "$3" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+    out=$(cd "$3" && PATH="$idtmp/home/bin:$PATH" HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
   else
-    out=$(HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
+    out=$(PATH="$idtmp/home/bin:$PATH" HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
   fi
   status=$?
-  check_status "session identity ($1) reaches the alias-parse stage" 2 "$status"
-  check "session identity ($1) names the parse failure" "could not parse the claudex alias env" "$out"
+  check_status "session identity ($1) completes its turn" 0 "$status"
 }
+mkdir -p "$idtmp/home/bin"
+cat >"$idtmp/home/.bashrc" <<'IDBASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=t CLAUDE_CODE_SUBAGENT_MODEL=m claude'
+IDBASHRC
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "answered\\n"\n' >"$idtmp/home/bin/claude"
+chmod +x "$idtmp/home/bin/claude"
+# The pointer is written once the provider has taken the turn, so identity is
+# measured on a completed consult rather than on a run that dies before it.
 offline_invoke "root" "$idtmp/repo"
 offline_invoke "subdir" "$idtmp/repo/sub"
 offline_invoke "relative" "./sub" "$idtmp/repo"
@@ -357,9 +363,16 @@ rm -rf "$idtmp"
 
 printf '== state-root alignment (offline)\n'
 roottmp=$(mktemp -d)
-mkdir -p "$roottmp/home" "$roottmp/repo" "$roottmp/isolated"
+mkdir -p "$roottmp/home/bin" "$roottmp/repo" "$roottmp/isolated"
 git -C "$roottmp/repo" init -q
-HOME="$roottmp/home" CLAUDE_HOME="$roottmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$roottmp/isolated" \
+cat >"$roottmp/home/.bashrc" <<'ROOTBASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=t CLAUDE_CODE_SUBAGENT_MODEL=m claude'
+ROOTBASHRC
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "answered\\n"\n' >"$roottmp/home/bin/claude"
+chmod +x "$roottmp/home/bin/claude"
+# Which root the pointer lands under is only observable once a turn completes.
+PATH="$roottmp/home/bin:$PATH" HOME="$roottmp/home" CLAUDE_HOME="$roottmp/claude" \
+  CLAUDE_WORKFLOW_STATE_ROOT="$roottmp/isolated" \
   "$WRAPPER" --slug root-alignment --cwd "$roottmp/repo" -- "q" >/dev/null 2>&1
 override_sids=$(ls "$roottmp/isolated/_advisor-sessions"/*.sid 2>/dev/null | wc -l | tr -d ' ')
 fallback_sids=$(ls "$roottmp/claude/state/_advisor-sessions"/*.sid 2>/dev/null | wc -l | tr -d ' ')

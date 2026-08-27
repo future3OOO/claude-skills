@@ -345,8 +345,15 @@ def _advisor_projection(value: object) -> JsonObject:
     if expected != indexed:
         raise ValueError(f"the advisorProjection candidate trees disagree: {expected} against {indexed}")
     graph = value.get("graph")
-    if not isinstance(graph, dict) or not isinstance(graph.get("requiredOmissions"), list):
-        raise ValueError("the advisorProjection carries no graph result")
+    # An empty omission list says the planned checks were not dropped; it says
+    # nothing about whether the analysis resolved. Both have to hold before the
+    # result is evidence the advisor can be handed.
+    if (
+        not isinstance(graph, dict)
+        or graph.get("status") != "resolved"
+        or not isinstance(graph.get("requiredOmissions"), list)
+    ):
+        raise ValueError("the advisorProjection carries no resolved graph result")
     if graph["requiredOmissions"]:
         raise ValueError("the advisorProjection leaves required checks omitted; rerun Repo Context Forge")
     return dict(value)
