@@ -21,15 +21,21 @@ if str(ROOT) not in sys.path:
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 REARM = ROOT / "hooks" / "skill-discipline-rearm.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
+ADVISOR = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
-from hooks.tests.support import build_document, build_no_change_document, record_context_forge, wait_for_trace_writes  # noqa: E402
+from hooks.tests.support import (  # noqa: E402
+    build_document, build_no_change_document, graph_packet, record_context_forge,
+    wait_for_trace_writes,
+)
 
 from hooks.lib._workflow_db import database_path  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import _active_candidate_tree  # noqa: E402
-from hooks.lib.workflow_documents import design_file_declaration  # noqa: E402
-from hooks.lib.workflow_state import read_workflow, set_phase  # noqa: E402
+from hooks.lib.workflow_documents import design_file_declaration, graph_evidence_document  # noqa: E402
+from hooks.lib.workflow_state import (  # noqa: E402
+    WorkflowError, commit_evidence_phase, read_workflow, set_phase,
+)
 
 
 # Driven as a child process by the mid-gate mutation test. It runs outside this
@@ -423,6 +429,152 @@ class PassLifecycleTests(unittest.TestCase):
             (wid, begun_at, candidate), marker,
         )
 
+    def test_checkpoint_is_the_complete_advisor_stage_descriptor(self) -> None:
+        marker = "CHECKPOINT_DESCRIPTOR_INCOMPLETE"
+        wid = self.begin_slug("checkpoint-descriptor")
+        self.advance_to_context_forge()
+        status = json.loads(self.cli("status").stdout)
+        checkpoint = self.checkpoint("preflight-advice")
+        projection = checkpoint.get("advisorProjection")
+        self.assertEqual(
+            (
+                checkpoint.get("schemaVersion"), checkpoint.get("ready"),
+                checkpoint.get("slug"), checkpoint.get("workflowId"),
+                checkpoint.get("nextAction"), checkpoint.get("sessionMode"),
+                checkpoint.get("passStartOid"), checkpoint.get("activeCandidateTree"),
+                checkpoint.get("advisorProjectionEvidence"),
+                projection.get("schemaVersion") if isinstance(projection, dict) else None,
+                projection.get("expectedCandidateTree") if isinstance(projection, dict) else None,
+                projection.get("indexedCandidateTree") if isinstance(projection, dict) else None,
+            ),
+            (
+                1, True, "checkpoint-descriptor", wid, "advisor-preflight", "create",
+                status["passStartOid"], status["activeCandidateTree"],
+                status["repoContextForgeEvidence"], 1,
+                status["activeCandidateTree"], status["activeCandidateTree"],
+            ),
+            marker + json.dumps(checkpoint, sort_keys=True),
+        )
+
+    def test_checkpoint_refuses_a_projection_for_an_old_candidate(self) -> None:
+        marker = "INVALID_PROJECTION_REACHED_ADVISOR"
+        self.begin_slug("checkpoint-candidate-drift")
+        self.advance_to_context_forge()
+        app = self.repo / "app.py"
+        app.write_text(app.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+
+        checkpoint = self.checkpoint("preflight-advice")
+        self.assertEqual(
+            (
+                checkpoint.get("ready"), checkpoint.get("advisorProjection"),
+                "advisor projection does not describe the active candidate tree"
+                in checkpoint.get("missing", []),
+            ),
+            (False, None, True),
+            marker + json.dumps(checkpoint, sort_keys=True),
+        )
+
+    def test_checkpoint_refuses_a_non_integer_projection_schema(self) -> None:
+        marker = "INVALID_PROJECTION_REACHED_ADVISOR"
+        slug, wid = "checkpoint-schema-refusal", self.begin_slug("checkpoint-schema-refusal")
+        identity = resolve_repo_identity(self.repo)
+        state = read_workflow(identity)
+        packet = graph_packet(
+            str(identity.root), str(_active_candidate_tree(identity)),
+            str(state["passStartOid"]),
+        )
+        path = self.tmp / "non-integer-projection.json"
+        path.write_text(json.dumps(packet), encoding="utf-8")
+        document = graph_evidence_document(
+            str(path), slug=slug, workflow_id=wid,
+            source_root=str(identity.root),
+        )
+        projection = document["advisorProjection"]
+        self.assertIsInstance(projection, dict)
+        projection["schemaVersion"] = True
+        commit_evidence_phase(
+            identity, slug, wid, "repo-context-forge", document,
+        )
+
+        checkpoint = self.checkpoint("preflight-advice")
+        self.assertEqual(
+            (
+                checkpoint.get("ready"), checkpoint.get("advisorProjection"),
+                "advisor projection requires the installed schemaVersion 1 shape"
+                in checkpoint.get("missing", []),
+            ),
+            (False, None, True),
+            marker + json.dumps(checkpoint, sort_keys=True),
+        )
+
+    def test_phased_advisor_refuses_caller_selected_fresh_mode(self) -> None:
+        marker = "ADVISOR_SESSION_MODE_WRONG"
+        result = subprocess.run(
+            [
+                str(ADVISOR), "--slug", "fresh-refusal",
+                "--phase", "preflight-advice", "--cwd", str(self.repo),
+                "--design-absent", "test pass has no design", "--fresh", "--", "q",
+            ],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(
+            (result.returncode, "phased consults do not accept --fresh" in result.stderr),
+            (2, True), marker + result.stdout + result.stderr,
+        )
+
+    def test_phased_advisor_refuses_caller_selected_payload_anchors(self) -> None:
+        marker = "ADVISOR_PAYLOAD_DUPLICATED"
+        packet = self.tmp / "caller-packet.json"
+        packet.write_text("{}", encoding="utf-8")
+        for extra in (("--packet", str(packet)), ("--base-ref", "HEAD")):
+            with self.subTest(extra=extra[0]):
+                result = subprocess.run(
+                    [
+                        str(ADVISOR), "--slug", "payload-anchor-refusal",
+                        "--phase", "preflight-advice", "--cwd", str(self.repo),
+                        "--design-absent", "test pass has no design", *extra, "--", "q",
+                    ],
+                    cwd=ROOT, env=self.env, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                )
+                self.assertEqual(
+                    (
+                        result.returncode,
+                        "phased consults do not accept --packet or --base-ref" in result.stderr,
+                    ),
+                    (2, True), marker + result.stdout + result.stderr,
+                )
+
+    def test_advisor_result_refuses_a_candidate_newer_than_its_checkpoint(self) -> None:
+        marker = "STALE_ADVISOR_RESULT_RECORDED"
+        slug, wid = "stale-advisor-result", self.begin_slug("stale-advisor-result")
+        self.advance_to_context_forge()
+        checkpoint_candidate = self.checkpoint("preflight-advice")["activeCandidateTree"]
+        envelope = self.tmp / "advisor-envelope.json"
+        envelope.write_text(json.dumps({
+            "schemaVersion": 1, "findings": [], "verdict": "completed",
+        }), encoding="utf-8")
+        app = self.repo / "app.py"
+        app.write_text(app.read_text(encoding="utf-8") + "# provider race\n", encoding="utf-8")
+        before = self.ledger_rows()
+
+        result = self.cli(
+            "advisor-result", "--slug", slug, "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor",
+            "--input", str(envelope),
+            "--expected-candidate-tree", str(checkpoint_candidate),
+        )
+        self.assertEqual(
+            (
+                result.returncode,
+                "active candidate changed" in result.stderr.lower(),
+                self.ledger_rows(),
+            ),
+            (2, True, before),
+            marker + result.stdout + result.stderr,
+        )
+
     def ledger_rows(self) -> tuple[tuple[object, ...], ...]:
         tables = ("metadata", "workflows", "evidence", "review_manifests", "workflow_events",
                   "event_evidence", "event_manifests", "active_projection", "migration_records")
@@ -593,8 +745,11 @@ class PassLifecycleTests(unittest.TestCase):
         # against a still-stale workflow would refuse whether or not completion
         # recomputes after the same-call edit.
         (self.repo / "app.py").write_bytes(reviewed)
-        self.assertTrue(self.checkpoint("final-review")["ready"],
-                        "restoring the reviewed bytes did not restore freshness")
+        restored = self.checkpoint("final-review")
+        self.assertEqual(
+            [item for item in restored["missing"] if "stale" in item or "changed" in item],
+            [], "restoring the reviewed bytes did not restore freshness",
+        )
 
         # The same edit and the completion inside one shell call: completion
         # recomputes after the edit has already landed, so it is still caught.
@@ -884,6 +1039,10 @@ class PassLifecycleTests(unittest.TestCase):
             f"revalidation reported readiness without naming the drifted tree: {stale['missing']}",
         )
 
+        try:
+            record_context_forge(self.repo, self.tmp)
+        except WorkflowError as exc:
+            self.fail("REVALIDATION_PROJECTION_REFRESH_BLOCKED" + str(exc))
         self.owner_phase("code-review", "passed", findings="none")
         self.assertTrue(self.checkpoint("final-review")["ready"], "the refreshed manifest did not reopen the consult")
         self.finalize("revalidated-manifest", wid)

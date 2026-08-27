@@ -16,14 +16,13 @@ phase belongs in `--phase`, not in the slug.
 ### `preflight-advice`
 
 Run after Repo Context Forge, before production preflight and before edits.
-Supply the task contract, packet/coverage summary, intended Module/Interface/Seam,
-first real-seam RED, and no-change surfaces. The recorded graph result is attached
-for you, carrying the caller and upstream-impact halves; it holds no callee facts,
-so callee context stays yours to supply. The advisor challenges scope and design; it does not create
-the preflight artifact or approve implementation. It treats the lead question
-as a claim, measures accessible premises before inferring, and makes supplied
-contract items without GREEN/baseline proof plus unowned `PRES-n` or behavioral
-`ASSUMP-n` obligations material.
+Supply the focused scope question; the workflow checkpoint supplies the
+pass-owned advisor projection, workflow binding, and current-pass diff anchors.
+The advisor challenges scope and design; it does not create the preflight
+artifact or approve implementation. It treats the lead question as a claim,
+measures accessible premises before inferring, and makes supplied contract items
+without GREEN/baseline proof plus unowned `PRES-n` or behavioral `ASSUMP-n`
+obligations material.
 
 Every phased consult carries a governing-design declaration: `--design-file`
 with the durable design artifact, or `--design-absent` with the specific
@@ -49,7 +48,8 @@ Behavior Map `sourceRefs` reference. The wrapper captures and validates the
 catalogue once, records that canonical declaration as workflow evidence, and
 requires final review to present the identical declaration; preflight and
 completion enforce reference integrity and required-label ownership. The
-advisor still reviews the design's prose and never owns dispositions.
+wrapper sends the canonical declaration, not the design body, and the advisor
+never owns dispositions.
 
 The canonical imaginary-risk ban and the premise/occurrence checks in the
 repo's `CLAUDE.md` govern architecture-family decisions; this checkpoint adds
@@ -65,22 +65,13 @@ whether it is behavioral or non-behavioral.
 
 Run after implementation, verification, and the lead's structured code-review
 pass when required. This is the workflow's independent review checkpoint: it
-challenges the lead's review rather than trusting it, loading the live diff plus
-the recorded TDD and review summaries.
-The wrapper attaches the live diff, the same governing-design declaration
-(carry the identical `--design-file` or `--design-absent` on both
-checkpoints), and the pass's recorded production preflight. The phase prompt
-states precedence once — the design says why this was proposed, the recorded
-preflight is the reconciled before-edit contract, the Behavior Map names the
-authoritative proof obligations, and recorded TDD evidence is its bounded
-observation, never proof — and makes unreconciled design/preflight
-divergence a finding. It requires each `PRES-n` obligation rechecked against
-the diff, each `ASSUMP-n` assumption falsified against the implementation,
-the contradictory-contract gate applied to the changed Interface, and at most
-one additional material reachable failure class beyond the design and
-recorded proof. The advisor reconciles the governed slice, real-seam proof,
-module shape, minimality, and regression coverage, returning only this strict
-envelope:
+challenges the lead's review rather than trusting it. The wrapper sends the
+checkpoint's retained advisor projection, the same governing-design declaration
+(carry the identical `--design-file` or `--design-absent` on both checkpoints),
+and one direct `passStartOid^{tree} -> activeCandidateTree` diff. The advisor
+uses the repository and workflow-owned bindings to reconcile the governed slice,
+real-seam proof, Module shape, minimality, and regression coverage, returning
+only this strict envelope:
 
 ```json
 {"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"fix-before-commit"}
@@ -111,64 +102,41 @@ wait for the process rather than polling with repeated sleeps.
 ```bash
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase preflight-advice \
-  --cwd "$PWD" --packet "<packet-file>" \
-  --design-file "<design-artifact>" \
+  --cwd "$PWD" --design-file "<design-artifact>" \
   --budget 600 -- "<focused scope question>"
 
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase final-review \
-  --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" \
-  --design-file "<design-artifact>" \
+  --cwd "$PWD" --design-file "<design-artifact>" \
   --budget 600 -- "<focused completion question>"
 ```
 
 Substitute `--design-absent "<specific reason>"` when the pass genuinely has
 no design artifact. The operator-selected default budget is 600 words, and
-budgets above 1,200 are refused. Exact 51KB bodies did not finish within the
-240-second deadline at 450, 600, or 900; those runs record the measured provider
-throughput limit, not a replay-calibrated budget threshold.
+budgets above 1,200 are refused. Phased consults refuse `--packet`, `--base-ref`,
+and `--fresh`; the workflow checkpoint owns payload anchors and session mode.
 
-Every bounded evidence channel — design, recorded preflight, packet,
-verification runs, current Behavior Map, TDD, and review summaries — wears a
-delegate-visible header with shown/total bytes, truncation, and sha256, and
-reports the same on stderr as
-`codex_advisor_evidence`; the assembled prompt reports
-`codex_advisor_prompt bytes_total`. Graph evidence keeps its whole-check
-omission accounting. The claudex window knobs
+The prompt carries one complete schema-version-1 advisor projection and one
+direct current-pass diff. Their sizes and digests are reported on stderr as
+`codex_advisor_evidence`, and the assembled prompt reports
+`codex_advisor_prompt bytes_total`. The claudex window knobs
 (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) pass through to the delegate exactly when
 the alias block configures them, so a proxy model the CLI does not recognize
 stops compacting against a guessed window.
 
-Carry `--packet` on **both** checkpoints. The delegate has a separate context:
-it sees the diff and the repository, but not the packet you read, so evidence you gathered
-and did not attach does not exist for it. A final review that cannot check
-consumer completeness independently answers `context-mismatch`, and the paid
-consult buys a re-run rather than a review.
+Before the expensive consult the wrapper runs only the read-only
+`workflow.py checkpoint --phase <phase>` query. The checkpoint validates stage
+readiness, pass-owned projection evidence, governed-design identity, and the
+current candidate, then returns the create/resume mode and direct diff anchors.
+A delayed result is recorded with that checkpoint candidate and the mutation
+transaction recaptures it before commit.
 
-Graph evidence is not one of those attachments. The wrapper reads the active
-pass's `repo-context-forge` evidence — the resolved context/impact result Repo
-Context Forge recorded with the packet — through the workflow evidence
-Interface, and appends a bounded excerpt itself. There is no option to supply
-graph evidence by hand, and nothing to copy between panes.
-
-Before the expensive consult the wrapper runs the read-only
-`workflow.py checkpoint --phase <phase>` query and refuses when the
-checkpoint is not ready: `preflight-advice` requires Repo Context Forge
-evidence recorded; `final-review` requires verification passed and a terminal
-code-review state. It then resolves the graph evidence and refuses, still
-before the provider runs, when this workflow instance has none or does not own
-the recorded record — rerun the Repo Context Forge bootstrap and consult again.
-The delayed result still revalidates slug and workflowId at recording time.
-
-`--base-ref` is required for `final-review` and must resolve in the repository.
-`--packet` is an optional bounded read-only file appended to the evidence.
-
-The wrapper derives the repository root and session identity
-from `hooks/lib/repo_identity.py`, so one stable slug resumes the same session
-from the root, a subdirectory, a relative path, or a symlinked path, and it
-automatically attaches the active pass's recorded TDD and code-review
-summaries when present.
+The wrapper derives the repository root and session identity from
+`hooks/lib/repo_identity.py`, so one stable slug uses one workflow-bound SID
+from the root, a subdirectory, a relative path, or a symlinked path. Preflight
+creates it; final review and appeal require and resume it. A missing SID or
+resume failure refuses without a cold-start fallback.
 
 A successful transport requires exit 0, non-empty stdout, and
 `codex_advisor_complete status=0 provider=codex` on stderr. A missing terminal

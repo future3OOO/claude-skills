@@ -128,6 +128,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--findings")
     command.add_argument("--reason")
     command.add_argument("--design-declaration", required=True)
+    command.add_argument("--expected-candidate-tree")
 
     command = _instance_command(commands, "advisor-disposition", "record lead disposition of advisor findings")
     command.add_argument("--stage", required=True)
@@ -461,19 +462,25 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif verdict is None:
             raise ValueError("advisor-result requires --input or legacy --verdict")
-        _emit_mutation(identity, lambda candidate: record_advisor_result(
-            identity,
-            args.slug,
-            args.workflow_id,
-            args.stage,
-            args.source,
-            verdict,
-            findings=args.findings,
-            reason=args.reason,
-            design=design_declaration(args.design_declaration),
-            intake=intake,
-            expected_candidate_tree=candidate,
-        ))
+        def record(candidate: str) -> dict[str, object]:
+            expected = args.expected_candidate_tree
+            if expected is not None and expected != candidate:
+                raise WorkflowError("active candidate changed after the advisor checkpoint")
+            return record_advisor_result(
+                identity,
+                args.slug,
+                args.workflow_id,
+                args.stage,
+                args.source,
+                verdict,
+                findings=args.findings,
+                reason=args.reason,
+                design=design_declaration(args.design_declaration),
+                intake=intake,
+                expected_candidate_tree=expected or candidate,
+            )
+
+        _emit_mutation(identity, record)
     elif args.command == "advisor-disposition":
         if args.findings == "addressed" and args.input is None:
             raise ValueError("an addressed disposition requires --input with the lead's disposition document")

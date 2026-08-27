@@ -291,6 +291,68 @@ def _resolved_graph(value: object) -> JsonObject:
     return value
 
 
+def validate_advisor_projection(
+    value: object, *, candidate_tree: str | None = None,
+) -> JsonObject:
+    fields = {
+        "schemaVersion", "producerRevision", "sourceRepo", "sourceBaseOid",
+        "committedHeadOid", "expectedCandidateTree", "indexedCandidateTree",
+        "targets", "graph", "coverageGaps",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != fields
+        or type(value.get("schemaVersion")) is not int
+        or value.get("schemaVersion") != 1
+    ):
+        raise ValueError("advisor projection requires the installed schemaVersion 1 shape")
+    revision = value.get("producerRevision")
+    if (
+        not isinstance(revision, dict)
+        or set(revision) != {"commit", "dirty"}
+        or not isinstance(revision.get("dirty"), bool)
+        or not isinstance(revision.get("commit"), str)
+        or re.fullmatch(r"[0-9a-f]{40}", revision["commit"]) is None
+    ):
+        raise ValueError("advisor projection requires canonical producer provenance")
+    if not _text(value.get("sourceRepo")):
+        raise ValueError("advisor projection requires canonical source repository provenance")
+    for field in (
+        "sourceBaseOid", "committedHeadOid", "expectedCandidateTree",
+        "indexedCandidateTree",
+    ):
+        found = value.get(field)
+        if not isinstance(found, str) or re.fullmatch(r"[0-9a-f]{40}", found) is None:
+            raise ValueError(f"advisor projection requires a 40-hex {field}")
+    if value["expectedCandidateTree"] != value["indexedCandidateTree"]:
+        raise ValueError("advisor projection candidate trees do not match")
+    if candidate_tree is not None and value["expectedCandidateTree"] != candidate_tree:
+        raise ValueError("advisor projection does not describe the active candidate tree")
+    if not isinstance(value.get("targets"), list) or not all(
+        isinstance(target, dict) for target in value["targets"]
+    ):
+        raise ValueError("advisor projection targets must be an array of objects")
+    graph = value.get("graph")
+    if not isinstance(graph, dict) or set(graph) != {
+        "status", "references", "requiredOmissions", "optionalOmissionCount",
+    }:
+        raise ValueError("advisor projection graph has an invalid shape")
+    if graph.get("status") != "resolved":
+        raise ValueError("advisor projection graph is not resolved")
+    references = graph.get("references")
+    if not isinstance(references, list) or not all(_text(item) for item in references):
+        raise ValueError("advisor projection graph references must be text")
+    if graph.get("requiredOmissions") != []:
+        raise ValueError("advisor projection has required graph omissions")
+    omissions = graph.get("optionalOmissionCount")
+    if type(omissions) is not int or omissions < 0:
+        raise ValueError("advisor projection optional omission count is invalid")
+    gaps = value.get("coverageGaps")
+    if not isinstance(gaps, list) or not all(isinstance(gap, dict) for gap in gaps):
+        raise ValueError("advisor projection coverage gaps must be an array of objects")
+    return dict(value)
+
+
 def _gate_symbols(graph: JsonObject) -> list[JsonObject]:
     """Gate-shaped symbol results carrying only genuine incoming-relationship
     data: context-check callers and file-context references, merged per
@@ -341,16 +403,23 @@ def graph_evidence_document(
         raise ValueError(f"the packet was produced for {reported!r}, not {source_root}")
     gitnexus = packet.get("gitnexus")
     graph = _resolved_graph(gitnexus.get("analysis") if isinstance(gitnexus, dict) else None)
+    snapshot_candidate = None
+    if snapshot is not None:
+        if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):
+            raise ValueError("a snapshot binding requires its base commit and candidate tree")
+        snapshot_candidate = str(snapshot["candidate"]).strip()
+    projection = validate_advisor_projection(
+        packet.get("advisorProjection"), candidate_tree=snapshot_candidate,
+    )
     document: JsonObject = {
         "schemaVersion": 1,
         "slug": slug,
         "workflowId": workflow_id,
         "graph": graph,
+        "advisorProjection": projection,
         "recordedAt": utc_timestamp(),
     }
     if snapshot is not None:
-        if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):
-            raise ValueError("a snapshot binding requires its base commit and candidate tree")
         document["gateContext"] = {
             "base": str(snapshot["base"]).strip(),
             "candidate": str(snapshot["candidate"]).strip(),

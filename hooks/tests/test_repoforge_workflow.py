@@ -47,6 +47,7 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.git("init", "-q")
         self.git("config", "user.email", "test@example.invalid")
         self.git("config", "user.name", "Workflow Harness")
+        self.git("remote", "add", "origin", "https://example.invalid/workflow-fixture.git")
         # A callable symbol and a dependent, so the producer's graph plan has real
         # context and impact to resolve rather than an empty single-file surface.
         (self.repo / "app.py").write_text("def compute(value):\n    return value + 1\n", encoding="utf-8")
@@ -454,6 +455,20 @@ class RepoForgeWorkflowTests(unittest.TestCase):
             "the evidence is not bound to this source checkout",
         )
         self.assertTrue(graph["producer_revision"]["commit"])
+        projection = record["document"]["advisorProjection"]
+        self.assertEqual(projection["schemaVersion"], 1)
+        self.assertEqual(
+            (projection["expectedCandidateTree"], projection["indexedCandidateTree"]),
+            (state["activeCandidateTree"], state["activeCandidateTree"]),
+        )
+        checkpoint_result = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertEqual(
+            checkpoint_result.returncode, 0,
+            checkpoint_result.stdout + checkpoint_result.stderr,
+        )
+        checkpoint = json.loads(checkpoint_result.stdout)
+        self.assertEqual(checkpoint["advisorProjectionEvidence"], evidence_id)
+        self.assertEqual(checkpoint["advisorProjection"], projection)
 
     def git_out(self, *args: str) -> str:
         result = subprocess.run(
@@ -714,9 +729,12 @@ class GraphEvidenceContractTests(unittest.TestCase):
             str(path), slug="contract", workflow_id="wid", source_root=str(self.root), **binding,
         )
 
+    def packet(self) -> dict[str, object]:
+        return graph_packet(str(self.root), "c" * 40, "b" * 40)
+
     def test_a_packet_for_another_checkout_is_refused(self) -> None:
         foreign = self.tmp / "elsewhere"
-        packet = graph_packet(str(self.root))
+        packet = self.packet()
         packet["target_state"] = {"source_repo": str(foreign)}
         with self.assertRaises(ValueError) as refusal:
             self.document_for(packet)
@@ -729,15 +747,42 @@ class GraphEvidenceContractTests(unittest.TestCase):
         )
 
     def test_a_resolved_packet_for_this_checkout_is_accepted(self) -> None:
-        document = self.document_for(graph_packet(str(self.root)))
+        document = self.document_for(self.packet())
         self.assertEqual(document["graph"]["status"], "resolved")
         self.assertEqual(document["workflowId"], "wid")
         self.assertNotIn("gateContext", document)
         self.assertNotIn("gateContextGap", document)
 
+    def test_invalid_advisor_projections_are_refused_before_recording(self) -> None:
+        mutations = {
+            "unsupported schema": lambda projection: projection.__setitem__("schemaVersion", 2),
+            "missing producer": lambda projection: projection.__setitem__("producerRevision", {}),
+            "missing source": lambda projection: projection.__setitem__("sourceRepo", ""),
+            "missing base": lambda projection: projection.__setitem__("sourceBaseOid", ""),
+            "candidate mismatch": lambda projection: projection.__setitem__("indexedCandidateTree", "d" * 40),
+            "unresolved graph": lambda projection: projection["graph"].__setitem__("status", "blocked"),
+            "required omission": lambda projection: projection["graph"].__setitem__("requiredOmissions", ["missing"]),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                packet = self.packet()
+                projection = packet["advisorProjection"]
+                self.assertIsInstance(projection, dict)
+                mutate(projection)
+                with self.assertRaises(ValueError):
+                    self.document_for(packet)
+
+    def test_advisory_coverage_gaps_remain_retained(self) -> None:
+        packet = self.packet()
+        projection = packet["advisorProjection"]
+        self.assertIsInstance(projection, dict)
+        projection["coverageGaps"] = [{"kind": "absent_symbol", "reference": "optional"}]
+        document = self.document_for(packet)
+        self.assertEqual(document["advisorProjection"]["coverageGaps"], projection["coverageGaps"])
+
     def test_a_snapshot_binding_records_the_gate_shaped_context(self) -> None:
         document = self.document_for(
-            graph_packet(str(self.root)),
+            self.packet(),
             snapshot={"base": "b" * 40, "candidate": "c" * 40},
         )
         self.assertEqual(document["gateContext"], {
@@ -752,7 +797,7 @@ class GraphEvidenceContractTests(unittest.TestCase):
 
     def test_an_unbound_run_records_its_measured_gap_instead(self) -> None:
         document = self.document_for(
-            graph_packet(str(self.root)),
+            self.packet(),
             snapshot_gap="the worktree changed during the producer run (aaaaaaaaaaaa then bbbbbbbbbbbb)",
         )
         self.assertNotIn("gateContext", document)
@@ -761,14 +806,14 @@ class GraphEvidenceContractTests(unittest.TestCase):
     def test_a_binding_and_a_gap_together_are_refused(self) -> None:
         with self.assertRaises(ValueError):
             self.document_for(
-                graph_packet(str(self.root)),
+                self.packet(),
                 snapshot={"base": "b" * 40, "candidate": "c" * 40},
                 snapshot_gap="also a gap",
             )
 
     def test_a_binding_without_base_or_candidate_is_refused(self) -> None:
         with self.assertRaises(ValueError):
-            self.document_for(graph_packet(str(self.root)), snapshot={"base": "b" * 40})
+            self.document_for(self.packet(), snapshot={"base": "b" * 40})
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from ._workflow_db import (
     read_manifest,
 )
 from .repo_identity import RepoIdentity
+from .workflow_documents import validate_advisor_projection, validate_design_declaration
 from .state_store import (
     _active_candidate_tree,
     is_governance_path,
@@ -361,8 +362,10 @@ def _apply_step(
     if phase not in STEP_FIELDS and phase != "code-review":
         raise ValueError(f"unsupported workflow phase: {phase}")
     _require_open(state)
-    if state.get("revalidation") and phase not in {"verification", "code-review"}:
-        raise WorkflowError(f"governance revalidation permits only re-verification and review; {phase} is closed")
+    if state.get("revalidation") and phase not in {"repo-context-forge", "verification", "code-review"}:
+        raise WorkflowError(
+            f"governance revalidation permits only context refresh, re-verification, and review; {phase} is closed"
+        )
     state.pop("paused", None)
     _require_predecessor(state, phase)
     if phase == "implementation" and status == "passed" and state.get("tdd") not in {"passed", "not-required"}:
@@ -1367,12 +1370,21 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
     if phase not in CHECKPOINT_PHASES:
         raise ValueError(f"unsupported checkpoint phase: {phase}")
     state = _require(identity)
+    workflow_id = instance_id(state)
+    candidate = _active_candidate_tree(identity)
     revalidation = bool(state.get("revalidation"))
     terminal = state.get("phase") == "complete" and not revalidation
     open_for_phase = not terminal and not (phase == "preflight-advice" and revalidation)
+    stage_actions = {
+        "preflight-advice": {"advisor-preflight"},
+        "final-review": {"final-review", "appeal-final-review", "re-consult-final-review"},
+    }
     requirements = (
-        ("workflowId", instance_id(state) is not None),
+        ("workflowId", workflow_id is not None),
         ("open-workflow", open_for_phase),
+        ("advisor-stage", state.get("nextAction") in stage_actions[phase]),
+        ("passStartOid", isinstance(state.get("passStartOid"), str)
+         and re.fullmatch(r"[0-9a-f]{40}", str(state["passStartOid"])) is not None),
         *(
             _context_steps(state)
             if phase == "preflight-advice"
@@ -1384,6 +1396,35 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         ),
     )
     missing = [name for name, ready in requirements if not ready]
+    evidence_id = state.get("repoContextForgeEvidence")
+    graph_document = evidence_document(
+        identity, evidence_id if isinstance(evidence_id, str) else None,
+    )
+    projection = None
+    if not isinstance(graph_document, dict):
+        missing.append("advisor projection evidence")
+    elif (
+        graph_document.get("schemaVersion") != 1
+        or graph_document.get("slug") != state.get("slug")
+        or graph_document.get("workflowId") != workflow_id
+    ):
+        missing.append("advisor projection evidence belongs to another workflow")
+    else:
+        try:
+            projection = validate_advisor_projection(
+                graph_document.get("advisorProjection"), candidate_tree=candidate,
+            )
+        except ValueError as exc:
+            missing.append(str(exc))
+    design_evidence_id = state.get("governedDesignEvidence")
+    design = None
+    if isinstance(design_evidence_id, str):
+        try:
+            design = validate_design_declaration(
+                evidence_document(identity, design_evidence_id),
+            )
+        except ValueError as exc:
+            missing.append(str(exc))
     if phase == "final-review":
         missing.extend(() if state.get("nextAction") in ("appeal-final-review", "re-consult-final-review") else correction_blockers(identity, state))
         if drift := _binding_drift(identity, state, "review"):
@@ -1392,11 +1433,20 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
             missing.append(drift)
     review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
     return {
+        "schemaVersion": 1,
         "phase": phase,
         "ready": not missing,
         "missing": missing,
         "slug": state.get("slug"),
         "workflowId": state.get("workflowId"),
+        "nextAction": state.get("nextAction"),
+        "sessionMode": "create" if phase == "preflight-advice" else "resume",
+        "passStartOid": state.get("passStartOid"),
+        "activeCandidateTree": candidate,
+        "advisorProjectionEvidence": evidence_id,
+        "advisorProjection": projection,
+        "governedDesignEvidence": design_evidence_id,
+        "governedDesign": design,
         "tdd": state.get("tdd"),
         "codeReviewStatus": review.get("status"),
     }
