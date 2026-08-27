@@ -357,6 +357,42 @@ class AdvisorBudgetContractTest(unittest.TestCase):
                     self.assertNotIn("cwd is not a directory", result.stderr, marker)
 
 
+class AdvisorPhaseLessPayloadContractTest(unittest.TestCase):
+    def test_payload_anchors_fail_closed_before_provider_state(self) -> None:
+        marker = "PHASE_LESS_PAYLOAD_ANCHORS_NOT_REFUSED"
+        self.assertNotRegex(wrapper_help().stderr, r"--(?:packet|base-ref)", marker)
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            packet = temporary / "packet.json"
+            packet.write_text("{}\n", encoding="utf-8")
+            env = os.environ | {
+                "HOME": directory,
+                "CLAUDE_HOME": str(temporary / "claude"),
+                "CLAUDE_WORKFLOW_STATE_ROOT": str(temporary / "state"),
+            }
+            for option in (("--packet", str(packet)), ("--base-ref", "HEAD")):
+                with self.subTest(option=option[0]):
+                    result = subprocess.run(
+                        [
+                            str(WRAPPER), "--slug", "phase-less-anchor-refusal",
+                            "--cwd", str(ROOT), *option, "--", "question",
+                        ],
+                        cwd=ROOT,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 2, marker)
+                    self.assertIn(
+                        "phase-less consults do not accept --packet or --base-ref",
+                        result.stderr,
+                        marker,
+                    )
+            self.assertFalse(
+                (temporary / "state" / "_advisor-sessions").exists(), marker
+            )
+
+
 class AdvisorTrustContractTest(unittest.TestCase):
     def test_same_trust_instruction_without_immutability_promise(self) -> None:
         help_result = wrapper_help()

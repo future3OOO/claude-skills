@@ -4,8 +4,8 @@ set -euo pipefail
 umask 077
 
 usage() {
-  printf 'Usage: %s --slug <name> [--phase preflight-advice|final-review] [--cwd path] [--base-ref ref] [--packet file] [--design-file file | --design-absent reason] [--budget words] [--fresh] -- "question"\n' "$0" >&2
-  printf '  Phased consults derive payload, candidate anchors, and create/resume mode from workflow checkpoint.\n' >&2
+  printf 'Usage: %s --slug <name> [--phase preflight-advice|final-review] [--cwd path] [--design-file file | --design-absent reason] [--budget words] [--fresh] -- "question"\n' "$0" >&2
+  printf '  Phased consults derive payload, candidate anchors, and create/resume mode from workflow checkpoint; phase-less consults carry only the question.\n' >&2
   printf '  Default budget: 600 words; values above 1200 are refused.\n' >&2
   printf '  Advisor trust: same as the lead; instructed not to mutate the checkout or workflow ledger.\n' >&2
   exit 2
@@ -49,6 +49,10 @@ if [[ -n "$phase" && ( -n "$packet_file" || -n "$base_ref" ) ]]; then
   printf 'error: phased consults do not accept --packet or --base-ref; checkpoint owns projection and current-pass anchors\n' >&2
   exit 2
 fi
+if [[ -z "$phase" && ( -n "$packet_file" || -n "$base_ref" ) ]]; then
+  printf 'error: phase-less consults do not accept --packet or --base-ref; supply only the consult question\n' >&2
+  exit 2
+fi
 if [[ -n "$design_file" && -n "$design_absent" ]]; then
   printf 'error: supply exactly one of --design-file or --design-absent\n' >&2
   exit 2
@@ -72,10 +76,6 @@ if [[ -n "$phase" ]]; then
   fi
 elif [[ -n "$design_file" || -n "$design_absent" ]]; then
   printf 'error: --design-file/--design-absent requires --phase\n' >&2
-  exit 2
-fi
-if [[ -n "$packet_file" && ! ( -f "$packet_file" && -r "$packet_file" ) ]]; then
-  printf 'error: bounded input is not a readable regular file: %s\n' "$packet_file" >&2
   exit 2
 fi
 [[ -n "$question" ]] || question="$(cat)"
@@ -131,10 +131,6 @@ repo_key=$(python3 "$repo_identity" --path "$cwd" --field key) || {
   exit 2
 }
 repo_root=$(python3 "$repo_identity" --path "$cwd" --field root)
-if [[ -n "$base_ref" ]] && ! git -C "$repo_root" rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
-  printf 'error: --base-ref cannot be resolved in %s: %s\n' "$repo_root" "$base_ref" >&2
-  exit 2
-fi
 workflow_cli="$script_dir/../../repo-production-workflow/scripts/workflow.py"
 producer_slug=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from hooks.lib.workflow_state import safe_slug; print(safe_slug(sys.argv[2]))' "$script_dir/../../.." "$slug")
 
