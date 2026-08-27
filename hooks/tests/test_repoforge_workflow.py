@@ -242,6 +242,25 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertIn("REPO_CONTEXT_FORGE_REQUIRED_INTAKE", output.read_text(encoding="utf-8"))
         self.assertEqual(self.status()["repoContextForge"], "passed")
 
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_no_remote_source_gap_reaches_advisor_checkpoint(self) -> None:
+        marker = "NO_REMOTE_SOURCE_PROVENANCE_BLOCKED"
+        self.git("remote", "remove", "origin")
+        self.git("branch", "-M", "main")
+
+        forged = self.graph_bootstrap(base="main")
+
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        state = self.status()
+        self.assertEqual((state["repoContextForge"], state["gitnexus"]), ("passed", "passed"), marker)
+        evidence = self.evidence(str(state["repoContextForgeEvidence"]))["document"]
+        projection = evidence["advisorProjection"]
+        self.assertEqual(projection["sourceRepo"], {"gap": "source_repo_unavailable"}, marker)
+        self.assertEqual(projection["expectedCandidateTree"], projection["indexedCandidateTree"], marker)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertEqual(checkpoint.returncode, 0, marker + "\n" + checkpoint.stdout + checkpoint.stderr)
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker)
+
     def ledger_bytes(self, state: dict[str, object]) -> bytes:
         return (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
                 / str(state["repo"]["key"]) / "workflow.sqlite3").read_bytes()

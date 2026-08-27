@@ -318,7 +318,8 @@ def validate_advisor_projection(
         or not _git_oid(revision.get("commit"))
     ):
         raise ValueError("advisor projection requires canonical producer provenance")
-    if not _text(value.get("sourceRepo")):
+    source_repo = value.get("sourceRepo")
+    if not (_text(source_repo) or source_repo == {"gap": "source_repo_unavailable"}):
         raise ValueError("advisor projection requires canonical source repository provenance")
     for field in (
         "sourceBaseOid", "committedHeadOid", "expectedCandidateTree",
