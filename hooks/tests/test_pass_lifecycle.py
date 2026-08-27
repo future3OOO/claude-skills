@@ -3360,6 +3360,121 @@ class PassLifecycleTests(unittest.TestCase):
                              str(self.mixed_finding_disposition_document(intake_id, "fixed")))
         self.assertEqual(fixed.returncode, 0,
                          marker + f": the retired row blocked its replacement's closure: {fixed.stderr.strip()!r}")
+    def test_the_rig_drives_the_selected_cli_from_every_launch(self) -> None:
+        """An entrypoint selection the helpers ignore is not a selection.
+
+        `workflow_cli` says the checkout copy is the default and installed proof is
+        the same suite pointed at the estate. That only holds if every workflow-CLI
+        subprocess the rig starts names the selection, so this drives a real checkout
+        whose default entrypoint is genuinely deleted, with the estate named only by
+        the environment. Nothing is substituted: a helper that resolves the default
+        opens a path that does not exist on disk.
+        """
+        marker = "SUPPORT_DROVE_THE_CHECKOUT_CLI"
+        estate = self.tmp / "estate"
+        shutil.copytree(ROOT / "hooks", estate / "hooks")
+        shutil.copytree(ROOT / "skills", estate / "skills")
+        selected = estate / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
+        stripped = self.tmp / "stripped"
+        shutil.copytree(ROOT / "hooks", stripped / "hooks")
+        shutil.copytree(ROOT / "skills", stripped / "skills")
+        (stripped / "skills" / "repo-production-workflow" / "scripts" / "workflow.py").unlink()
+        probe = self.tmp / "probe-repo"
+        probe.mkdir()
+        subprocess.run(["git", "-C", str(probe), "init", "-q"], check=True, env=self.env)
+        subprocess.run(["git", "-C", str(probe), "-c", "user.email=t@example.invalid",
+                        "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "base"],
+                       check=True, env=self.env)
+        (probe / "app.py").write_text("value = 1\n", encoding="utf-8")
+        work = self.tmp / "rig-work"
+        work.mkdir()
+        environment = {**self.env, "CLAUDE_WORKFLOW_CLI": str(selected)}
+        begun = subprocess.run(
+            [sys.executable, str(selected), "begin", "--repo", str(probe),
+             "--slug", "rig-probe", "--intent", "rig entrypoint probe"],
+            env=environment, text=True, capture_output=True, check=False)
+        self.assertEqual(begun.returncode, 0, marker + begun.stdout + begun.stderr)
+        driven = subprocess.run(
+            [sys.executable, "-c",
+             "import sys\n"
+             "from pathlib import Path\n"
+             "from hooks.tests.support import advance_to_final_review\n"
+             "advance_to_final_review(Path(sys.argv[1]), Path(sys.argv[2]))\n",
+             str(probe), str(work)],
+            cwd=stripped, env=environment, text=True, capture_output=True, check=False)
+        self.assertEqual(driven.returncode, 0,
+                         f"{marker}: a helper resolved the deleted checkout default: "
+                         f"{driven.stderr.strip()[-300:]!r}")
+
+    def green_late_preservation(self, slug: str, wid: str, behavior_id: str,
+                                refs: list[dict[str, str]], value: int, failure: str) -> None:
+        """Add one preservation obligation after the contract GREEN and prove it.
+
+        Rows are added one at a time on purpose: a pending preservation item
+        withholds the production edit the next RED needs, so two pending rows
+        would block each other and neither could ever reach GREEN.
+        """
+        payload = self.tmp / f"{behavior_id.lower()}-addition.json"
+        payload.write_text(json.dumps({"reassessment": f"the work exposed {behavior_id}", "items": [
+            {"id": behavior_id, "kind": "preservation", "basis": "exposed by the GREEN",
+             "sourceRefs": refs, "behavior": behavior_id, "seam": "workflow CLI",
+             "expected": f"value is {value}", "redFailure": failure, "status": "pending"}],
+            "dispositions": []}), encoding="utf-8")
+        added = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(payload))
+        self.assertEqual(added.returncode, 0, failure + added.stdout + added.stderr)
+        self.green_mapped(slug, behavior_id, value, failure)
+
+    def test_a_preservation_obligation_retires_onto_an_unlinked_replacement(self) -> None:
+        """`behavior_map.unresolved` already lets a preservation obligation close that way.
+
+        The exact-reservation rule owns contract proof: a replacement the finding
+        never linked is unrelated proof however GREEN it is elsewhere. A preservation
+        obligation is not that shape, and the predicate said so in prose two lines
+        above while refusing it in code.
+        """
+        marker, slug = "PRESERVATION_RETIREMENT_REFUSED", "preservation-retirement"
+        wid, intake_id = self.reserved_proof_pass(slug, [])
+        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
+        refs = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        self.green_late_preservation(slug, wid, "BM_ADV_KEPT", refs, 4, "KEPT_NOT_PROVED")
+        self.green_late_preservation(slug, wid, "BM_ELSEWHERE", [], 6, "ELSEWHERE_NOT_PROVED")
+        update = self.tmp / "retirement-reassessment.json"
+        update.write_text(json.dumps({"reassessment": "the obligation retires onto proof outside the finding",
+            "items": [], "dispositions": [{"id": "BM_ADV_KEPT", "status": "superseded",
+                "supersededBy": "BM_ELSEWHERE",
+                "evidence": "measurement retired it onto a row proved on its own"}]}), encoding="utf-8")
+        retired = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(retired.returncode, 0, marker + retired.stdout + retired.stderr)
+        fixed = self.dispose(slug, wid, "preflight", "addressed",
+                             str(self.mixed_finding_disposition_document(intake_id, "fixed")))
+        self.assertEqual(fixed.returncode, 0,
+                         marker + f": a preservation obligation could not retire off the linked set: {fixed.stderr.strip()!r}")
+
+    def test_a_contract_obligation_still_may_not_retire_off_the_linked_set(self) -> None:
+        """The narrowing must not reach the rule the exact reservation exists for."""
+        marker, slug = "CONTRACT_STRAY_ADMITTED", "contract-stray"
+        wid, intake_id = self.reserved_proof_pass(slug, [
+            {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
+             "behavior": "reserved contract proof", "expected": "value is four",
+             "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
+            {"id": "BM_ELSEWHERE", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
+             "behavior": "proved on its own, outside the finding", "expected": "value is six",
+             "redFailure": "ELSEWHERE_NOT_PROVED", "status": "pending", "linked": False},
+        ])
+        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
+        self.green_mapped(slug, "BM_ADV_RETIRED", 4, "RETIRED_NOT_PROVED")
+        self.green_mapped(slug, "BM_ELSEWHERE", 6, "ELSEWHERE_NOT_PROVED")
+        update = self.tmp / "stray-reassessment.json"
+        update.write_text(json.dumps({"reassessment": "retired onto proof the finding never linked",
+            "items": [], "dispositions": [{"id": "BM_ADV_RETIRED", "status": "superseded",
+                "supersededBy": "BM_ELSEWHERE", "evidence": "retired onto an unrelated row"}]}), encoding="utf-8")
+        retired = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(retired.returncode, 0, marker + retired.stdout + retired.stderr)
+        fixed = self.dispose(slug, wid, "preflight", "addressed",
+                             str(self.mixed_finding_disposition_document(intake_id, "fixed")))
+        self.assertEqual(fixed.returncode, 2, marker + ": unrelated contract proof closed the finding")
+        self.assertIn("stay linked to the finding", fixed.stderr, marker)
+
     def test_an_envelope_reviewing_another_candidate_marks_how_it_answered(self) -> None:
         """A stale answer is visible, not impossible.
 

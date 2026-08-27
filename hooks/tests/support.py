@@ -141,13 +141,18 @@ def advance_to_final_review(repo: Path, tmp: Path, design=None) -> RepoIdentity:
     state = read_workflow(identity)
     slug, workflow_id = str(state["slug"]), str(instance_id(state))
 
+    # One resolution for the whole rig: a helper that reaches past the selection
+    # drives a different implementation than the one the operator chose, and an
+    # installed run would then be proof of the checkout copy.
+    selected = workflow_cli()
+
     def producer(command: str, document: object) -> None:
         path = tmp / f"{command}-input.json"
         path.write_text(json.dumps(document), encoding="utf-8")
         result = subprocess.run(
             [
                 sys.executable,
-                str(WORKFLOW),
+                str(selected),
                 command,
                 "--repo",
                 str(repo),
@@ -201,7 +206,7 @@ def advance_to_final_review(repo: Path, tmp: Path, design=None) -> RepoIdentity:
         subprocess.run(
             [
                 sys.executable,
-                str(WORKFLOW),
+                str(selected),
                 "verify",
                 "--repo",
                 str(repo),

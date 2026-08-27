@@ -1039,17 +1039,17 @@ def _behavioral_finding_closure(
     # A retired obligation defers to its replacement here as it does everywhere
     # else: behavior_map owns the terminal walk, and judging a linked item by its
     # raw status instead let a superseded row block the closure its own GREEN
-    # replacement had already proved.
-    # Reserved contract proof resolves within the finding's own linked set: a
-    # replacement the finding never linked is exactly the unrelated proof the
-    # exact reservation exists to refuse, however GREEN it is elsewhere. A
-    # preservation obligation is not that shape - it may already close on its own
-    # baseline evidence - so retiring one onto GREEN proof stays admitted.
+    # replacement had already proved. Reserved contract proof still resolves
+    # inside the finding's own linked set, because a replacement the finding never
+    # linked is exactly the unrelated proof an exact reservation exists to refuse,
+    # however GREEN it is elsewhere. A preservation obligation is not that shape -
+    # `behavior_map.unresolved` already closes one through any GREEN terminal
+    # replacement - so retiring one off the linked set stays admitted.
     terminal = {identifier: behavior_map.terminal(items, entry) for identifier, entry in linked.items()}
-    # The walk resolves within the finding's own linked set: a replacement the
-    # finding never linked is the unrelated proof an exact reservation refuses,
-    # however GREEN it is elsewhere.
-    if strayed := sorted(identifier for identifier, entry in terminal.items() if entry["id"] not in linked):
+    if strayed := sorted(
+        identifier for identifier, entry in terminal.items()
+        if linked[identifier].get("kind") == "contract" and entry["id"] not in linked
+    ):
         raise WorkflowError(
             "behavioral fixed requires the replacement to stay linked to the finding: " + ", ".join(strayed)
         )

@@ -351,11 +351,11 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
             raise ValueError(f"behavior {identifier} disposition requires evidence")
         mapped = item(items, identifier)
         if status == "superseded":
-            # A pending obligation measurement has retired is superseded like a GREEN
-            # one: the alternative is abandoning the instance and replaying the pass,
-            # which reclassifies its own prior fixes as pre-instance work. Closure is
-            # not weakened - the replacement must still reach GREEN terminally - and a
-            # settled item has nothing left to supersede.
+            # Only a GREEN item can be superseded. Retiring a pending obligation
+            # forward was considered and deliberately not shipped, so the pending
+            # case is out of scope here rather than merely unimplemented, and a
+            # settled item has nothing left to supersede either. Closure is
+            # unweakened: the replacement must still reach GREEN terminally.
             if mapped.get("status") != "green":
                 raise ValueError(
                     f"behavior {identifier} is {mapped.get('status')}; only a GREEN item can be superseded"

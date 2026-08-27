@@ -514,13 +514,25 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assert_map_refused(slug, workflow_id, self.supersede("BM_A", "BM_A", pending="BM_A"),
                                 "BM_A", "SELF_SUPERSESSION_RECORDED")
 
-    def test_supersede_refuses_a_settled_source(self) -> None:
-        """A pending obligation retires forward; a settled one has nothing left to retire.
+    def test_supersede_refuses_a_pending_source(self) -> None:
+        """Retiring a pending obligation forward was considered and not shipped.
 
-        Superseding a pending item is how an obligation measurement has retired
-        closes without replaying the pass, and its replacement must still reach
-        GREEN. An item that already reached a settled status is not in that
-        position, so superseding it would only hide a recorded outcome.
+        The guard admits a GREEN source only, so the descoped case has a retained
+        regression here rather than resting on the adjacent settled-source test,
+        which exercises a different status.
+        """
+        marker = "PENDING_SUPERSESSION_ADMITTED"
+        slug, workflow_id = self.green_pair()
+        self.assert_map_refused(slug, workflow_id, self.supersede("BM_OTHER", "BM_A", pending="BM_A"),
+                                "only a GREEN item can be superseded", marker)
+
+    def test_supersede_refuses_a_settled_source(self) -> None:
+        """Only a GREEN item can be superseded; a settled one has nothing left to retire.
+
+        Retiring a pending obligation forward was considered and deliberately not
+        shipped, so the guard admits a GREEN source only. An item that already
+        reached another settled status is not in that position either: superseding
+        it would hide a recorded outcome rather than move an open obligation.
         """
         slug, workflow_id = self.h.begin_to_preflight([
             contract("BM_A"),
