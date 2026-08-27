@@ -2,11 +2,12 @@
 
 ## Status
 
-- current state: PR A changed-candidate appeal recovery is fixed and pre-stabilization source/RCF/typed gates are green at 697 net human-authored lines; this reconciliation triggers one final exact-candidate gate pass before no-finding lead review and final advisor
+- current state: original PR A workflow is complete; commit `c21e86d909a68ccf788d68570f66bb5eff95d8a2` is pushed, PR [#164](https://github.com/future3OOO/claude-skills/pull/164) is open, and its historical 17-path scoped install was verified. The current-head reviewer gate remains open while governed fix pass `issue-152-pr-a-fix-5` closes real legacy final-review recovery after fix-4's immutable proof reservation was malformed; its dirty candidate is 699 net human-authored lines, mapped RED/GREEN/reassessment, clone-local full suites, final RCF/GitNexus refresh, and the typed gate are green, with lead review, final advisor, completion, push, and current-head reviewer closure pending.
 - governing artifact: this document
 - trusted checkout: `/home/prop_/projects/simpbitch-152`
 - trusted base: `origin/main` at `0c5fec84c65ec9ad4ca5b368a9e6b9ae0a8a9b79`
-- active workflow: `issue-152-pr-a` / `7e90a919dc7c4091838fcc47ac9ba17e`
+- original workflow: `issue-152-pr-a` / `7e90a919dc7c4091838fcc47ac9ba17e` (complete)
+- active workflow: `issue-152-pr-a-fix-5` / `21e77d1f5bd4410aa147469c90794b66`
 - last updated: 2026-08-27
 
 ## Objective
@@ -35,10 +36,10 @@ The issue wins on divergence. `producerRevision` is provenance, not a pinned com
 ## Assumptions And Required Re-Measurement
 
 - PR A's base contains the merged #143 validator; this was measured with `git merge-base --is-ancestor ea15a906... HEAD`.
-- The producer half is reported installed and compatible by the issue. PR B must re-measure the installed producer and configured GitNexus before edits and before installed acceptance.
+- The producer half is reported installed and compatible by the issue. PR B must re-measure the clone-local installed producer and configured GitNexus before edits and acceptance.
 - A configured real advisor provider is available through the existing wrapper. If it is unavailable, provider-dependent acceptance remains blocked; controlled payload capture cannot substitute.
-- No production fix begins from issue prose alone. Each PR pass reproduces its owned current behavior through the real workflow CLI, installed bootstrap, or installed wrapper and records a falsifiable root-cause hypothesis first.
-- Every scratch path created by this work stays under this clone. Local commands set `TMPDIR="$PWD/.issue-152-scratch"` and remove that directory before candidate binding.
+- No production fix begins from issue prose alone. Each PR pass reproduces its owned current behavior through the real workflow CLI, clone-local installed bootstrap, or clone-local installed wrapper and records a falsifiable root-cause hypothesis first.
+- Every scratch and private-install path stays under this clone. Local commands set `TMPDIR="$PWD/.issue-152-scratch"`; no remaining #152 action writes beneath the shared `~/.claude`, and any proof requiring that shared estate is a named proof gap.
 
 ## Affected Surface
 
@@ -204,7 +205,7 @@ This work is transaction-sensitive because it changes workflow state transitions
 - no local full suite is a prerequisite to resumed advisor review;
 - after candidate stabilization, run focused real-Seam tests and live probes, generic verification as needed, and one successful typed quality gate before lead review and resumed advisor;
 - after push, CI runs `hooks/tests/run.sh` once for each current head;
-- scoped installed-estate checks happen after publication; failure starts a new measured fix pass.
+- clone-local private-`HOME` install checks happen after publication; any check that requires the shared `~/.claude` estate is reported as a named proof gap, and failure starts a new measured fix pass.
 
 ## Diagnosis Gate
 
@@ -454,17 +455,13 @@ Current-candidate verification for each governed pass:
 Post-publication verification for each PR head:
 
 - CI log shows one `bash hooks/tests/run.sh` invocation for that head;
-- scoped install records branch, commit, and exact live path set;
-- installed focused tests run from `~/.claude` with `TMPDIR` still inside this clone;
-- PR B additionally runs `LIVE=1 bash ~/.claude/skills/codex-advisor/tests/test-ask-codex-advisor.sh` using one workflow across preflight and final;
-- README estate diff and executable-mode checks classify every difference;
-- any failure opens a new governed reviewer-fix pass before another push.
+- a private `HOME` under `.issue-152-scratch` receives the scoped branch install and records branch, commit, and exact path set;
+- installed focused tests run through that clone-local `HOME` with `TMPDIR` inside this clone;
+- PR B additionally runs its configured-provider proof from the clone-local installation using one workflow across preflight and final;
+- README install diff and executable-mode checks classify every clone-local difference;
+- any shared-`~/.claude`-only observation is named as a proof gap; any clone-local failure opens a new governed reviewer-fix pass before another push.
 
-Cleanup before candidate binding:
-
-```bash
-rm -rf /home/prop_/projects/simpbitch-152/.issue-152-scratch
-```
+Clone-local scratch is active workflow, install, and test state for this race. Preserve `.issue-152-scratch` through both PR reviewer gates; remove it only after delivery evidence is exported and no clone-local workflow remains active.
 
 Line-budget measurement excludes generated files, lockfiles, vendored code, and pure docs, and counts additions minus deletions in human-authored source including tests.
 
@@ -484,10 +481,11 @@ No `docs/agents/reviewers.md` exists in this checkout; live GitHub signals and r
 
 ## Install And Stack Discipline
 
-- A scoped branch install uses only `git diff --name-status origin/main...HEAD` live-mapped paths and stops on unexpected installed ownership drift.
-- PR B's scoped install uses its own delta against PR A, not the cumulative A+B path set.
-- Do not install B until installed RCF compatibility is remeasured.
-- Record branch, commit, and installed path set in this checklist/change log.
+- The clone is the install and test environment; no remaining #152 action writes beneath the shared `~/.claude`.
+- A private `HOME` under `.issue-152-scratch` receives only `git diff --name-status origin/main...HEAD` live-mapped paths and stops on unexpected ownership drift.
+- PR B's clone-local install uses its own delta against PR A, not the cumulative A+B path set.
+- Do not install B until clone-local RCF compatibility is remeasured.
+- Record branch, commit, installed path set, and any shared-estate-only proof gap in this checklist/change log.
 - Rebase only B after an A correction, with `git push --force-with-lease`.
 - If A needs a second significant rewrite after B is active, freeze B and stabilize A before rebuilding it.
 - Do not merge either PR as part of this task; completion requires both PRs open with reviewer gates closed.
@@ -508,7 +506,7 @@ No `docs/agents/reviewers.md` exists in this checkout; live GitHub signals and r
 
 ### PR A
 
-- [~] active workflow `issue-152-pr-a`
+- [x] original workflow `issue-152-pr-a` completed
 - [x] current CLI defects reproduced and root causes traced
 - [x] Codex Advisor preflight completed and findings dispositioned
 - [x] production preflight/Behavior Map recorded
@@ -517,24 +515,24 @@ No `docs/agents/reviewers.md` exists in this checkout; live GitHub signals and r
 - [x] A1 implemented and GREEN/reassessment recorded
 - [x] A2 implemented and GREEN/reassessment recorded
 - [x] A3 implemented and GREEN/reassessment recorded
-- [~] latest targeted appeal lifecycle proof is green; full exact-candidate source verification remains pending after final governing reconciliation
-- [~] post-fix RCF/GitNexus evidence `evidence-f381e3ffba2859148b09e29252626537` is green; final governing reconciliation requires one exact-candidate refresh
-- [~] standalone gate is green with zero errors at exactly 700 net lines; typed exact-candidate gate remains pending
-- [x] final-advisor SPEC-1/SPEC-2 are fixed in `evidence-4e5a0b1f6ef3510657697e37ba9ee3a5`; refreshed no-finding lead review pending
-- [~] candidate-binding drift, contradictory-map, appeal-race, changed-candidate recovery, ordinary-appeal gate bypass, and terminal map contradiction findings are fixed; fresh exact-candidate final review pending
-- [ ] workflow complete
-- [~] current human-authored net growth is exactly the 700 hard ceiling; clone-local scratch removal remains
-- [ ] commits pushed to `simpbitch/issue-152-pr-a`
-- [ ] `[SimpBitch] Make advisor findings append-only and candidate-bound` PR open
-- [ ] scoped installed path set recorded and installed checks green
-- [ ] CI/current-head reviewer completion gate closed
+- [x] original exact-candidate verification, lead review, and final advisor completed
+- [x] original candidate measured at exactly the 700-net hard ceiling
+- [x] commits `82c0156` and `c21e86d` pushed to `simpbitch/issue-152-pr-a`
+- [x] PR [#164](https://github.com/future3OOO/claude-skills/pull/164), `[SimpBitch] Make advisor findings append-only and candidate-bound`, opened
+- [x] original 17-path scoped install recorded and hash-verified
+- [~] current reviewer-fix workflow `issue-152-pr-a-fix-5` is in lead review at 699 cumulative net human-authored lines; fix-3 and fix-4 are paused because their immutable finding reservations had no legal closure
+- [x] reviewer-fix open-correction, post-mismatch, terminal/legacy re-intake, mixed-correction appeal, wrapper fixture, refused-producer measurement, and real legacy `dispositionEvidence` recovery causes reproduced and fixed through real-CLI proof
+- [x] fix-5 RED/GREEN/reassessment are `evidence-54eac79ea6a607847647ef87bfed3d15`/`evidence-9bcdde5cb6010886f4d9afa13f7f8d02`/`evidence-4f70cfe4bb010851dec030b311dc14a6`; focused lifecycle tests, complete hooks suite, and the 144-case wrapper suite pass in the clone-local test environment
+- [x] reviewer-fix RCF/GitNexus refresh `evidence-e2dffa0bd037b8460275a59a92a3e9c7` and typed gate `evidence-82d7af47bec4cd255fa3448aa1dfd9f8` passed on the stabilized code/test candidate
+- [ ] lead review, final advisor, workflow completion, commit, push, and clone-local scoped install
+- [ ] CI/current-head reviewer completion gate closed; current published head remains failing `contracts` until the wrapper fixture fix is pushed
 
 ### PR B
 
 - [ ] PR A reviewer gate closed before execution begins
 - [ ] branch `simpbitch/issue-152-pr-b` created from current PR A head
 - [ ] new workflow pass begun and code-anchored RCF packet recorded
-- [ ] installed producer/GitNexus compatibility remeasured
+- [ ] clone-local installed producer/GitNexus compatibility remeasured
 - [ ] diagnosis, advisor preflight, production preflight, mapped RED, and production-code baseline complete
 - [ ] B1 implemented and GREEN/reassessment recorded
 - [ ] B2 implemented and GREEN/reassessment recorded
@@ -572,3 +570,7 @@ No `docs/agents/reviewers.md` exists in this checkout; live GitHub signals and r
 - 2026-08-27: resumed final advisor intake `evidence-8ddcf1905f7baae01ba9262ee0778dc3` first closed the context-mismatch re-consult deadlock in `evidence-5f53ff0579d188cd16381b49eff47fcc`; intake `evidence-f375d7733e142833ecf5acd6b91e4aef` then closed raw re-consult drift and contradictory GREEN rows in `evidence-6d65ea216430540927ebfabe1e6b6034`. Intake `evidence-7b615856255544b567839262610abc8e` reproduced stale-candidate appeal consumption; sharp RED/GREEN/reassessment `evidence-101592e77991c502a46095659527f067`/`evidence-9f0e5a4a742007fa5ecc022ea1a9580e`/`evidence-f32f0f8cbe215fcacb796e2298e0ada5` made every final result revalidate current review and quality bindings while preserving unchanged appeal/re-consult transport, fixed in `evidence-ef6beff57262e24480c9ceda50bfa0af`. Refreshed source verification passed 168 workflow/lifecycle tests (`evidence-30f253beaa37244775b659a2a3b2bc9f`) plus 88 quality-gate tests (`evidence-3332c17e4878e05e229459a49e02e11c`) at 698 net lines.
 - 2026-08-27: final advisor intake `evidence-ea27d573f14088e05c6956717453fc58` then reproduced an unrecoverable changed-candidate appeal after the new binding checks. Real CLI and production PostToolUse proof established stale refusal and preserved non-appeal correction gates in `evidence-7072578dca72160af99813a3da817020` and `evidence-ba796745c6e995542e04995eb794206a`; RED/GREEN/reassessment `evidence-aea2e213185a81f84678248be1d2036d`/`evidence-52b700308e6f34268984ff5f878ee61d`/`evidence-b595264e7ed6a8b2836f3c52b2776ac8` now permits only appeal-final-review recovery to refresh verification and lead-review bindings. Fixed disposition `evidence-1a11fd3fbd05c2fb9ed41a6a2baa0886` closes the finding at 697 net lines. Pre-stabilization verification passed 168 workflow/lifecycle tests (`evidence-ef769966c17e318458a88f08a4c5e22c`) plus 88 quality-gate tests (`evidence-220433700fbe981eb1c9932df75a50b3`); RCF `evidence-2a7bbba07c827d0c0dbb766609f28d8c` and typed gate `evidence-bfdf3805c439ebd59dc14eaa81d3fb14` also passed with zero hard errors.
 - 2026-08-27: final-advisor intake `evidence-5fb9a57ae1ca53760175bec245aef54f` reproduced ordinary-appeal gate bypass and contradictory terminal Behavior Map contracts. Binding-specific appeal revalidation, real-CLI proof, and terminal GREEN supersessions close both findings in `evidence-4e5a0b1f6ef3510657697e37ba9ee3a5`; post-fix RCF/GitNexus evidence is `evidence-f381e3ffba2859148b09e29252626537`. The candidate is at the 700-net hard ceiling, and this final governing reconciliation intentionally precedes one exact-candidate source, gate, lead-review, and advisor pass.
+- 2026-08-27: original workflow `issue-152-pr-a` completed; plan `82c0156` and implementation `c21e86d` were pushed, PR #164 opened, and the 17-path scoped install hash-verified. The published `contracts` check exposed the stale unborn-repository advisor-wrapper fixture, and reviewer signals exposed ordinary final re-intake admission. Governed pass `issue-152-pr-a-fix-3` reproduced both causes, recorded real-CLI RED/GREEN/reassessment through `evidence-f818e7553971ff921a419a2a47f1276e` and `evidence-c8dceb375df8eebef74b1fb503c934b9`, preserved terminal context-mismatch re-consultation, and returned the dirty candidate to exactly 700 cumulative net human-authored lines; focused lifecycle tests pass while broad current-candidate verification remains pending.
+- 2026-08-27: fix-3 paused when its stage-expected missing-map observation proved structurally unrecordable as accepted-for-proof: the linked contract correctly producer-baselined already-satisfied, while immutable finding closure deliberately requires GREEN. Replacement pass `issue-152-pr-a-fix-4` classified only a newly measured mixed-correction appeal bypass. Real workflow-CLI RED `evidence-939c644203ff33b76288adf9db932f79`, GREEN `evidence-47f7db00010b0984cb20308ab8c3e526`, reassessment `evidence-d9d52ca50652db15e7e69354fdaad253`, and fixed disposition `evidence-1da0e39a65d17b5871c5510450ea77ef` now block appeal mutation while any non-rejection correction remains unresolved and preserve the valid post-closure appeal.
+- 2026-08-27: legacy final-review recovery reached RED/GREEN/reassessment in `evidence-332d9fc8712da29b4aeba6538caaaee7`/`evidence-22be64f6d53a4603b8e4e0016be862fb`/`evidence-dfe1b519e7016931fdd4482f50bf70a9`. A stale refused-producer test was corrected after a real CLI measurement proved only `activeCandidateTree` changed before bootstrap; focused proof is `evidence-54f3655097496c6c8ddb881e45f7d134`, and the complete hooks suite is green in `evidence-ca2ed1dca13745e2ecacd1aa5e6d4595` at 698 net lines. Per the operator override, all remaining installs/tests stay clone-local under `.issue-152-scratch`; the shared `~/.claude` is frozen and shared-estate-only proofs are named gaps.
+- 2026-08-27: fix-4 paused after its immutable final-advisor SPEC-1 reservation incorrectly assigned both contract and preservation behavior as preservation obligations, leaving no legal fixed transition. Fix-5 reproduced the supported historical `finalReview` shape with `dispositionEvidence` and no `intakeEvidence`; real workflow-CLI RED/GREEN/reassessment `evidence-54eac79ea6a607847647ef87bfed3d15`/`evidence-9bcdde5cb6010886f4d9afa13f7f8d02`/`evidence-4f70cfe4bb010851dec030b311dc14a6` replaced exact dictionary equality with required legacy fields plus absence of immutable intake. Preflight closure is `evidence-705848dc26dec7b6ead898791251b599`; the readability-only final layout was reassessed in `evidence-1efbe3a46f4162e3e4a088bbfc511967`, and cumulative growth is 699 net lines.

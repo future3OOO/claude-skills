@@ -940,6 +940,17 @@ def record_advisor_result(
                     rejected or isinstance(record, dict) and record.get("status") != "pending"
                 ):
                     raise WorkflowError("final appeal already consumed")
+                correction = any(isinstance(entry, dict) and entry.get("stage") == "final"
+                                 and entry.get("producer") == source and _finding_unresolved(entry)
+                                 and entry not in rejected for entry in finding_states)
+                if rejected and correction:
+                    raise WorkflowError("final appeal is blocked by unresolved final-review work")
+                legacy_recovery = isinstance(record, dict) and record.get("source") == source and (
+                    record.get("status"), record.get("findings"), "intakeEvidence" in record
+                ) == ("fix-before-commit", "addressed", False)
+                if not rejected and not legacy_recovery and isinstance(record, dict) and record.get("status") != "pending" and (
+                    not state.get("finalReviewContextMismatchEvidence") or correction):
+                    raise WorkflowError("final review result already recorded for the current candidate")
                 if rejected:
                     if intake is None:
                         raise WorkflowError("final appeal requires the advisor finding envelope")

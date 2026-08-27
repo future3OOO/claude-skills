@@ -246,6 +246,7 @@ gatetmp=$(mktemp -d)
 # inside it would drift the review manifest against the tree it describes.
 mkdir -p "$gatetmp/home" "$gatetmp/repo"
 git -C "$gatetmp/repo" init -q
+git -C "$gatetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
   "$WRAPPER" --slug orphan --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
 check_status "governed consult without an active workflow refused" 2 "$status"
@@ -264,7 +265,6 @@ check "checkpoint refusal names the missing steps" "missing: repo-context-forge"
 # Ineligible checkpoints must refuse before the expensive `claude` call. A refusal
 # naming the checkpoint (not the ~/.bashrc transport parse that follows it) is the
 # proof that the gate fired first.
-git -C "$gatetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
 workflow_py() { CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 -c "$1" "$ROOT" "$gatetmp/repo" "$2"; }
 workflow_py 'import sys
 from pathlib import Path
