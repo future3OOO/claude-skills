@@ -47,7 +47,7 @@ PY
 
 write_design() {
   cat >"$1" <<'EOF'
-UNIQUE-DESIGN-BODY-MARKER-DO-NOT-SEND
+UNIQUE-DESIGN-BODY-MARKER
 Chosen architecture preserves PRES-1 and records ASSUMP-1.
 <!-- governed-design-labels:v1 -->
 ```json
@@ -198,7 +198,10 @@ preflight_args=$(cat "$rigtmp/capture/args-1")
 preflight_sid=$(printf '%s\n' "$preflight_args" | python3 -c 'import shlex,sys; a=shlex.split(sys.stdin.read()); print(a[a.index("--session-id")+1])')
 check "preflight creates provider session" "--session-id $preflight_sid" "$preflight_args"
 check_absent "preflight does not resume" "--resume" "$preflight_args"
-check_absent "design body is not resent" "UNIQUE-DESIGN-BODY-MARKER-DO-NOT-SEND" "$(cat "$rigtmp/capture/payload-1")"
+check "design body is attached as framed evidence" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-1")"
+check_status "one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- governed-design narrative evidence')"
+check "design evidence names line framing" "framing=design-line-prefix" "$(cat "$rigtmp/capture/payload-1")"
+check "design telemetry emitted" "codex_advisor_evidence name=governing-design" "$(cat "$rigtmp/preflight.err")"
 check "canonical design declaration is retained" '"sha256"' "$(cat "$rigtmp/capture/payload-1")"
 check "current-pass diff carries the changed value" "+value = 2" "$(cat "$rigtmp/capture/payload-1")"
 check_status "one projection section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- advisor projection (schemaVersion 1) ---')"
@@ -247,8 +250,11 @@ final_out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$r
 check_status "controlled final composition exits 0" 0 "$status"
 final_args=$(cat "$rigtmp/capture/args-3")
 check "successful final resumes same SID" "--resume $preflight_sid" "$final_args"
+check_status "final has one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- governed-design narrative evidence')"
+check "final carries framed design body" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-3")"
 check_status "final has one projection section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- advisor projection (schemaVersion 1) ---')"
 check_status "final has one current-pass diff section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---')"
+check "final design telemetry emitted" "codex_advisor_evidence name=governing-design" "$(cat "$rigtmp/final.err")"
 check "projection telemetry emitted" "codex_advisor_evidence name=advisor-projection" "$(cat "$rigtmp/final.err")"
 check "diff telemetry emitted" "codex_advisor_evidence name=current-pass-diff" "$(cat "$rigtmp/final.err")"
 check "completion marker emitted" "codex_advisor_complete status=0 provider=codex" "$(cat "$rigtmp/final.err")"

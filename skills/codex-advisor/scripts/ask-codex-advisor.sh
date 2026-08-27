@@ -91,6 +91,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 transport_dir=$(mktemp -d)
 trap 'rm -rf "$transport_dir"' EXIT
 design_declaration_file=""
+design_snapshot=""; design_bytes=""; design_sha=""
 if [[ -n "$phase" ]]; then
   design_declaration_file="$transport_dir/design-declaration.json"
   if [[ -n "$design_file" ]]; then
@@ -122,6 +123,10 @@ from hooks.lib.workflow_documents import design_absence
 with open(sys.argv[3], "w", encoding="utf-8") as handle:
     json.dump(design_absence(sys.argv[2]), handle, sort_keys=True)
 PY
+  fi
+  if [[ -n "$design_snapshot" ]]; then
+    design_bytes=$(wc -c <"$design_snapshot")
+    design_sha=$(sha256sum "$design_snapshot" | cut -d' ' -f1)
   fi
 fi
 
@@ -316,12 +321,21 @@ prompt_file="$transport_dir/prompt"
     printf '\n=== Advisor checkpoint binding\nworkflowId: %s\nphase: %s\nnextAction: %s\npassStartOid: %s\nactiveCandidateTree: %s\nadvisorProjectionEvidence: %s\n' \
       "$active_wid" "$phase" "$next_action" "$pass_start" "$candidate" "$projection_evidence"
     printf '\n--- canonical governing design declaration ---\n'; cat "$design_declaration_file"
+    if [[ -n "$design_snapshot" ]]; then
+      printf '\n--- governed-design narrative evidence shown=%s total=%s truncated=no sha256=%s framing=design-line-prefix ---\n' \
+        "$design_bytes" "$design_bytes" "$design_sha"
+      sed 's/^/design> /' "$design_snapshot"; printf '\n'
+    fi
     printf '\n--- advisor projection (schemaVersion 1) ---\n'; cat "$projection_file"
     printf '\n--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---\n'; cat "$transport_dir/current-pass.diff"
   fi
   printf '\n=== Consult\n%s\n' "$question"
 } >"$prompt_file"
 if [[ -n "$phase" ]]; then
+  if [[ -n "$design_snapshot" ]]; then
+    printf 'codex_advisor_evidence name=governing-design shown=%s total=%s truncated=no sha256=%s framing=design-line-prefix\n' \
+      "$design_bytes" "$design_bytes" "$design_sha" >&2
+  fi
   printf 'codex_advisor_evidence name=advisor-projection shown=%s total=%s truncated=no sha256=%s\n' \
     "$(wc -c <"$projection_file")" "$(wc -c <"$projection_file")" "$(sha256sum "$projection_file" | cut -d' ' -f1)" >&2
   printf 'codex_advisor_evidence name=current-pass-diff shown=%s total=%s truncated=no sha256=%s\n' \
