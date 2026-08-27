@@ -447,6 +447,12 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
             extra = {field}
             if not _text(item.get(field)):
                 raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
+        if "supersedes" in item:
+            # Correcting a settled record is append-only: the reason travels with
+            # the replacement so history keeps both halves of the correction.
+            if not _text(item.get("supersedes")):
+                raise ValueError(_disposition_error(status, f"finding {identifier} supersedes requires its reason"))
+            extra = extra | {"supersedes"}
         if set(item) != common | extra:
             raise ValueError(_disposition_error(status, f"finding {identifier} {status} has unknown or missing fields"))
         if status in {"fixed", "rejected-with-evidence"} and not (

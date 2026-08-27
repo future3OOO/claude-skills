@@ -108,6 +108,42 @@ are accepted, production editing stays closed, and completing again restores
 the terminal state. The read-only `checkpoint` query reports consult
 readiness for the advisor phases without mutating anything.
 
+### Finding lifecycle
+
+A material final-review finding the lead closes itself opens one appeal, bound to
+that finding, its immutable intake, and the candidate tree the closure measured.
+Only a strict advisor envelope answers it: a bare recorded verdict carries no
+findings intake, so its silence is not the advisor omitting the appealed id.
+Omission in the next context-matched envelope accepts the closure and terminalizes
+it, whatever else that envelope raises; a material re-raise of the same id records
+persistent disagreement and blocks completion with
+`needs-human-owner-adjudication`, which ordinary progress does not clear. The
+answer records whether it reviewed the bound candidate, so a stale acceptance
+stays auditable without the appeal becoming unanswerable when the pass corrects
+something else. A `context-mismatch` envelope answers nothing, consumes no
+appeal, and contributes no findings, while remaining recorded as evidence.
+
+One recorded envelope is one correction batch. While a stage-final finding is
+unresolved or a review-stage reservation is not both consumed and fixed,
+`nextAction` names the correction the batch owes - `tdd` for an open reservation,
+otherwise `address-review-findings` - and never generic verification, the typed
+gate, or lead review. The batch is keyed on the immutable intake, so a correction
+edit does not close it.
+
+A closure document references only the findings it changes; untouched terminal
+findings stay terminal without being re-copied. An erroneous settled record,
+including one carrying a consumed proof reservation, is corrected only by an
+appended supersession naming what it replaces and why - never by rewriting
+history, and never on a record that has settled nothing.
+
+### Pass identity
+
+`baseOid` is the immutable integration fork point recorded by the Repo Context
+Forge adapter, and remains the only base the per-edit quality gate receives.
+`passStartOid` is the commit at `begin`, recorded first-write-wins and honestly
+absent when HEAD does not resolve; it does not move when a local candidate commit
+changes HEAD. A local commit is a reversible snapshot, not publication.
+
 `complete` requires:
 
 - Repo Context Forge completed, carrying its producer graph evidence;
@@ -124,7 +160,8 @@ readiness for the advisor phases without mutating anything.
   evidence reference;
 - lead code review passed/not required with material findings addressed;
 - final review from `codex-advisor` with `commit-ready` and no pending material
-  findings;
+  findings, no appeal still awaiting a strict envelope, and no recorded
+  persistent disagreement;
 - the reviewable working tree unchanged since the recorded lead review.
 
 The historical `pass-state.py`, recorder, TDD, and verification scripts are temporary compatibility adapters. They call the same unified CLI Module and contain no persistence or path logic; new callers use `workflow.py` directly.

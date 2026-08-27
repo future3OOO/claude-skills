@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from hooks.lib.behavior_map import no_change_item
@@ -21,6 +23,18 @@ from hooks.lib.workflow_state import (
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
+
+
+def workflow_cli(environ: Mapping[str, str] | None = None) -> Path:
+    """The workflow entrypoint the lifecycle suite drives as a subprocess.
+
+    The checkout copy is the default because that is what CI runs. Installed
+    proof is the same suite pointed at the estate, so the path is an operator
+    selection rather than a constant: a same-named file under another root is a
+    different implementation, and only running it proves the installed one.
+    """
+    selected = (environ if environ is not None else os.environ).get("CLAUDE_WORKFLOW_CLI")
+    return Path(selected) if selected else WORKFLOW
 
 
 def pending_behavior(
@@ -127,13 +141,18 @@ def advance_to_final_review(repo: Path, tmp: Path, design=None) -> RepoIdentity:
     state = read_workflow(identity)
     slug, workflow_id = str(state["slug"]), str(instance_id(state))
 
+    # One resolution for the whole rig: a helper that reaches past the selection
+    # drives a different implementation than the one the operator chose, and an
+    # installed run would then be proof of the checkout copy.
+    selected = workflow_cli()
+
     def producer(command: str, document: object) -> None:
         path = tmp / f"{command}-input.json"
         path.write_text(json.dumps(document), encoding="utf-8")
         result = subprocess.run(
             [
                 sys.executable,
-                str(WORKFLOW),
+                str(selected),
                 command,
                 "--repo",
                 str(repo),
@@ -187,7 +206,7 @@ def advance_to_final_review(repo: Path, tmp: Path, design=None) -> RepoIdentity:
         subprocess.run(
             [
                 sys.executable,
-                str(WORKFLOW),
+                str(selected),
                 "verify",
                 "--repo",
                 str(repo),
