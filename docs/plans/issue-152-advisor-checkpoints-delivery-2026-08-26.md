@@ -2,13 +2,31 @@
 
 ## Status
 
-- current state: original PR A workflow is complete; commit `c21e86d909a68ccf788d68570f66bb5eff95d8a2` is pushed, PR [#164](https://github.com/future3OOO/claude-skills/pull/164) is open, and its historical 17-path scoped install was verified. The current-head reviewer gate remains open while governed fix pass `issue-152-pr-a-fix-5` closes real legacy final-review recovery after fix-4's immutable proof reservation was malformed; its dirty candidate is 699 net human-authored lines, mapped RED/GREEN/reassessment, clone-local full suites, final RCF/GitNexus refresh, and the typed gate are green, with lead review, final advisor, completion, push, and current-head reviewer closure pending.
+- current state: original PR A workflow is complete; published head `8cb24add53728ec941b026782322c2804aa18109` is on PR [#164](https://github.com/future3OOO/claude-skills/pull/164). Fix-9c is stabilized locally at 699 net human-authored source/test lines with every Behavior Map item terminal, 288 hook tests and 88 quality-gate tests green, current RCF/GitNexus and typed-gate evidence recorded, lead review clear, and the final advisor appeal commit-ready after a live terminal-completion probe disproved its sole finding's premise; workflow completion, commit, push, install, and the current-head reviewer gate remain open. Fix-9b stopped before preflight because its accepted-for-proof reservation could not represent its required contract item plus three preservation obligations.
 - governing artifact: this document
 - trusted checkout: `/home/prop_/projects/simpbitch-152`
 - trusted base: `origin/main` at `0c5fec84c65ec9ad4ca5b368a9e6b9ae0a8a9b79`
 - original workflow: `issue-152-pr-a` / `7e90a919dc7c4091838fcc47ac9ba17e` (complete)
-- active workflow: `issue-152-pr-a-fix-5` / `21e77d1f5bd4410aa147469c90794b66`
+- superseded workflows: `issue-152-pr-a-fix-9` / `fdbbbc2f61734061a1bf13f5efb2d06b` and `issue-152-pr-a-fix-9b` / `16983c6f8b574dafa3a284151cda17ad` (paused before preflight)
+- active workflow: `issue-152-pr-a-fix-9c` / `6347b63c844a42438b9e6ef4b0e6a2e1`
 - last updated: 2026-08-27
+
+### PR A fix-9 reviewer remediation
+
+The existing workflow CLI Seam admits stale successful mutation responses. `_emit_mutation()` samples `activeCandidateTree` before its lifecycle operation enters `BEGIN IMMEDIATE`; the transaction then commits without checking that invocation identity. Deterministic real-Seam probes hold the real SQLite writer lock, observe both real Git `write-tree` snapshots through trace2, edit the worktree, and release the lock: `pause` returns `0`, appends an event, and reports a stale tree; an identical preflight advisor-result replay returns `0` with the same stale tree despite appending no rows; `begin` likewise stores and reports a stale tree. A legacy-only begin also commits authority import before the lifecycle transaction, leaving two events, one evidence row, one projection, metadata, and migration state. Separately, a supported 31-second required clean filter reaches `state_store._git()` and raises uncaught `subprocess.TimeoutExpired`, producing exit `1` and a traceback while appending zero rows.
+
+Fix-9 deepens the existing Workflow Module with an **opt-in transaction guard**. Candidate-reporting CLI operations sample one invocation candidate and pass it explicitly into their existing lifecycle owner. `_workflow_db.mutation(..., expected_candidate_tree=...)` opens the SQLite connection without precommitting authority, acquires `BEGIN IMMEDIATE`, applies any authority/legacy import in the same transaction, yields to append or no-op lifecycle behavior, captures a final stable candidate sample immediately before commit, and rolls the whole domain back when it differs from the invocation candidate. An edit after that final sample is a later candidate rejected by the next candidate-bound consumer; the Interface does not promise universal editor exclusion. The shallow one-caller `begin_workflow()` wrapper is deleted so `begin()` uses that guarded mutation directly. Non-response callers retain the default `None` and perform no Git capture themselves; while a guarded mutation owns the writer lock, they retain the existing bounded `LedgerBusy`/no-transition Interface and succeed on retry after release. `_git()` converts only demonstrated `TimeoutExpired` to bounded `OSError`; it must never become `RuntimeError`, because the existing `rev-parse` fallback interprets that class as unborn `HEAD`.
+
+Rejected families:
+
+- validation only in `LedgerMutation.append`: misses the supported no-op advisor replay;
+- unconditional validation in generic `mutation`: makes every writer perform Git capture without an occurrence;
+- leaving `_ensure_authority()` self-committing before the guarded transaction: permits legacy rows to survive later candidate refusal;
+- post-commit recapture: detects drift after persistence and cannot roll back;
+- capture only after obtaining the SQLite lock: loses the candidate identity sampled for the invocation response;
+- `ContextVar`, environment variable, wrapper guard, or second candidate owner: hides data flow or creates shallow competing ownership.
+
+Proof is split vertically. `BM_R9_FINAL_SAMPLE_BINDING`, `BM_R9_MUTATION_RESPONSE_BINDING`, `BM_R9_IDEMPOTENT_REPLAY_BINDING`, `BM_R9_BEGIN_RESPONSE_BINDING`, `BM_R9_COMPLETE_LEGACY_ATOMICITY`, `BM_R9_AUTHORITY_TRANSACTION_SPLIT`, `BM_R9_GIT_TIMEOUT_NORMALIZATION`, and `BM_R9_GUARDED_WRITER_BUSY_BOUND` own the new contract through real CLI/Git/SQLite interleavings and exact raw-table equality. Separate mapped preservation baselines own `PRES-1` through `PRES-3` and behavioral `ASSUMP-1` through `ASSUMP-3`: canonical candidate ownership, raw no-filter manifest identity, finding/disposition lifecycle, schema/ledger ownership, RCF, quality-gate, advisor, and branch-budget behavior are re-run rather than inferred from the defect tests. Final branch-cumulative human-authored source/test growth remains capped at 700; the measured pre-production candidate is 699 and the implementation is funded by deleting `begin_workflow()` plus consolidating repeated CLI dispatch and lifecycle-test shapes, so the final source/test delta must be at most `+1` net.
 
 ## Objective
 
@@ -262,7 +280,7 @@ PR B repeats the diagnosis gate for projection omission, broad-status scraping, 
 - SID rotation, compaction recovery, forced invalidation, automatic cold-start fallback, or automatic adjudicator;
 - lead self-certification or indefinite raw-verdict veto;
 - GREEN-report validation without a new demonstrated occurrence;
-- WebSearch/WebFetch, `--max-turns`, generic timeout, or benchmark isolation changes;
+- WebSearch/WebFetch, `--max-turns`, advisor-transport timeout policy, retry policy, or benchmark isolation changes;
 - wiring or deleting `skills/codex-advisor/tests/test_advisor_direct_measurement.py`;
 - local full-suite execution as a prerequisite to resumed advisor review.
 
@@ -520,12 +538,13 @@ No `docs/agents/reviewers.md` exists in this checkout; live GitHub signals and r
 - [x] commits `82c0156` and `c21e86d` pushed to `simpbitch/issue-152-pr-a`
 - [x] PR [#164](https://github.com/future3OOO/claude-skills/pull/164), `[SimpBitch] Make advisor findings append-only and candidate-bound`, opened
 - [x] original 17-path scoped install recorded and hash-verified
-- [~] current reviewer-fix workflow `issue-152-pr-a-fix-5` is in lead review at 699 cumulative net human-authored lines; fix-3 and fix-4 are paused because their immutable finding reservations had no legal closure
+- [x] current reviewer-fix workflow `issue-152-pr-a-fix-9c` has terminal mapped TDD and a stabilized 699-net candidate; 288 hook tests and 88 quality-gate tests pass, RCF evidence `evidence-7d7ca3ef7ebb35dc0ff6d5e0a47c254d` and typed gate `evidence-08b2917717c999310301c3cad70630c4` bind the candidate
 - [x] reviewer-fix open-correction, post-mismatch, terminal/legacy re-intake, mixed-correction appeal, wrapper fixture, refused-producer measurement, and real legacy `dispositionEvidence` recovery causes reproduced and fixed through real-CLI proof
 - [x] fix-5 RED/GREEN/reassessment are `evidence-54eac79ea6a607847647ef87bfed3d15`/`evidence-9bcdde5cb6010886f4d9afa13f7f8d02`/`evidence-4f70cfe4bb010851dec030b311dc14a6`; focused lifecycle tests, complete hooks suite, and the 144-case wrapper suite pass in the clone-local test environment
 - [x] reviewer-fix RCF/GitNexus refresh `evidence-e2dffa0bd037b8460275a59a92a3e9c7` and typed gate `evidence-82d7af47bec4cd255fa3448aa1dfd9f8` passed on the stabilized code/test candidate
-- [ ] lead review, final advisor, workflow completion, commit, push, and clone-local scoped install
-- [ ] CI/current-head reviewer completion gate closed; current published head remains failing `contracts` until the wrapper fixture fix is pushed
+- [x] lead review `evidence-4ab8b0e30a79fc5b63d62578b95c1928` is clear; final advisor SPEC-1 was rejected by a live post-sample/next-completion probe and its same-SID appeal returned commit-ready as `evidence-7ce4e956e7d06cfcc6389dc988d815ee`
+- [ ] workflow completion, commit, push, and clone-local scoped install
+- [ ] CI/current-head reviewer completion gate closed; published head `8cb24ad` is green, but fix-9c remains local and must be pushed, rechecked, and re-reviewed
 
 ### PR B
 

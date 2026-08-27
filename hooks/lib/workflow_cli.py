@@ -198,11 +198,11 @@ def _intent(args: argparse.Namespace) -> str:
 
 
 def _emit_mutation(
-    identity: RepoIdentity, operation: Callable[[], dict[str, object]],
+    identity: RepoIdentity, operation: Callable[[str], dict[str, object]],
 ) -> None:
     """Bind full-state output before its mutation can commit."""
     candidate = _active_candidate_tree(identity)
-    _emit_json(public_status({**operation(), "activeCandidateTree": candidate}))
+    _emit_json(public_status({**operation(candidate), "activeCandidateTree": candidate}))
 
 
 def _state(identity: RepoIdentity) -> dict[str, object]:
@@ -437,13 +437,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             raise ValueError("set-phase is lead-owned only for implementation and code-review not-required")
         if phase == "code-review" and (args.status != "not-required" or args.findings != "none"):
             raise ValueError("code-review passed is recorder-owned; lead-owned set-phase permits only not-required with findings none")
-        _emit_mutation(identity, lambda: set_phase(
+        _emit_mutation(identity, lambda candidate: set_phase(
             identity,
             phase,
             args.status,
             findings=args.findings,
             slug=args.slug,
             workflow_id=args.workflow_id,
+            expected_candidate_tree=candidate,
         ))
     elif args.command == "advisor-result":
         intake = None
@@ -460,7 +461,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif verdict is None:
             raise ValueError("advisor-result requires --input or legacy --verdict")
-        _emit_mutation(identity, lambda: record_advisor_result(
+        _emit_mutation(identity, lambda candidate: record_advisor_result(
             identity,
             args.slug,
             args.workflow_id,
@@ -471,6 +472,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             reason=args.reason,
             design=design_declaration(args.design_declaration),
             intake=intake,
+            expected_candidate_tree=candidate,
         ))
     elif args.command == "advisor-disposition":
         if args.findings == "addressed" and args.input is None:
@@ -483,26 +485,27 @@ def _dispatch(args: argparse.Namespace) -> int:
             workflow_id=args.workflow_id,
             stage=args.stage,
         ) if args.input else None
-        _emit_mutation(identity, lambda: advisor_disposition(
+        _emit_mutation(identity, lambda candidate: advisor_disposition(
             identity,
             args.slug,
             args.workflow_id,
             args.stage,
             args.findings,
             document=document,
+            expected_candidate_tree=candidate,
         ))
     elif args.command == "pause":
-        _emit_mutation(identity, lambda: pause(identity, args.slug, args.workflow_id, args.reason))
+        _emit_mutation(identity, lambda candidate: pause(
+            identity, args.slug, args.workflow_id, args.reason,
+            expected_candidate_tree=candidate,
+        ))
     elif args.command == "checkpoint":
         _emit_json(checkpoint(identity, args.phase))
     elif args.command == "complete":
-        from .tdd_workflow import completion_blockers
-        blocked_state = read_workflow(identity)
-        if blocked_state is not None:
-            blockers = completion_blockers(identity, blocked_state)
-            if blockers:
-                raise WorkflowError("workflow incomplete: " + "; ".join(blockers))
-        _emit_mutation(identity, lambda: complete(identity, slug=args.slug, workflow_id=args.workflow_id))
+        _emit_mutation(identity, lambda candidate: complete(
+            identity, slug=args.slug, workflow_id=args.workflow_id,
+            expected_candidate_tree=candidate,
+        ))
     elif args.command == "record-preflight":
         return _record_phase(args, identity, "preflight", "document", validated_document(args.input))
     elif args.command == "record-production-code":

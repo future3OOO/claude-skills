@@ -214,15 +214,18 @@ def _git(
     stdin: bytes | None = None,
     env: dict[str, str] | None = None,
 ) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", str(identity.root), *args],
-        input=stdin,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=30,
-        check=False,
-        env={**os.environ, **env} if env else None,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(identity.root), *args],
+            input=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+            env={**os.environ, **env} if env else None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OSError(f"git {args[0]} timed out after {exc.timeout} seconds") from exc
     if result.returncode:
         message = (result.stderr or result.stdout or b"git command failed").decode("utf-8", errors="replace").strip()
         raise RuntimeError(message)

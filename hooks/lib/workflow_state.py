@@ -13,7 +13,6 @@ from ._workflow_db import (
     LedgerError,
     LedgerMutation,
     ManifestWrite,
-    begin_workflow,
     evidence_write,
     manifest_write,
     mutation,
@@ -238,13 +237,14 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
     head = _head_oid(identity)
     if head is None:
         raise WorkflowError("workflow begin requires HEAD^{commit}")
+    candidate = _active_candidate_tree(identity)
     state: JsonObject = {
         "schemaVersion": 1,
         "repo": identity.as_dict(),
         "slug": normalized,
         "workflowId": uuid.uuid4().hex,
         "passStartOid": head,
-        "activeCandidateTree": _active_candidate_tree(identity),
+        "activeCandidateTree": candidate,
         "intent": intent,
         "phase": "intake",
         "nextAction": "repo-context-forge",
@@ -260,7 +260,8 @@ def begin(identity: RepoIdentity, slug: str, intent: str = "") -> JsonObject:
         "createdAt": now,
         "updatedAt": now,
     }
-    return begin_workflow(identity, state)
+    with mutation(identity, expected_candidate_tree=candidate) as transaction:
+        return transaction.append(state, "begin", activate=True)
 
 
 def _head_oid(identity: RepoIdentity) -> str | None:
@@ -411,8 +412,9 @@ def set_phase(
     findings: str | None = None,
     slug: str | None = None,
     workflow_id: str | None = None,
+    expected_candidate_tree: str | None = None,
 ) -> JsonObject:
-    with mutation(identity) as transaction:
+    with mutation(identity, expected_candidate_tree=expected_candidate_tree) as transaction:
         state = _require_state(transaction.state)
         _require_instance(state, slug, workflow_id)
         if phase == "code-review" and not appeal_revalidation_open(identity, state, phase, transaction=transaction) and (blockers := _transaction_correction_blockers(transaction, state)):
@@ -831,6 +833,7 @@ def record_advisor_result(
     reason: str | None = None,
     design: JsonObject | None = None,
     intake: JsonObject | None = None,
+    expected_candidate_tree: str | None = None,
 ) -> JsonObject:
     if source not in REVIEW_SOURCES:
         raise ValueError(f"unsupported reviewer source: {source}")
@@ -838,7 +841,7 @@ def record_advisor_result(
         raise ValueError("advisor-result records findings=pending; disposition findings with advisor-disposition")
     if stage == "final" and verdict == "context-mismatch" and intake is None:
         raise ValueError("final context-mismatch requires the advisor finding envelope")
-    with mutation(identity) as transaction:
+    with mutation(identity, expected_candidate_tree=expected_candidate_tree) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
         writes: list[EvidenceWrite] = []
         intake_write: EvidenceWrite | None = None
@@ -1046,11 +1049,12 @@ def instance_id(state: JsonObject) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: str) -> JsonObject:
+def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: str, *,
+          expected_candidate_tree: str | None = None) -> JsonObject:
     cleaned = reason.strip()
     if not cleaned:
         raise ValueError("pause requires a non-empty --reason")
-    with mutation(identity) as transaction:
+    with mutation(identity, expected_candidate_tree=expected_candidate_tree) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
         state["paused"] = {"reason": cleaned, "at": utc_timestamp()}
         return _commit(transaction, state, "pause")
@@ -1262,6 +1266,7 @@ def advisor_disposition(
     findings: str,
     *,
     document: JsonObject | None = None,
+    expected_candidate_tree: str | None = None,
 ) -> JsonObject:
     if findings not in {"none", "addressed"}:
         raise ValueError("advisor disposition requires --findings none or addressed")
@@ -1271,7 +1276,7 @@ def advisor_disposition(
         raise ValueError("an addressed disposition requires the lead's disposition document")
     if findings == "none" and document is not None:
         raise ValueError("a findings-none disposition carries no document")
-    with mutation(identity) as transaction:
+    with mutation(identity, expected_candidate_tree=expected_candidate_tree) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
         if stage == "preflight" and state.get("revalidation"):
             raise WorkflowError(PREFLIGHT_CLOSED)
@@ -1397,8 +1402,11 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
     }
 
 
-def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: str | None = None) -> JsonObject:
-    with mutation(identity) as transaction:
+def complete(
+    identity: RepoIdentity, *, slug: str | None = None, workflow_id: str | None = None,
+    expected_candidate_tree: str | None = None,
+) -> JsonObject:
+    with mutation(identity, expected_candidate_tree=expected_candidate_tree) as transaction:
         state = _require_state(transaction.state)
         _require_instance(state, slug, workflow_id)
         state.pop("paused", None)

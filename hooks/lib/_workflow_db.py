@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterator, NoReturn, Sequence
 from .preflight_document import validate_document
 from .repo_identity import RepoIdentity
-from .state_store import claude_home, read_json, repo_state_dir, utc_timestamp
+from .state_store import _active_candidate_tree, claude_home, read_json, repo_state_dir, utc_timestamp
 DATABASE_NAME = "workflow.sqlite3"
 DATABASE_FILES = frozenset({DATABASE_NAME, *(f"{DATABASE_NAME}{suffix}" for suffix in ("-journal", "-wal", "-shm"))})
 AUTHORITY = "sqlite-event-ledger-v1"
@@ -145,7 +145,9 @@ def _path_connection(path: Path, *, read_only: bool) -> Iterator[sqlite3.Connect
             os.umask(previous_umask)
             _private_sidecars(path)
 @contextlib.contextmanager
-def _connection(identity: RepoIdentity) -> Iterator[sqlite3.Connection]:
+def _connection(
+    identity: RepoIdentity, *, prepare_authority: bool = True,
+) -> Iterator[sqlite3.Connection]:
     try:
         path = repo_state_dir(identity) / DATABASE_NAME
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -156,7 +158,8 @@ def _connection(identity: RepoIdentity) -> Iterator[sqlite3.Connection]:
     try:
         with _path_connection(path, read_only=False) as connection:
             _schema(connection)
-            _ensure_authority(connection, identity)
+            if prepare_authority:
+                _ensure_authority(connection, identity)
             yield connection
     except sqlite3.OperationalError as exc:
         _raise_operational(exc)
@@ -474,57 +477,59 @@ def _ensure_authority(connection: sqlite3.Connection, identity: RepoIdentity) ->
         return
     _begin_write(connection)
     try:
-        if _metadata(connection, "authority") == AUTHORITY:
-            _validate_repository_identity(connection, identity)
-            connection.commit()
-            return
-        legacy_path = database_path(identity).parent / "workflow.json"
-        if legacy_path.exists():
-            legacy = _strict_document(legacy_path)
-            if (type(legacy.get("schemaVersion")) is not int
-                    or legacy.get("schemaVersion") != 1
-                    or legacy.get("repo") != identity.as_dict()):
-                raise LegacyImportError("legacy workflow identity or schema is unsupported")
-            converted, evidence, manifests = _legacy_evidence(legacy, legacy_path.parent)
-            _insert_workflow(connection, identity, converted)
-            event_id = _append_event(
-                connection,
-                converted,
-                "legacy-imported",
-                evidence=evidence,
-                manifests=manifests,
-                activate=True,
-            )
-            _set_projection(connection, str(converted["workflowId"]), event_id)
-            stored = json.loads(
-                connection.execute(
-                    "SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)
-                ).fetchone()["state_json"]
-            )
-            if stored != converted:
-                raise LegacyImportError("legacy import public status mismatch")
-            details = {
-                "legacyPath": str(legacy_path),
-                "workflowId": converted["workflowId"],
-                "evidenceIds": [write.evidence_id for write in evidence],
-                "manifestIds": [write.manifest_id for write in manifests],
-            }
-        else:
-            details = {"legacyPath": None, "workflowId": None, "evidenceIds": [], "manifestIds": []}
-        now = utc_timestamp()
-        connection.execute(
-            "INSERT INTO migration_records(name, completed_at, details_json) VALUES (?, ?, ?)",
-            ("legacy-json-v1", now, _canonical(details)),
-        )
-        connection.executemany(
-            "INSERT INTO metadata(key, value) VALUES (?, ?)",
-            (("repo_key", identity.key), ("repo_root", str(identity.root)),
-                ("authority", AUTHORITY),),
-        )
+        _apply_authority(connection, identity)
         connection.commit()
     except Exception:
         connection.rollback()
         raise
+
+def _apply_authority(connection: sqlite3.Connection, identity: RepoIdentity) -> None:
+    if _metadata(connection, "authority") == AUTHORITY:
+        _validate_repository_identity(connection, identity)
+        return
+    legacy_path = database_path(identity).parent / "workflow.json"
+    if legacy_path.exists():
+        legacy = _strict_document(legacy_path)
+        if (type(legacy.get("schemaVersion")) is not int
+                or legacy.get("schemaVersion") != 1
+                or legacy.get("repo") != identity.as_dict()):
+            raise LegacyImportError("legacy workflow identity or schema is unsupported")
+        converted, evidence, manifests = _legacy_evidence(legacy, legacy_path.parent)
+        _insert_workflow(connection, identity, converted)
+        event_id = _append_event(
+            connection,
+            converted,
+            "legacy-imported",
+            evidence=evidence,
+            manifests=manifests,
+            activate=True,
+        )
+        _set_projection(connection, str(converted["workflowId"]), event_id)
+        stored = json.loads(
+            connection.execute(
+                "SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)
+            ).fetchone()["state_json"]
+        )
+        if stored != converted:
+            raise LegacyImportError("legacy import public status mismatch")
+        details = {
+            "legacyPath": str(legacy_path),
+            "workflowId": converted["workflowId"],
+            "evidenceIds": [write.evidence_id for write in evidence],
+            "manifestIds": [write.manifest_id for write in manifests],
+        }
+    else:
+        details = {"legacyPath": None, "workflowId": None, "evidenceIds": [], "manifestIds": []}
+    now = utc_timestamp()
+    connection.execute(
+        "INSERT INTO migration_records(name, completed_at, details_json) VALUES (?, ?, ?)",
+        ("legacy-json-v1", now, _canonical(details)),
+    )
+    connection.executemany(
+        "INSERT INTO metadata(key, value) VALUES (?, ?)",
+        (("repo_key", identity.key), ("repo_root", str(identity.root)),
+            ("authority", AUTHORITY),),
+    )
 def _event_state(row: sqlite3.Row, workflow_id: str | None = None) -> JsonObject:
     state_version, policy_version = row["state_schema_version"], row["policy_version"]
     if (type(state_version) is not int or state_version != STATE_SCHEMA_VERSION
@@ -617,20 +622,22 @@ class LedgerMutation:
     def manifest(self, manifest_id: str | None) -> dict[str, str] | None:
         return _manifest_from(self.connection, manifest_id)
 @contextlib.contextmanager
-def mutation(identity: RepoIdentity) -> Iterator[LedgerMutation]:
-    with _connection(identity) as connection:
+def mutation(
+    identity: RepoIdentity, *, expected_candidate_tree: str | None = None,
+) -> Iterator[LedgerMutation]:
+    with _connection(identity, prepare_authority=False) as connection:
         _begin_write(connection)
         try:
+            _apply_authority(connection, identity)
             transaction = LedgerMutation(connection, identity)
             yield transaction
+            if (expected_candidate_tree is not None
+                    and _active_candidate_tree(identity) != expected_candidate_tree):
+                raise LedgerError("active candidate changed during workflow mutation")
             connection.commit()
         except Exception:
             connection.rollback()
             raise
-def begin_workflow(identity: RepoIdentity, state: JsonObject) -> JsonObject:
-    with mutation(identity) as transaction:
-        transaction.append(state, "begin", activate=True)
-    return state
 def read_active(identity: RepoIdentity) -> JsonObject | None:
     if not _store_exists(identity):
         return None
