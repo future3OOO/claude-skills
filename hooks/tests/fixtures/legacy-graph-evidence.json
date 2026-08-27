@@ -1,0 +1,40 @@
+{
+ "schemaVersion": 1,
+ "slug": "legacy",
+ "workflowId": "legacy-workflow",
+ "graph": {
+  "status": "resolved",
+  "entries": [
+   {
+    "kind": "symbol_context",
+    "file": "app.py",
+    "target": "compute",
+    "direction": "",
+    "status": "resolved",
+    "resolved_identity": "Function:app.py:compute",
+    "callers": [
+     {
+      "identity": "Function:caller.py:run",
+      "name": "run",
+      "file": "caller.py"
+     }
+    ]
+   }
+  ],
+  "unresolved_checks": [],
+  "elapsed_ms": 1,
+  "process_count": 1,
+  "graph_call_count": 1,
+  "output_bytes": 1,
+  "estimated_output_tokens": 1,
+  "omitted_check_count": 0,
+  "authority": {
+   "source_repository": "/probe"
+  },
+  "producer_revision": {
+   "commit": "0000000000000000000000000000000000000000",
+   "dirty": false
+  }
+ },
+ "recordedAt": "2026-08-27T12:03:55+00:00"
+}
