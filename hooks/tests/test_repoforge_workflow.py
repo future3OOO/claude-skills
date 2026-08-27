@@ -132,6 +132,72 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_sha256_repo_records_projection_and_reaches_advisor_checkpoint(self) -> None:
+        marker = "SHA256_WORKFLOW_NOT_READY"
+        repo = self.tmp / "sha256-repo"
+        repo.mkdir()
+        env = self.env | {"CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "sha256-state")}
+
+        def git(*args: str) -> str:
+            result = subprocess.run(
+                ["git", *args], cwd=repo, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            return result.stdout.strip()
+
+        git("init", "-q", "--object-format=sha256")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "user.name", "Workflow Harness")
+        git("remote", "add", "origin", "https://example.invalid/workflow-sha256.git")
+        (repo / "app.py").write_text(
+            "def compute(value):\n    return value + 1\n", encoding="utf-8"
+        )
+        (repo / "caller.py").write_text(
+            "from app import compute\n\n\ndef run():\n    return compute(1)\n", encoding="utf-8"
+        )
+        git("add", "app.py", "caller.py")
+        git("commit", "-q", "-m", "base")
+        head = git("rev-parse", "HEAD")
+        self.assertEqual(len(head), 64)
+
+        slug = "repoforge-sha256"
+        intent = "record the real SHA-256 compute projection"
+        begun = subprocess.run(
+            [sys.executable, str(WORKFLOW), "begin", "--repo", str(repo),
+             "--slug", slug, "--intent", intent],
+            cwd=repo, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        (repo / "caller.py").write_text(
+            "from app import compute\n\n\ndef run():\n    return compute(2)\n", encoding="utf-8"
+        )
+
+        forged = subprocess.run(
+            [sys.executable, str(BOOTSTRAP), "--repo", str(repo),
+             "--workflow-slug", slug, "--mode", "local", "--map-build", "auto",
+             "--gitnexus-mode", "auto", "--top", "5", "--intent", intent],
+            cwd=repo, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
+        )
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+
+        checkpoint = subprocess.run(
+            [sys.executable, str(WORKFLOW), "checkpoint", "--repo", str(repo),
+             "--phase", "preflight-advice"],
+            cwd=repo, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(
+            checkpoint.returncode, 0, marker + "\n" + checkpoint.stdout + checkpoint.stderr,
+        )
+        payload = json.loads(checkpoint.stdout)
+        self.assertTrue(payload["ready"], marker)
+        self.assertEqual(payload["passStartOid"], head, marker)
+        self.assertEqual(len(payload["activeCandidateTree"]), 64, marker)
+
     def test_corrupt_authoritative_ledger_refuses_before_the_bootstrap_runs(self) -> None:
         state = self.status()
         database = (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])

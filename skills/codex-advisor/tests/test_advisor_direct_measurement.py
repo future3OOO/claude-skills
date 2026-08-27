@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
 WRAPPER = ROOT / "skills/codex-advisor/scripts/ask-codex-advisor.sh"
 SKILL = ROOT / "skills/codex-advisor/SKILL.md"
 WORKFLOW = ROOT / "skills/repo-production-workflow/scripts/workflow.py"
+BOOTSTRAP = ROOT / "skills/repo-context-forge/scripts/bootstrap.py"
 QUALITY_GATE = ROOT / "skills/production-code/scripts/code_quality_gate.py"
 sys.path.insert(0, str(ROOT))
 from hooks.lib.workflow_documents import design_absence  # noqa: E402
@@ -317,6 +319,114 @@ class AdvisorDirectMeasurementTest(unittest.TestCase):
                 )
             )
         )
+
+
+@unittest.skipUnless(os.environ.get("LIVE") == "1", "set LIVE=1 for the real provider Seam")
+class AdvisorConcurrentSessionTest(unittest.TestCase):
+    def test_same_workflow_preflights_have_one_authoritative_session(self) -> None:
+        marker = "CONCURRENT_ADVISOR_SESSION_SPLIT"
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            repo = temporary / "repo"
+            repo.mkdir()
+            env = os.environ | {
+                "CLAUDE_WORKFLOW_STATE_ROOT": str(temporary / "state"),
+                "PYTHONPYCACHEPREFIX": str(temporary / "pycache"),
+            }
+            for command in (
+                ["git", "init", "-q"],
+                ["git", "config", "user.email", "probe@example.invalid"],
+                ["git", "config", "user.name", "Advisor Probe"],
+                ["git", "remote", "add", "origin", "https://example.invalid/advisor-race.git"],
+            ):
+                run_checked(command, cwd=repo, env=env)
+            (repo / "app.py").write_text(
+                "def compute(value):\n    return value + 1\n", encoding="utf-8"
+            )
+            (repo / "caller.py").write_text(
+                "from app import compute\n\n\ndef run():\n    return compute(1)\n", encoding="utf-8"
+            )
+            run_checked(["git", "add", "app.py", "caller.py"], cwd=repo, env=env)
+            run_checked(["git", "commit", "-qm", "probe baseline"], cwd=repo, env=env)
+
+            slug = "advisor-concurrent-session"
+            intent = "Inspect app.py compute through concurrent configured-provider preflight consults."
+            run_workflow(
+                "begin", "--repo", str(repo), "--slug", slug, "--intent", intent,
+                cwd=repo, env=env,
+            )
+            (repo / "caller.py").write_text(
+                "from app import compute\n\n\ndef run():\n    return compute(2)\n", encoding="utf-8"
+            )
+            forged = subprocess.run(
+                [sys.executable, str(BOOTSTRAP), "--repo", str(repo),
+                 "--workflow-slug", slug, "--mode", "local", "--map-build", "auto",
+                 "--gitnexus-mode", "auto", "--top", "5", "--intent", intent],
+                cwd=repo, env=env, capture_output=True, text=True, timeout=600,
+            )
+            self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+            state = json.loads(run_workflow("status", "--repo", str(repo), cwd=repo, env=env).stdout)
+            sid_file = (
+                Path(env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "_advisor-sessions"
+                / f"{state['repo']['key']}-{slug}-{state['workflowId']}.sid"
+            )
+            common = [
+                str(WRAPPER), "--slug", slug, "--phase", "preflight-advice",
+                "--cwd", str(repo), "--design-absent",
+                "concurrency regression has no governing design artifact", "--budget", "80", "--",
+            ]
+            slow = subprocess.Popen(
+                common + [
+                    "Use Bash to run sleep 30 before answering. Then return only "
+                    '{"schemaVersion":1,"findings":[],"verdict":"completed"}.'
+                ],
+                cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True,
+            )
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                if sid_file.is_file() and sid_file.read_text(encoding="utf-8").strip():
+                    break
+                if slow.poll() is not None:
+                    break
+                time.sleep(0.01)
+            self.assertTrue(sid_file.is_file(), "the first real provider session never started")
+            sid = sid_file.read_text(encoding="utf-8").strip()
+            self.assertTrue(sid, "the first real provider session id is empty")
+
+            competing = subprocess.Popen(
+                common + ['Return only {"schemaVersion":1,"findings":[],"verdict":"completed"}.'],
+                cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True,
+            )
+            try:
+                competing_stdout, competing_stderr = competing.communicate(timeout=420)
+                slow_stdout, slow_stderr = slow.communicate(timeout=420)
+            except subprocess.TimeoutExpired:
+                for process in (slow, competing):
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.communicate()
+                self.fail("configured-provider concurrency proof timed out")
+
+            self.assertEqual(slow.returncode, 0, slow_stdout + slow_stderr)
+            self.assertEqual(competing.returncode, 2, marker + "\n" + competing_stdout + competing_stderr)
+            self.assertIn("checkpoint is not ready", competing_stderr, marker)
+            self.assertNotIn("codex_advisor_session", competing_stderr, marker)
+            self.assertEqual(sid_file.read_text(encoding="utf-8").strip(), sid, marker)
+            self.assertIn(f"sid_prefix={sid[:8]}", slow_stderr, marker)
+
+            state = json.loads(run_workflow("status", "--repo", str(repo), cwd=repo, env=env).stdout)
+            intake = str(state["advisorPreflight"]["intakeEvidence"])
+            evidence = json.loads(
+                run_workflow(
+                    "evidence", "--repo", str(repo), "--evidence-id", intake,
+                    cwd=repo, env=env,
+                ).stdout
+            )
+            self.assertEqual(
+                json.loads(evidence["document"]["raw"]), json.loads(slow_stdout), marker,
+            )
 
 
 class AdvisorBudgetContractTest(unittest.TestCase):

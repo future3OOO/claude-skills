@@ -569,10 +569,16 @@ class WorkflowHookTests(unittest.TestCase):
             ["git", "rev-parse", "HEAD"], cwd=self.repo, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         ).stdout.strip()
+        other = subprocess.run(
+            ["git", "commit-tree", "HEAD^{tree}", "-p", "HEAD"],
+            cwd=self.repo, env=self.env, text=True, input="other base\n",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        ).stdout.strip()
+        self.assertNotEqual(other, base)
         with self.assertRaises(ValueError):
             record_base_oid(identity, "with-base", wid, "base-main")
         self.assertEqual(record_base_oid(identity, "with-base", wid, base).get("baseOid"), base)
-        self.assertEqual(record_base_oid(identity, "with-base", wid, "f" * 40).get("baseOid"), base)
+        self.assertEqual(record_base_oid(identity, "with-base", wid, other).get("baseOid"), base)
 
         (self.repo / "app.py").write_text("value = 6\n", encoding="utf-8")
         result = self.post_edit("app.py")

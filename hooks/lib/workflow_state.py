@@ -271,6 +271,16 @@ def _head_oid(identity: RepoIdentity) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _is_commit_oid(identity: RepoIdentity, value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(identity.root), "rev-parse", "--verify", "--end-of-options", f"{value}^{{commit}}"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == value
+
+
 def _bind_review_to_tree(
     identity: RepoIdentity, state: JsonObject, document: dict[str, str] | None = None,
     head: str | None = None,
@@ -731,8 +741,8 @@ def record_base_oid(identity: RepoIdentity, slug: str, workflow_id: str | None, 
     caller reports that conflict, because a moving base would make successive
     per-edit growth measurements incoherent.
     """
-    if not re.fullmatch(r"[0-9a-f]{40}", oid):
-        raise ValueError("base OID must be a 40-hex commit OID")
+    if not _is_commit_oid(identity, oid):
+        raise ValueError("base OID must be a canonical commit OID for this repository")
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
         existing = state.get("baseOid")
@@ -1383,8 +1393,7 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         ("workflowId", workflow_id is not None),
         ("open-workflow", open_for_phase),
         ("advisor-stage", state.get("nextAction") in stage_actions[phase]),
-        ("passStartOid", isinstance(state.get("passStartOid"), str)
-         and re.fullmatch(r"[0-9a-f]{40}", str(state["passStartOid"])) is not None),
+        ("passStartOid", _is_commit_oid(identity, state.get("passStartOid"))),
         *(
             _context_steps(state)
             if phase == "preflight-advice"

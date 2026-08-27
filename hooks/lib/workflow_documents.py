@@ -258,6 +258,10 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _git_oid(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is not None
+
+
 def _resolved_graph(value: object) -> JsonObject:
     """The producer's graph result, accepted only when it resolved every check.
 
@@ -311,8 +315,7 @@ def validate_advisor_projection(
         not isinstance(revision, dict)
         or set(revision) != {"commit", "dirty"}
         or not isinstance(revision.get("dirty"), bool)
-        or not isinstance(revision.get("commit"), str)
-        or re.fullmatch(r"[0-9a-f]{40}", revision["commit"]) is None
+        or not _git_oid(revision.get("commit"))
     ):
         raise ValueError("advisor projection requires canonical producer provenance")
     if not _text(value.get("sourceRepo")):
@@ -321,9 +324,8 @@ def validate_advisor_projection(
         "sourceBaseOid", "committedHeadOid", "expectedCandidateTree",
         "indexedCandidateTree",
     ):
-        found = value.get(field)
-        if not isinstance(found, str) or re.fullmatch(r"[0-9a-f]{40}", found) is None:
-            raise ValueError(f"advisor projection requires a 40-hex {field}")
+        if not _git_oid(value.get(field)):
+            raise ValueError(f"advisor projection requires a canonical Git OID for {field}")
     if value["expectedCandidateTree"] != value["indexedCandidateTree"]:
         raise ValueError("advisor projection candidate trees do not match")
     if candidate_tree is not None and value["expectedCandidateTree"] != candidate_tree:
@@ -461,10 +463,10 @@ def _occurrence(value: object) -> JsonObject:
 def _disposition_context(value: object) -> JsonObject:
     if not isinstance(value, dict) or set(value) not in ({"workflowId", "candidateTree"}, {"workflowId", "candidateTree", "prHead"}):
         raise ValueError("disposition context requires workflowId, candidateTree, and optional prHead")
-    if not _text(value.get("workflowId")) or not isinstance(value.get("candidateTree"), str) or not re.fullmatch(r"[0-9a-f]{40}", value["candidateTree"]):
-        raise ValueError("disposition context requires workflowId and a 40-hex candidateTree")
-    if "prHead" in value and (not isinstance(value["prHead"], str) or not re.fullmatch(r"[0-9a-f]{40}", value["prHead"])):
-        raise ValueError("disposition context prHead must be a 40-hex commit")
+    if not _text(value.get("workflowId")) or not _git_oid(value.get("candidateTree")):
+        raise ValueError("disposition context requires workflowId and a canonical candidateTree Git OID")
+    if "prHead" in value and not _git_oid(value["prHead"]):
+        raise ValueError("disposition context prHead must be a canonical Git OID")
     return dict(value)
 
 

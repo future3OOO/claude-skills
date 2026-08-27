@@ -229,6 +229,38 @@ fi
 state_dir="${CLAUDE_WORKFLOW_STATE_ROOT:-${CLAUDE_HOME:-$HOME/.claude}/state}/_advisor-sessions"
 mkdir -p "$state_dir"; chmod 700 "$state_dir"
 sid_file="$state_dir/${repo_key}-${normalized_slug}${active_wid:+-$active_wid}.sid"
+if [[ -n "$phase" ]]; then
+  exec 9>"$state_dir/${repo_key}-${normalized_slug}.lock"
+  flock -x 9
+  locked_checkpoint="$transport_dir/locked-checkpoint.json"
+  if ! python3 "$workflow_cli" checkpoint --repo "$repo_root" --phase "$phase" >"$locked_checkpoint" 2>"$transport_dir/locked-checkpoint-error"; then
+    cat "$transport_dir/locked-checkpoint-error" >&2
+    exit 2
+  fi
+  if ! locked_error=$(python3 - "$checkpoint_file" "$locked_checkpoint" "$phase" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    before = json.load(handle)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    locked = json.load(handle)
+phase = sys.argv[3]
+if not locked.get("ready"):
+    print(f"{phase} checkpoint is not ready; missing: {','.join(locked.get('missing') or [])}")
+    raise SystemExit(1)
+for field in (
+    "slug", "workflowId", "nextAction", "sessionMode", "passStartOid",
+    "activeCandidateTree", "advisorProjectionEvidence", "advisorProjection",
+    "governedDesignEvidence", "governedDesign",
+):
+    if before.get(field) != locked.get(field):
+        print(f"{phase} checkpoint changed while waiting for advisor session ownership: {field}")
+        raise SystemExit(1)
+PY
+  ); then
+    printf 'error: %s\n' "$locked_error" >&2
+    exit 2
+  fi
+fi
 new_session_id() { if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/kernel/random/uuid; else python3 -c 'import uuid; print(uuid.uuid4())'; fi; }
 if [[ -n "$phase" ]]; then
   if [[ "$session_mode" == create ]]; then
