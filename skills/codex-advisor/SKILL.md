@@ -48,8 +48,8 @@ Behavior Map `sourceRefs` reference. The wrapper captures and validates the
 catalogue once, records that canonical declaration as workflow evidence, and
 requires final review to present the identical declaration; preflight and
 completion enforce reference integrity and required-label ownership. The
-wrapper sends the canonical declaration, not the design body, and the advisor
-never owns dispositions.
+wrapper sends the canonical declaration and the complete design body as framed
+evidence, and the advisor never owns dispositions.
 
 The canonical imaginary-risk ban and the premise/occurrence checks in the
 repo's `CLAUDE.md` govern architecture-family decisions; this checkpoint adds
