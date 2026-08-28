@@ -2,7 +2,7 @@
 
 ## Status
 
-- current state: PR A open as [#166](https://github.com/future3OOO/claude-skills/pull/166) with five reviewer threads awaiting a fix pass; PR B complete and open, stacked on PR A
+- current state: PR A open as [#166](https://github.com/future3OOO/claude-skills/pull/166) and PR B open as [#169](https://github.com/future3OOO/claude-skills/pull/169), stacked; both implementations are complete and their reviewer loops are closed. Workflow closure is a separate gate and is blocked on both: the per-round advisor intakes leave findings dispositionable only while their round is current, tracked in [#170](https://github.com/future3OOO/claude-skills/issues/170). Implementation and PR state are not workflow closure.
 - governing artifact: this document
 - last updated: 2026-08-27
 - PR B budget: 637 net against a 300-500 target. The overrun is ten final-advisor rounds of fixes, each reserved against the finding that measured it and driven RED to GREEN: retired `--base-ref` and `--packet`, the discarded graph excerpt, checkpoint-owned identity, projection rendering, resume suppression rebuilt twice, the pre-migration graph-evidence refusal, and the bool `schemaVersion`. Under the 1,000-net split threshold; recorded here rather than split because every increment answers a measured defect in the same owner slice.
