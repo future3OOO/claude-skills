@@ -211,6 +211,11 @@ def advance_to_final_review(repo: Path, tmp: Path, design=None) -> RepoIdentity:
     assert gate.returncode == 0, gate.stdout + gate.stderr
     producer("record-production-code", json.loads(gate.stdout))
     set_phase(identity, "implementation", "passed")
+    # The workflow re-records analysis after the last edit and before typed
+    # verification, and completion now refuses without that binding, so the
+    # scaffold follows the same order rather than completing on a graph measured
+    # before the pass edited anything.
+    record_context_forge(repo, tmp)
     for extra in (
         ("--", sys.executable, "-c", "pass"),
         ("--kind", "quality-gate", "--base-ref", "HEAD"),

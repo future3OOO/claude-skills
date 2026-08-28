@@ -182,10 +182,14 @@ marker, empty output, or quoting error is not a completed consult.
 
 The delegate runs with the same trust as the lead and is instructed not to
 mutate the checkout or workflow ledger. It may use repository reads, Bash, web
-reads, Git and GitHub reads, tests, CLI probes, and normally configured MCP
-tools. It must report GitNexus unavailable explicitly rather than imply it
-searched. Edit, Write, NotebookEdit, and Task/subagents remain denied, but the
-wrapper promises no sandbox or immutability enforcement around Bash or MCP.
+reads, Git and GitHub reads, tests, and CLI probes. It gets no MCP servers: the
+wrapper passes `--strict-mcp-config` and names no `--mcp-config`, so the ambient
+configuration does not reach it. `--tools` alone never did this — it gates
+built-in tools only — which is why the boundary is a launch flag and not rubric
+wording. The delegate therefore has no graph capability of its own and reads the
+lead's recorded, candidate-bound projection instead. Edit, Write, NotebookEdit,
+and Task/subagents remain denied, and the wrapper promises no sandbox around
+Bash: a CLI on the delegate's PATH is still reachable.
 `CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE` prevent nested consultation.
 
 The wrapper carries the canonical mock and imaginary-risk rules because the

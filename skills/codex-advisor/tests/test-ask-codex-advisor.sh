@@ -86,10 +86,13 @@ grep -q -- '--tools "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
   && { printf 'PASS  direct-measurement built-ins granted\n'; pass=$((pass+1)); } \
   || { printf 'FAIL  --tools must grant the exact direct-measurement built-ins\n'; fail=$((fail+1)); }
 
-if grep -q -- '--strict-mcp-config\|mcp__\*' "$WRAPPER"; then
-  printf 'FAIL  normally configured MCP tools must be inherited\n'; fail=$((fail+1))
+# The advisor gets no MCP servers. --tools gates built-in tools only, so the
+# boundary is a launch flag: --strict-mcp-config with no --mcp-config leaves the
+# subprocess nothing to load from the ambient configuration.
+if grep -q -- '--strict-mcp-config' "$WRAPPER" && ! grep -q -- '--mcp-config "' "$WRAPPER"; then
+  printf 'PASS  the advisor is launched with no MCP servers\n'; pass=$((pass+1))
 else
-  printf 'PASS  normally configured MCP tools are inherited\n'; pass=$((pass+1))
+  printf 'FAIL  the advisor must be launched with --strict-mcp-config and no --mcp-config\n'; fail=$((fail+1))
 fi
 
 grep -q 'Load /codebase-design, /tdd, and /code-quality' "$WRAPPER" \
@@ -121,8 +124,8 @@ for prompt_rule in \
   check "preflight asks ${prompt_rule%:}" "$prompt_rule" "$preflight_block"
   check "final review asks ${prompt_rule%:}" "$prompt_rule" "$final_block"
 done
-check "preflight GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$preflight_block"
-check "final-review GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$final_block"
+absent "preflight must not direct the advisor at GitNexus" "GitNexus" "$preflight_block"
+absent "final review must not direct the advisor at GitNexus" "GitNexus" "$final_block"
 
 if [[ "$preflight_block" == *"$materiality"* ]]; then
   printf 'FAIL  materiality rule must stay out of preflight-advice, which emits no gating verdict\n'; fail=$((fail+1))

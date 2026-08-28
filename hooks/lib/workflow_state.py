@@ -64,6 +64,8 @@ PREFLIGHT_CLOSED = "governance revalidation permits only re-verification and rev
 TDD_CLOSED = "governance revalidation permits only re-verification and review; tdd is closed"
 MANIFEST_MISSING = "review-manifest-missing"
 MANIFEST_STALE = "review-manifest-stale"
+GRAPH_MISSING = "graph-tree-missing"
+GRAPH_STALE = "graph-tree-stale"
 QUALITY_GATE_MISSING = "quality-gate-tree-missing"
 QUALITY_GATE_STALE = "quality-gate-tree-stale"
 
@@ -354,6 +356,7 @@ def _binding_drift(
     field, missing, stale = {
         "review": ("reviewManifestId", MANIFEST_MISSING, MANIFEST_STALE),
         "quality-gate": ("qualityGateManifestId", QUALITY_GATE_MISSING, QUALITY_GATE_STALE),
+        "graph": ("graphManifestId", GRAPH_MISSING, GRAPH_STALE),
     }[binding]
     if binding == "review" and isinstance(head := state.get("reviewHead"), str):
         if _head_oid(identity) != head: return f"{stale}: HEAD changed after lead review"
@@ -785,8 +788,15 @@ def commit_evidence_phase(
         latest_field = f"{field}LatestEvidence"
         if expected_evidence_id is not _NO_CAS and state.get(latest_field) != expected_evidence_id:
             raise WorkflowError(f"{phase} evidence changed during the run; re-read and re-run the command")
+        manifests: list[ManifestWrite] = []
         if phase == "repo-context-forge":
             _bind_projection(state, evidence_doc)
+            # The tree the analysis described, recorded through the same owner the
+            # review and quality-gate bindings already use, so drift is answered by
+            # the existing predicate rather than by rebuilding a tree at read time.
+            binding = manifest_write(str(state["workflowId"]), "graph-tree", tree_manifest(identity))
+            manifests.append(binding)
+            state["graphManifestId"] = binding.manifest_id
         if phase == "preflight":
             _validate_design_map(
                 transaction, state, evidence_doc, require_coverage=True,
@@ -803,6 +813,7 @@ def commit_evidence_phase(
             state,
             f"record-{phase}",
             evidence=[write],
+            manifests=manifests,
         ), write.evidence_id
 
 
@@ -1294,6 +1305,11 @@ def completion_missing(state: JsonObject) -> list[str]:
             missing.append("qualityGateEvidence")
         if not state.get("qualityGateManifestId"):
             missing.append("qualityGateManifest")
+    # A tracked edit retires the graph binding, so its absence on a pass whose
+    # analysis passed is the same fact the checkpoint reports as drift: the
+    # recorded graph no longer describes the tree being completed.
+    if state.get("repoContextForge") == "passed" and not state.get("graphManifestId"):
+        missing.append("graphManifest")
     if state.get("tdd") not in {"passed", "not-required"}:
         missing.append("tdd")
     if not _allows_next(state, "advisor-preflight"):
@@ -1338,6 +1354,13 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         ),
     )
     missing = [name for name, ready in requirements if not ready]
+    # Both consults read the recorded graph, so both refuse a graph measured on a
+    # different tree; the advisor has no capability to check it for itself. This
+    # holds in every state, revalidation included: an Interface that admits a write
+    # it cannot prevent may not also require callers to avoid it, so a tree that
+    # moved is reported wherever it moved, and the remedy is a new pass.
+    if drift := _binding_drift(identity, state, "graph"):
+        missing.append(drift)
     if phase == "final-review":
         if drift := _binding_drift(identity, state, "review"):
             missing.append(drift)
@@ -1446,6 +1469,11 @@ def invalidate_after_edit(identity: RepoIdentity, path: str) -> JsonObject | Non
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
             kind = "production-edit-invalidated"
+            # Only a tracked source edit moves the tree the analysis described, so
+            # only it retires the graph binding; a governance edit leaves that tree
+            # alone and keeps it. The evidence itself stays for audit and drift
+            # reporting, exactly as verification does.
+            state.pop("graphManifestId", None)
         else:
             kind = "governance-edit-invalidated"
             if state.get("phase") == "complete":

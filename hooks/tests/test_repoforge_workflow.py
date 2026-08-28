@@ -477,6 +477,71 @@ class RepoForgeWorkflowTests(unittest.TestCase):
             return ""
         return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
 
+    def checkpoint_now(self, phase: str) -> dict[str, object]:
+        return json.loads(self.pass_state("checkpoint", "--phase", phase).stdout)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_tracked_edit_through_the_real_hook_stales_the_producers_graph(self) -> None:
+        """Graph evidence describes the tree the producer measured.
+
+        Driven end to end: the installed bootstrap records a real producer result,
+        the real PostToolUse hook processes a tracked edit, and the checkpoint the
+        advisor consults is read back afterwards. A fixture packet and a direct
+        invalidation call cannot show this, because neither crosses the producer or
+        the hook that owns post-edit invalidation.
+        """
+        marker = "STALE_GRAPH_STILL_READY_AT_THE_HOOK"
+        recorded = self.graph_bootstrap()
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        ready = self.checkpoint_now("preflight-advice")
+        self.assertTrue(ready["ready"], f"the probe did not start ready: {ready['missing']}")
+        (self.repo / "app.py").write_text("def compute(value):\n    return value + 2\n", encoding="utf-8")
+        self.post_edit("app.py")
+        stale = self.checkpoint_now("preflight-advice")
+        self.assertFalse(stale["ready"], f"{marker}: still ready on evidence measured before the edit")
+        self.assertTrue([name for name in stale["missing"] if "graph" in name],
+                        f"{marker}: nothing in {stale['missing']} names the stale graph")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_completion_names_the_retired_binding_after_the_real_hook(self) -> None:
+        """A pass may not close on a graph its own tree has moved past."""
+        marker = "COMPLETION_ACCEPTED_A_STALE_GRAPH_AT_THE_HOOK"
+        recorded = self.graph_bootstrap()
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        (self.repo / "app.py").write_text("def compute(value):\n    return value + 3\n", encoding="utf-8")
+        self.post_edit("app.py")
+        refused = self.pass_state("complete")
+        self.assertEqual(refused.returncode, 2, f"{marker}: completion accepted a retired binding")
+        self.assertIn("graphManifest", refused.stderr,
+                      f"{marker}: the refusal did not name the retired binding")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_an_unedited_pass_carries_no_graph_blocker(self) -> None:
+        """Freshness must reach a moved tree and nothing else."""
+        marker = "FRESH_PASS_BLOCKED"
+        recorded = self.graph_bootstrap()
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        fresh = self.checkpoint_now("preflight-advice")
+        self.assertTrue(fresh["ready"], f"{marker}: {fresh['missing']}")
+        self.assertFalse([name for name in fresh["missing"] if "graph" in name],
+                         f"{marker}: a graph blocker appeared with no edit at all")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_governance_edit_through_the_real_hook_keeps_the_graph(self) -> None:
+        """A governance edit does not move the tree the producer measured."""
+        marker = "GOVERNANCE_EDIT_RETIRED_THE_GRAPH"
+        recorded = self.graph_bootstrap()
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        bound = self.status().get("graphManifestId")
+        self.assertTrue(bound, "the producer result recorded no binding")
+        (self.repo / "AGENTS.md").write_text("governance text\n", encoding="utf-8")
+        self.post_edit("AGENTS.md")
+        self.assertEqual(self.status().get("graphManifestId"), bound,
+                         f"{marker}: a governance edit retired a binding it does not invalidate")
+        kept = self.checkpoint_now("preflight-advice")
+        self.assertFalse([name for name in kept["missing"] if "graph" in name],
+                         f"{marker}: a graph blocker appeared for a governance edit: {kept['missing']}")
+
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_bootstrap_records_the_pass_base_and_per_edit_growth_reads_cumulative(self) -> None:
         """The base recorded once at bootstrap makes every per-edit gate run
@@ -744,6 +809,30 @@ class GraphEvidenceContractTests(unittest.TestCase):
                     graph_evidence_document(str(path), slug="unresolved-graph",
                                             workflow_id="w", source_root=str(self.root))
                 self.assertIn("resolved", str(refusal.exception), marker)
+
+    def test_two_worktrees_on_one_head_are_not_interchangeable(self) -> None:
+        """Base-commit equality never establishes graph identity.
+
+        Two checkouts of one repository can share a HEAD and hold different dirty
+        content, so the commit says nothing about which tree was analysed. Only the
+        checkout the packet names does.
+        """
+        marker = "SAME_HEAD_WORKTREES_CONFUSED"
+        first, second = self.root, self.tmp / "sibling"
+        second.mkdir()
+        for checkout, value in ((first, "one"), (second, "two")):
+            subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(checkout), "-c", "user.email=t@example.invalid",
+                            "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+            (checkout / "app.py").write_text(f"value = {value!r}\n", encoding="utf-8")
+        # Produced in the sibling, recorded from this pass's checkout.
+        foreign = graph_packet(str(second))
+        path = self.tmp / "foreign-worktree-packet.json"
+        path.write_text(json.dumps(foreign), encoding="utf-8")
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            graph_evidence_document(str(path), slug="contract", workflow_id="wid",
+                                    source_root=str(first))
+        self.assertIn(str(second), str(refusal.exception), marker)
 
     def test_a_bool_schema_version_is_not_the_integer_one(self) -> None:
         """`True == 1` in Python, so an equality guard alone admits the wrong type."""

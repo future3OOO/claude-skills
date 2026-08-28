@@ -29,7 +29,7 @@ from hooks.tests.support import build_document, build_no_change_document, record
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import tree_manifest  # noqa: E402
 from hooks.lib.workflow_documents import design_file_declaration  # noqa: E402
-from hooks.lib.workflow_state import set_phase  # noqa: E402
+from hooks.lib.workflow_state import invalidate_after_edit, set_phase  # noqa: E402
 
 
 # Driven as a child process by the mid-gate mutation test. It runs outside this
@@ -759,28 +759,43 @@ class PassLifecycleTests(unittest.TestCase):
         self.finalize("stale-verdict", wid)
         self.assertEqual(self.cli("complete").returncode, 0)
 
-    def test_governance_revalidation_completes_against_the_refreshed_manifest(self) -> None:
-        from hooks.lib.workflow_state import invalidate_after_edit
+    def post_edit_hook(self, relative: str) -> None:
+        """The real PostToolUse gate hook, as the session runs it."""
+        result = subprocess.run(
+            [str(ROOT / "hooks" / "code-quality-gate.py")], cwd=self.repo, env=self.env, text=True,
+            input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
+            capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-        wid = self.complete_slug("revalidated-manifest")
-        identity = resolve_repo_identity(self.repo)
-        invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
+    def test_governance_revalidation_blocks_when_the_source_tree_also_moved(self) -> None:
+        """Graph freshness has no revalidation exception.
+
+        A governance edit reopens a completed pass for re-verification and review.
+        If that window also moves a tracked source file, the recorded graph stops
+        describing the tree, and re-analysis is closed during revalidation. The
+        honest outcome is a blocked pass whose remedy is `begin` - not a completion
+        against a graph the tree has moved past. Both edits go through the real
+        PostToolUse hook, which is what owns invalidation.
+        """
+        marker = "REVALIDATION_KEPT_A_STALE_GRAPH"
+        self.complete_slug("revalidated-manifest")
+        (self.repo / "AGENTS.md").write_text("governance text\n", encoding="utf-8")
+        self.post_edit_hook("AGENTS.md")
         self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 7\\n')")
+        self.post_edit_hook("app.py")
 
-        reverified = self.verify_run(sys.executable, "-c", "pass")
-        self.assertEqual(reverified.returncode, 0, reverified.stdout + reverified.stderr)
-        stale = self.checkpoint("final-review")
-        self.assertTrue(
-            any("review-manifest-stale" in item and "app.py" in item for item in stale["missing"]),
-            f"revalidation reported readiness without naming the drifted tree: {stale['missing']}",
-        )
-
-        self.owner_phase("code-review", "passed", findings="none")
-        self.assertTrue(self.checkpoint("final-review")["ready"], "the refreshed manifest did not reopen the consult")
-        self.finalize("revalidated-manifest", wid)
-        completed = self.cli("complete")
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-
+        blocked = self.checkpoint("final-review")
+        self.assertFalse(blocked["ready"],
+                         f"{marker}: a moved source tree was reported ready during revalidation")
+        self.assertTrue([name for name in blocked["missing"] if "graph" in name],
+                        f"{marker}: nothing in {blocked['missing']} names the stale graph")
+        # Completion refuses; which blocker it names first is not this row's claim.
+        # The reassessment gate legitimately reports before completion readiness is
+        # computed, and the graph-specific refusal has its own proof at the real
+        # hook where it is reached.
+        refused = self.cli("complete")
+        self.assertEqual(refused.returncode, 2,
+                         f"{marker}: completion accepted a graph the tree had moved past")
     def preflight_document(self) -> dict[str, str]:
         return build_no_change_document("concrete content for this pass")
 
@@ -2641,6 +2656,7 @@ class PassLifecycleTests(unittest.TestCase):
         invalidate_after_edit(identity, "app.py")
         self.assertEqual(json.loads(self.cli("status").stdout)["productionCode"], "passed",
                          "an ordinary production edit erased the production-code step")
+        self.refresh_graph()
         self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
         legacy_verified = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(legacy_verified.returncode, 0, legacy_verified.stdout + legacy_verified.stderr)
@@ -3406,6 +3422,54 @@ class PassLifecycleTests(unittest.TestCase):
                          f"{marker}: a helper resolved the deleted checkout default: "
                          f"{driven.stderr.strip()[-300:]!r}")
 
+    def refresh_graph(self) -> None:
+        """Re-record analysis after the last edit, the way the workflow prescribes.
+
+        Completion refuses while the graph binding is retired, so a pass that edits
+        after analysis and then completes has to refresh it first. These tests are
+        asserting other contracts; this keeps their scaffold matching the order the
+        workflow already documents.
+        """
+        work = self.tmp / f"graph-refresh-{len(list(self.tmp.glob('graph-refresh-*')))}"
+        work.mkdir()
+        record_context_forge(self.repo, work)
+
+    def test_a_tracked_edit_stales_the_recorded_graph(self) -> None:
+        """Graph evidence describes the tree it was measured on.
+
+        `invalidate_after_edit` clears verification and review through
+        `_reset_downstream` and says nothing about the graph, so an edit made after
+        analysis left the preflight-advice checkpoint ready on evidence that no
+        longer described the working tree.
+        """
+        marker = "STALE_GRAPH_STILL_READY"
+        self.begin_slug("graph-freshness")
+        (self.tmp / "graph-freshness-work").mkdir()
+        record_context_forge(self.repo, self.tmp / "graph-freshness-work")
+        before = json.loads(self.cli("checkpoint", "--phase", "preflight-advice").stdout)
+        self.assertTrue(before["ready"], "the probe did not start from a ready checkpoint")
+        (self.repo / "app.py").write_text("value = 41\n", encoding="utf-8")
+        invalidate_after_edit(resolve_repo_identity(str(self.repo)), str(self.repo / "app.py"))
+        after = json.loads(self.cli("checkpoint", "--phase", "preflight-advice").stdout)
+        self.assertFalse(after["ready"],
+                         f"{marker}: the checkpoint stayed ready on evidence measured before the edit")
+        self.assertTrue([name for name in after["missing"] if "graph" in name],
+                        f"{marker}: nothing in {after['missing']} names the stale graph")
+
+    def test_completion_fails_closed_on_a_stale_graph(self) -> None:
+        """A pass may not close on evidence that predates its own tree."""
+        marker = "COMPLETION_ACCEPTED_A_STALE_GRAPH"
+        slug = "graph-completion"
+        self.begin_slug(slug)
+        (self.tmp / "graph-completion-work").mkdir()
+        support.advance_to_final_review(self.repo, self.tmp / "graph-completion-work")
+        (self.repo / "app.py").write_text("value = 43\n", encoding="utf-8")
+        invalidate_after_edit(resolve_repo_identity(str(self.repo)), str(self.repo / "app.py"))
+        completed = self.cli("complete")
+        self.assertEqual(completed.returncode, 2, f"{marker}: completion accepted a stale graph")
+        self.assertIn("graphManifest", completed.stderr,
+                      f"{marker}: the refusal did not name the retired graph binding")
+
     def test_final_review_names_the_candidate_the_pass_proved(self) -> None:
         """The projection is recorded before implementation and never refreshed by it.
 
@@ -3422,6 +3486,7 @@ class PassLifecycleTests(unittest.TestCase):
         support.advance_to_final_review(self.repo, work)
         bootstrap = json.loads(self.cli("checkpoint", "--phase", "preflight-advice").stdout)
         (self.repo / "implemented.py").write_text("value = 7\n", encoding="utf-8")
+        self.refresh_graph()
         self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0, marker)
         self.assertEqual(self.cli("verify", "--slug", slug, "--kind", "quality-gate",
                                   "--base-ref", "HEAD").returncode, 0, marker)

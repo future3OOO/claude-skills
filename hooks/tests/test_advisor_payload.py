@@ -409,5 +409,57 @@ class AdvisorPayloadTests(unittest.TestCase):
                          f"{marker}: the migration proof needs the checkout's history: "
                          f"{run.stderr.strip()[-300:]!r}")
 
+    def launched(self, *args: str) -> list[str]:
+        """The argv the wrapper actually hands the provider.
+
+        A callee earlier on PATH writes its own argv, so this observes what the
+        wrapper launched rather than what its source says it would.
+        """
+        recorder = self.tmp / "provider-argv"
+        provider = self.home / "bin" / "claude"
+        original = provider.read_text(encoding="utf-8")
+        provider.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$@" >"{recorder}"\n' + original.split("\n", 1)[1],
+            encoding="utf-8")
+        provider.chmod(0o755)
+        self.wrapper(*args)
+        return recorder.read_text(encoding="utf-8").split()
+
+    def test_the_advisor_is_launched_with_no_mcp_servers(self) -> None:
+        """`--tools` gates built-in tools only; MCP servers load from configuration.
+
+        Measured against the live provider with the wrapper's exact flags: as
+        shipped the subprocess reported the whole `mcp__gitnexus__*` inventory,
+        and with `--strict-mcp-config` it reported none. The wrapper passes no
+        `--mcp-config`, so the flag leaves it no MCP servers at all.
+        """
+        marker = "ADVISOR_STILL_HOLDS_GITNEXUS_TOOLS"
+        argv = self.launched("--slug", "payload", "--phase", "preflight-advice",
+                             "--design-absent", "payload rig: no plan artifact", "--", "scope question")
+        flags = [word for word in argv if word.startswith("--")]
+        self.assertIn("--strict-mcp-config", flags,
+                      f"{marker}: launched with the ambient MCP configuration; flags were {flags}")
+        self.assertNotIn("--mcp-config", flags,
+                         f"{marker}: naming a config would hand the subprocess servers again")
+
+    def test_the_advisor_keeps_the_tools_it_measures_with(self) -> None:
+        """Closing the MCP surface must not disarm the reviewer."""
+        marker = "ADVISOR_LOST_ITS_MEASUREMENT_TOOLS"
+        argv = self.launched("--slug", "payload", "--phase", "preflight-advice",
+                             "--design-absent", "payload rig: no plan artifact", "--", "scope question")
+        tools = argv[argv.index("--tools") + 1] if "--tools" in argv else ""
+        for kept in ("Bash", "Read", "Grep", "Glob"):
+            self.assertIn(kept, tools, f"{marker}: the advisor lost {kept}")
+
+    def test_no_rubric_directs_the_advisor_at_gitnexus(self) -> None:
+        """An instruction to use an absent capability is the contradictory-contract shape."""
+        marker = "RUBRIC_STILL_DIRECTS_GITNEXUS"
+        for path in (WRAPPER, ROOT / "skills" / "codex-advisor" / "SKILL.md"):
+            text = path.read_text(encoding="utf-8")
+            for promise in ("GitNexus", "configured MCP tools"):
+                self.assertNotIn(promise, text, f"{marker}: {path.name} still promises {promise!r}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
