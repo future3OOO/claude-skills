@@ -414,8 +414,9 @@ class AdvisorDirectMeasurementTest(unittest.TestCase):
                     "--budget",
                     "120",
                     "--",
-                    "Do not use tools or inspect files, processes, environment, or temporary "
-                    "paths. Using only supplied prompt evidence, return the required preflight "
+                    "Invoke mcp__gitnexus__group_list exactly once with name "
+                    "issue174-probe-does-not-exist; do not substitute Bash or another tool. "
+                    "Then, using only supplied prompt evidence, return the required preflight "
                     "JSON envelope with one nonmaterial nonbehavioral finding. Its claim must "
                     "contain DESIGN_NONCE=<value from the governed-design narrative>, "
                     "WORKFLOW_PROJECTION_SECTIONS=<count of workflow-owned top-level projection "
@@ -430,6 +431,25 @@ class AdvisorDirectMeasurementTest(unittest.TestCase):
                 timeout=300,
             )
             self.assertEqual(result.returncode, 0, marker + "\n" + result.stdout + result.stderr)
+            sid = next(
+                (Path(env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "_advisor-sessions").glob("*.sid")
+            ).read_text(encoding="utf-8").strip()
+            transcript = next(
+                (Path(env["HOME"]) / ".claude" / "projects").rglob(f"{sid}.jsonl")
+            )
+            gitnexus_tools = []
+            for line in transcript.read_text(encoding="utf-8").splitlines():
+                message = json.loads(line).get("message")
+                blocks = message.get("content", []) if isinstance(message, dict) else []
+                gitnexus_tools.extend(
+                    block["name"] for block in blocks
+                    if isinstance(block, dict) and block.get("type") == "tool_use"
+                    and str(block.get("name", "")).startswith("mcp__gitnexus__")
+                )
+            self.assertFalse(
+                gitnexus_tools,
+                "ADVISOR_GITNEXUS_TOOL_EXPOSED: " + ", ".join(gitnexus_tools),
+            )
             response = json.loads(result.stdout)
             claim = " ".join(
                 str(item.get("claim", ""))

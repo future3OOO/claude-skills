@@ -79,9 +79,9 @@ check_status "bad cwd refused" 2 "$status"
 grep -q -- '--tools "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
   && { printf 'PASS  direct-measurement tools retained\n'; pass=$((pass + 1)); } \
   || { printf 'FAIL  direct-measurement tools changed\n'; fail=$((fail + 1)); }
-grep -q 'disallowed-tools "Edit Write NotebookEdit Task"' "$WRAPPER" \
-  && { printf 'PASS  writes and subagents remain blocked\n'; pass=$((pass + 1)); } \
-  || { printf 'FAIL  write/subagent deny changed\n'; fail=$((fail + 1)); }
+grep -Fq 'disallowed-tools "Edit Write NotebookEdit Task${phase:+ mcp__gitnexus__*}"' "$WRAPPER" \
+  && { printf 'PASS  writes, subagents, and phased GitNexus remain blocked\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  process-boundary deny changed\n'; fail=$((fail + 1)); }
 grep -q -- '--expected-candidate-tree "$candidate"' "$WRAPPER" \
   && { printf 'PASS  checkpoint candidate reaches advisor-result\n'; pass=$((pass + 1)); } \
   || { printf 'FAIL  checkpoint candidate is not recorded with the result\n'; fail=$((fail + 1)); }
@@ -198,6 +198,8 @@ preflight_args=$(cat "$rigtmp/capture/args-1")
 preflight_sid=$(printf '%s\n' "$preflight_args" | python3 -c 'import shlex,sys; a=shlex.split(sys.stdin.read()); print(a[a.index("--session-id")+1])')
 check "preflight creates provider session" "--session-id $preflight_sid" "$preflight_args"
 check_absent "preflight does not resume" "--resume" "$preflight_args"
+check "preflight denies GitNexus tools" "mcp__gitnexus__*" "$preflight_args"
+check_absent "preflight role has no GitNexus guidance" "configured GitNexus" "$preflight_args"
 check "design body is attached as framed evidence" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-1")"
 check_status "one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- governed-design narrative evidence')"
 check "design evidence names line framing" "framing=design-line-prefix" "$(cat "$rigtmp/capture/payload-1")"
@@ -250,6 +252,7 @@ final_out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$r
 check_status "controlled final composition exits 0" 0 "$status"
 final_args=$(cat "$rigtmp/capture/args-3")
 check "successful final resumes same SID" "--resume $preflight_sid" "$final_args"
+check "final denies GitNexus tools" "mcp__gitnexus__*" "$final_args"
 check_status "final has one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- governed-design narrative evidence')"
 check "final carries framed design body" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-3")"
 check_status "final has one projection section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- advisor projection (schemaVersion 1) ---')"
@@ -258,6 +261,11 @@ check "final design telemetry emitted" "codex_advisor_evidence name=governing-de
 check "projection telemetry emitted" "codex_advisor_evidence name=advisor-projection" "$(cat "$rigtmp/final.err")"
 check "diff telemetry emitted" "codex_advisor_evidence name=current-pass-diff" "$(cat "$rigtmp/final.err")"
 check "completion marker emitted" "codex_advisor_complete status=0 provider=codex" "$(cat "$rigtmp/final.err")"
+
+unphased_out=$(run_wrapper --slug scoped-unphased --fresh -- 'unphased question' 2>"$rigtmp/unphased.err"); status=$?
+check_status "controlled unphased consult exits 0" 0 "$status"
+unphased_args=$(cat "$rigtmp/capture/args-4")
+check_absent "unphased consult keeps configured MCP tools" "mcp__gitnexus__*" "$unphased_args"
 rm -rf "$rigtmp"
 
 if [[ "${LIVE:-0}" == 1 ]]; then

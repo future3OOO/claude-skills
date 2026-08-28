@@ -817,6 +817,13 @@ def evidence_record(identity: RepoIdentity, evidence_id: str) -> JsonObject | No
     return read_evidence(identity, evidence_id)
 
 
+def _graph_candidate_ready(document: object, candidate: str) -> bool:
+    projection = document.get("advisorProjection") if isinstance(document, dict) else None
+    return isinstance(projection, dict) and (
+        projection.get("expectedCandidateTree") == candidate == projection.get("indexedCandidateTree")
+    )
+
+
 def _register_finding_intake(
     state: JsonObject, intake_id: str, findings: list[JsonObject], stage: str, source: str,
 ) -> None:
@@ -1483,6 +1490,13 @@ def complete(
         missing = behavior_map.closure_blockers(
             tdd_document, preflight_document,
         ) + _finding_completion_blockers(transaction, state) + completion_missing(state)
+        graph_id = state.get("repoContextForgeEvidence")
+        graph_document = transaction.evidence(graph_id) if isinstance(graph_id, str) else None
+        if (
+            not _graph_candidate_ready(graph_document, _active_candidate_tree(identity))
+            and "repoContextForge" not in missing
+        ):
+            missing.append("repoContextForge")
         if missing:
             raise WorkflowIncomplete("workflow incomplete: " + ", ".join(missing))
         if drift := _binding_drift(identity, state, "review", transaction):
@@ -1559,11 +1573,20 @@ def public_status(state: JsonObject, identity: RepoIdentity | None = None) -> Js
     phase, reporting that same readiness. It is never stored, never writable, and never
     a second readiness source.
     """
-    ready = _evidence_ready(state, "repo-context-forge")
+    candidate = _active_candidate_tree(identity) if identity is not None else None
+    graph_id = state.get("repoContextForgeEvidence")
+    graph_document = (
+        evidence_document(identity, graph_id)
+        if identity is not None and isinstance(graph_id, str)
+        else None
+    )
+    ready = _evidence_ready(state, "repo-context-forge") and (
+        candidate is None or _graph_candidate_ready(graph_document, candidate)
+    )
     stored = state.get("repoContextForge")
     return {
         **state,
-        **({"activeCandidateTree": _active_candidate_tree(identity)} if identity is not None else {}),
+        **({"activeCandidateTree": candidate} if candidate is not None else {}),
         "repoContextForge": stored if ready or stored != "passed" else "pending",
         "gitnexus": "passed" if ready else "pending",
     }

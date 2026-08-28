@@ -146,10 +146,11 @@ marker, empty output, or quoting error is not a completed consult.
 
 The delegate runs with the same trust as the lead and is instructed not to
 mutate the checkout or workflow ledger. It may use repository reads, Bash, web
-reads, Git and GitHub reads, tests, CLI probes, and normally configured MCP
-tools. It must report GitNexus unavailable explicitly rather than imply it
-searched. Edit, Write, NotebookEdit, and Task/subagents remain denied, but the
-wrapper promises no sandbox or immutability enforcement around Bash or MCP.
+reads, Git and GitHub reads, tests, CLI probes, and configured MCP tools only
+for phase-less consults. Phased consults receive no `mcp__gitnexus__*` tools and
+consume only the workflow-recorded advisor projection. Edit, Write,
+NotebookEdit, and Task/subagents remain denied, but the wrapper promises no
+sandbox or immutability enforcement around Bash or phase-less MCP.
 `CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE` prevent nested consultation.
 
 The wrapper carries the canonical mock and imaginary-risk rules because the

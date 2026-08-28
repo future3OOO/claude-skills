@@ -406,6 +406,10 @@ def graph_evidence_document(
         raise ValueError(f"the packet was produced for {reported!r}, not {source_root}")
     gitnexus = packet.get("gitnexus")
     graph = _resolved_graph(gitnexus.get("analysis") if isinstance(gitnexus, dict) else None)
+    authority = graph.get("authority")
+    graph_source = authority.get("source_repository") if isinstance(authority, dict) else None
+    if not _text(graph_source) or os.path.realpath(str(graph_source)) != os.path.realpath(source_root):
+        raise ValueError(f"the graph was produced for {graph_source!r}, not {source_root}")
     snapshot_candidate = None
     if snapshot is not None:
         if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):

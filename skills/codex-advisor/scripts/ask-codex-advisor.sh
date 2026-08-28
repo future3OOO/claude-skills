@@ -313,7 +313,7 @@ Challenge the proposed Module owner, Interface, Seam, first real-Seam RED, prese
 Run /code-review, /codebase-design, /tdd, and /code-quality against the live repository, checkpoint projection, and current-pass diff. Verify current owner, Behavior Map closure and reassessment, design reconciliation, preservation proof, candidate binding, the contradictory-contract gate, and every material mandatory finding plus at most one additional reachable failure class. A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed already-satisfied with baseline evidence for its exact surface and unchanged for the pass, or superseded with a GREEN terminal replacement; omitted, prose-only, RED, unresolved, stale, or unterminated supersession remains material. Measure before inferring. Return only schemaVersion 1 with findings carrying exactly id, claim, material, and kind, and verdict commit-ready, fix-before-commit, or context-mismatch. Use fix-before-commit only with a material finding and commit-ready only when context matches with none.' ;;
 esac
 
-role="Codex advisor mode, investigative. You are the independent advisor delegate for one consult. You run with the same trust as the lead and are instructed not to mutate the checkout or workflow ledger. Do not spawn agents or run another advisor. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. An undemonstrated theoretical failure cannot require code. For bugs require a reproduced symptom and falsifiable root-cause hypothesis. Use targeted reads, configured GitNexus when available, direct tests and CLI probes, and cite file:line. Report GitNexus unavailable explicitly. Give findings, not orders, in <=${budget} words."
+role="Codex advisor mode, investigative. You are the independent advisor delegate for one consult. You run with the same trust as the lead and are instructed not to mutate the checkout or workflow ledger. Do not spawn agents or run another advisor. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. An undemonstrated theoretical failure cannot require code. For bugs require a reproduced symptom and falsifiable root-cause hypothesis. Use targeted reads, direct tests and CLI probes, and cite file:line. Give findings, not orders, in <=${budget} words."
 prompt_file="$transport_dir/prompt"
 {
   printf '%s\n' "$phase_prompt"
@@ -351,7 +351,7 @@ cd "$repo_root" && env "${provider_unset[@]}" "${provider_env[@]}" \
   claude -p "${session_args[@]}" --model "$model" --output-format text \
     --append-system-prompt "$role" \
     --tools "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch" \
-    --disallowed-tools "Edit Write NotebookEdit Task" <"$prompt_file" >"$output_file"
+    --disallowed-tools "Edit Write NotebookEdit Task${phase:+ mcp__gitnexus__*}" <"$prompt_file" >"$output_file"
 status=$?
 set -e
 if [[ "$status" -ne 0 ]]; then

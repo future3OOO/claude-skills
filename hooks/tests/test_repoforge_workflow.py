@@ -831,6 +831,11 @@ class GraphEvidenceContractTests(unittest.TestCase):
             f"the packet was produced for {str(foreign)!r}, not {self.root}",
         )
 
+        packet = self.packet()
+        packet["gitnexus"]["analysis"]["authority"]["source_repository"] = str(foreign)
+        with self.assertRaisesRegex(ValueError, str(foreign), msg="FOREIGN_GRAPH_IDENTITY_ACCEPTED"):
+            self.document_for(packet)
+
     def test_a_resolved_packet_for_this_checkout_is_accepted(self) -> None:
         document = self.document_for(self.packet())
         self.assertEqual(document["graph"]["status"], "resolved")

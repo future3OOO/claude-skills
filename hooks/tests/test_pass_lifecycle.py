@@ -1692,6 +1692,31 @@ class PassLifecycleTests(unittest.TestCase):
         self.owner_phase("code-review", "passed", findings="none")
         self.assertTrue(self.checkpoint("final-review")["ready"])
 
+    def test_graph_readiness_tracks_the_dirty_candidate_through_completion(self) -> None:
+        marker, slug = "FOREIGN_GRAPH_IDENTITY_ACCEPTED", "candidate-sensitive-graph"
+        wid = self.begin_slug(slug)
+        self.advance_to_context_forge()
+        analyzed = json.loads(self.cli("status").stdout)
+
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        stale = json.loads(self.cli("status").stdout)
+        self.assertEqual((stale["repoContextForge"], stale["gitnexus"]), ("pending", "pending"), marker)
+        self.assertFalse(self.checkpoint("preflight-advice")["ready"], marker)
+
+        self.advance_to_context_forge()
+        refreshed = json.loads(self.cli("status").stdout)
+        graph = self.evidence(str(refreshed["repoContextForgeEvidence"]))
+        self.assertNotEqual(refreshed["activeCandidateTree"], analyzed["activeCandidateTree"], marker)
+        self.assertEqual(graph["advisorProjection"]["expectedCandidateTree"], refreshed["activeCandidateTree"], marker)
+
+        self.advance_to_verification(slug, wid)
+        self.owner_phase("code-review", "passed", findings="none")
+        self.finalize(slug, wid)
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        blocked = self.cli("complete")
+        self.assertEqual(blocked.returncode, 2, marker + blocked.stdout + blocked.stderr)
+        self.assertIn("repoContextForge", blocked.stderr, marker)
+
     def test_workflow_completion_survives_a_same_tree_review_commit(self) -> None:
         missing = self.cli("status")
         self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
