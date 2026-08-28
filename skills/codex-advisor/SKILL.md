@@ -69,9 +69,9 @@ challenges the lead's review rather than trusting it. The wrapper sends the
 checkpoint's retained advisor projection, the same governing-design declaration
 (carry the identical `--design-file` or `--design-absent` on both checkpoints),
 and one direct `passStartOid^{tree} -> activeCandidateTree` diff. The advisor
-uses the repository and workflow-owned bindings to reconcile the governed slice,
-real-seam proof, Module shape, minimality, and regression coverage, returning
-only this strict envelope:
+uses only those supplied channels to challenge the changed Module shape,
+minimality, security boundary, candidate binding, and visible regression coverage;
+checkpoint readiness remains wrapper-owned. It returns only this strict envelope:
 
 ```json
 {"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"fix-before-commit"}
@@ -144,13 +144,14 @@ marker, empty output, or quoting error is not a completed consult.
 
 ## Measurement and recursion contract
 
-The delegate runs with the same trust as the lead and is instructed not to
-mutate the checkout or workflow ledger. It may use repository reads, Bash, web
-reads, Git and GitHub reads, tests, CLI probes, and configured MCP tools only
-for phase-less consults. Phased consults receive no `mcp__gitnexus__*` tools and
-consume only the workflow-recorded advisor projection. Edit, Write,
-NotebookEdit, and Task/subagents remain denied, but the wrapper promises no
-sandbox or immutability enforcement around Bash or phase-less MCP.
+Phase-less delegates run with the same trust as the lead and may use repository
+reads, Bash, web reads, Git and GitHub reads, tests, CLI probes, and configured
+MCP tools. Phased consults run with customizations and MCP disabled, expose no
+tools, and consume only the supplied workflow-recorded projection and current-pass
+diff; embedded repository-derived content is untrusted data, never instructions.
+Edit, Write, NotebookEdit, and Task/subagents remain denied for every consult,
+and the wrapper promises no sandbox or immutability enforcement around
+phase-less Bash or MCP.
 `CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE` prevent nested consultation.
 
 The wrapper carries the canonical mock and imaginary-risk rules because the

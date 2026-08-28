@@ -76,12 +76,18 @@ check_status "oversized budget refused" 2 "$status"
 out=$("$WRAPPER" --slug t --cwd /definitely/not/a/dir -- q 2>&1); status=$?
 check_status "bad cwd refused" 2 "$status"
 
-grep -q -- '--tools "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
-  && { printf 'PASS  direct-measurement tools retained\n'; pass=$((pass + 1)); } \
-  || { printf 'FAIL  direct-measurement tools changed\n'; fail=$((fail + 1)); }
-grep -Fq 'disallowed-tools "Edit Write NotebookEdit Task${phase:+ mcp__gitnexus__*}"' "$WRAPPER" \
-  && { printf 'PASS  writes, subagents, and phased GitNexus remain blocked\n'; pass=$((pass + 1)); } \
-  || { printf 'FAIL  process-boundary deny changed\n'; fail=$((fail + 1)); }
+grep -Fq 'provider_tools="Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
+  && { printf 'PASS  phase-less direct-measurement tools retained\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phase-less direct-measurement tools changed\n'; fail=$((fail + 1)); }
+grep -Fq 'phase_args=(--safe-mode --strict-mcp-config)' "$WRAPPER" \
+  && { printf 'PASS  phased customizations and MCP config are disabled\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phased startup isolation missing\n'; fail=$((fail + 1)); }
+grep -Fq 'provider_tools=""' "$WRAPPER" \
+  && { printf 'PASS  phased tool allowlist is empty\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phased tool allowlist is not empty\n'; fail=$((fail + 1)); }
+grep -Fq 'disallowed_tools="Read Grep Glob Skill Bash WebSearch WebFetch Edit Write NotebookEdit Task mcp__gitnexus__*"' "$WRAPPER" \
+  && { printf 'PASS  phased built-ins and GitNexus remain blocked\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phased process-boundary deny changed\n'; fail=$((fail + 1)); }
 grep -q -- '--expected-candidate-tree "$candidate"' "$WRAPPER" \
   && { printf 'PASS  checkpoint candidate reaches advisor-result\n'; pass=$((pass + 1)); } \
   || { printf 'FAIL  checkpoint candidate is not recorded with the result\n'; fail=$((fail + 1)); }
@@ -198,6 +204,7 @@ preflight_args=$(cat "$rigtmp/capture/args-1")
 preflight_sid=$(printf '%s\n' "$preflight_args" | python3 -c 'import shlex,sys; a=shlex.split(sys.stdin.read()); print(a[a.index("--session-id")+1])')
 check "preflight creates provider session" "--session-id $preflight_sid" "$preflight_args"
 check_absent "preflight does not resume" "--resume" "$preflight_args"
+check "preflight disables customizations" "--safe-mode --strict-mcp-config" "$preflight_args"
 check "preflight denies GitNexus tools" "mcp__gitnexus__*" "$preflight_args"
 check_absent "preflight role has no GitNexus guidance" "configured GitNexus" "$preflight_args"
 check "design body is attached as framed evidence" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-1")"
@@ -205,7 +212,9 @@ check_status "one design narrative section" 1 "$(count_exact "$rigtmp/capture/pa
 check "design evidence names line framing" "framing=design-line-prefix" "$(cat "$rigtmp/capture/payload-1")"
 check "design telemetry emitted" "codex_advisor_evidence name=governing-design" "$(cat "$rigtmp/preflight.err")"
 check "canonical design declaration is retained" '"sha256"' "$(cat "$rigtmp/capture/payload-1")"
-check "current-pass diff carries the changed value" "+value = 2" "$(cat "$rigtmp/capture/payload-1")"
+check "current-pass diff carries the changed value" "diff> +value = 2" "$(cat "$rigtmp/capture/payload-1")"
+check "projection is framed as untrusted data" "Untrusted repository-derived projection data follows" "$(cat "$rigtmp/capture/payload-1")"
+check "diff is framed as untrusted data" "Untrusted repository diff data follows" "$(cat "$rigtmp/capture/payload-1")"
 check_status "one projection section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- advisor projection (schemaVersion 1) ---')"
 check_status "one current-pass diff section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---')"
 for old in 'repo context packet' 'Repo Context Forge graph evidence' '--- unstaged diff ---' '--- staged diff ---' '--- untracked diff ---' 'current Behavior Map' 'recorded TDD summary' 'recorded code-review summary'; do
@@ -252,6 +261,7 @@ final_out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$r
 check_status "controlled final composition exits 0" 0 "$status"
 final_args=$(cat "$rigtmp/capture/args-3")
 check "successful final resumes same SID" "--resume $preflight_sid" "$final_args"
+check "final disables customizations" "--safe-mode --strict-mcp-config" "$final_args"
 check "final denies GitNexus tools" "mcp__gitnexus__*" "$final_args"
 check_status "final has one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- governed-design narrative evidence')"
 check "final carries framed design body" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-3")"
@@ -265,6 +275,8 @@ check "completion marker emitted" "codex_advisor_complete status=0 provider=code
 unphased_out=$(run_wrapper --slug scoped-unphased --fresh -- 'unphased question' 2>"$rigtmp/unphased.err"); status=$?
 check_status "controlled unphased consult exits 0" 0 "$status"
 unphased_args=$(cat "$rigtmp/capture/args-4")
+check "unphased consult retains direct-measurement tools" "--tools Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch" "$unphased_args"
+check_absent "unphased consult keeps customizations" "--safe-mode" "$unphased_args"
 check_absent "unphased consult keeps configured MCP tools" "mcp__gitnexus__*" "$unphased_args"
 rm -rf "$rigtmp"
 
