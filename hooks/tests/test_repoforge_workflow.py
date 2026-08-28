@@ -555,6 +555,35 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(checkpoint["advisorProjectionEvidence"], evidence_id)
         self.assertEqual(checkpoint["advisorProjection"], projection)
 
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_mutation_and_status_responses_share_graph_candidate_readiness(self) -> None:
+        marker = "MUTATION_STATUS_GRAPH_READINESS_DIVERGED"
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        analyzed = self.status()
+        workflow_id = str(analyzed["workflowId"])
+        (self.repo / "caller.py").write_text(
+            "from app import compute\n\n\ndef run():\n    return compute(3)\n", encoding="utf-8"
+        )
+
+        paused = self.pass_state(
+            "pause", "--slug", self.slug, "--workflow-id", workflow_id,
+            "--reason", "measure candidate readiness",
+        )
+        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
+        mutation, status = json.loads(paused.stdout), self.status()
+        self.assertEqual(
+            (
+                mutation["activeCandidateTree"], mutation["repoContextForge"], mutation["gitnexus"],
+                status["activeCandidateTree"], status["repoContextForge"], status["gitnexus"],
+            ),
+            (
+                status["activeCandidateTree"], "pending", "pending",
+                mutation["activeCandidateTree"], "pending", "pending",
+            ),
+            marker + json.dumps({"mutation": mutation, "status": status}, sort_keys=True),
+        )
+
     def git_out(self, *args: str) -> str:
         result = subprocess.run(
             ["git", *args], cwd=self.repo, env=self.env, text=True,

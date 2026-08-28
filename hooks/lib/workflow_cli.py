@@ -203,7 +203,7 @@ def _emit_mutation(
 ) -> None:
     """Bind full-state output before its mutation can commit."""
     candidate = _active_candidate_tree(identity)
-    _emit_json(public_status({**operation(candidate), "activeCandidateTree": candidate}))
+    _emit_json(public_status({**operation(candidate), "activeCandidateTree": candidate}, identity))
 
 
 def _state(identity: RepoIdentity) -> dict[str, object]:

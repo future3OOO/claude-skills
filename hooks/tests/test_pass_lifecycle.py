@@ -507,6 +507,41 @@ class PassLifecycleTests(unittest.TestCase):
             marker + json.dumps(checkpoint, sort_keys=True),
         )
 
+    def test_completion_refuses_graph_evidence_that_checkpoint_would_reject(self) -> None:
+        marker = "FOREIGN_GRAPH_OWNERSHIP_COMPLETED"
+        for defect in ("projection-schema", "workflow-owner"):
+            with self.subTest(defect=defect):
+                slug = f"completion-{defect}"
+                wid = self.begin_slug(slug)
+                self.advance_to_verification(slug, wid)
+                self.owner_phase("code-review", "passed", findings="none")
+                self.finalize(slug, wid)
+                identity = resolve_repo_identity(self.repo)
+                state = read_workflow(identity)
+                packet = graph_packet(
+                    str(identity.root), str(_active_candidate_tree(identity)),
+                    str(state["passStartOid"]),
+                )
+                path = self.tmp / f"{defect}-completion-graph.json"
+                path.write_text(json.dumps(packet), encoding="utf-8")
+                document = graph_evidence_document(
+                    str(path), slug=slug, workflow_id=wid,
+                    source_root=str(identity.root),
+                )
+                if defect == "projection-schema":
+                    document["advisorProjection"]["schemaVersion"] = True
+                else:
+                    document["slug"] = "another-workflow"
+                    document["workflowId"] = "f" * 32
+                commit_evidence_phase(identity, slug, wid, "repo-context-forge", document)
+
+                completed = self.cli("complete")
+                self.assertEqual(
+                    completed.returncode, 2,
+                    marker + completed.stdout + completed.stderr,
+                )
+                self.assertIn("repoContextForge", completed.stderr, marker)
+
     def test_phased_advisor_refuses_caller_selected_fresh_mode(self) -> None:
         marker = "ADVISOR_SESSION_MODE_WRONG"
         result = subprocess.run(

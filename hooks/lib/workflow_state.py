@@ -817,11 +817,24 @@ def evidence_record(identity: RepoIdentity, evidence_id: str) -> JsonObject | No
     return read_evidence(identity, evidence_id)
 
 
-def _graph_candidate_ready(document: object, candidate: str) -> bool:
-    projection = document.get("advisorProjection") if isinstance(document, dict) else None
-    return isinstance(projection, dict) and (
-        projection.get("expectedCandidateTree") == candidate == projection.get("indexedCandidateTree")
-    )
+def _graph_candidate_ready(
+    document: object, candidate: str, *, slug: object, workflow_id: object,
+) -> bool:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schemaVersion")) is not int
+        or document.get("schemaVersion") != 1
+        or document.get("slug") != slug
+        or document.get("workflowId") != workflow_id
+    ):
+        return False
+    try:
+        validate_advisor_projection(
+            document.get("advisorProjection"), candidate_tree=candidate,
+        )
+    except ValueError:
+        return False
+    return True
 
 
 def _register_finding_intake(
@@ -1493,7 +1506,10 @@ def complete(
         graph_id = state.get("repoContextForgeEvidence")
         graph_document = transaction.evidence(graph_id) if isinstance(graph_id, str) else None
         if (
-            not _graph_candidate_ready(graph_document, _active_candidate_tree(identity))
+            not _graph_candidate_ready(
+                graph_document, _active_candidate_tree(identity),
+                slug=state.get("slug"), workflow_id=state.get("workflowId"),
+            )
             and "repoContextForge" not in missing
         ):
             missing.append("repoContextForge")
@@ -1581,7 +1597,10 @@ def public_status(state: JsonObject, identity: RepoIdentity | None = None) -> Js
         else None
     )
     ready = _evidence_ready(state, "repo-context-forge") and (
-        candidate is None or _graph_candidate_ready(graph_document, candidate)
+        candidate is None or _graph_candidate_ready(
+            graph_document, candidate,
+            slug=state.get("slug"), workflow_id=state.get("workflowId"),
+        )
     )
     stored = state.get("repoContextForge")
     return {
