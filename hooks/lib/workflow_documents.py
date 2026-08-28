@@ -405,6 +405,10 @@ def graph_evidence_document(
     reported = target.get("source_repo") if isinstance(target, dict) else None
     if not _text(reported) or os.path.realpath(str(reported)) != os.path.realpath(source_root):
         raise ValueError(f"the packet was produced for {reported!r}, not {source_root}")
+    git_facts = packet.get("git")
+    source_base = git_facts.get("merge_base") if isinstance(git_facts, dict) else None
+    if not _git_oid(source_base):
+        raise ValueError("the packet names no canonical Git merge base")
     gitnexus = packet.get("gitnexus")
     graph = _resolved_graph(gitnexus.get("analysis") if isinstance(gitnexus, dict) else None)
     authority = graph.get("authority")
@@ -428,6 +432,11 @@ def graph_evidence_document(
         raise ValueError(
             f"the advisor projection was produced for {projection['sourceRepo']!r}, "
             f"not {expected_source_repo!r}"
+        )
+    if projection["sourceBaseOid"] != source_base:
+        raise ValueError(
+            f"the advisor projection was produced for source base "
+            f"{projection['sourceBaseOid']!r}, not {source_base!r}"
         )
     document: JsonObject = {
         "schemaVersion": 1,

@@ -879,12 +879,34 @@ class GraphEvidenceContractTests(unittest.TestCase):
             marker,
         )
 
+    def test_a_projection_for_another_merge_base_is_refused(self) -> None:
+        packet = self.packet()
+        packet["advisorProjection"]["sourceBaseOid"] = "d" * 40
+        marker = "FOREIGN_SOURCE_BASE_OID_ACCEPTED"
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            self.document_for(packet)
+        self.assertEqual(
+            str(refusal.exception),
+            f"the advisor projection was produced for source base {'d' * 40!r}, "
+            f"not {'b' * 40!r}",
+            marker,
+        )
+
     def test_a_resolved_packet_for_this_checkout_is_accepted(self) -> None:
         document = self.document_for(self.packet())
         self.assertEqual(document["graph"]["status"], "resolved")
         self.assertEqual(document["workflowId"], "wid")
         self.assertNotIn("gateContext", document)
         self.assertNotIn("gateContextGap", document)
+
+    def test_a_diverged_base_tip_does_not_replace_merge_base_provenance(self) -> None:
+        marker = "DIVERGED_BASE_TIP_REJECTED"
+        document = self.document_for(
+            self.packet(),
+            snapshot={"base": "a" * 40, "candidate": "c" * 40},
+        )
+        self.assertEqual(document["advisorProjection"]["sourceBaseOid"], "b" * 40, marker)
+        self.assertEqual(document["gateContext"]["base"], "a" * 40, marker)
 
     def test_invalid_advisor_projections_are_refused_before_recording(self) -> None:
         mutations = {

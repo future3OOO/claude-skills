@@ -376,13 +376,13 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertIn("reassessment", str(refused.exception), marker)
         self.assertNotEqual(read_workflow(self.identity)["phase"], "complete", marker)
 
-    def test_final_review_prompt_states_the_contract_item_clause(self) -> None:
+    def test_final_review_prompt_requires_only_supplied_evidence(self) -> None:
         # The prompt literal is the production artifact; its delivery to the
         # delegate is proven by the wrapper's captured-payload suite.
-        marker = "FINAL_REVIEW_CLAUSE_ABSENT"
+        marker = "FINAL_REVIEW_EVIDENCE_ONLY_CONTRACT_ABSENT"
         script = (ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh").read_text(encoding="utf-8")
         preflight, final = script.split("  final-review)\n", 1)
-        clause = "A contract Behavior Map item is material unless"
+        clause = "do not require omitted Behavior Map, TDD, code-review, verification, preservation"
         self.assertIn(clause, final.split("esac", 1)[0], marker)
         self.assertNotIn(clause, preflight.rsplit("  preflight-advice)\n", 1)[-1], marker)
 

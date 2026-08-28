@@ -92,6 +92,7 @@ def graph_packet(root: str, candidate: str, head: str) -> dict[str, object]:
     """
     return {
         "target_state": {"source_repo": root},
+        "git": {"merge_base": head},
         "gitnexus": {
             "analysis": {
                 "status": "resolved",
