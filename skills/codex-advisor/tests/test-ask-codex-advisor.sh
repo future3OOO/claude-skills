@@ -440,6 +440,7 @@ graph_py 'import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.lib.state_store import tree_manifest
 from hooks.lib.workflow_documents import graph_evidence_document
 from hooks.lib import workflow_state as w
 identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
@@ -468,7 +469,9 @@ packet_path = Path(sys.argv[2]).parent / "oversized-packet.json"
 packet_path.write_text(json.dumps(packet), encoding="utf-8")
 w.commit_evidence_phase(identity, slug, w.instance_id(state), "repo-context-forge",
                         graph_evidence_document(str(packet_path), slug=slug,
-                                                workflow_id=str(w.instance_id(state)), source_root=root))' oversized-graph
+                                                workflow_id=str(w.instance_id(state)), source_root=root,
+                                                snapshot={"base": "b" * 40, "candidate": "c" * 40,
+                                                          "manifest": tree_manifest(identity)}))' oversized-graph
 out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
   "$WRAPPER" --slug oversized-graph --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
 check_status "an oversized graph result still reaches the consult gate" 2 "$status"

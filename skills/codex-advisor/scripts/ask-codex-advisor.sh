@@ -308,6 +308,12 @@ print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") o
   fi
   if [[ "$checkpoint_ready" != "yes" ]]; then
     printf 'error: %s checkpoint is not ready; missing: %s\n' "$phase" "$checkpoint_missing" >&2
+    # Every graph blocker has one remedy, and it is the pass's own producer. Naming
+    # it here keeps the blocker names machine-readable while an operator still reads
+    # what to do about them.
+    if [[ "$checkpoint_missing" == *graph-* ]]; then
+      printf 'rerun the Repo Context Forge bootstrap before consulting\n' >&2
+    fi
     exit 2
   fi
   # The same descriptor that gated readiness also names the references and the task
@@ -421,9 +427,15 @@ if [[ -n "$phase" ]]; then
   # caller-selected base, because the fork point answers branch growth and not what
   # this pass did, and the candidate the pass recorded rather than one rebuilt here,
   # because two recipes for one identity can disagree about what is under review.
+  # A diff the pass cannot produce is a refusal, not an empty section: swallowing
+  # the failure composed a consult whose delta silently described nothing.
   current_diff=""
   if [[ -n "$pass_start_oid" && -n "$active_candidate" ]]; then
-    current_diff=$(git -C "$repo_root" diff "$pass_start_oid^{tree}" "$active_candidate" || printf '')
+    if ! current_diff=$(git -C "$repo_root" diff "$pass_start_oid^{tree}" "$active_candidate" 2>&1); then
+      printf 'error: cannot diff the pass start %s to its recorded candidate %s: %s\n' \
+        "$pass_start_oid" "$active_candidate" "$current_diff" >&2
+      exit 2
+    fi
   fi
   if [[ -n "$design_file" ]]; then
     bounded_section design_section design "governing design artifact" "$design_transport_file" 20000 file

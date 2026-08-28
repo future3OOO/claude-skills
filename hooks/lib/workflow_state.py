@@ -794,9 +794,15 @@ def commit_evidence_phase(
             # The tree the analysis described, recorded through the same owner the
             # review and quality-gate bindings already use, so drift is answered by
             # the existing predicate rather than by rebuilding a tree at read time.
-            binding = manifest_write(str(state["workflowId"]), "graph-tree", tree_manifest(identity))
-            manifests.append(binding)
-            state["graphManifestId"] = binding.manifest_id
+            # A bound run carries that manifest and an unbound one records its gap,
+            # so the binding follows the document: an empty tree is a measurement,
+            # while a missing manifest is the gap the graph already reports.
+            analysed = evidence_doc.get("analysedManifest")
+            state.pop("graphManifestId", None)
+            if isinstance(analysed, dict):
+                binding = manifest_write(str(state["workflowId"]), "graph-tree", analysed)
+                manifests.append(binding)
+                state["graphManifestId"] = binding.manifest_id
         if phase == "preflight":
             _validate_design_map(
                 transaction, state, evidence_doc, require_coverage=True,
@@ -1354,19 +1360,6 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         ),
     )
     missing = [name for name, ready in requirements if not ready]
-    # Both consults read the recorded graph, so both refuse a graph measured on a
-    # different tree; the advisor has no capability to check it for itself. This
-    # holds in every state, revalidation included: an Interface that admits a write
-    # it cannot prevent may not also require callers to avoid it, so a tree that
-    # moved is reported wherever it moved, and the remedy is a new pass.
-    if drift := _binding_drift(identity, state, "graph"):
-        missing.append(drift)
-    if phase == "final-review":
-        if drift := _binding_drift(identity, state, "review"):
-            missing.append(drift)
-        if drift := _binding_drift(identity, state, "quality-gate"):
-            missing.append(drift)
-    review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
     # The wrapper derives no identity of its own: base, pass start, candidate and
     # the recorded projection are all facts the pass already owns, and a consumer
     # that reconstructs them can disagree with the pass about what is under review.
@@ -1374,6 +1367,25 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
     projection = (evidence_document(identity, recorded) or {}) if isinstance(recorded, str) else {}
     advisor = projection.get("advisorProjection") if isinstance(projection, dict) else None
     gate = projection.get("gateContext") if isinstance(projection, dict) else None
+    # Both consults read the recorded graph, so both refuse a graph measured on a
+    # different tree; the advisor has no capability to check it for itself. This
+    # holds in every state, revalidation included: an Interface that admits a write
+    # it cannot prevent may not also require callers to avoid it, so a tree that
+    # moved is reported wherever it moved, and the remedy is a new pass.
+    # The advisor has no graph capability of its own, so recorded graph evidence
+    # carrying no projection leaves it nothing to read; drift is measured only on a
+    # graph that has one, because there is otherwise no analysis to be stale.
+    if isinstance(advisor, dict):
+        if drift := _binding_drift(identity, state, "graph"):
+            missing.append(drift)
+    elif state.get("repoContextForge") == "passed":
+        missing.append("graph-projection-missing")
+    if phase == "final-review":
+        if drift := _binding_drift(identity, state, "review"):
+            missing.append(drift)
+        if drift := _binding_drift(identity, state, "quality-gate"):
+            missing.append(drift)
+    review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
     return {
         "phase": phase,
         "ready": not missing,
@@ -1384,10 +1396,6 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         "codeReviewStatus": review.get("status"),
         "baseOid": state.get("baseOid"),
         "passStartOid": state.get("passStartOid"),
-        # At final-review the pass has bound both a reviewed and a gated tree, so the
-        # candidate it names is the one it proved rather than the one Repo Context
-        # Forge recorded before implementation began. Earlier checkpoints have no
-        # such binding and keep the producer's value.
         # At final-review the pass has already gated a tree, so the candidate it
         # names is the one its own quality-gate run recorded rather than the one
         # Repo Context Forge recorded before implementation began. Earlier

@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.tests.support import WORKFLOW, record_context_forge  # noqa: E402
+from hooks.tests.support import WORKFLOW, graph_packet, record_context_forge  # noqa: E402
 
 WRAPPER = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
 # The callee answers as well as captures: the wrapper persists a session only
@@ -459,6 +459,74 @@ class AdvisorPayloadTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             for promise in ("GitNexus", "configured MCP tools"):
                 self.assertNotIn(promise, text, f"{marker}: {path.name} still promises {promise!r}")
+
+    def test_an_unresolvable_candidate_is_refused_not_diffed_away(self) -> None:
+        """A failed diff is a failure, not an empty one.
+
+        The candidate comes from the pass. If Git cannot resolve it the payload
+        cannot describe what is under review, and swallowing the failure produced a
+        consult whose diff section was silently empty. The rig's recorded candidate
+        is exactly that case, so no setup is needed to reach it.
+        """
+        marker = "UNRESOLVABLE_CANDIDATE_BECAME_AN_EMPTY_DIFF"
+        # Forced rather than incidental: the fixture now names a resolvable tree, so
+        # the case has to be constructed. A candidate can still go unresolvable in
+        # production when the object it named is gone from this checkout.
+        sys.path.insert(0, str(ROOT))
+        from hooks.lib.repo_identity import resolve_repo_identity
+        from hooks.lib import workflow_state as w
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        identity = resolve_repo_identity(str(self.repo))
+        state = json.loads(self.run_workflow("status").stdout)
+        recorded = w.evidence_document(identity, state["repoContextForgeEvidence"])
+        gone = "d" * 40
+        recorded["advisorProjection"]["expectedCandidateTree"] = gone
+        recorded["advisorProjection"]["indexedCandidateTree"] = gone
+        if isinstance(recorded.get("gateContext"), dict):
+            recorded["gateContext"]["candidate"] = gone
+        w.commit_evidence_phase(identity, state["slug"], state["workflowId"],
+                                "repo-context-forge", recorded)
+        resolved = subprocess.run(["git", "-C", str(self.repo), "cat-file", "-t", gone],
+                                  text=True, capture_output=True, check=False, env=self.env)
+        self.assertNotEqual(resolved.returncode, 0, "the probe candidate resolves; it cannot show the swallow")
+        run = self.wrapper("--slug", "payload", "--phase", "preflight-advice",
+                           "--design-absent", "payload rig: no plan artifact", "--", "scope question")
+        self.assertEqual(run.returncode, 2,
+                         f"{marker}: the consult proceeded on a candidate Git cannot resolve")
+        self.assertIn("candidate", run.stderr.lower(),
+                      f"{marker}: the refusal did not name the candidate diff failure")
+
+    def test_a_graph_without_a_projection_is_not_consulted_on(self) -> None:
+        """The advisor has no graph capability, so a projection-less graph is nothing to read."""
+        marker = "PROJECTIONLESS_GRAPH_CONSULTED"
+        sys.path.insert(0, str(ROOT))
+        from hooks.lib.repo_identity import resolve_repo_identity
+        from hooks.lib.workflow_documents import graph_evidence_document
+        from hooks.lib import workflow_state as w
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        identity = resolve_repo_identity(str(self.repo))
+        state = json.loads(self.run_workflow("status").stdout)
+        packet = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "gap-packet.json"
+        packet.write_text(json.dumps(graph_packet(str(self.repo))), encoding="utf-8")
+        # Built by the real serializer, so the refusal is the consult-side
+        # consequence of what an unbindable run records, not of a hand-edited document.
+        recorded = graph_evidence_document(
+            str(packet), slug=state["slug"], workflow_id=state["workflowId"],
+            source_root=str(self.repo),
+            snapshot_gap="the worktree changed during the producer run",
+        )
+        w.commit_evidence_phase(identity, state["slug"], state["workflowId"],
+                                "repo-context-forge", recorded)
+        descriptor = json.loads(self.run_workflow("checkpoint", "--phase", "preflight-advice").stdout)
+        self.assertFalse(descriptor["ready"],
+                         "PROJECTIONLESS_GRAPH_READ_AS_READY: ready on a graph carrying no projection")
+        self.assertTrue([name for name in descriptor["missing"] if "projection" in name],
+                        f"PROJECTIONLESS_GRAPH_READ_AS_READY: nothing in {descriptor['missing']} names it")
+        run = self.wrapper("--slug", state["slug"], "--phase", "preflight-advice",
+                           "--design-absent", "payload rig: no plan artifact", "--", "scope question")
+        self.assertEqual(run.returncode, 2, f"{marker}: consulted on a graph carrying no projection")
+        self.assertIn("rerun the Repo Context Forge bootstrap", run.stderr,
+                      "REMEDY_NOT_NAMED: the refusal does not name the missing graph result")
 
 
 if __name__ == "__main__":

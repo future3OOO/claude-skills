@@ -27,7 +27,12 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.workflow_state import WorkflowError, begin, commit_evidence_phase, instance_id  # noqa: E402
+from hooks.lib.state_store import tree_manifest  # noqa: E402
+from hooks.lib._workflow_db import read_manifest  # noqa: E402
+from hooks.lib.workflow_state import (  # noqa: E402
+    WorkflowError, begin, commit_evidence_phase, instance_id, read_workflow,
+)
+from hooks.lib.workflow_state import evidence_document as w_evidence_document  # noqa: E402
 from hooks.tests.support import build_no_change_document, graph_packet  # noqa: E402
 
 
@@ -502,6 +507,65 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertTrue([name for name in stale["missing"] if "graph" in name],
                         f"{marker}: nothing in {stale['missing']} names the stale graph")
 
+    def test_the_graph_binds_the_tree_the_producer_analysed(self) -> None:
+        """The binding is the analysed tree, not whatever the worktree holds at commit time.
+
+        The adapter measures its snapshot and the recorder commits it as two steps,
+        so a tracked write landing between them would bind content the graph never
+        described while the projection it is compared against still matches.
+        """
+        marker = "GRAPH_BOUND_TO_A_LATER_TREE"
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        identity = resolve_repo_identity(str(self.repo))
+        packet = graph_packet(str(self.repo))
+        packet_path = self.tmp / "analysed-packet.json"
+        packet_path.write_text(json.dumps(packet), encoding="utf-8")
+        analysed = tree_manifest(identity)
+        projection = packet["advisorProjection"]
+        document = graph_evidence_document(
+            str(packet_path), slug=self.slug,
+            workflow_id=str(instance_id(read_workflow(identity))), source_root=str(self.repo),
+            snapshot={"base": projection["committedHeadOid"],
+                      "candidate": projection["expectedCandidateTree"], "manifest": analysed},
+        )
+        (self.repo / "app.py").write_text("def compute(value):\n    return value + 7\n", encoding="utf-8")
+        self.assertNotEqual(tree_manifest(identity), analysed, "the probe did not move the tree")
+        commit_evidence_phase(identity, self.slug, str(instance_id(read_workflow(identity))),
+                              "repo-context-forge", document)
+        stored = read_manifest(identity, str(read_workflow(identity)["graphManifestId"]))
+        self.assertEqual(stored, analysed,
+                         f"{marker}: the binding names the tree written after the analysis")
+
+    def test_the_adapter_binds_the_tree_its_snapshot_names(self) -> None:
+        """Driven through the installed bootstrap, not the recorder it commits through.
+
+        The recorder proof shows the binding is the document's manifest; it cannot
+        show the adapter measured that manifest for the tree its own snapshot names.
+        Only a run of the installed bootstrap does, and it is the half the reviewer
+        thread was actually about.
+        """
+        marker = "ADAPTER_BOUND_AN_UNSETTLED_TREE"
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        recorded = self.graph_bootstrap()
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        identity = resolve_repo_identity(str(self.repo))
+        state = read_workflow(identity)
+        document = w_evidence_document(identity, str(state["repoContextForgeEvidence"])) or {}
+        self.assertNotIn("gateContextGap", document,
+                         f"SETTLED_RUN_LOST_ITS_BINDING: the settled checkout recorded a gap: {document.get('gateContextGap')}")
+        self.assertIn("analysedManifest", document,
+                      f"{marker}: the adapter recorded no manifest for the tree it named")
+        stored = read_manifest(identity, str(state["graphManifestId"]))
+        self.assertEqual(stored, document["analysedManifest"],
+                         f"{marker}: the stored binding is not the manifest the adapter measured")
+        self.assertEqual(stored, tree_manifest(identity),
+                         f"{marker}: the binding does not describe the analysed checkout")
+        candidate = (document.get("gateContext") or {}).get("candidate")
+        resolved = subprocess.run(["git", "-C", str(self.repo), "cat-file", "-t", str(candidate)],
+                                  text=True, capture_output=True, check=False, env=self.env)
+        self.assertEqual(resolved.stdout.strip(), "tree",
+                         f"{marker}: the named candidate {candidate} does not resolve in its own repository")
+
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_completion_names_the_retired_binding_after_the_real_hook(self) -> None:
         """A pass may not close on a graph its own tree has moved past."""
@@ -770,6 +834,11 @@ class GraphEvidenceContractTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="graph-evidence-"))
         self.root = self.tmp / "repo"
         self.root.mkdir()
+        # A real checkout, because the shared fixture names this repository's own
+        # tree and refuses to invent one for a root that is not a checkout.
+        subprocess.run(["git", "-C", str(self.root), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.email=t@example.invalid",
+                        "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -790,7 +859,10 @@ class GraphEvidenceContractTests(unittest.TestCase):
         """
         marker = "PROJECTION_NOT_RETAINED"
         packet = graph_packet(str(self.root))
-        document = self.document_for(packet)
+        document = self.document_for(
+            packet,
+            snapshot={"base": "b" * 40, "candidate": "c" * 40, "manifest": {"app.py": "100644:abc"}},
+        )
         self.assertEqual(document.get("advisorProjection"), packet["advisorProjection"], marker)
 
     def test_an_unresolved_graph_status_is_refused(self) -> None:
@@ -810,6 +882,40 @@ class GraphEvidenceContractTests(unittest.TestCase):
                                             workflow_id="w", source_root=str(self.root))
                 self.assertIn("resolved", str(refusal.exception), marker)
 
+    def test_an_unbound_run_records_its_graph_without_a_projection(self) -> None:
+        """A projection nothing can bind is not evidence the advisor may read.
+
+        The gap shape stays: the graph and the measured gap are still recorded, so
+        the honest absence remains legible. What it no longer carries is a
+        projection, because there is no snapshot to compare its candidate against.
+        """
+        marker = "GAP_DOCUMENT_CARRIED_A_PROJECTION"
+        document = self.document_for(graph_packet(str(self.root)),
+                                     snapshot_gap="the worktree changed during the producer run")
+        self.assertIn("graph", document, marker)
+        self.assertIn("gateContextGap", document, f"{marker}: the gap shape was retired")
+        self.assertNotIn("advisorProjection", document,
+                         f"{marker}: an unbindable projection was recorded anyway")
+
+    def test_the_shared_fixture_names_a_resolvable_candidate(self) -> None:
+        """A fixture identity Git cannot resolve lets a consult pass on an empty delta."""
+        marker = "FIXTURE_CANDIDATE_UNRESOLVABLE"
+        (self.root / "app.py").write_text("value = 1\n", encoding="utf-8")
+        projection = graph_packet(str(self.root))["advisorProjection"]
+        for key in ("expectedCandidateTree", "indexedCandidateTree"):
+            resolved = subprocess.run(["git", "-C", str(self.root), "cat-file", "-t", projection[key]],
+                                      text=True, capture_output=True, check=False)
+            self.assertEqual(resolved.stdout.strip(), "tree",
+                             f"{marker}: {key} {projection[key]} does not resolve in its own repository")
+
+    def test_the_fixture_refuses_a_root_that_is_not_a_checkout(self) -> None:
+        """An identity Git cannot resolve is the defect, so the fixture never invents one."""
+        marker = "FIXTURE_INVENTED_A_ROOTLESS_CANDIDATE"
+        rootless = self.tmp / "not-a-checkout"
+        rootless.mkdir()
+        with self.assertRaises(subprocess.CalledProcessError, msg=marker):
+            graph_packet(str(rootless))
+
     def test_two_worktrees_on_one_head_are_not_interchangeable(self) -> None:
         """Base-commit equality never establishes graph identity.
 
@@ -819,12 +925,17 @@ class GraphEvidenceContractTests(unittest.TestCase):
         """
         marker = "SAME_HEAD_WORKTREES_CONFUSED"
         first, second = self.root, self.tmp / "sibling"
-        second.mkdir()
-        for checkout, value in ((first, "one"), (second, "two")):
-            subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True)
-            subprocess.run(["git", "-C", str(checkout), "-c", "user.email=t@example.invalid",
-                            "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
-            (checkout / "app.py").write_text(f"value = {value!r}\n", encoding="utf-8")
+        # A real second worktree of the same checkout, so the shared HEAD is a fact
+        # rather than a coincidence of two commits landing in the same second.
+        subprocess.run(["git", "-C", str(first), "worktree", "add", "-q", "--detach", str(second)], check=True)
+        def head(where: Path) -> str:
+            return subprocess.run(["git", "-C", str(where), "rev-parse", "HEAD"],
+                                  text=True, capture_output=True, check=True).stdout.strip()
+
+        self.assertEqual(head(first), head(second),
+                         "SAME_HEAD_NOT_ESTABLISHED: the two checkouts do not share a HEAD")
+        (first / "app.py").write_text("value = 'one'\n", encoding="utf-8")
+        (second / "app.py").write_text("value = 'two'\n", encoding="utf-8")
         # Produced in the sibling, recorded from this pass's checkout.
         foreign = graph_packet(str(second))
         path = self.tmp / "foreign-worktree-packet.json"
@@ -887,7 +998,10 @@ class GraphEvidenceContractTests(unittest.TestCase):
         ]
         packet["advisorProjection"]["graph"]["optionalOmissionCount"] = 998
         try:
-            document = self.document_for(packet)
+            document = self.document_for(
+            packet,
+            snapshot={"base": "b" * 40, "candidate": "c" * 40, "manifest": {"app.py": "100644:abc"}},
+        )
         except ValueError as refusal:
             self.fail(f"{marker}: a healthy packet's coverage gaps were refused: {refusal}")
         self.assertEqual(document["advisorProjection"]["coverageGaps"], packet["advisorProjection"]["coverageGaps"], marker)
@@ -924,7 +1038,7 @@ class GraphEvidenceContractTests(unittest.TestCase):
         packet["advisorProjection"]["indexedCandidateTree"] = "e" * 40
         document = graph_evidence_document(
             str(self.write_packet(packet)), slug=slug, workflow_id=workflow_id,
-            source_root=str(identity.root), snapshot={"base": "b" * 40, "candidate": "c" * 40},
+            source_root=str(identity.root), snapshot={"base": "b" * 40, "candidate": "c" * 40, "manifest": {"app.py": "100644:abc"}},
         )
         with self.assertRaises(WorkflowError, msg=marker) as refusal:
             commit_evidence_phase(identity, slug, workflow_id, "repo-context-forge", document)
@@ -954,7 +1068,7 @@ class GraphEvidenceContractTests(unittest.TestCase):
     def test_a_snapshot_binding_records_the_gate_shaped_context(self) -> None:
         document = self.document_for(
             graph_packet(str(self.root)),
-            snapshot={"base": "b" * 40, "candidate": "c" * 40},
+            snapshot={"base": "b" * 40, "candidate": "c" * 40, "manifest": {"app.py": "100644:abc"}},
         )
         self.assertEqual(document["gateContext"], {
             "base": "b" * 40,
@@ -978,7 +1092,7 @@ class GraphEvidenceContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.document_for(
                 graph_packet(str(self.root)),
-                snapshot={"base": "b" * 40, "candidate": "c" * 40},
+                snapshot={"base": "b" * 40, "candidate": "c" * 40, "manifest": {"app.py": "100644:abc"}},
                 snapshot_gap="also a gap",
             )
 

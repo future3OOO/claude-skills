@@ -391,12 +391,19 @@ def graph_evidence_document(
         "slug": slug,
         "workflowId": workflow_id,
         "graph": graph,
-        "advisorProjection": _advisor_projection(packet.get("advisorProjection")),
         "recordedAt": utc_timestamp(),
     }
+    # Always validated, recorded only when a snapshot binds it to a tree: a
+    # malformed projection is refused wherever it appears, and an unbindable one is
+    # withheld, because there is nothing to compare its candidate against.
+    projection = _advisor_projection(packet.get("advisorProjection"))
     if snapshot is not None:
+        document["advisorProjection"] = projection
         if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):
             raise ValueError("a snapshot binding requires its base commit and candidate tree")
+        if not isinstance(snapshot.get("manifest"), dict):
+            raise ValueError("a snapshot binding requires the manifest of the tree it names")
+        document["analysedManifest"] = dict(snapshot["manifest"])
         document["gateContext"] = {
             "base": str(snapshot["base"]).strip(),
             "candidate": str(snapshot["candidate"]).strip(),

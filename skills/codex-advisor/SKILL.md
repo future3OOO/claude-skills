@@ -147,9 +147,11 @@ not what you read. It does not need you to attach that. The wrapper reads the
 pass's own recorded evidence -- intent, governing design, preflight, Repo
 Context Forge projection, verification, Behavior Map, TDD and review -- and
 renders each exactly once, so the consult carries what the pass recorded rather
-than what a caller remembered to pass. There is no caller attachment argument;
-evidence that is not recorded on the pass is evidence the delegate will not see,
-and the fix is to record it, not to hand it over out of band.
+than what a caller remembered to pass. There is no caller packet or graph attachment argument; the governing-design
+declaration (`--design-file` or `--design-absent`) is still required and is
+read after it is validated against the recorded declaration. Evidence that is
+not recorded on the pass is evidence the delegate will not see, and the fix is
+to record it, not to hand it over out of band.
 
 Graph evidence is read the same way. The wrapper reads the active pass's
 `repo-context-forge` evidence through the workflow evidence Interface, resolves

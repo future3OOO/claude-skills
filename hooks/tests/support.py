@@ -5,12 +5,14 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
 from hooks.lib.behavior_map import no_change_item
 from hooks.lib.preflight_document import BEHAVIOR_MAP_SECTION, SECTIONS
 from hooks.lib.repo_identity import RepoIdentity, resolve_repo_identity
+from hooks.lib.state_store import tree_manifest
 from hooks.lib.workflow_documents import graph_evidence_document
 from hooks.lib.workflow_state import (
     advisor_disposition,
@@ -86,6 +88,25 @@ def build_no_change_document(fill: str) -> dict[str, object]:
     )
 
 
+# Both fail closed: a fixture identity Git cannot resolve is the exact defect these
+# helpers exist to remove, so a root that is not a checkout raises here rather than
+# handing back a null oid the consumers would diff against.
+def _head_commit(root: str) -> str:
+    return subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], text=True,
+                          capture_output=True, check=True).stdout.strip()
+
+
+def _worktree_tree(root: str) -> str:
+    """The git tree object for `root` as it stands, built in a throwaway index."""
+    with tempfile.TemporaryDirectory() as scratch:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        for arguments in (["read-tree", "HEAD"], ["add", "-A"]):
+            subprocess.run(["git", "-C", root, *arguments], env=environment,
+                           capture_output=True, check=True)
+        return subprocess.run(["git", "-C", root, "write-tree"], env=environment,
+                              text=True, capture_output=True, check=True).stdout.strip()
+
+
 def graph_packet(root: str) -> dict[str, object]:
     """A machine packet shaped exactly as the canonical producer emits one.
 
@@ -94,6 +115,10 @@ def graph_packet(root: str) -> dict[str, object]:
     library. The producer contract itself is proved against the real Repo Context
     Forge, real GitNexus, and a real repository in test_repoforge_workflow.py.
     """
+    # The candidate is the repository's own tree. A fabricated oid cannot be
+    # resolved by the consumers that diff against it, and a consult reading one
+    # describes an empty delta rather than the work under review.
+    candidate = _worktree_tree(root)
     return {
         "target_state": {"source_repo": root},
         "advisorProjection": {
@@ -102,8 +127,8 @@ def graph_packet(root: str) -> dict[str, object]:
             "sourceRepo": "example.invalid/repo",
             "sourceBaseOid": "a" * 40,
             "committedHeadOid": "b" * 40,
-            "expectedCandidateTree": "c" * 40,
-            "indexedCandidateTree": "c" * 40,
+            "expectedCandidateTree": candidate,
+            "indexedCandidateTree": candidate,
             "targets": [],
             "graph": {"status": "resolved", "references": [], "requiredOmissions": [], "optionalOmissionCount": 998},
             "coverageGaps": [{"kind": "absent_symbol", "reference": "a symbol the intent named"}],
@@ -255,6 +280,14 @@ def record_context_forge(repo: Path, tmp: Path) -> RepoIdentity:
             slug=str(state["slug"]),
             workflow_id=str(instance_id(state)),
             source_root=str(identity.root),
+            # Bound the way the adapter binds: the tree it names, and the manifest
+            # of that same tree. An unbound document carries no projection, which
+            # is an honest gap rather than the healthy path these suites drive.
+            snapshot={
+                "base": _head_commit(str(identity.root)),
+                "candidate": _worktree_tree(str(identity.root)),
+                "manifest": tree_manifest(identity),
+            },
         ),
     )
     return identity

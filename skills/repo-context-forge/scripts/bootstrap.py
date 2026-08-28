@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import tree_manifest  # noqa: E402
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     NO_INSTANCE_ID,
@@ -214,7 +215,14 @@ def _snapshot_binding(
     mismatch = _overlay_mismatch(root, Path(analysis_repo), head_sha, tree_before)
     if mismatch:
         return None, mismatch
-    return {"base": base_sha.strip(), "candidate": tree_before}, ""
+    # The manifest of the very tree the snapshot names, measured here rather than
+    # re-read at commit time: a tracked write landing in between would otherwise
+    # bind the graph to content the producer never analysed.
+    try:
+        analysed = tree_manifest(resolve_repo_identity(str(root)))
+    except (RuntimeError, RepoIdentityError) as exc:
+        return None, f"the analysed tree manifest could not be measured: {exc}"
+    return {"base": base_sha.strip(), "candidate": tree_before, "manifest": analysed}, ""
 
 
 def main(argv: list[str]) -> int:
