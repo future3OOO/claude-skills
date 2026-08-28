@@ -735,6 +735,7 @@ class PassLifecycleTests(unittest.TestCase):
 
         reviewed = (self.repo / "app.py").read_bytes()
         self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 3\\n')")
+        self.advance_to_context_forge()
         refused = self.cli("complete")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
         self.assertIn("after the final review", refused.stderr, "the refusal did not attribute the window")
@@ -750,6 +751,7 @@ class PassLifecycleTests(unittest.TestCase):
             [item for item in restored["missing"] if "stale" in item or "changed" in item],
             [], "restoring the reviewed bytes did not restore freshness",
         )
+        self.advance_to_context_forge()
 
         # The same edit and the completion inside one shell call: completion
         # recomputes after the edit has already landed, so it is still caught.
@@ -761,7 +763,7 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(combined.returncode, 2, combined.stdout + combined.stderr)
         self.assertEqual(
-            json.loads(self.cli("status").stdout)["phase"], "final-review",
+            json.loads(self.cli("status").stdout)["phase"], "repo-context-forge",
             "an edit-and-complete shell call landed the pass",
         )
 
@@ -964,6 +966,7 @@ class PassLifecycleTests(unittest.TestCase):
             "pathlib.Path('lib.py').unlink()\n"
             "pathlib.Path('app.py').write_text('value = 5\\n')\n"
         )
+        self.advance_to_context_forge()
         refused = self.cli("complete")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
         self.assertIn("added=new_module.py", refused.stderr)
@@ -1005,6 +1008,7 @@ class PassLifecycleTests(unittest.TestCase):
 
         self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 6\\n')")
         self.assertEqual(self.cli("complete").returncode, 2)
+        self.advance_to_context_forge()
 
         # Re-verifying and re-reviewing refreshes the manifest; the verdict from
         # the old tree must not survive that refresh.
@@ -2190,6 +2194,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(fixed.returncode, 0, mixed_marker + fixed.stdout + fixed.stderr)
         closed = json.loads(fixed.stdout)
         self.assertEqual((closed["findingStates"][0]["status"], closed["findingReservations"][0]["fixed"]), ("fixed", True), marker)
+        self.advance_to_context_forge()
         self.record_real_gate(wid)
         self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
         self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0, marker)
@@ -2269,6 +2274,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.post_edit_hook(slug)
         reassessment = self.json_file("appeal-reassessment.json", {"reassessment": "refresh changed-candidate appeal bindings"})
         self.run_cli(("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(reassessment)))
+        self.advance_to_context_forge()
         self.owner_phase("implementation", "passed"); self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0)
         self.owner_phase("code-review", "passed", findings="none")
         appeal_args = ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
@@ -2494,6 +2500,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertIn("Behavior Map reassessment", blocked.stderr, unrelated_marker)
         update.write_text(json.dumps({"sourceBehaviorId": "BM_ADV_2", "reassessment": "GREEN replacement preserves fixed proof", "items": [], "dispositions": [{"id": "BM_ADV_1", "status": "superseded", "supersededBy": "BM_ADV_2", "evidence": "the GREEN replacement owns the outcome"}]}), encoding="utf-8")
         self.assertEqual(self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update)).returncode, 0, "FIXED_GREEN_SUPERSESSION_REFUSED")
+        self.advance_to_context_forge()
         self.record_real_gate(wid)
         self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
         verified = self.verify_run(sys.executable, "-c", "pass")

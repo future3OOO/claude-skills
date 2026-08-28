@@ -698,6 +698,7 @@ class TddSummaryTests(unittest.TestCase):
             "--seam", "workflow.py tdd subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        record_context_forge(self.repo, self.tmp)
         summary_id = json.loads(green.stdout.splitlines()[-1])["summaryId"]
         before = self.evidence_document(summary_id)
 
