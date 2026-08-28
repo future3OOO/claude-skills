@@ -385,6 +385,7 @@ def graph_evidence_document(
     slug: str,
     workflow_id: str,
     source_root: str,
+    canonical_source_repo: str | None,
     snapshot: JsonObject | None = None,
     snapshot_gap: str | None = None,
 ) -> JsonObject:
@@ -418,6 +419,16 @@ def graph_evidence_document(
     projection = validate_advisor_projection(
         packet.get("advisorProjection"), candidate_tree=snapshot_candidate,
     )
+    expected_source_repo: object = (
+        canonical_source_repo
+        if canonical_source_repo is not None
+        else {"gap": "source_repo_unavailable"}
+    )
+    if projection["sourceRepo"] != expected_source_repo:
+        raise ValueError(
+            f"the advisor projection was produced for {projection['sourceRepo']!r}, "
+            f"not {expected_source_repo!r}"
+        )
     document: JsonObject = {
         "schemaVersion": 1,
         "slug": slug,

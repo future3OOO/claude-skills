@@ -219,6 +219,10 @@ def main(argv: list[str]) -> int:
         args.append("--enforce-intake")
     if not workflow_slug:
         return _run_producer(args)
+    if str(SOURCE_ROOT) not in sys.path:
+        sys.path.insert(0, str(SOURCE_ROOT))
+    from repo_context_forge import canonical_repo_identity
+
     try:
         slug = safe_slug(workflow_slug)
         identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
@@ -258,6 +262,7 @@ def main(argv: list[str]) -> int:
                     slug=slug,
                     workflow_id=captured_workflow_id,
                     source_root=str(identity.root),
+                    canonical_source_repo=canonical_repo_identity(Path(identity.root)),
                     snapshot=snapshot,
                     snapshot_gap=snapshot_gap or None,
                 ),

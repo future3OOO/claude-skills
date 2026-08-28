@@ -488,6 +488,7 @@ class PassLifecycleTests(unittest.TestCase):
         document = graph_evidence_document(
             str(path), slug=slug, workflow_id=wid,
             source_root=str(identity.root),
+            canonical_source_repo="example.invalid/workflow-fixture",
         )
         projection = document["advisorProjection"]
         self.assertIsInstance(projection, dict)
@@ -527,6 +528,7 @@ class PassLifecycleTests(unittest.TestCase):
                 document = graph_evidence_document(
                     str(path), slug=slug, workflow_id=wid,
                     source_root=str(identity.root),
+                    canonical_source_repo="example.invalid/workflow-fixture",
                 )
                 if defect == "projection-schema":
                     document["advisorProjection"]["schemaVersion"] = True
@@ -792,11 +794,18 @@ class PassLifecycleTests(unittest.TestCase):
         # recomputes after the edit has already landed, so it is still caught.
         combined = self.shell(
             "import pathlib, subprocess, sys\n"
+            "sys.path.insert(0, sys.argv[3])\n"
+            "from hooks.tests.support import record_context_forge\n"
+            "repo = pathlib.Path(sys.argv[2])\n"
             "pathlib.Path('app.py').write_text('value = 4\\n')\n"
+            "record_context_forge(repo, pathlib.Path(sys.argv[4]))\n"
             "raise SystemExit(subprocess.run([sys.executable, sys.argv[1], 'complete', '--repo', sys.argv[2]]).returncode)",
-            str(WORKFLOW), str(self.repo),
+            str(WORKFLOW), str(self.repo), str(ROOT), str(self.tmp),
         )
         self.assertEqual(combined.returncode, 2, combined.stdout + combined.stderr)
+        self.assertIn("after the final review", combined.stderr)
+        self.assertIn("review-manifest-stale", combined.stderr)
+        self.assertIn("app.py", combined.stderr)
         self.assertEqual(
             json.loads(self.cli("status").stdout)["phase"], "repo-context-forge",
             "an edit-and-complete shell call landed the pass",

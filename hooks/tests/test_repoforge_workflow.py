@@ -840,7 +840,8 @@ class GraphEvidenceContractTests(unittest.TestCase):
         path = self.tmp / "packet.json"
         path.write_text(json.dumps(packet), encoding="utf-8")
         return graph_evidence_document(
-            str(path), slug="contract", workflow_id="wid", source_root=str(self.root), **binding,
+            str(path), slug="contract", workflow_id="wid", source_root=str(self.root),
+            canonical_source_repo="example.invalid/workflow-fixture", **binding,
         )
 
     def packet(self) -> dict[str, object]:
@@ -864,6 +865,19 @@ class GraphEvidenceContractTests(unittest.TestCase):
         packet["gitnexus"]["analysis"]["authority"]["source_repository"] = str(foreign)
         with self.assertRaisesRegex(ValueError, str(foreign), msg="FOREIGN_GRAPH_IDENTITY_ACCEPTED"):
             self.document_for(packet)
+
+    def test_a_projection_for_another_canonical_source_is_refused(self) -> None:
+        packet = self.packet()
+        packet["advisorProjection"]["sourceRepo"] = "github.com/foreign-owner/foreign-repo"
+        marker = "FOREIGN_ADVISOR_SOURCE_REPO_ACCEPTED"
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            self.document_for(packet)
+        self.assertEqual(
+            str(refusal.exception),
+            "the advisor projection was produced for 'github.com/foreign-owner/foreign-repo', "
+            "not 'example.invalid/workflow-fixture'",
+            marker,
+        )
 
     def test_a_resolved_packet_for_this_checkout_is_accepted(self) -> None:
         document = self.document_for(self.packet())

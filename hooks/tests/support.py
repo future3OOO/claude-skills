@@ -248,6 +248,7 @@ def record_context_forge(repo: Path, tmp: Path) -> RepoIdentity:
             slug=str(state["slug"]),
             workflow_id=str(instance_id(state)),
             source_root=str(identity.root),
+            canonical_source_repo="example.invalid/workflow-fixture",
         ),
     )
     return identity
