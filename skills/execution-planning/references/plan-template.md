@@ -1,13 +1,17 @@
-# Plan Template
+# Governing Design Template
 
-```md
+Copy the fenced design body to the repository's workflow-state `designs/` directory, not into the Git checkout. Remove unused optional sections and keep the label catalogue synchronized before validation.
+
+````md
 # <Title>
 
-## Status
+## Design Identity
 
-- current state:
-- governing artifact:
-- last updated:
+- workflow ID:
+- workflow slug:
+- design path: `<workflow-state-root>/<repo-key>/designs/<workflowId>.md`
+- created:
+- freeze rule: immutable after the first completed `preflight-advice` consult; a replacement requires a new workflow pass
 
 ## Objective
 
@@ -20,15 +24,41 @@
 - trusted base:
 - linked evidence:
 
+## Chosen Architecture
+
+- selected family:
+- rationale:
+- Module / Interface / Seam:
+
+## Explored Architecture Families
+
+| Family | Selected / Rejected | Technical Reason | Measurement |
+|---|---|---|---|
+| ... | ... | ... | ... |
+
+## Verified Constraints
+
+- finding:
+- measurement:
+- design consequence:
+
+## Preservation Obligations
+
+- PRES-1: <observable behavior that must remain true>
+
+## Load-Bearing Assumptions
+
+- ASSUMP-1 (behavioral): <falsifiable assumption and real-Seam measurement>
+
 ## Affected Surface
 
-- changed boundary or behavior:
+- changed behavior:
 - adjacent consumers/callers:
 - no-change surfaces:
 
 ## Affected Transaction System
 
-Use only for transaction-sensitive work. Apply `../../production-code/references/transaction-doctrine.md`; these fields record its result rather than redefining it.
+Use only for transaction-sensitive work. Apply the installed `production-code/references/transaction-doctrine.md`; these fields record its result rather than redefining it.
 
 - authoritative records:
 - mutation boundary:
@@ -41,9 +71,6 @@ Use only for transaction-sensitive work. Apply `../../production-code/references
 - helper semantic splits:
 
 ## Contract And Proof Model
-
-Use for all non-trivial code work.
-For transaction-sensitive work, keep this section explicit.
 
 - authoritativeContract:
 - invariants:
@@ -73,7 +100,7 @@ For transaction-sensitive work, keep this section explicit.
 
 | PR | Branch | Base | Owner Slice | Commit Structure | Verification | Entry | Exit |
 |---|---|---|---|---|---|---|---|
-| A | `codex/...` | `main` | ... | ... | ... | ... | ... |
+| A | `...` | `main` | ... | ... | ... | ... | ... |
 
 ## Verification Plan
 
@@ -83,20 +110,19 @@ For transaction-sensitive work, keep this section explicit.
 - full gate:
 - post-merge checks:
 
-## Execution Checklist
+## Execution Order
 
-- [ ] planning artifact created
-- [ ] authority verified
-- [ ] PR-A
-- [ ] PR-B
-- [ ] PR-C
-- [ ] final classification complete
+1. ...
+2. ...
 
-## Linked Review Artifacts
+Pass lifecycle, evidence, blockers, and findings live in repository-scoped workflow history. Commit, push, review, and merge status live in GitHub PR state when applicable. Tasks are session-local convenience only, never durable authority.
+
+## Linked Evidence
 
 - ...
 
-## Change Log
-
-- YYYY-MM-DD: created plan
+<!-- governed-design-labels:v1 -->
+```json
+{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"},{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}
 ```
+````

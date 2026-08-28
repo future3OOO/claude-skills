@@ -110,7 +110,7 @@ When spawning sub-agents via the `Agent` tool, default to:
 Keep delegation bounded:
 
 - **Fan-in before planning.** Every spawned delegate returns before the lead writes the design or plan.
-- **Delegates provide planning inputs; the lead owns the plan.** Explore/Plan delegates explore, compare alternatives, and invoke `codebase-design`; the lead reconciles their reports and authors the governing artifact.
+- **Delegates provide planning inputs; the lead owns the design.** Explore/Plan delegates explore, compare alternatives, and invoke `codebase-design`; the lead reconciles their reports and authors the governing design.
 - Do not run build, typecheck, or proof commands concurrently with a delegated agent unless the user explicitly asks for that level of parallel execution.
 
 If the parent session needs an independent second opinion, spawn a fresh agent rather than asking the same context-laden agent to self-review.
@@ -125,12 +125,12 @@ The full chain, in order — every named skill is INVOKED with the Skill tool by
 
 Invocation policy:
 
-- Escalate to `repo-large-implementation` for large planned work: anything likely to span multiple PRs, need a tracked governing artifact, or exceed the review budget. It pairs `delivery-governance` with `execution-planning`, then returns to `repo-production-workflow` for each execution pass.
+- Escalate to `repo-large-implementation` for large planned work: anything likely to span multiple PRs, need a durable governing design, or exceed the review budget. It pairs `delivery-governance` with `execution-planning`, then returns to `repo-production-workflow` for each execution pass. New advisor-bound designs are keyed by the workflow's public `workflowId` under the selected workflow state root, outside the Git checkout; create a tracked planning document only when the user explicitly requests that document as a deliverable.
 - Use `diagnose` before fixing bugs, failures, flaky behavior, or performance regressions; the canonical root-cause-first gate above governs entry to a fix.
 - Use `tdd` for behavior changes where a public-Interface failing test is practical; name the real production Seam and apply the canonical mock ban above without exception.
 - Skill invocation is per execution pass, not per session: every new PR slice, every bug or regression outside the active pass's recorded intent, and every reviewer-fix round from signals on a pushed PR head begins a new pass by invoking `repo-production-workflow` with the Skill tool before Repo Context Forge, `diagnose`, or any edit, then follows the rest of the chain. Findings raised by the lead's own `code-review` or final Codex Advisor against the current unpushed tree stay in the active pass and follow the return-to-implementation path owned by `WORKFLOW-MAP.md`. Compaction or resume notes never waive re-invocation for a new pass. A harness compaction notice that says not to re-execute previously invoked skills governs their one-time setup actions only (scheduling, file creation) and is never a waiver of this rule. A pass that spans the compaction boundary keeps the invocations it already made; a new pass begun after compaction re-invokes its chain regardless of the notice's wording.
 - Do not bypass `repo-production-workflow` by jumping from Repo Context Forge straight to edits.
-- Do not re-invoke `execution-planning` for an execution-only pass when a governing artifact exists; execute against it and keep its checklist current.
+- Do not re-invoke `execution-planning` for an execution-only pass when a governing design exists. Execute against the immutable advisor-bound design; repository-scoped workflow history and GitHub PR state carry durable progress. Tasks are session-local convenience only, never durable authority. Changing the design after the first completed `preflight-advice` consult begins a new pass. Existing tracked governing artifacts already controlling in-flight work remain authoritative under their existing contracts and are not migrated or rewritten merely to adopt the workflow-state design policy.
 - Documentation-only changes follow the Repo Context Forge gate exception below.
 
 The **review budget** targets ~500 net lines of code per PR (net = additions minus deletions in human-authored source; measurement and the 1,000-net-line split threshold live in the delivery-governance skill). Split, shrink, or consolidate scope before coding when a planned PR is likely to run past the target.
