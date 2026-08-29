@@ -26,6 +26,7 @@ from hooks.tests import support  # noqa: E402
 WORKFLOW = support.workflow_cli()
 from hooks.tests.support import build_document, build_no_change_document, record_context_forge  # noqa: E402
 
+from hooks.lib.behavior_map import runtime_items  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import tree_manifest  # noqa: E402
 from hooks.lib.workflow_documents import design_file_declaration  # noqa: E402
@@ -2270,130 +2271,164 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(self.evidence(preflight_id), kept,
                          "begin deleted retained history instead of merely deactivating it")
 
-    def test_design_wrapper_refusals_name_complete_corrective_shape(self) -> None:
-        marker = "DESIGN_SHAPE_GUIDANCE_MISSING"
-        repo = self.tmp / "design-shape-repo"
+    def test_design_wrapper_accepts_plain_markdown_without_a_catalogue(self) -> None:
+        marker = "PLAIN_DESIGN_REJECTED_FOR_MISSING_CATALOGUE"
+        repo = self.tmp / "plain-design-repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, env=self.env, check=True)
+        design = self.tmp / "plain-design.md"
+        design.write_text(
+            "# Decision\n\nPreserve writes and falsify cursor rollback before editing.\n",
+            encoding="utf-8",
+        )
         wrapper = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
 
-        def run(path: Path) -> subprocess.CompletedProcess[str]:
-            return subprocess.run([
-                str(wrapper), "--slug", "shape", "--phase", "preflight-advice",
-                "--design-file", str(path), "--cwd", str(repo), "--", "q",
-            ], cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        result = subprocess.run([
+            str(wrapper), "--slug", "plain-design", "--phase", "preflight-advice",
+            "--design-file", str(design), "--cwd", str(repo), "--", "q",
+        ], cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
 
-        cases = {
-            "marker": "Decision only.\n",
-            "fence": "<!-- governed-design-labels:v1 -->\n",
-            "schema": "<!-- governed-design-labels:v1 -->\n```json\n{\"schemaVersion\":1}\n```\n",
-            "uncatalogued": "ASSUMP-1\n<!-- governed-design-labels:v1 -->\n```json\n{\"schemaVersion\":1,\"labels\":[]}\n```\n",
-            "catalogue-only": "<!-- governed-design-labels:v1 -->\n```json\n{\"schemaVersion\":1,\"labels\":[{\"id\":\"PRES-1\",\"kind\":\"preservation\"}]}\n```\n",
-        }
-        for name, text in cases.items():
-            design = self.tmp / f"{name}.md"
-            design.write_text(text, encoding="utf-8")
-            refused = run(design)
-            self.assertEqual(refused.returncode, 1, marker + refused.stdout + refused.stderr)
-            for expected in ("<!-- governed-design-labels:v1 -->", "```json", '"schemaVersion":1', '"labels"', "reserved tokens in prose must equal catalogue ids"):
-                self.assertIn(expected, refused.stderr, marker)
+        self.assertEqual(result.returncode, 2, marker + result.stdout + result.stderr)
+        self.assertIn("requires an active workflow", result.stderr, marker)
+        self.assertNotIn("catalogue", result.stderr, marker)
 
-        corrected = self.tmp / "corrected.md"
-        corrected.write_text("PRES-1\n<!-- governed-design-labels:v1 -->\n```json\n"
-            '{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"}]}\n```\n', encoding="utf-8")
-        accepted = run(corrected)
-        self.assertEqual(accepted.returncode, 2, marker + accepted.stdout + accepted.stderr)
-        self.assertIn("requires an active workflow", accepted.stderr, marker)
-
-    def test_governed_design_rejects_catalogue_only_label(self) -> None:
-        design = self.tmp / "catalogue-only-design.md"
-        design.write_text(
-            "ASSUMP-"
-            "<!-- governed-design-labels:v1 -->\n```json\n"
-            '{"schemaVersion":1,"labels":['
-            '{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}\n```'
-            "1\n",
-            encoding="utf-8",
-        )
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "catalogue-only: ASSUMP-1",
-            msg="CATALOGUE_ONLY_LABEL_WAS_ACCEPTED",
-        ):
-            design_file_declaration(str(design))
-
-    def test_governed_design_labels_bind_preflight_coverage_atomically(self) -> None:
-        wid = self.begin_slug("design-labels")
+    def test_design_sha_identity_replays_and_changed_sha_refuses(self) -> None:
+        marker = "SAME_DESIGN_BYTES_REJECTED_AFTER_CATALOGUE_REMOVAL"
+        wid = self.begin_slug("design-shape-replay")
         self.advance_to_context_forge()
-        design = self.tmp / "design.md"
-        design.write_text(
-            "Decision preserves PRES-1 and relies on ASSUMP-1.\n"
-            "<!-- governed-design-labels:v1 -->\n```json\n"
-            '{"schemaVersion":1,"labels":['
-            '{"id":"PRES-1","kind":"preservation"},'
-            '{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}\n```\n',
-            encoding="utf-8",
-        )
+        digest = hashlib.sha256(b"the same design bytes\n").hexdigest()
         declaration = self.tmp / "design.json"
-        declaration.write_text(json.dumps(design_file_declaration(str(design))), encoding="utf-8")
-        bad_design = self.tmp / "bad-design.md"
-        bad_design.write_text(design.read_text(encoding="utf-8") + "Uncatalogued ASSUMP-2.\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "uncatalogued: ASSUMP-2"):
-            design_file_declaration(str(bad_design))
-        recorded = self.cli(
-            "advisor-result", "--slug", "design-labels", "--workflow-id", wid,
+        declaration.write_text(json.dumps({
+            "schemaVersion": 1,
+            "status": "present",
+            "sha256": digest,
+        }), encoding="utf-8")
+        first = self.cli(
+            "advisor-result", "--slug", "design-shape-replay", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
             "--design-declaration", str(declaration),
         )
-        self.assertEqual(recorded.returncode, 0, recorded.stderr)
-        evidence_id = json.loads(recorded.stdout)["governedDesignEvidence"]
+        self.assertEqual(first.returncode, 0, marker + first.stdout + first.stderr)
 
-        changed = json.loads(declaration.read_text(encoding="utf-8"))
-        changed["catalogue"]["labels"].append(
-            {"id": "ASSUMP-2", "kind": "assumption", "behavioral": False}
-        )
-        changed_path = self.tmp / "changed-design.json"
-        changed_path.write_text(json.dumps(changed), encoding="utf-8")
-        refused = self.cli(
-            "advisor-result", "--slug", "design-labels", "--workflow-id", wid,
+        replay = self.cli(
+            "advisor-result", "--slug", "design-shape-replay", "--workflow-id", wid,
             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
-            "--design-declaration", str(changed_path),
+            "--design-declaration", str(declaration),
         )
-        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-        self.assertIn("differs from the recorded declaration", refused.stderr)
+        self.assertEqual(replay.returncode, 0, marker + replay.stdout + replay.stderr)
 
-        self.assertEqual(self.dispose("design-labels", wid, "preflight", "none").returncode, 0)
+        changed = self.tmp / "changed-design.json"
+        changed.write_text(json.dumps({
+            "schemaVersion": 1,
+            "status": "present",
+            "sha256": hashlib.sha256(b"changed design bytes\n").hexdigest(),
+        }), encoding="utf-8")
+        refused = self.cli(
+            "advisor-result", "--slug", "design-shape-replay", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+            "--design-declaration", str(changed),
+        )
+        self.assertEqual(refused.returncode, 2, marker + refused.stdout + refused.stderr)
+        self.assertIn("differs from the recorded declaration", refused.stderr, marker)
+
+    def test_new_behavior_map_items_can_omit_source_refs(self) -> None:
+        marker = "SOURCE_REFS_REMAIN_REQUIRED"
+        slug = "optional-behavior-map-refs"
+        wid = self.begin_slug(slug)
+        self.advance_to_context_forge()
+        self.run_cli(
+            ("advisor-result", "--slug", slug, "--workflow-id", wid,
+             "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
+            ("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+             "--stage", "preflight", "--findings", "none"),
+        )
+        item = {
+            "id": "BM_NO_REFS", "kind": "preservation", "basis": "Behavior Map input",
+            "behavior": "new items may omit sourceRefs", "seam": "public workflow CLI",
+            "expected": "the item is accepted", "redFailure": marker,
+            "status": "already-satisfied", "evidence": "real CLI input",
+        }
+        document = build_document("Optional Behavior Map sourceRefs", behavior_map=[item])
+        document["behaviorMap"][0].pop("sourceRefs")
+        recorded = self.record_preflight(wid, document)
+        self.assertEqual(recorded.returncode, 0, marker + recorded.stdout + recorded.stderr)
+
+        update = self.tmp / "added-item-without-source-refs.json"
+        update.write_text(json.dumps({
+            "reassessment": "new items may omit sourceRefs",
+            "items": [{
+                **{key: value for key, value in item.items() if key != "evidence"},
+                "id": "BM_ADDED_NO_REFS", "kind": "contract", "status": "pending",
+            }],
+            "dispositions": [],
+        }), encoding="utf-8")
+        added = self.cli(
+            "tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update),
+        )
+        self.assertEqual(added.returncode, 0, marker + added.stdout + added.stderr)
+
+    def test_new_behavior_map_items_reject_design_source_refs(self) -> None:
+        marker = "NEW_DESIGN_SOURCE_REF_ACCEPTED"
+        marker += " NEW_DESIGN_SOURCE_REF_POLICY_REGRESSED"
+        wid = self.begin_slug("behavior-map-authority")
+        self.advance_to_context_forge()
+        design = self.tmp / "design.md"
+        design.write_text("# Decision\n\nPreserve the public workflow contract.\n", encoding="utf-8")
+        declaration = self.tmp / "design.json"
+        declaration.write_text(json.dumps(design_file_declaration(str(design))), encoding="utf-8")
+        recorded = self.cli(
+            "advisor-result", "--slug", "behavior-map-authority", "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
+            "--design-declaration", str(declaration),
+        )
+        self.assertEqual(recorded.returncode, 0, marker + recorded.stdout + recorded.stderr)
+        evidence_id = json.loads(recorded.stdout)["governedDesignEvidence"]
+        self.assertEqual(
+            self.dispose("behavior-map-authority", wid, "preflight", "none").returncode,
+            0,
+            marker,
+        )
         item = {
             "id": "BM_DESIGN", "kind": "preservation", "basis": "governed design",
-            "behavior": "design labels own map proof", "seam": "public workflow CLI",
-            "expected": "required labels have an owner", "redFailure": "DESIGN_LABEL_UNOWNED",
+            "behavior": "the Behavior Map owns proof obligations", "seam": "public workflow CLI",
+            "expected": "design labels carry no workflow authority", "redFailure": marker,
             "status": "already-satisfied", "evidence": "real CLI declaration intake",
-            "sourceRefs": [{"type": "design", "evidenceId": evidence_id, "id": "PRES-1"}],
+            "sourceRefs": [{"type": "design", "evidenceId": evidence_id, "id": "PRES-999"}],
         }
-        before = json.loads(self.cli("status").stdout)
-        repeated = {**item, "sourceRefs": [*item["sourceRefs"], *item["sourceRefs"]]}
-        duplicate = self.record_preflight(wid, build_document("design coverage", behavior_map=[repeated]))
-        self.assertEqual(duplicate.returncode, 2, duplicate.stdout + duplicate.stderr)
-        self.assertIn("repeats design sourceRef PRES-1", duplicate.stderr)
-        missing = self.record_preflight(wid, build_document("design coverage", behavior_map=[item]))
-        self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
-        self.assertIn("ASSUMP-1", missing.stderr)
-        self.assertEqual(json.loads(self.cli("status").stdout).get("preflightEvidence"), before.get("preflightEvidence"))
+        self.assertEqual(runtime_items([item])[0]["sourceRefs"], item["sourceRefs"], marker)
 
-        item["sourceRefs"].append(
-            {"type": "design", "evidenceId": evidence_id, "id": "ASSUMP-1"}
+        refused = self.record_preflight(
+            wid, build_document("Behavior Map authority", behavior_map=[item])
         )
-        empty = {**item, "id": "BM_EMPTY", "sourceRefs": []}
-        empty_result = self.record_preflight(
-            wid, build_document("design coverage", behavior_map=[item, empty])
+        self.assertEqual(refused.returncode, 2, marker + refused.stdout + refused.stderr)
+        self.assertIn("new Behavior Map items cannot carry design sourceRefs", refused.stderr, marker)
+
+        item.pop("sourceRefs")
+        accepted = self.record_preflight(
+            wid, build_document("Behavior Map authority", behavior_map=[item])
         )
-        self.assertEqual(
-            empty_result.returncode, 2,
-            "EMPTY_SOURCE_REFS_ACCEPTED" + empty_result.stdout + empty_result.stderr,
+        self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+
+        update = self.tmp / "new-design-ref.json"
+        update.write_text(json.dumps({
+            "reassessment": "new items have no design authority",
+            "items": [{
+                **item,
+                "id": "BM_ADDED_DESIGN",
+                "status": "pending",
+                "kind": "contract",
+                "sourceRefs": [
+                    {"type": "design", "evidenceId": evidence_id, "id": "PRES-999"},
+                ],
+            }],
+            "dispositions": [],
+        }), encoding="utf-8")
+        added = self.cli(
+            "tdd-map", "--slug", "behavior-map-authority", "--workflow-id", wid,
+            "--input", str(update),
         )
-        accepted = self.record_preflight(wid, build_document("design coverage", behavior_map=[item]))
-        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertEqual(added.returncode, 2, marker + added.stdout + added.stderr)
+        self.assertIn("new Behavior Map items cannot carry design sourceRefs", added.stderr, marker)
 
     def test_identical_pending_preflight_design_replay_is_a_no_op(self) -> None:
         wid = self.begin_slug("design-replay")

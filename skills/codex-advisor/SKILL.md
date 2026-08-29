@@ -22,8 +22,8 @@ for you, carrying the caller and upstream-impact halves; it holds no callee fact
 so callee context stays yours to supply. The advisor challenges scope and design; it does not create
 the preflight artifact or approve implementation. It treats the lead question
 as a claim, measures accessible premises before inferring, and makes supplied
-contract items without GREEN/baseline proof plus unowned `PRES-n` or behavioral
-`ASSUMP-n` obligations material.
+contract items without GREEN/baseline proof material. Design prose is evidence
+to challenge, not a second proof-obligation registry.
 
 Every phased consult carries a governing-design declaration: `--design-file`
 with the durable design artifact, or `--design-absent` with the specific
@@ -40,16 +40,14 @@ consult.
 
 A design artifact carries: the chosen architecture and rationale; every
 architecture family exploration or planning produced, with the technical
-rejection reason for each rejected family; the verified exploration findings that constrain the design
-and how each was measured; stable `PRES-n` preservation-obligation labels;
-stable `ASSUMP-n` load-bearing-assumption labels; and every unverified
-falsifiable prediction explicitly marked unresolved. The labels and the
-behavioral/non-behavioral classification below are the handoff surface
-Behavior Map `sourceRefs` reference. The wrapper captures and validates the
-catalogue once, records that canonical declaration as workflow evidence, and
-requires final review to present the identical declaration; preflight and
-completion enforce reference integrity and required-label ownership. The
-advisor still reviews the design's prose and never owns dispositions.
+rejection reason for each rejected family; the verified exploration findings
+that constrain the design and how each was measured; concrete preservation
+obligations and load-bearing assumptions; and every unverified falsifiable
+prediction explicitly marked unresolved. The wrapper captures the readable
+UTF-8 artifact by SHA-256, records that declaration as workflow evidence, and
+requires final review to present the same artifact. The Behavior Map alone owns
+proof obligations; the advisor reviews the design prose and never owns
+dispositions.
 
 The canonical imaginary-risk ban and the premise/occurrence checks in the
 repo's `CLAUDE.md` govern architecture-family decisions; this checkpoint adds
@@ -74,9 +72,10 @@ states precedence once — the design says why this was proposed, the recorded
 preflight is the reconciled before-edit contract, the Behavior Map names the
 authoritative proof obligations, and recorded TDD evidence is its bounded
 observation, never proof — and makes unreconciled design/preflight
-divergence a finding. It requires each `PRES-n` obligation rechecked against
-the diff, each `ASSUMP-n` assumption falsified against the implementation,
-the contradictory-contract gate applied to the changed Interface, and at most
+divergence a finding. It requires the design's concrete preservation
+obligations rechecked against the diff, its load-bearing assumptions falsified
+against the implementation, the contradictory-contract gate applied to the
+changed Interface, and at most
 one additional material reachable failure class beyond the design and
 recorded proof. The advisor reconciles the governed slice, real-seam proof,
 module shape, minimality, and regression coverage, returning only this strict

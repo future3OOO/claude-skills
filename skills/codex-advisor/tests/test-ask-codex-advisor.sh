@@ -13,11 +13,9 @@ fail=0
 
 write_design() {
   cat >"$1" <<'EOF'
-Chosen architecture: preserve transport behavior under PRES-1 and test ASSUMP-1.
-<!-- governed-design-labels:v1 -->
-```json
-{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"},{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}
-```
+Chosen architecture: preserve transport behavior.
+Preservation obligation: keep the provider boundary unchanged.
+Load-bearing assumption: the workflow lookup remains the next gate.
 EOF
 }
 
@@ -118,7 +116,7 @@ check "final-review states the materiality verdict criterion" "$materiality" "$f
 check "final-review remeasures changed findings" "Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation." "$final_block"
 for prompt_rule in \
   "Contract coverage:" \
-  "Design coverage:" \
+  "Design review:" \
   "Framing:" \
   "Measure before you infer:"; do
   check "preflight asks ${prompt_rule%:}" "$prompt_rule" "$preflight_block"
@@ -232,15 +230,6 @@ check "declared absence proceeds to the workflow lookup" "requires an active wor
 out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/design.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
 check_status "readable design file clears the design gate" 2 "$status"
 check "readable design file proceeds to the workflow lookup" "requires an active workflow" "$out"
-
-cp "$designtmp/design.md" "$designtmp/uncatalogued.md"; printf 'ASSUMP-2\n' >>"$designtmp/uncatalogued.md"
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/uncatalogued.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "uncatalogued design token refused" 1 "$status"
-check "uncatalogued token named" "uncatalogued: ASSUMP-2" "$out"
-cp "$designtmp/design.md" "$designtmp/two-markers.md"; printf '\n<!-- governed-design-labels:v1 -->\n```json\n{}\n```\n' >>"$designtmp/two-markers.md"
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/two-markers.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "two design markers refused" 1 "$status"
-check "two-marker refusal named" "exactly one labels marker" "$out"
 
 # Fail closed on a phase-less consult: there is no checkpoint to carry the
 # design to, so accepting the flag would silently drop caller-supplied evidence.
@@ -708,8 +697,9 @@ behavior_map_payload=$(printf '%s\n' "$armh_payload" | sed -n '/^--- current Beh
 check "Behavior Map carries item kind" '"kind":' "$behavior_map_payload"
 check "precedence is stated to the delegate" "the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof" "$armh_payload"
 check "design/preflight divergence is a finding" "Unreconciled divergence between the design and the recorded preflight is a finding" "$armh_payload"
-check "PRES-n obligations are rechecked" "Recheck each PRES-n preservation obligation" "$armh_payload"
-check "ASSUMP-n assumptions are falsified" "falsify each ASSUMP-n load-bearing assumption" "$armh_payload"
+check "design preservation obligations are rechecked" "Recheck the concrete preservation obligations in the design" "$armh_payload"
+check "design assumptions are falsified" "attempt to falsify its load-bearing assumptions" "$armh_payload"
+check "Behavior Map stays the sole proof authority" "it does not own Behavior Map entries or proof status" "$armh_payload"
 check "the contradictory-contract gate is applied" "may not also require callers to avoid particular operations" "$armh_payload"
 check "discovery is bounded to one additional failure class" "at most one additional material reachable failure class" "$armh_payload"
 check "contract Behavior Map items carry the issue #141 materiality clause" "A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed already-satisfied" "$armh_payload"

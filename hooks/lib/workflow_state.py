@@ -23,6 +23,7 @@ from ._workflow_db import (
     read_manifest,
 )
 from .repo_identity import RepoIdentity
+from .workflow_documents import same_design_declaration
 from .state_store import (
     is_governance_path,
     is_reviewable_path,
@@ -450,29 +451,6 @@ def _map_items(document: JsonObject | None) -> list[JsonObject] | None:
     return behavior_map.runtime_items(value) if value is not None else None
 
 
-def _validate_design_map(
-    transaction: LedgerMutation,
-    state: JsonObject,
-    document: JsonObject | None,
-    *,
-    require_coverage: bool,
-    evidence_id: str | None = None,
-    declaration: JsonObject | None = None,
-) -> None:
-    items = _map_items(document)
-    if items is None:
-        return
-    design_id = evidence_id or (
-        state.get("governedDesignEvidence")
-        if isinstance(state.get("governedDesignEvidence"), str)
-        else None
-    )
-    design = declaration or transaction.evidence(design_id)
-    behavior_map.validate_design_authority(
-        items, design_id, design, require_coverage=require_coverage,
-    )
-
-
 def _validate_finding_reservation(reservation: JsonObject, linked: dict[str, JsonObject], finding_id: str) -> set[str]:
     legacy = "seam" not in reservation and "preservationObligations" not in reservation
     expected = {str(value) if legacy else str(value).strip() for value in reservation["reservedBehaviorIds"]}
@@ -558,9 +536,6 @@ def commit_tdd(
             raise WorkflowError("tdd requires recorded preflight evidence")
         if state.get("tddEvidence") != expected_evidence_id:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
-        _validate_design_map(
-            transaction, state, summary_doc, require_coverage=False,
-        )
         if summary_doc is not None:
             _consume_finding_reservations(transaction, state, summary_doc, "review")
             reservations = state.get("findingReservations", [])
@@ -804,9 +779,6 @@ def commit_evidence_phase(
                 manifests.append(binding)
                 state["graphManifestId"] = binding.manifest_id
         if phase == "preflight":
-            _validate_design_map(
-                transaction, state, evidence_doc, require_coverage=True,
-            )
             _consume_finding_reservations(transaction, state, evidence_doc, "preflight")
         _apply_step(identity, state, phase, status)
         write = evidence_write(str(state["workflowId"]), phase, evidence_doc)
@@ -955,21 +927,14 @@ def record_advisor_result(
             candidate = evidence_write(str(state["workflowId"]), "governed-design", design)
             existing_id = state.get("governedDesignEvidence")
             if isinstance(existing_id, str):
-                if transaction.evidence(existing_id) != design:
+                if not same_design_declaration(
+                    transaction.evidence(existing_id), design,
+                ):
                     raise WorkflowError("governed design differs from the recorded declaration")
                 replayed_design = True
             elif stage == "final":
                 raise WorkflowError("final review requires the recorded governing design declaration")
             else:
-                if state.get("preflightEvidence"):
-                    _validate_design_map(
-                        transaction,
-                        state,
-                        transaction.evidence(str(state["preflightEvidence"])),
-                        require_coverage=True,
-                        evidence_id=candidate.evidence_id,
-                        declaration=design,
-                    )
                 state["governedDesignEvidence"] = candidate.evidence_id
                 writes.append(candidate)
         if stage == "preflight":
@@ -1431,16 +1396,10 @@ def complete(identity: RepoIdentity, *, slug: str | None = None, workflow_id: st
         _require_instance(state, slug, workflow_id)
         state.pop("paused", None)
         state.pop("revalidation", None)
-        # Behavior Map closure and design coverage are judged from the evidence
-        # this transaction sees, so a concurrent map change cannot slip through.
+        # Behavior Map closure is judged from the evidence this transaction
+        # sees, so a concurrent map change cannot slip through.
         tdd_document = transaction.evidence(state.get("tddEvidence"))
         preflight_document = transaction.evidence(state.get("preflightEvidence"))
-        _validate_design_map(
-            transaction,
-            state,
-            tdd_document or preflight_document,
-            require_coverage=True,
-        )
         missing = behavior_map.closure_blockers(
             tdd_document, preflight_document,
         ) + _finding_completion_blockers(transaction, state) + completion_missing(state)
