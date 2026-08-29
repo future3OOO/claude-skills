@@ -1247,22 +1247,46 @@ def _apply_finding_dispositions(
         current = finding_state.get("status")
         if kind != findings[identifier].get("kind"):
             raise WorkflowError(f"finding {identifier} disposition kind differs from immutable intake")
-        if status == current:
-            raise WorkflowError(f"finding {identifier} disposition does not change effective state")
-        if current in {"fixed", "rejected-with-evidence", "report-only"}:
-            raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
         reservation = next((entry for entry in reservations if isinstance(entry, dict)
                             and entry.get("intakeEvidenceId") == intake_id
                             and entry.get("findingId") == identifier), None)
+        replacement = ({
+            "reservedBehaviorIds": [str(value).strip() for value in disposition["reservedBehaviorIds"]],
+            "seam": str(disposition["seam"]).strip(),
+            "preservationObligations": [str(value).strip() for value in disposition["preservationObligations"]],
+        } if status == "accepted-for-proof" else None)
+        if status == current:
+            if status != "accepted-for-proof" or kind != "behavioral" or reservation is None:
+                raise WorkflowError(f"finding {identifier} disposition does not change effective state")
+            if reservation.get("consumed"):
+                raise WorkflowError(f"finding {identifier} cannot replace a consumed proof reservation")
+            existing = {
+                "reservedBehaviorIds": [str(value).strip() for value in reservation.get("reservedBehaviorIds", [])],
+                "seam": str(reservation.get("seam", "")).strip(),
+                "preservationObligations": [str(value).strip() for value in reservation.get("preservationObligations", [])],
+            }
+            if (
+                replacement["seam"] == existing["seam"]
+                and set(replacement["reservedBehaviorIds"]) == set(existing["reservedBehaviorIds"])
+                and set(replacement["preservationObligations"])
+                == set(existing["preservationObligations"])
+            ):
+                raise WorkflowError(f"finding {identifier} disposition does not change effective state")
+            reservation.update(replacement)
+        if current in {"fixed", "rejected-with-evidence", "report-only"}:
+            raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
         if status == "accepted-for-proof":
-            if kind != "behavioral" or reservation is not None or current != "pending":
+            if kind != "behavioral":
                 raise WorkflowError(f"finding {identifier} cannot record accepted-for-proof")
-            reservations.append({
-                "stage": stage, "intakeEvidenceId": intake_id, "findingId": identifier,
-                "reservedBehaviorIds": list(disposition["reservedBehaviorIds"]), "consumed": False,
-                "seam": disposition["seam"],
-                "preservationObligations": list(disposition["preservationObligations"]),
-            })
+            if current == "pending":
+                if reservation is not None:
+                    raise WorkflowError(f"finding {identifier} cannot record accepted-for-proof")
+                reservations.append({
+                    "stage": stage, "intakeEvidenceId": intake_id, "findingId": identifier,
+                    **replacement, "consumed": False,
+                })
+            elif current != "accepted-for-proof" or reservation is None:
+                raise WorkflowError(f"finding {identifier} cannot record accepted-for-proof")
         elif reservation is not None and status != "fixed":
             raise WorkflowError(f"accepted-for-proof finding {identifier} can only transition to fixed")
         elif status == "fixed" and kind == "behavioral":

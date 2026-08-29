@@ -345,7 +345,7 @@ class ReviewSummaryTests(unittest.TestCase):
         intake_id = json.loads(intake.stdout)["summaryId"]
         corrected = self.disposition_document(
             intake_id, "SPEC-1", "accepted-for-proof", kind="behavioral",
-            reservedBehaviorIds=["BM_SPEC_1"], seam="workflow CLI",
+            reservedBehaviorIds=["BM_SPEC_1", "BM_SPEC_1_PRESERVE"], seam="workflow CLI",
             preservationObligations=["preserve review state"],
         )
         item = corrected["dispositions"][0]

@@ -1981,6 +1981,112 @@ class PassLifecycleTests(unittest.TestCase):
         preflight = self.record_preflight(wid, self.preflight_document())
         self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
 
+    def test_advisor_refuses_structurally_impossible_proof_reservation(self) -> None:
+        marker, slug = "IMPOSSIBLE_RESERVATION_RECORDED", "impossible-reservation"
+        wid = self.begin_slug(slug)
+        self.advance_to_context_forge()
+        envelope = self.tmp / "impossible-reservation-envelope.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [{
+            "id": "SPEC-1", "claim": "proof is missing", "material": True, "kind": "behavioral",
+        }], "verdict": "completed"}), encoding="utf-8")
+        recorded = self.cli(
+            "advisor-result", "--slug", slug, "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--input", str(envelope),
+        )
+        intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
+        disposition = self.finding_disposition_document(intake_id)
+        document = json.loads(disposition.read_text(encoding="utf-8"))
+        document["dispositions"][0]["reservedBehaviorIds"] = ["BM_ADV_1"]
+        disposition.write_text(json.dumps(document), encoding="utf-8")
+        before = self.cli("status").stdout, len(self.history_events())
+
+        refused = self.dispose(slug, wid, "preflight", "addressed", str(disposition))
+
+        self.assertEqual(refused.returncode, 2, marker + refused.stdout + refused.stderr)
+        self.assertEqual((self.cli("status").stdout, len(self.history_events())), before, marker)
+        self.assertIn("contract behavior ID plus preservation", refused.stderr, marker)
+
+    def test_unconsumed_proof_reservation_can_be_corrected_in_place(self) -> None:
+        marker, reordered_marker, slug = (
+            "UNCONSUMED_RESERVATION_REPLACEMENT_REFUSED",
+            "REORDERED_RESERVATION_MUTATED_STATE",
+            "correct-reservation",
+        )
+        wid = self.begin_slug(slug)
+        self.advance_to_context_forge()
+        envelope = self.tmp / "correct-reservation-envelope.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [{
+            "id": "SPEC-1", "claim": "proof is missing", "material": True, "kind": "behavioral",
+        }], "verdict": "completed"}), encoding="utf-8")
+        recorded = self.cli(
+            "advisor-result", "--slug", slug, "--workflow-id", wid,
+            "--stage", "preflight", "--source", "codex-advisor", "--input", str(envelope),
+        )
+        intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
+        initial = self.finding_disposition_document(intake_id)
+        accepted = self.dispose(slug, wid, "preflight", "addressed", str(initial))
+        self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+        before_noop = self.cli("status").stdout, len(self.history_events())
+        noop = self.dispose(slug, wid, "preflight", "addressed", str(initial))
+        self.assertEqual(noop.returncode, 2, marker + noop.stdout + noop.stderr)
+        self.assertEqual((self.cli("status").stdout, len(self.history_events())), before_noop, marker)
+        reordered = self.finding_disposition_document(intake_id)
+        reordered_document = json.loads(reordered.read_text(encoding="utf-8"))
+        reordered_document["dispositions"][0]["reservedBehaviorIds"].reverse()
+        reordered.write_text(json.dumps(reordered_document), encoding="utf-8")
+        before_reordered = self.cli("status").stdout, len(self.history_events())
+        reordered_result = self.dispose(slug, wid, "preflight", "addressed", str(reordered))
+        self.assertEqual(reordered_result.returncode, 2,
+                         reordered_marker + reordered_result.stdout + reordered_result.stderr)
+        self.assertEqual((self.cli("status").stdout, len(self.history_events())),
+                         before_reordered, reordered_marker)
+
+        def poisoned_reservation(state):
+            state["findingReservations"][0].update({
+                "reservedBehaviorIds": ["BM_ADV_1"],
+                "seam": "legacy workflow seam",
+                "preservationObligations": ["PRES-4"],
+            })
+        self.rewrite_latest_state(poisoned_reservation)
+        before_events = len(self.history_events())
+        corrected = self.finding_disposition_document(intake_id)
+
+        repaired = self.dispose(slug, wid, "preflight", "addressed", str(corrected))
+
+        self.assertEqual(repaired.returncode, 0, marker + repaired.stdout + repaired.stderr)
+        state = json.loads(repaired.stdout)
+        reservation = state["findingReservations"][0]
+        finding = state["findingStates"][0]
+        self.assertEqual(reservation["reservedBehaviorIds"], ["BM_ADV_1", "BM_ADV_PRESERVE"], marker)
+        self.assertEqual(reservation["seam"], "workflow CLI", marker)
+        self.assertEqual(reservation["preservationObligations"], ["preserve advisor intake"], marker)
+        self.assertFalse(reservation["consumed"], marker)
+        self.assertEqual(len(self.history_events()), before_events + 1, marker)
+        self.assertEqual(finding["dispositionHistory"][-1]["status"], "accepted-for-proof", marker)
+        self.assertEqual(finding["dispositionHistory"][-1]["supersededBy"], finding["dispositionEvidenceId"], marker)
+
+        source_ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        preflight = self.preflight_document()
+        preflight["behaviorMap"] = [{
+            "id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding",
+            "behavior": "close the finding through proof", "seam": "workflow CLI",
+            "expected": "explicit fixed closes", "redFailure": marker, "status": "pending",
+            "sourceRefs": source_ref,
+        }, {
+            "id": "BM_ADV_PRESERVE", "kind": "preservation", "basis": "advisor finding",
+            "behavior": "preserve advisor intake", "seam": "advisor intake",
+            "expected": "advisor intake remains valid", "redFailure": marker,
+            "status": "already-satisfied", "evidence": "current intake is preserved",
+            "sourceRefs": source_ref,
+        }]
+        consumed = self.record_preflight(wid, preflight)
+        self.assertEqual(consumed.returncode, 0, marker + consumed.stdout + consumed.stderr)
+        before_consumed = self.cli("status").stdout, len(self.history_events())
+        blocked = self.dispose(slug, wid, "preflight", "addressed", str(corrected))
+        self.assertEqual(blocked.returncode, 2, "CONSUMED_RESERVATION_REPLACED" + blocked.stdout + blocked.stderr)
+        self.assertEqual((self.cli("status").stdout, len(self.history_events())), before_consumed,
+                         "CONSUMED_RESERVATION_REPLACED")
+
     def test_advisor_refusals_name_each_disposition_shape_atomically(self) -> None:
         marker = "DISPOSITION_SHAPE_GUIDANCE_MISSING"
         for status in ("fixed", "rejected-with-evidence", "report-only", "accepted-follow-up", "accepted-for-proof"):

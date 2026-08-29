@@ -23,7 +23,7 @@ DISPOSITION_REQUIREMENTS = {
     "rejected-with-evidence": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
     "report-only": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; materialConsequence.result strips and lowercases to false",
     "accepted-follow-up": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; reference=non-empty text",
-    "accepted-for-proof": f"premise={MEASUREMENT_SHAPE}; occurrence={SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE} with result not stripping/lowercasing to false; reservedBehaviorIds=[unique BM ids]; seam=non-empty text equal to occurrence.seam after trimming; preservationObligations=[unique non-empty text values]",
+    "accepted-for-proof": f"premise={MEASUREMENT_SHAPE}; occurrence={SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE} with result not stripping/lowercasing to false; reservedBehaviorIds=[unique BM ids including one contract id plus one id per preservation obligation]; seam=non-empty text equal to occurrence.seam after trimming; preservationObligations=[unique non-empty text values]",
 }
 DISPOSITION_SHAPES = {status: f'{{"finding_id":non-empty text,"status":"{status}","kind":"behavioral" or "nonbehavioral"}} plus {requirements}' for status, requirements in DISPOSITION_REQUIREMENTS.items()}
 
@@ -538,8 +538,9 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
                 and len(set(canonical_reserved)) == len(reserved) and all(IDENTIFIER.fullmatch(entry) for entry in canonical_reserved) and _text(item.get("seam"))
                 and isinstance(preserved, list) and preserved and all(_text(entry) for entry in preserved)
                 and len(set(canonical_preserved)) == len(preserved)
+                and len(canonical_reserved) >= len(canonical_preserved) + 1
             ):
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations"))
+                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations, including one contract behavior ID plus preservation behavior IDs"))
             demonstrated = ("reproduction" in occurrence
                 and occurrence.get("seam", "").strip() == str(item["seam"]).strip())
             if not demonstrated:
