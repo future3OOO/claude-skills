@@ -405,6 +405,9 @@ def graph_evidence_document(
     reported = target.get("source_repo") if isinstance(target, dict) else None
     if not _text(reported) or os.path.realpath(str(reported)) != os.path.realpath(source_root):
         raise ValueError(f"the packet was produced for {reported!r}, not {source_root}")
+    committed_head = target.get("head_sha") if isinstance(target, dict) else None
+    if not _git_oid(committed_head):
+        raise ValueError("the packet names no canonical Git committed head")
     git_facts = packet.get("git")
     source_base = git_facts.get("merge_base") if isinstance(git_facts, dict) else None
     if not _git_oid(source_base):
@@ -437,6 +440,11 @@ def graph_evidence_document(
         raise ValueError(
             f"the advisor projection was produced for source base "
             f"{projection['sourceBaseOid']!r}, not {source_base!r}"
+        )
+    if projection["committedHeadOid"] != committed_head:
+        raise ValueError(
+            f"the advisor projection was produced for committed head "
+            f"{projection['committedHeadOid']!r}, not {committed_head!r}"
         )
     document: JsonObject = {
         "schemaVersion": 1,

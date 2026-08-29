@@ -91,7 +91,7 @@ def graph_packet(root: str, candidate: str, head: str) -> dict[str, object]:
     Forge, real GitNexus, and a real repository in test_repoforge_workflow.py.
     """
     return {
-        "target_state": {"source_repo": root},
+        "target_state": {"source_repo": root, "head_sha": head},
         "git": {"merge_base": head},
         "gitnexus": {
             "analysis": {

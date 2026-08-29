@@ -162,7 +162,8 @@ git -C "$rigtmp/repo" commit -q -m base
 write_design "$rigtmp/design.md"
 cat >"$rigtmp/home/.bashrc" <<'BASHRC'
 alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
-CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 claude --model offline-model'
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 claude --model offline-model'
 BASHRC
 cat >"$rigtmp/bin/claude" <<'PROVIDER'
 #!/usr/bin/env bash
@@ -172,6 +173,9 @@ count=0; [[ -f "$count_file" ]] && count=$(cat "$count_file")
 count=$((count + 1)); printf '%s\n' "$count" >"$count_file"
 printf '%s\n' "$PWD" >"$CAPTURE_DIR/pwd-$count"
 printf '%s\n' "$*" >"$CAPTURE_DIR/args-$count"
+printf 'CLAUDE_CODE_MAX_CONTEXT_TOKENS=%s\nCLAUDE_CODE_AUTO_COMPACT_WINDOW=%s\nCLAUDE_AUTOCOMPACT_PCT_OVERRIDE=%s\n' \
+  "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-unset}" "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}" \
+  "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-unset}" >"$CAPTURE_DIR/env-$count"
 cat >"$CAPTURE_DIR/payload-$count"
 if [[ "${FAIL_RESUME:-0}" == 1 && " $* " == *" --resume "* ]]; then exit 7; fi
 if [[ " $* " == *" --resume "* ]]; then
@@ -206,7 +210,10 @@ check "preflight creates provider session" "--session-id $preflight_sid" "$prefl
 check_absent "preflight does not resume" "--resume" "$preflight_args"
 check "preflight disables customizations" "--safe-mode --strict-mcp-config" "$preflight_args"
 check "preflight denies GitNexus tools" "mcp__gitnexus__*" "$preflight_args"
-check_absent "preflight role has no GitNexus guidance" "configured GitNexus" "$preflight_args"
+check_absent "preflight role has no GitNexus guidance" "configured GitNexus" "$(cat "$rigtmp/capture/payload-1")"
+check "configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$rigtmp/capture/env-1")"
+check "configured auto-compact window reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$rigtmp/capture/env-1")"
+check "configured autocompact percent reaches the provider" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80" "$(cat "$rigtmp/capture/env-1")"
 check "design body is attached as framed evidence" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-1")"
 check_status "one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- governed-design narrative evidence')"
 check "design evidence names line framing" "framing=design-line-prefix" "$(cat "$rigtmp/capture/payload-1")"
@@ -272,12 +279,31 @@ check "projection telemetry emitted" "codex_advisor_evidence name=advisor-projec
 check "diff telemetry emitted" "codex_advisor_evidence name=current-pass-diff" "$(cat "$rigtmp/final.err")"
 check "completion marker emitted" "codex_advisor_complete status=0 provider=codex" "$(cat "$rigtmp/final.err")"
 
-unphased_out=$(run_wrapper --slug scoped-unphased --fresh -- 'unphased question' 2>"$rigtmp/unphased.err"); status=$?
+cat >"$rigtmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 claude --model offline-model'
+BASHRC
+unphased_out=$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=999111 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  run_wrapper --slug scoped-unphased --fresh -- 'unphased question' 2>"$rigtmp/unphased.err"); status=$?
 check_status "controlled unphased consult exits 0" 0 "$status"
 unphased_args=$(cat "$rigtmp/capture/args-4")
 check "unphased consult retains direct-measurement tools" "--tools Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch" "$unphased_args"
 check_absent "unphased consult keeps customizations" "--safe-mode" "$unphased_args"
 check_absent "unphased consult keeps configured MCP tools" "mcp__gitnexus__*" "$unphased_args"
+check "the alias-configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$rigtmp/capture/env-4")"
+check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$rigtmp/capture/env-4")"
+check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-4")"
+
+cat >"$rigtmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 claude --model offline-model'
+BASHRC
+omitted_max_out=$(CLAUDE_CODE_MAX_CONTEXT_TOKENS=888222 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  run_wrapper --slug scoped-unphased-max-isolation --fresh -- 'unphased question' 2>"$rigtmp/unphased-max.err"); status=$?
+check_status "controlled max-context isolation consult exits 0" 0 "$status"
+check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$rigtmp/capture/env-5")"
+check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$rigtmp/capture/env-5")"
+check "a parent-exported unconfigured percent remains cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-5")"
 rm -rf "$rigtmp"
 
 if [[ "${LIVE:-0}" == 1 ]]; then

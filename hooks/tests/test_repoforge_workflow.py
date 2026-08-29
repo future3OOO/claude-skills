@@ -845,7 +845,10 @@ class GraphEvidenceContractTests(unittest.TestCase):
         )
 
     def packet(self) -> dict[str, object]:
-        return graph_packet(str(self.root), "c" * 40, "b" * 40)
+        packet = graph_packet(str(self.root), "c" * 40, "a" * 40)
+        packet["git"]["merge_base"] = "b" * 40
+        packet["advisorProjection"]["sourceBaseOid"] = "b" * 40
+        return packet
 
     def test_a_packet_for_another_checkout_is_refused(self) -> None:
         foreign = self.tmp / "elsewhere"
@@ -892,12 +895,29 @@ class GraphEvidenceContractTests(unittest.TestCase):
             marker,
         )
 
-    def test_a_resolved_packet_for_this_checkout_is_accepted(self) -> None:
+    def test_a_projection_for_another_committed_head_is_refused(self) -> None:
+        packet = self.packet()
+        packet["advisorProjection"]["committedHeadOid"] = "d" * 40
+        marker = "FOREIGN_COMMITTED_HEAD_OID_ACCEPTED"
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            self.document_for(packet)
+        self.assertEqual(
+            str(refusal.exception),
+            f"the advisor projection was produced for committed head {'d' * 40!r}, "
+            f"not {'a' * 40!r}",
+            marker,
+        )
+
+    def test_a_projection_for_the_packet_head_is_accepted_with_distinct_merge_base(self) -> None:
+        marker = "VALID_COMMITTED_HEAD_REJECTED"
         document = self.document_for(self.packet())
-        self.assertEqual(document["graph"]["status"], "resolved")
-        self.assertEqual(document["workflowId"], "wid")
-        self.assertNotIn("gateContext", document)
-        self.assertNotIn("gateContextGap", document)
+        projection = document["advisorProjection"]
+        self.assertEqual(projection["committedHeadOid"], "a" * 40, marker)
+        self.assertEqual(projection["sourceBaseOid"], "b" * 40, marker)
+        self.assertEqual(document["graph"]["status"], "resolved", marker)
+        self.assertEqual(document["workflowId"], "wid", marker)
+        self.assertNotIn("gateContext", document, marker)
+        self.assertNotIn("gateContextGap", document, marker)
 
     def test_a_diverged_base_tip_does_not_replace_merge_base_provenance(self) -> None:
         marker = "DIVERGED_BASE_TIP_REJECTED"

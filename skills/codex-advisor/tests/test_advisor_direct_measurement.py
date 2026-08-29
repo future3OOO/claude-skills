@@ -566,8 +566,13 @@ class AdvisorSecurityBoundaryTest(unittest.TestCase):
                 ],
                 cwd=repo, env=env, capture_output=True, text=True, timeout=300,
             )
+            sid = next(
+                (Path(env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "_advisor-sessions").glob("*.sid")
+            ).read_text(encoding="utf-8").strip()
+            tools = advisor_tool_names(env, sid)
         self.assertEqual(result.returncode, 0, marker + result.stdout + result.stderr)
         self.assertIn(f"PHASELESS_NONCE={nonce}", result.stdout, marker)
+        self.assertEqual(tools, ["Bash"], marker + ": " + ", ".join(tools))
 
 
 @unittest.skipUnless(os.environ.get("LIVE") == "1", "set LIVE=1 for the real provider Seam")
@@ -625,37 +630,74 @@ class AdvisorConcurrentSessionTest(unittest.TestCase):
                 "concurrency regression has no governing design artifact", "--budget", "80", "--",
             ]
             slow = subprocess.Popen(
-                common + [
-                    "Use Bash to run sleep 30 before answering. Then return only "
-                    '{"schemaVersion":1,"findings":[],"verdict":"completed"}.'
-                ],
-                cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, start_new_session=True,
-            )
-            deadline = time.monotonic() + 120
-            while time.monotonic() < deadline:
-                if sid_file.is_file() and sid_file.read_text(encoding="utf-8").strip():
-                    break
-                if slow.poll() is not None:
-                    break
-                time.sleep(0.01)
-            self.assertTrue(sid_file.is_file(), "the first real provider session never started")
-            sid = sid_file.read_text(encoding="utf-8").strip()
-            self.assertTrue(sid, "the first real provider session id is empty")
-
-            competing = subprocess.Popen(
                 common + ['Return only {"schemaVersion":1,"findings":[],"verdict":"completed"}.'],
                 cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, start_new_session=True,
             )
+            competing = None
+            stopped = False
+            timed_out = False
             try:
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline:
+                    if sid_file.is_file() and sid_file.read_text(encoding="utf-8").strip():
+                        break
+                    if slow.poll() is not None:
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(sid_file.is_file(), "the first real provider session never started")
+                sid = sid_file.read_text(encoding="utf-8").strip()
+                self.assertTrue(sid, "the first real provider session id is empty")
+
+                os.killpg(slow.pid, signal.SIGSTOP)
+                stopped = True
+                lock_file = sid_file.with_name(f"{state['repo']['key']}-{slug}.lock")
+                held = subprocess.run(
+                    ["flock", "-n", str(lock_file), "true"],
+                    cwd=repo, env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(held.returncode, 1, marker + held.stdout + held.stderr)
+
+                competing = subprocess.Popen(
+                    common + ['Return only {"schemaVersion":1,"findings":[],"verdict":"completed"}.'],
+                    cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, start_new_session=True,
+                )
+                waiting_on_flock = False
+                children = Path(f"/proc/{competing.pid}/task/{competing.pid}/children")
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline and competing.poll() is None:
+                    try:
+                        child_pids = children.read_text(encoding="utf-8").split()
+                    except OSError:
+                        child_pids = []
+                    for pid in child_pids:
+                        try:
+                            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                        except OSError:
+                            continue
+                        if b"flock\x00-x\x009\x00" in command:
+                            waiting_on_flock = True
+                            break
+                    if waiting_on_flock:
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(waiting_on_flock, "the competing wrapper never waited on the real flock")
+
+                os.killpg(slow.pid, signal.SIGCONT)
+                stopped = False
                 competing_stdout, competing_stderr = competing.communicate(timeout=420)
                 slow_stdout, slow_stderr = slow.communicate(timeout=420)
             except subprocess.TimeoutExpired:
+                timed_out = True
+            finally:
+                if stopped and slow.poll() is None:
+                    os.killpg(slow.pid, signal.SIGCONT)
                 for process in (slow, competing):
-                    if process.poll() is None:
+                    if process is not None and process.poll() is None:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.communicate()
+            if timed_out:
                 self.fail("configured-provider concurrency proof timed out")
 
             self.assertEqual(slow.returncode, 0, slow_stdout + slow_stderr)
