@@ -1433,7 +1433,8 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
     if not isinstance(graph_document, dict):
         missing.append("advisor projection evidence")
     elif (
-        graph_document.get("schemaVersion") != 1
+        type(graph_document.get("schemaVersion")) is not int
+        or graph_document.get("schemaVersion") != 1
         or graph_document.get("slug") != state.get("slug")
         or graph_document.get("workflowId") != workflow_id
     ):

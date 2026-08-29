@@ -474,8 +474,7 @@ class PassLifecycleTests(unittest.TestCase):
             marker + json.dumps(checkpoint, sort_keys=True),
         )
 
-    def test_checkpoint_refuses_a_non_integer_projection_schema(self) -> None:
-        marker = "INVALID_PROJECTION_REACHED_ADVISOR"
+    def test_checkpoint_refuses_non_integer_graph_evidence_schemas(self) -> None:
         slug, wid = "checkpoint-schema-refusal", self.begin_slug("checkpoint-schema-refusal")
         identity = resolve_repo_identity(self.repo)
         state = read_workflow(identity)
@@ -490,6 +489,24 @@ class PassLifecycleTests(unittest.TestCase):
             source_root=str(identity.root),
             canonical_source_repo="example.invalid/workflow-fixture",
         )
+        document["schemaVersion"] = True
+        commit_evidence_phase(
+            identity, slug, wid, "repo-context-forge", document,
+        )
+
+        checkpoint = self.checkpoint("preflight-advice")
+        self.assertEqual(
+            (
+                checkpoint.get("ready"), checkpoint.get("advisorProjection"),
+                "advisor projection evidence belongs to another workflow"
+                in checkpoint.get("missing", []),
+            ),
+            (False, None, True),
+            "BOOLEAN_GRAPH_SCHEMA_REACHED_ADVISOR"
+            + json.dumps(checkpoint, sort_keys=True),
+        )
+
+        document["schemaVersion"] = 1
         projection = document["advisorProjection"]
         self.assertIsInstance(projection, dict)
         projection["schemaVersion"] = True
@@ -505,12 +522,13 @@ class PassLifecycleTests(unittest.TestCase):
                 in checkpoint.get("missing", []),
             ),
             (False, None, True),
-            marker + json.dumps(checkpoint, sort_keys=True),
+            "INVALID_PROJECTION_REACHED_ADVISOR"
+            + json.dumps(checkpoint, sort_keys=True),
         )
 
     def test_completion_refuses_graph_evidence_that_checkpoint_would_reject(self) -> None:
         marker = "FOREIGN_GRAPH_OWNERSHIP_COMPLETED"
-        for defect in ("projection-schema", "workflow-owner"):
+        for defect in ("evidence-schema", "projection-schema", "workflow-owner"):
             with self.subTest(defect=defect):
                 slug = f"completion-{defect}"
                 wid = self.begin_slug(slug)
@@ -530,7 +548,9 @@ class PassLifecycleTests(unittest.TestCase):
                     source_root=str(identity.root),
                     canonical_source_repo="example.invalid/workflow-fixture",
                 )
-                if defect == "projection-schema":
+                if defect == "evidence-schema":
+                    document["schemaVersion"] = True
+                elif defect == "projection-schema":
                     document["advisorProjection"]["schemaVersion"] = True
                 else:
                     document["slug"] = "another-workflow"

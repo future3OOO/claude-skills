@@ -34,6 +34,27 @@ def run_checked(
     return result
 
 
+def run_advisor(
+    args: list[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=300)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
 def run_workflow(
     *args: str, cwd: Path, env: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
@@ -146,7 +167,7 @@ class AdvisorDirectMeasurementTest(unittest.TestCase):
                 "```\n",
                 encoding="utf-8",
             )
-            result = subprocess.run(
+            result = run_advisor(
                 [
                     str(WRAPPER),
                     "--slug",
@@ -172,9 +193,6 @@ class AdvisorDirectMeasurementTest(unittest.TestCase):
                 ],
                 cwd=repo,
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=300,
             )
             self.assertEqual(result.returncode, 0, marker + "\n" + result.stdout + result.stderr)
             sid = next(
@@ -273,14 +291,14 @@ class AdvisorSecurityBoundaryTest(unittest.TestCase):
                 cwd=repo, env=env, capture_output=True, text=True, timeout=600,
             )
             self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
-            result = subprocess.run(
+            result = run_advisor(
                 [
                     str(WRAPPER), "--slug", slug, "--phase", "preflight-advice",
                     "--cwd", str(repo), "--design-absent",
                     "security boundary probe has no governing design artifact",
                     "--budget", "120", "--", question,
                 ],
-                cwd=repo, env=env, capture_output=True, text=True, timeout=300,
+                cwd=repo, env=env,
             )
             sid = next(
                 (Path(env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "_advisor-sessions").glob("*.sid")
@@ -327,14 +345,14 @@ class AdvisorSecurityBoundaryTest(unittest.TestCase):
                 cwd=repo, env=env, capture_output=True, text=True, timeout=600,
             )
             self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
-            preflight = subprocess.run(
+            preflight = run_advisor(
                 [
                     str(WRAPPER), "--slug", slug, "--phase", "preflight-advice",
                     "--cwd", str(repo), "--design-absent", design_reason,
                     "--budget", "80", "--",
                     'Return only {"schemaVersion":1,"findings":[],"verdict":"completed"}.',
                 ],
-                cwd=repo, env=env, capture_output=True, text=True, timeout=300,
+                cwd=repo, env=env,
             )
             self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
             self.assertEqual(json.loads(preflight.stdout).get("findings"), [])
@@ -413,13 +431,13 @@ class AdvisorSecurityBoundaryTest(unittest.TestCase):
             before = json.loads(
                 run_workflow("status", "--repo", str(repo), cwd=repo, env=env).stdout
             )
-            result = subprocess.run(
+            result = run_advisor(
                 [
                     str(WRAPPER), "--slug", slug, "--phase", "final-review",
                     "--cwd", str(repo), "--design-absent", design_reason,
                     "--budget", "120", "--", question,
                 ],
-                cwd=repo, env=env, capture_output=True, text=True, timeout=300,
+                cwd=repo, env=env,
             )
             sid = next(
                 (Path(env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "_advisor-sessions").glob("*.sid")
@@ -558,14 +576,14 @@ class AdvisorSecurityBoundaryTest(unittest.TestCase):
                 "PYTHONPYCACHEPREFIX": str(Path(directory) / "pycache"),
             }
             run_checked(["git", "init", "-q"], cwd=repo, env=env)
-            result = subprocess.run(
+            result = run_advisor(
                 [
                     str(WRAPPER), "--slug", f"phase-less-{nonce[:12]}", "--fresh",
                     "--cwd", str(repo), "--budget", "40", "--",
                     f"Use Bash exactly once to run printf 'PHASELESS_NONCE={nonce}'. "
                     "Return only that command output.",
                 ],
-                cwd=repo, env=env, capture_output=True, text=True, timeout=300,
+                cwd=repo, env=env,
             )
             sid = next(
                 (Path(env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "_advisor-sessions").glob("*.sid")
