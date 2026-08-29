@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from hooks.lib.repo_identity import RepoIdentity, RepoIdentityError, resolve_repo_identity  # noqa: E402
+from hooks.lib.state_store import tree_manifest  # noqa: E402
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     NO_INSTANCE_ID,
@@ -149,6 +150,11 @@ def _same_content(source: Path, target: Path) -> bool:
     return filecmp.cmp(source, target, shallow=False)
 
 
+# The producer builds these two from the committed head and refuses a dirty target;
+# every other mode overlays the source worktree into the analysis checkout.
+COMMITTED_HEAD_MODES = frozenset({"pr", "repo"})
+
+
 def _overlay_mismatch(root: Path, analysis_repo: Path, head_sha: str, tree: str) -> str:
     """Per-path proof that the analysis worktree materialized the snapshot.
 
@@ -199,6 +205,7 @@ def _snapshot_binding(
         packet = json.loads(packet_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return None, f"the machine packet could not be read: {exc}"
+    mode = str(packet.get("mode") or "") if isinstance(packet, dict) else ""
     target = packet.get("target_state") if isinstance(packet, dict) else None
     target = target if isinstance(target, dict) else {}
     head_sha = str(target.get("head_sha") or "")
@@ -213,8 +220,24 @@ def _snapshot_binding(
         return None, f"the packet base ref does not resolve to a commit: {base_ref}"
     mismatch = _overlay_mismatch(root, Path(analysis_repo), head_sha, tree_before)
     if mismatch:
+        # `pr` and `repo` materialize the committed head and overlay nothing, so a
+        # dirty checkout can never satisfy the per-path check. Naming the path there
+        # reports the symptom; the cause is the mode, and the remedy is the one that
+        # does overlay. Any other mode keeps the per-path measurement.
+        if mode in COMMITTED_HEAD_MODES:
+            return None, (
+                f"mode {mode} analysed the committed head, not the dirty worktree under "
+                f"review (first difference: {mismatch}); rerun with --mode local"
+            )
         return None, mismatch
-    return {"base": base_sha.strip(), "candidate": tree_before}, ""
+    # The manifest of the very tree the snapshot names, measured here rather than
+    # re-read at commit time: a tracked write landing in between would otherwise
+    # bind the graph to content the producer never analysed.
+    try:
+        analysed = tree_manifest(resolve_repo_identity(str(root)))
+    except (RuntimeError, RepoIdentityError) as exc:
+        return None, f"the analysed tree manifest could not be measured: {exc}"
+    return {"base": base_sha.strip(), "candidate": tree_before, "manifest": analysed}, ""
 
 
 def main(argv: list[str]) -> int:

@@ -2,9 +2,10 @@
 
 ## Status
 
-- current state: planning complete; PR A not started
+- current state: PR A open as [#166](https://github.com/future3OOO/claude-skills/pull/166) and PR B open as [#169](https://github.com/future3OOO/claude-skills/pull/169), stacked; both implementations are complete and their reviewer loops are closed. Workflow closure is a separate gate and is blocked on both: the per-round advisor intakes leave findings dispositionable only while their round is current, tracked in [#170](https://github.com/future3OOO/claude-skills/issues/170). Implementation and PR state are not workflow closure.
 - governing artifact: this document
-- last updated: 2026-08-26
+- last updated: 2026-08-27
+- PR B budget: 637 net against a 300-500 target. The overrun is ten final-advisor rounds of fixes, each reserved against the finding that measured it and driven RED to GREEN: retired `--base-ref` and `--packet`, the discarded graph excerpt, checkpoint-owned identity, projection rendering, resume suppression rebuilt twice, the pre-migration graph-evidence refusal, and the bool `schemaVersion`. Under the 1,000-net split threshold; recorded here rather than split because every increment answers a measured defect in the same owner slice.
 
 ## Objective
 
@@ -281,39 +282,39 @@ Every checkbox in #152's Acceptance Proof, with its owner. An unowned row is a p
 - [x] delegate fan-in complete (state machine, wrapper, harness, projection)
 - [x] adversarial critique pass integrated (15 findings assessed; `begin` continuation dropped, `activeCandidateTree` re-sourced, contract 7 split, 5 unowned rows given owners)
 - [x] deploy-freeze producer half measured (`533dfce9`, clean, `schemaVersion: 1`)
-- [ ] producer post-edit freshness measured (comment 2 acceptance: edit without changing HEAD → rerun bootstrap → different candidate identity, no manual `.gitnexus` deletion)
-- [ ] PR-A — branch `simpdaddy/issue-152-pr-a` created from `origin/main`
-- [ ] PR-A — Behavior Map: one row per contract, each on a distinct test surface
-- [ ] PR-A — `repo-production-workflow` pass: begin → RCF → advisor preflight → preflight → TDD → production-code → implementation
-- [ ] PR-A — c1 readiness rows GREEN, including the three lead-only-completion refusals (`fixed` / `rejected-with-evidence` / `report-only`) with the C3 disposable diagnostic probe demonstrated and removed
-- [ ] PR-A — c2 appeal rows GREEN (A1, A3, A4, A5, second-appeal refusal)
-- [ ] PR-A — c3 batching/`nextAction` rows GREEN (F1, F2, F3), including survival across `invalidate_after_edit`
-- [ ] PR-A — c4 partial-closure row GREEN (A8)
-- [ ] PR-A — c5 supersession row GREEN (A7, covering `accepted-follow-up`)
-- [ ] PR-A — c6 rows GREEN (A6 late reservation batch, A9 one-`begin` continuation)
-- [ ] PR-A — c7 rows GREEN (D1 preservation, D2 `passStartOid` immutability, pass-start refusal)
-- [ ] PR-A — net lines measured against the 850 breaker after each commit
-- [ ] PR-A — one typed quality gate after candidate stabilization
-- [ ] PR-A — lead `code-review` + N final Codex Advisor rounds (+ at most one appeal)
-- [ ] PR-A — workflow complete, committed, pushed, PR opened titled `[SimpDaddy] …`
-- [ ] PR-A — reviewer completion gate closed on head
-- [ ] PR-B — branch `simpdaddy/issue-152-pr-b` created from PR-A head
-- [ ] PR-B — Behavior Map: one row per contract, distinct test surfaces
-- [ ] PR-B — `repo-production-workflow` pass through implementation
-- [ ] PR-B — c8 rows GREEN (P2, P3) with the shape/binding split and all three legal evidence shapes handled
-- [ ] PR-B — `gateContext.candidate` vs producer `candidate_tree()` measured on a **dirty** tree before either is relied on
-- [ ] PR-B — c9 checkpoint-descriptor rows GREEN (W1)
-- [ ] PR-B — c10 transport rows GREEN (P4, S3, S4) plus S1/S2 preservation
-- [ ] PR-B — D3, D4, D5 rows GREEN; `--base-ref` no longer caller-selected
-- [ ] PR-B — appeal-id stability instruction in the final prompt; A2 SID half proved
-- [ ] PR-B — challenge-matrix doctrine stated once in `production-preflight`, referenced from `code-review` and the advisor prompt
-- [ ] PR-B — W2 #143 replay and W3 positive control run against the real provider
-- [ ] PR-B — C4/C6: byte-exact capture **and** real wrapper/provider transcript
-- [ ] PR-B — scoped install per `README.md:144-162`; installed measurement captured immediately
-- [ ] PR-B — one typed quality gate, lead review, final advisor rounds
-- [ ] PR-B — workflow complete, committed, pushed, PR opened titled `[SimpDaddy] …`
-- [ ] PR-B — reviewer completion gate closed on head
-- [ ] final classification: every one of the 35 acceptance rows marked held, or named as an honest proof gap
+- [-] producer post-edit freshness measured (comment 2 acceptance: edit without changing HEAD → rerun bootstrap → different candidate identity, no manual `.gitnexus` deletion) — producer-side: `pr` mode cannot bind a dirty candidate, `--mode local` can (measured, reported, not fixed here)
+- [x] PR-A — branch `simpdaddy/issue-152-pr-a` created from `origin/main`
+- [x] PR-A — Behavior Map: one row per contract, each on a distinct test surface
+- [x] PR-A — `repo-production-workflow` pass: begin → RCF → advisor preflight → preflight → TDD → production-code → implementation
+- [x] PR-A — c1 readiness rows GREEN, including the three lead-only-completion refusals (`fixed` / `rejected-with-evidence` / `report-only`) with the C3 disposable diagnostic probe demonstrated and removed
+- [x] PR-A — c2 appeal rows GREEN (A1, A3, A4, A5, second-appeal refusal)
+- [x] PR-A — c3 batching/`nextAction` rows GREEN (F1, F2, F3), including survival across `invalidate_after_edit`
+- [x] PR-A — c4 partial-closure row GREEN (A8)
+- [-] PR-A — c5 supersession row GREEN (A7, covering `accepted-follow-up`) — descoped by owner decision; the obligation moves to the follow-up
+- [-] PR-A — c6 rows GREEN (A6 late reservation batch, A9 one-`begin` continuation) — descoped with c5; A6/A9 not shipped
+- [x] PR-A — c7 rows GREEN (D1 preservation, D2 `passStartOid` immutability, pass-start refusal)
+- [x] PR-A — net lines measured against the 850 breaker after each commit
+- [x] PR-A — one typed quality gate after candidate stabilization
+- [x] PR-A — lead `code-review` + N final Codex Advisor rounds (+ at most one appeal)
+- [!] PR-A — workflow complete, committed, pushed, PR opened titled `[SimpDaddy] …` — blocked: a shared preservation row was superseded onto an unlinked replacement and no supported command repairs it
+- [~] PR-A — reviewer completion gate closed on head — five threads open on head 75c6673; fix pass next
+- [x] PR-B — branch `simpdaddy/issue-152-pr-b` created from PR-A head
+- [x] PR-B — Behavior Map: one row per contract, distinct test surfaces
+- [x] PR-B — `repo-production-workflow` pass through implementation
+- [x] PR-B — c8 rows GREEN (P2, P3) with the shape/binding split and all three legal evidence shapes handled
+- [x] PR-B — `gateContext.candidate` vs producer `candidate_tree()` measured on a **dirty** tree before either is relied on
+- [x] PR-B — c9 checkpoint-descriptor rows GREEN (W1)
+- [x] PR-B — c10 transport rows GREEN (P4, S3, S4) plus S1/S2 preservation
+- [x] PR-B — D3, D4, D5 rows GREEN; `--base-ref` no longer caller-selected
+- [x] PR-B — appeal-id stability instruction in the final prompt; A2 SID half proved
+- [x] PR-B — challenge-matrix doctrine stated once in `production-preflight`, referenced from `code-review` and the advisor prompt
+- [-] PR-B — W2 #143 replay and W3 positive control run against the real provider — estate-only proof; the shared estate was frozen by owner instruction
+- [-] PR-B — C4/C6: byte-exact capture **and** real wrapper/provider transcript — capture proved; real-provider pairing is [#167](https://github.com/future3OOO/claude-skills/issues/167)
+- [-] PR-B — scoped install per `README.md:144-162`; installed measurement captured immediately — installed inside the clone (`.simpdaddy-estate` symlinks to the clone's own `hooks/` and `skills/`); the shared estate was frozen by owner instruction
+- [x] PR-B — one typed quality gate, lead review, final advisor rounds
+- [!] PR-B — workflow complete, committed, pushed, PR opened titled `[SimpDaddy] …` — blocked: ten final-advisor rounds each left findings dispositionable only while their intake was current, and each new consult superseded the previous one, so the backlog cannot be closed by any supported command
+- [~] PR-B — reviewer completion gate closed on head
+- [~] final classification: every one of the 35 acceptance rows marked held, or named as an honest proof gap — held rows named in the PR; uncovered acceptance rows tracked in [#168](https://github.com/future3OOO/claude-skills/issues/168)
 
 ## Risks And Named Gaps
 

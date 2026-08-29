@@ -29,7 +29,7 @@ from hooks.tests.support import build_document, build_no_change_document, record
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import tree_manifest  # noqa: E402
 from hooks.lib.workflow_documents import design_file_declaration  # noqa: E402
-from hooks.lib.workflow_state import set_phase  # noqa: E402
+from hooks.lib.workflow_state import invalidate_after_edit, set_phase  # noqa: E402
 
 
 # Driven as a child process by the mid-gate mutation test. It runs outside this
@@ -759,28 +759,43 @@ class PassLifecycleTests(unittest.TestCase):
         self.finalize("stale-verdict", wid)
         self.assertEqual(self.cli("complete").returncode, 0)
 
-    def test_governance_revalidation_completes_against_the_refreshed_manifest(self) -> None:
-        from hooks.lib.workflow_state import invalidate_after_edit
+    def post_edit_hook(self, relative: str) -> None:
+        """The real PostToolUse gate hook, as the session runs it."""
+        result = subprocess.run(
+            [str(ROOT / "hooks" / "code-quality-gate.py")], cwd=self.repo, env=self.env, text=True,
+            input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
+            capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-        wid = self.complete_slug("revalidated-manifest")
-        identity = resolve_repo_identity(self.repo)
-        invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
+    def test_governance_revalidation_blocks_when_the_source_tree_also_moved(self) -> None:
+        """Graph freshness has no revalidation exception.
+
+        A governance edit reopens a completed pass for re-verification and review.
+        If that window also moves a tracked source file, the recorded graph stops
+        describing the tree, and re-analysis is closed during revalidation. The
+        honest outcome is a blocked pass whose remedy is `begin` - not a completion
+        against a graph the tree has moved past. Both edits go through the real
+        PostToolUse hook, which is what owns invalidation.
+        """
+        marker = "REVALIDATION_KEPT_A_STALE_GRAPH"
+        self.complete_slug("revalidated-manifest")
+        (self.repo / "AGENTS.md").write_text("governance text\n", encoding="utf-8")
+        self.post_edit_hook("AGENTS.md")
         self.shell("import pathlib; pathlib.Path('app.py').write_text('value = 7\\n')")
+        self.post_edit_hook("app.py")
 
-        reverified = self.verify_run(sys.executable, "-c", "pass")
-        self.assertEqual(reverified.returncode, 0, reverified.stdout + reverified.stderr)
-        stale = self.checkpoint("final-review")
-        self.assertTrue(
-            any("review-manifest-stale" in item and "app.py" in item for item in stale["missing"]),
-            f"revalidation reported readiness without naming the drifted tree: {stale['missing']}",
-        )
-
-        self.owner_phase("code-review", "passed", findings="none")
-        self.assertTrue(self.checkpoint("final-review")["ready"], "the refreshed manifest did not reopen the consult")
-        self.finalize("revalidated-manifest", wid)
-        completed = self.cli("complete")
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-
+        blocked = self.checkpoint("final-review")
+        self.assertFalse(blocked["ready"],
+                         f"{marker}: a moved source tree was reported ready during revalidation")
+        self.assertTrue([name for name in blocked["missing"] if "graph" in name],
+                        f"{marker}: nothing in {blocked['missing']} names the stale graph")
+        # Completion refuses; which blocker it names first is not this row's claim.
+        # The reassessment gate legitimately reports before completion readiness is
+        # computed, and the graph-specific refusal has its own proof at the real
+        # hook where it is reached.
+        refused = self.cli("complete")
+        self.assertEqual(refused.returncode, 2,
+                         f"{marker}: completion accepted a graph the tree had moved past")
     def preflight_document(self) -> dict[str, str]:
         return build_no_change_document("concrete content for this pass")
 
@@ -2641,6 +2656,7 @@ class PassLifecycleTests(unittest.TestCase):
         invalidate_after_edit(identity, "app.py")
         self.assertEqual(json.loads(self.cli("status").stdout)["productionCode"], "passed",
                          "an ordinary production edit erased the production-code step")
+        self.refresh_graph()
         self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
         legacy_verified = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(legacy_verified.returncode, 0, legacy_verified.stdout + legacy_verified.stderr)
@@ -3250,33 +3266,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(support.workflow_cli({}), support.WORKFLOW,
                          marker + ": the default stopped being the checkout entrypoint")
 
-    def test_closure_refuses_a_replacement_the_finding_never_linked(self) -> None:
-        """Proof closes the finding that reserved it, not proof it merely reaches.
-
-        Following supersession across the whole map let a GREEN item carrying no
-        sourceRef to the finding satisfy that finding's reservation, which is the
-        unrelated proof an exact reservation exists to refuse.
-        """
-        marker, slug = "UNLINKED_REPLACEMENT_CLOSED_THE_FINDING", "unlinked-replacement"
-        wid, intake_id = self.reserved_proof_pass(slug, [
-            # Same Seam, so retirement is admitted as subsumption; no sourceRef to
-            # the finding, so the closure guard is what must refuse it.
-            {"id": "BM_UNLINKED", "kind": "contract", "basis": "unrelated work", "seam": "workflow CLI",
-             "behavior": "proof this finding never reserved", "expected": "value is three",
-             "redFailure": "VALUE_NOT_THREE", "status": "pending", "linked": False},
-        ])
-        self.green_mapped(slug, "BM_UNLINKED", 3, "VALUE_NOT_THREE")
-        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
-        update = self.tmp / "unlinked-supersede.json"
-        update.write_text(json.dumps({"reassessment": "retire onto unrelated proof",
-            "items": [], "dispositions": [{"id": "BM_ADV_1", "status": "superseded", "supersededBy": "BM_UNLINKED",
-                "evidence": "retired onto proof this finding never reserved"}]}), encoding="utf-8")
-        self.assertEqual(self.cli("tdd-map", "--slug", slug, "--workflow-id", wid,
-                                  "--input", str(update)).returncode, 0, marker)
-        closed = self.dispose(slug, wid, "preflight", "addressed",
-                              str(self.mixed_finding_disposition_document(intake_id, "fixed")))
-        self.assertEqual(closed.returncode, 2,
-                         marker + ": unrelated proof closed the finding" + closed.stdout + closed.stderr)
     def reserved_proof_pass(self, slug: str, items: list[dict[str, object]]) -> tuple[str, str]:
         """A pass whose behavioural finding reserved proof against `items`.
 
@@ -3406,6 +3395,93 @@ class PassLifecycleTests(unittest.TestCase):
                          f"{marker}: a helper resolved the deleted checkout default: "
                          f"{driven.stderr.strip()[-300:]!r}")
 
+    def refresh_graph(self) -> None:
+        """Re-record analysis after the last edit, the way the workflow prescribes.
+
+        Completion refuses while the graph binding is retired, so a pass that edits
+        after analysis and then completes has to refresh it first. These tests are
+        asserting other contracts; this keeps their scaffold matching the order the
+        workflow already documents.
+        """
+        work = self.tmp / f"graph-refresh-{len(list(self.tmp.glob('graph-refresh-*')))}"
+        work.mkdir()
+        record_context_forge(self.repo, work)
+
+    def test_a_tracked_edit_stales_the_recorded_graph(self) -> None:
+        """Graph evidence describes the tree it was measured on.
+
+        `invalidate_after_edit` clears verification and review through
+        `_reset_downstream` and says nothing about the graph, so an edit made after
+        analysis left the preflight-advice checkpoint ready on evidence that no
+        longer described the working tree.
+        """
+        marker = "STALE_GRAPH_STILL_READY"
+        self.begin_slug("graph-freshness")
+        (self.tmp / "graph-freshness-work").mkdir()
+        record_context_forge(self.repo, self.tmp / "graph-freshness-work")
+        before = json.loads(self.cli("checkpoint", "--phase", "preflight-advice").stdout)
+        self.assertTrue(before["ready"], "the probe did not start from a ready checkpoint")
+        (self.repo / "app.py").write_text("value = 41\n", encoding="utf-8")
+        invalidate_after_edit(resolve_repo_identity(str(self.repo)), str(self.repo / "app.py"))
+        after = json.loads(self.cli("checkpoint", "--phase", "preflight-advice").stdout)
+        self.assertFalse(after["ready"],
+                         f"{marker}: the checkpoint stayed ready on evidence measured before the edit")
+        self.assertTrue([name for name in after["missing"] if "graph" in name],
+                        f"{marker}: nothing in {after['missing']} names the stale graph")
+
+    def test_completion_fails_closed_on_a_stale_graph(self) -> None:
+        """A pass may not close on evidence that predates its own tree."""
+        marker = "COMPLETION_ACCEPTED_A_STALE_GRAPH"
+        slug = "graph-completion"
+        self.begin_slug(slug)
+        (self.tmp / "graph-completion-work").mkdir()
+        support.advance_to_final_review(self.repo, self.tmp / "graph-completion-work")
+        (self.repo / "app.py").write_text("value = 43\n", encoding="utf-8")
+        invalidate_after_edit(resolve_repo_identity(str(self.repo)), str(self.repo / "app.py"))
+        completed = self.cli("complete")
+        self.assertEqual(completed.returncode, 2, f"{marker}: completion accepted a stale graph")
+        self.assertIn("graphManifest", completed.stderr,
+                      f"{marker}: the refusal did not name the retired graph binding")
+
+    def test_final_review_names_the_candidate_the_pass_proved(self) -> None:
+        """The projection is recorded before implementation and never refreshed by it.
+
+        A pass that edits after Repo Context Forge, verifies, and records its review
+        has bound both a reviewed and a gated tree; exporting the bootstrap-era
+        candidate instead hands the advisor a diff that omits the implementation it
+        was asked to review.
+        """
+        marker = "FINAL_REVIEW_SAW_THE_BOOTSTRAP_TREE"
+        slug = "final-candidate"
+        self.begin_slug(slug)
+        work = self.tmp / "final-candidate-work"
+        work.mkdir()
+        support.advance_to_final_review(self.repo, work)
+        bootstrap = json.loads(self.cli("checkpoint", "--phase", "preflight-advice").stdout)
+        (self.repo / "implemented.py").write_text("value = 7\n", encoding="utf-8")
+        self.refresh_graph()
+        self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0, marker)
+        self.assertEqual(self.cli("verify", "--slug", slug, "--kind", "quality-gate",
+                                  "--base-ref", "HEAD").returncode, 0, marker)
+        self.owner_phase("code-review", "passed", findings="none")
+        descriptor = json.loads(self.cli("checkpoint", "--phase", "final-review").stdout)
+        self.assertTrue(descriptor["ready"], marker + f": {descriptor['missing']}")
+        # Read back, not rebuilt: the named candidate is the object the pass's own
+        # quality-gate run recorded, so a write landing after the gate cannot move it.
+        recorded = json.loads(self.cli("evidence", "--evidence-id",
+                                       json.loads(self.cli("status").stdout)["verificationLatestEvidence"]).stdout)
+        gated = [run["gate"]["candidateTree"] for run in recorded["document"]["runs"]
+                 if run.get("kind") == "quality-gate"][-1]
+        self.assertEqual(descriptor["activeCandidateTree"], gated,
+                         f"{marker}: the descriptor did not name the gated candidate")
+        self.assertNotEqual(descriptor["activeCandidateTree"], bootstrap["activeCandidateTree"],
+                            f"{marker}: the descriptor still names the bootstrap tree")
+        listed = subprocess.run(["git", "-C", str(self.repo), "ls-tree", "-r", "--name-only",
+                                 str(descriptor["activeCandidateTree"])],
+                                text=True, capture_output=True, check=True, env=self.env)
+        self.assertIn("implemented.py", listed.stdout.split(),
+                      f"{marker}: the named candidate does not contain the implementation")
+
     def green_late_preservation(self, slug: str, wid: str, behavior_id: str,
                                 refs: list[dict[str, str]], value: int, failure: str) -> None:
         """Add one preservation obligation after the contract GREEN and prove it.
@@ -3450,9 +3526,17 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(fixed.returncode, 0,
                          marker + f": a preservation obligation could not retire off the linked set: {fixed.stderr.strip()!r}")
 
-    def test_a_contract_obligation_still_may_not_retire_off_the_linked_set(self) -> None:
-        """The narrowing must not reach the rule the exact reservation exists for."""
-        marker, slug = "CONTRACT_STRAY_ADMITTED", "contract-stray"
+    def test_a_contract_supersession_keeps_the_finding_link(self) -> None:
+        """The refusal belongs where the rows are still mutable.
+
+        `_behavioral_finding_closure` already refuses a contract obligation retired
+        onto a terminal the finding never linked, but it refuses at `fixed`, long
+        after `tdd-map` has recorded the rows and the ledger has made them immutable.
+        By then nothing can carry the ref forward, so the pass cannot close at all.
+        It keeps that rule for maps recorded before this check existed, which is now
+        the only way to reach it.
+        """
+        marker, slug = "DROPPED_REF_NOT_IDENTIFIED", "contract-stray"
         wid, intake_id = self.reserved_proof_pass(slug, [
             {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
              "behavior": "reserved contract proof", "expected": "value is four",
@@ -3464,16 +3548,94 @@ class PassLifecycleTests(unittest.TestCase):
         self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
         self.green_mapped(slug, "BM_ADV_RETIRED", 4, "RETIRED_NOT_PROVED")
         self.green_mapped(slug, "BM_ELSEWHERE", 6, "ELSEWHERE_NOT_PROVED")
+        # The retained ref proves the message discriminates: BM_ELSEWHERE carries
+        # SPEC-2 from the same intake, so naming a finding id alone would print one
+        # the replacement still holds.
         update = self.tmp / "stray-reassessment.json"
         update.write_text(json.dumps({"reassessment": "retired onto proof the finding never linked",
             "items": [], "dispositions": [{"id": "BM_ADV_RETIRED", "status": "superseded",
                 "supersededBy": "BM_ELSEWHERE", "evidence": "retired onto an unrelated row"}]}), encoding="utf-8")
         retired = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
-        self.assertEqual(retired.returncode, 0, marker + retired.stdout + retired.stderr)
-        fixed = self.dispose(slug, wid, "preflight", "addressed",
-                             str(self.mixed_finding_disposition_document(intake_id, "fixed")))
-        self.assertEqual(fixed.returncode, 2, marker + ": unrelated contract proof closed the finding")
-        self.assertIn("stay linked to the finding", fixed.stderr, marker)
+        self.assertEqual(retired.returncode, 2,
+                         f"{marker}: tdd-map recorded a supersession that can never close its finding")
+        self.assertIn("BM_ADV_RETIRED", retired.stderr, f"{marker}: the refusal does not name the row")
+        self.assertIn(intake_id, retired.stderr,
+                      f"{marker}: the refusal does not identify the dropped ref by its intake")
+        self.assertIn("SPEC-1", retired.stderr, f"{marker}: the refusal does not name the dropped finding")
+
+    def test_a_later_supersession_cannot_drift_a_terminal_off_the_linked_set(self) -> None:
+        """The row that loses its link is not the row being dispositioned.
+
+        Checking only what this update supersedes catches A -> unlinked directly,
+        and misses A -> B -> unlinked when B is superseded later. A preservation
+        middle link makes it worse: preservation rows are skipped by design, so
+        nothing measures the update that moves A's terminal.
+        """
+        marker, slug = "TERMINAL_DRIFTED_OFF_THE_LINKED_SET", "terminal-drift"
+        wid, intake_id = self.reserved_proof_pass(slug, [
+            {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
+             "behavior": "reserved contract proof", "expected": "value is four",
+             "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
+            {"id": "BM_UNLINKED", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
+             "behavior": "proof the finding never linked", "expected": "value is eight",
+             "redFailure": "UNLINKED_NOT_PROVED", "status": "pending", "linked": False},
+        ])
+        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
+        self.green_mapped(slug, "BM_ADV_RETIRED", 4, "RETIRED_NOT_PROVED")
+        self.green_mapped(slug, "BM_UNLINKED", 8, "UNLINKED_NOT_PROVED")
+        # Added after the contract GREENs, the way a touched-Seam obligation appears:
+        # a pending preservation row would block the contract cycle from opening.
+        refs = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        self.green_late_preservation(slug, wid, "BM_MIDDLE", refs, 6, "MIDDLE_NOT_PROVED")
+        first = self.tmp / "drift-one.json"
+        first.write_text(json.dumps({"reassessment": "the obligation retires onto the linked middle",
+            "items": [], "dispositions": [{"id": "BM_ADV_RETIRED", "status": "superseded",
+                "supersededBy": "BM_MIDDLE", "evidence": "retired onto a row the finding does link"}]}),
+            encoding="utf-8")
+        self.assertEqual(self.cli("tdd-map", "--slug", slug, "--workflow-id", wid,
+                                  "--input", str(first)).returncode, 0,
+                         f"{marker}: retiring onto a linked row was refused")
+        second = self.tmp / "drift-two.json"
+        second.write_text(json.dumps({"reassessment": "the middle then retires onto unlinked proof",
+            "items": [], "dispositions": [{"id": "BM_MIDDLE", "status": "superseded",
+                "supersededBy": "BM_UNLINKED", "evidence": "which moves the earlier terminal"}]}),
+            encoding="utf-8")
+        drifted = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(second))
+        self.assertEqual(drifted.returncode, 2,
+                         f"{marker}: the update moved a contract row's terminal off its finding's set")
+        self.assertIn("BM_ADV_RETIRED", drifted.stderr,
+                      f"{marker}: the refusal names the dispositioned row, not the one that lost its link")
+        self.assertIn("SPEC-1", drifted.stderr, f"{marker}: the refusal does not name the dropped finding")
+
+    def test_a_linked_terminal_chain_is_still_admitted(self) -> None:
+        """The terminal is what closure judges, so an unlinked link in the middle is fine."""
+        marker, slug = "LINKED_TERMINAL_CHAIN_REFUSED", "linked-terminal-chain"
+        wid, intake_id = self.reserved_proof_pass(slug, [
+            {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
+             "behavior": "reserved contract proof", "expected": "value is four",
+             "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
+            {"id": "BM_MIDDLE", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
+             "behavior": "the unlinked middle of the chain", "expected": "value is six",
+             "redFailure": "MIDDLE_NOT_PROVED", "status": "pending", "linked": False},
+            {"id": "BM_TERMINAL", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
+             "behavior": "the linked terminal the finding closes on", "expected": "value is eight",
+             "redFailure": "TERMINAL_NOT_PROVED", "status": "pending"},
+        ])
+        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
+        self.green_mapped(slug, "BM_ADV_RETIRED", 4, "RETIRED_NOT_PROVED")
+        self.green_mapped(slug, "BM_MIDDLE", 6, "MIDDLE_NOT_PROVED")
+        self.green_mapped(slug, "BM_TERMINAL", 8, "TERMINAL_NOT_PROVED")
+        update = self.tmp / "chain-reassessment.json"
+        update.write_text(json.dumps({"reassessment": "the obligation moves twice and lands back on the finding",
+            "items": [], "dispositions": [
+                {"id": "BM_ADV_RETIRED", "status": "superseded", "supersededBy": "BM_MIDDLE",
+                 "evidence": "retired onto the middle of the chain"},
+                {"id": "BM_MIDDLE", "status": "superseded", "supersededBy": "BM_TERMINAL",
+                 "evidence": "which itself retires onto the linked terminal"},
+            ]}), encoding="utf-8")
+        chained = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(chained.returncode, 0,
+                         f"{marker}: {chained.stdout}{chained.stderr}")
 
     def test_an_envelope_reviewing_another_candidate_marks_how_it_answered(self) -> None:
         """A stale answer is visible, not impossible.
@@ -3595,6 +3757,25 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(state["nextAction"], "tdd",
                          marker + f": the owed reassessment named {state['nextAction']!r}")
         self.assertEqual(self.cli("complete").returncode, 2, marker)
+
+    def test_the_checkpoint_carries_every_identity_the_wrapper_needs(self) -> None:
+        """One descriptor, so the wrapper derives no identity of its own.
+
+        Base, pass start, candidate and the recorded projection all live in the
+        pass; a wrapper that reconstructs them can disagree with the pass about
+        what is being reviewed, which is how a fork-point base became an advisor
+        delta anchor.
+        """
+        marker = "CHECKPOINT_OMITS_BINDING"
+        self.begin_slug("checkpoint-binding")
+        self.advance_to_context_forge()
+        descriptor = self.checkpoint("preflight-advice")
+        state = json.loads(self.cli("status").stdout)
+        for field in ("baseOid", "passStartOid", "activeCandidateTree", "projectionEvidence", "reviewBinding"):
+            self.assertIn(field, descriptor, marker + f": the descriptor omits {field}")
+        self.assertEqual(descriptor["passStartOid"], state["passStartOid"], marker)
+        self.assertEqual(descriptor["projectionEvidence"], state["repoContextForgeEvidence"], marker)
+        self.assertTrue(descriptor["activeCandidateTree"], marker + ": no candidate identity")
 
 
 if __name__ == "__main__":

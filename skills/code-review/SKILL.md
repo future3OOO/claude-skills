@@ -35,7 +35,8 @@ named no-change surfaces. Do not rerun the production workflow or mutate state.
 ## 3. Apply the owned rubrics
 
 Use `code-quality` for the seven quality principles and `codebase-design` for
-Module/Interface/Seam judgement. Apply the canonical mock, imaginary-risk, and
+Module/Interface/Seam judgement. Judge Behavior Map coverage against the
+challenge categories owned by `production-preflight`'s `behaviorMap` section. Apply the canonical mock, imaginary-risk, and
 root-cause invariants from `CLAUDE.md`.
 
 Carry this smell baseline as judgement calls: Mysterious Name, Duplicated Code,

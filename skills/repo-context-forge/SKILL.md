@@ -204,8 +204,16 @@ commits. Remove unintended
 changes.
 
 On a governed pass, also rerun the bootstrap wrapper with the same
-`--workflow-slug` after the final production edits, before typed quality-gate
-verification. The re-run analyzes the dirty candidate and re-records the graph
+`--workflow-slug` and `--mode local` after the final production edits, before
+typed quality-gate verification. Pass the mode explicitly: auto selection tests `pr`
+before it tests dirty, so on any branch whose `base...HEAD` already carries a
+commit it lands on a mode that analyzes the committed head with no dirty
+overlay, however dirty the checkout is. A pass with nothing committed yet still
+resolves to `local` on its own; naming the mode is what makes the step correct
+in both cases. That analysis describes a different tree from the one the gate
+measures, and its snapshot binding refuses by naming the mode. `local` is the
+mode that overlays the worktree under review. The re-run analyzes the dirty
+candidate and re-records the graph
 evidence with a gate-shaped context bound to the measured snapshot tree; the
 typed runner hands that context to the gate, whose binding check alone
 adjudicates match, stale, or absent. Evidence recorded before the last edit

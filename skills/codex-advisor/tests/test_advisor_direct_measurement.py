@@ -259,8 +259,6 @@ class AdvisorDirectMeasurementTest(unittest.TestCase):
                     "final-review",
                     "--cwd",
                     str(repo),
-                    "--base-ref",
-                    "HEAD",
                     "--design-absent",
                     design_reason,
                     "--budget",

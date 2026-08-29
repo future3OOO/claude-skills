@@ -16,7 +16,7 @@ phase belongs in `--phase`, not in the slug.
 ### `preflight-advice`
 
 Run after Repo Context Forge, before production preflight and before edits.
-Supply the task contract, packet/coverage summary, intended Module/Interface/Seam,
+Supply the task contract, the coverage summary, intended Module/Interface/Seam,
 first real-seam RED, and no-change surfaces. The recorded graph result is attached
 for you, carrying the caller and upstream-impact halves; it holds no callee facts,
 so callee context stays yours to supply. The advisor challenges scope and design; it does not create
@@ -106,13 +106,13 @@ wait for the process rather than polling with repeated sleeps.
 ```bash
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase preflight-advice \
-  --cwd "$PWD" --packet "<packet-file>" \
+  --cwd "$PWD" \
   --design-file "<design-artifact>" \
   --budget 600 -- "<focused scope question>"
 
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase final-review \
-  --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" \
+  --cwd "$PWD" \
   --design-file "<design-artifact>" \
   --budget 600 -- "<focused completion question>"
 ```
@@ -123,29 +123,42 @@ budgets above 1,200 are refused. Exact 51KB bodies did not finish within the
 240-second deadline at 450, 600, or 900; those runs record the measured provider
 throughput limit, not a replay-calibrated budget threshold.
 
-Every bounded evidence channel — design, recorded preflight, packet,
-verification runs, current Behavior Map, TDD, and review summaries — wears a
-delegate-visible header with shown/total bytes, truncation, and sha256, and
-reports the same on stderr as
+Every bounded evidence channel — design, recorded preflight, Repo Context Forge
+projection, verification runs, current Behavior Map, TDD, and review summaries —
+wears a delegate-visible header with shown/total bytes, truncation, and sha256,
+and reports the same on stderr as
 `codex_advisor_evidence`; the assembled prompt reports
-`codex_advisor_prompt bytes_total`. Graph evidence keeps its whole-check
-omission accounting. The claudex window knobs
+`codex_advisor_prompt bytes_total`. On a resumed session three bodies are
+replaced by an unchanged marker rather than resent: the recorded intent, the
+governing design artifact, and the phase rubric when the phase has not changed.
+Those three are eligible because none of them can change within a pass -- the
+intent is immutable, a consult whose design sha256 differs from the recorded
+declaration is refused before assembly, and the rubric varies only with the
+phase -- so the rule needs the session mode and the phase, and no digest of what
+was sent. Bounded bodies keep their header, so the delegate reads the same
+sha256 it read before. The claudex window knobs
 (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) pass through to the delegate exactly when
 the alias block configures them, so a proxy model the CLI does not recognize
 stops compacting against a guessed window.
 
-Carry `--packet` on **both** checkpoints. The delegate has a separate context:
-it sees the diff and the repository, but not the packet you read, so evidence you gathered
-and did not attach does not exist for it. A final review that cannot check
-consumer completeness independently answers `context-mismatch`, and the paid
-consult buys a re-run rather than a review.
+The delegate has a separate context: it sees the diff and the repository, but
+not what you read. It does not need you to attach that. The wrapper reads the
+pass's own recorded evidence -- intent, governing design, preflight, Repo
+Context Forge projection, verification, Behavior Map, TDD and review -- and
+renders each exactly once, so the consult carries what the pass recorded rather
+than what a caller remembered to pass. There is no caller packet or graph attachment argument; the governing-design
+declaration (`--design-file` or `--design-absent`) is still required and is
+read after it is validated against the recorded declaration. Evidence that is
+not recorded on the pass is evidence the delegate will not see, and the fix is
+to record it, not to hand it over out of band.
 
-Graph evidence is not one of those attachments. The wrapper reads the active
-pass's `repo-context-forge` evidence — the resolved context/impact result Repo
-Context Forge recorded with the packet — through the workflow evidence
-Interface, and appends a bounded excerpt itself. There is no option to supply
-graph evidence by hand, and nothing to copy between panes.
+Graph evidence is read the same way. The wrapper reads the active pass's
+`repo-context-forge` evidence through the workflow evidence Interface, resolves
+that this instance owns it, and renders the producer's `advisorProjection` from
+it exactly once as a bounded section; a pass with no usable result is refused by
+name before the consult is paid for. There is no option to supply graph evidence
+by hand, and nothing to copy between panes.
 
 Before the expensive consult the wrapper runs the read-only
 `workflow.py checkpoint --phase <phase>` query and refuses when the
@@ -156,8 +169,6 @@ before the provider runs, when this workflow instance has none or does not own
 the recorded record — rerun the Repo Context Forge bootstrap and consult again.
 The delayed result still revalidates slug and workflowId at recording time.
 
-`--base-ref` is required for `final-review` and must resolve in the repository.
-`--packet` is an optional bounded read-only file appended to the evidence.
 
 The wrapper derives the repository root and session identity
 from `hooks/lib/repo_identity.py`, so one stable slug resumes the same session
@@ -173,10 +184,14 @@ marker, empty output, or quoting error is not a completed consult.
 
 The delegate runs with the same trust as the lead and is instructed not to
 mutate the checkout or workflow ledger. It may use repository reads, Bash, web
-reads, Git and GitHub reads, tests, CLI probes, and normally configured MCP
-tools. It must report GitNexus unavailable explicitly rather than imply it
-searched. Edit, Write, NotebookEdit, and Task/subagents remain denied, but the
-wrapper promises no sandbox or immutability enforcement around Bash or MCP.
+reads, Git and GitHub reads, tests, and CLI probes. It gets no MCP servers: the
+wrapper passes `--strict-mcp-config` and names no `--mcp-config`, so the ambient
+configuration does not reach it. `--tools` alone never did this — it gates
+built-in tools only — which is why the boundary is a launch flag and not rubric
+wording. The delegate therefore has no graph capability of its own and reads the
+lead's recorded, candidate-bound projection instead. Edit, Write, NotebookEdit,
+and Task/subagents remain denied, and the wrapper promises no sandbox around
+Bash: a CLI on the delegate's PATH is still reachable.
 `CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE` prevent nested consultation.
 
 The wrapper carries the canonical mock and imaginary-risk rules because the

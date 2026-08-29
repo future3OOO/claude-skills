@@ -314,6 +314,51 @@ def _gate_symbols(graph: JsonObject) -> list[JsonObject]:
     return [symbols[key] for key in sorted(symbols)]
 
 
+def _advisor_projection(value: object) -> JsonObject:
+    """The producer's advisor view of this packet, validated before it is recorded.
+
+    Schema version is the compatibility key and the producer revision is its
+    provenance. Both candidate trees must be present and equal: the producer emits
+    a `{"gap": ...}` sentinel rather than a tree when it could not establish one,
+    and an unbound analysis is not evidence the advisor can be handed. Required
+    omissions mean the plan the producer promised was not executed.
+
+    Coverage gaps are deliberately not a refusal input. The producer publishes no
+    blocking classification for them - its only blocking predicate covers omitted
+    checks - and healthy packets emit them routinely, so refusing here would both
+    reject good analyses and reinterpret producer-owned omission semantics.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("the packet carries no advisorProjection; rerun Repo Context Forge")
+    # `True == 1` in Python, so equality alone admits a bool where the producer
+    # promises an integer; the version key decides compatibility and a type it was
+    # never given cannot be read as the version it happens to compare equal to.
+    version = value.get("schemaVersion")
+    if not isinstance(version, int) or isinstance(version, bool) or version != 1:
+        raise ValueError(f"unsupported advisorProjection schemaVersion: {version!r}")
+    revision = value.get("producerRevision")
+    if not isinstance(revision, dict) or not _text(revision.get("commit")):
+        raise ValueError("the advisorProjection names no producer revision")
+    expected, indexed = value.get("expectedCandidateTree"), value.get("indexedCandidateTree")
+    if not _text(expected) or not _text(indexed):
+        raise ValueError(f"the advisorProjection has no bound candidate tree: {expected!r} against {indexed!r}")
+    if expected != indexed:
+        raise ValueError(f"the advisorProjection candidate trees disagree: {expected} against {indexed}")
+    graph = value.get("graph")
+    # An empty omission list says the planned checks were not dropped; it says
+    # nothing about whether the analysis resolved. Both have to hold before the
+    # result is evidence the advisor can be handed.
+    if (
+        not isinstance(graph, dict)
+        or graph.get("status") != "resolved"
+        or not isinstance(graph.get("requiredOmissions"), list)
+    ):
+        raise ValueError("the advisorProjection carries no resolved graph result")
+    if graph["requiredOmissions"]:
+        raise ValueError("the advisorProjection leaves required checks omitted; rerun Repo Context Forge")
+    return dict(value)
+
+
 def graph_evidence_document(
     path: str,
     *,
@@ -348,9 +393,17 @@ def graph_evidence_document(
         "graph": graph,
         "recordedAt": utc_timestamp(),
     }
+    # Always validated, recorded only when a snapshot binds it to a tree: a
+    # malformed projection is refused wherever it appears, and an unbindable one is
+    # withheld, because there is nothing to compare its candidate against.
+    projection = _advisor_projection(packet.get("advisorProjection"))
     if snapshot is not None:
+        document["advisorProjection"] = projection
         if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):
             raise ValueError("a snapshot binding requires its base commit and candidate tree")
+        if not isinstance(snapshot.get("manifest"), dict):
+            raise ValueError("a snapshot binding requires the manifest of the tree it names")
+        document["analysedManifest"] = dict(snapshot["manifest"])
         document["gateContext"] = {
             "base": str(snapshot["base"]).strip(),
             "candidate": str(snapshot["candidate"]).strip(),
