@@ -103,61 +103,9 @@ def advisor_envelope(
 FINAL_ENVELOPE_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
 
 
-DESIGN_MARKER = "<!-- governed-design-labels:v1 -->"
-DESIGN_ID = re.compile(r"^(?:PRES|ASSUMP)-[1-9][0-9]*$")
-RESERVED_DESIGN_TOKEN = re.compile(r"(?<![A-Z0-9-])(?:PRES|ASSUMP)-[0-9]+(?![A-Z0-9-])")
-DESIGN_FILE_SHAPE = (f'{DESIGN_MARKER} followed by ```json and '
-    '{"schemaVersion":1,"labels":[{"id":"PRES-n","kind":"preservation"},{"id":"ASSUMP-n","kind":"assumption","behavioral":bool}]}; '
-    "reserved tokens in prose must equal catalogue ids")
+DESIGN_FILE_SHAPE = "readable UTF-8 text captured by SHA-256"
 DOCUMENT_SHAPES = {**DISPOSITION_SHAPES, "governed-design": DESIGN_FILE_SHAPE}
 DOCUMENT_SHAPE_TABLE = "\n".join(["| Surface | Expected shape |", "|---|---|", *(f"| `{name}` | {shape} |" for name, shape in DOCUMENT_SHAPES.items())])
-
-
-def _design_file_error(message: str) -> str:
-    return f"{message}; governed-design expected shape: {DESIGN_FILE_SHAPE}"
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> JsonObject:
-    result: JsonObject = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"governed design catalogue repeats a key: {key}")
-        result[key] = value
-    return result
-
-
-def _catalogue(value: object) -> JsonObject:
-    if not isinstance(value, dict) or set(value) != {"schemaVersion", "labels"}:
-        raise ValueError("governed design catalogue requires only schemaVersion and labels")
-    labels = value.get("labels")
-    if value.get("schemaVersion") != 1 or not isinstance(labels, list):
-        raise ValueError("governed design catalogue requires schemaVersion 1 and a labels array")
-    result: list[JsonObject] = []
-    seen: set[str] = set()
-    for position, raw in enumerate(labels, 1):
-        if not isinstance(raw, dict):
-            raise ValueError(f"governed design label {position} must be an object")
-        identifier, kind = raw.get("id"), raw.get("kind")
-        if not isinstance(identifier, str) or not DESIGN_ID.fullmatch(identifier):
-            raise ValueError(f"governed design label {position} has an invalid id")
-        if identifier in seen:
-            raise ValueError(f"governed design label id is duplicated: {identifier}")
-        seen.add(identifier)
-        if identifier.startswith("PRES-"):
-            if set(raw) != {"id", "kind"} or kind != "preservation":
-                raise ValueError(f"governed design label {identifier} must be a preservation")
-            result.append({"id": identifier, "kind": kind})
-        else:
-            if (
-                set(raw) != {"id", "kind", "behavioral"}
-                or kind != "assumption"
-                or not isinstance(raw.get("behavioral"), bool)
-            ):
-                raise ValueError(
-                    f"governed design label {identifier} must be an assumption with behavioral boolean"
-                )
-            result.append({"id": identifier, "kind": kind, "behavioral": raw["behavioral"]})
-    return {"schemaVersion": 1, "labels": result}
 
 
 def validate_design_declaration(value: object) -> JsonObject:
@@ -165,7 +113,7 @@ def validate_design_declaration(value: object) -> JsonObject:
         raise ValueError("governed design declaration requires schemaVersion 1")
     status = value.get("status")
     if status == "present":
-        if set(value) != {"schemaVersion", "status", "sha256", "catalogue"}:
+        if set(value) != {"schemaVersion", "status", "sha256"}:
             raise ValueError("present governed design declaration has unknown or missing fields")
         digest = value.get("sha256")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -174,13 +122,22 @@ def validate_design_declaration(value: object) -> JsonObject:
             "schemaVersion": 1,
             "status": "present",
             "sha256": digest,
-            "catalogue": _catalogue(value.get("catalogue")),
         }
     if status == "absent":
         if set(value) != {"schemaVersion", "status", "reason"} or not _text(value.get("reason")):
             raise ValueError("absent governed design declaration requires only a non-empty reason")
         return {"schemaVersion": 1, "status": "absent", "reason": str(value["reason"])}
     raise ValueError("governed design declaration status must be present or absent")
+
+
+def same_design_declaration(recorded: object, candidate: object) -> bool:
+    if not isinstance(recorded, dict) or not isinstance(candidate, dict):
+        return False
+    status = candidate.get("status")
+    if status not in {"present", "absent"} or recorded.get("status") != status:
+        return False
+    field = "sha256" if status == "present" else "reason"
+    return recorded.get(field) == candidate.get(field)
 
 
 def design_declaration(path: str) -> JsonObject:
@@ -190,39 +147,13 @@ def design_declaration(path: str) -> JsonObject:
 def design_file_declaration(path: str) -> JsonObject:
     try:
         raw = Path(path).read_bytes()
-        text = raw.decode("utf-8")
+        raw.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"cannot read governed design: {exc}") from exc
-    if text.count(DESIGN_MARKER) != 1:
-        raise ValueError(_design_file_error("governed design requires exactly one labels marker"))
-    tail = text.split(DESIGN_MARKER, 1)[1]
-    match = re.match(r"\s*```json[ \t]*\r?\n(.*?)\r?\n```", tail, re.DOTALL)
-    if match is None:
-        raise ValueError(_design_file_error("governed design marker must be followed by one fenced json block"))
-    try:
-        catalogue = _catalogue(json.loads(match.group(1), object_pairs_hook=_unique_object))
-    except json.JSONDecodeError as exc:
-        raise ValueError(_design_file_error(f"cannot parse governed design catalogue JSON: {exc}")) from exc
-    except ValueError as exc:
-        raise ValueError(_design_file_error(str(exc))) from exc
-    declared = {str(label["id"]) for label in catalogue["labels"]}
-    reserved = set(RESERVED_DESIGN_TOKEN.findall(text[: text.index(DESIGN_MARKER)]))
-    reserved.update(RESERVED_DESIGN_TOKEN.findall(tail[match.end():]))
-    if declared != reserved:
-        missing = sorted(reserved - declared)
-        unused = sorted(declared - reserved)
-        details = "; ".join(filter(None, (
-            "uncatalogued: " + ", ".join(missing) if missing else "",
-            "catalogue-only: " + ", ".join(unused) if unused else "",
-        )))
-        raise ValueError(_design_file_error(
-            "governed design reserved tokens must equal catalogue ids" + (f": {details}" if details else ""),
-        ))
     return {
         "schemaVersion": 1,
         "status": "present",
         "sha256": hashlib.sha256(raw).hexdigest(),
-        "catalogue": catalogue,
     }
 
 

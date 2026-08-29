@@ -168,9 +168,9 @@ These were settled by measurement and one adversarial critique pass. Re-open one
 - **Row-specific diagnostics (#155 replay, row C3).** Where one combined proof could pass for a neighbouring row's reason, that row gets a row-specific diagnostic, and where detection itself is unproven the smallest **disposable fault-removal probe** demonstrates the diagnostic fires and is deleted before candidate binding. Named instance in PR A: the readiness rows for `fixed` / `rejected-with-evidence` / `report-only` share one completion surface and would otherwise pass for each other's reason.
 
 
-## Governed Design Labels
+## Historical Design Context
 
-Stable handoff labels for Behavior Map `sourceRefs`, advisor consults, and preflight reconciliation.
+These human-readable labels remain non-authoritative design context. The Behavior Map alone owns proof obligations; labels do not gate advisor consults, preflight, or closure.
 
 ### Preservation obligations
 
@@ -190,28 +190,6 @@ Stable handoff labels for Behavior Map `sourceRefs`, advisor consults, and prefl
 - **ASSUMP-3** *(behavioral)* — relaxing the whole-intake set equality to a subset leaves readiness correct, because the existing unresolved recompute — not document shape — decides whether findings remain open.
 - **ASSUMP-4** *(non-behavioral)* — `passStartOid` captured at `begin` through `_head_oid` records honest absence rather than failing when HEAD does not resolve, matching `baseOid`'s precedent.
 - **ASSUMP-5** *(behavioral)* — correction-batch state must survive `invalidate_after_edit` and `_reset_downstream`, or `nextAction` reverts to `verification` after the first correction edit and defect 3 reappears.
-
-<!-- governed-design-labels:v1 -->
-```json
-{
-  "schemaVersion": 1,
-  "labels": [
-    {"id": "PRES-1", "kind": "preservation"},
-    {"id": "PRES-2", "kind": "preservation"},
-    {"id": "PRES-3", "kind": "preservation"},
-    {"id": "PRES-4", "kind": "preservation"},
-    {"id": "PRES-5", "kind": "preservation"},
-    {"id": "PRES-6", "kind": "preservation"},
-    {"id": "PRES-7", "kind": "preservation"},
-    {"id": "PRES-8", "kind": "preservation"},
-    {"id": "ASSUMP-1", "kind": "assumption", "behavioral": true},
-    {"id": "ASSUMP-2", "kind": "assumption", "behavioral": true},
-    {"id": "ASSUMP-3", "kind": "assumption", "behavioral": true},
-    {"id": "ASSUMP-4", "kind": "assumption", "behavioral": false},
-    {"id": "ASSUMP-5", "kind": "assumption", "behavioral": true}
-  ]
-}
-```
 
 ## Acceptance Row Ownership Map
 

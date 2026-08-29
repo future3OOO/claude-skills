@@ -92,8 +92,8 @@ def _validate_red_failure(value: object, identifier: str) -> str:
     return marker
 
 
-def _source_refs(value: object, identifier: str, *, required: bool) -> list[JsonObject] | None:
-    if value is None and not required:
+def _source_refs(value: object, identifier: str) -> list[JsonObject] | None:
+    if value is None:
         return None
     if not isinstance(value, list):
         raise ValueError(f"behavior {identifier} sourceRefs must be an array")
@@ -123,7 +123,6 @@ def validate_items(
     *,
     allow_runtime: bool,
     existing: Iterable[JsonObject] = (),
-    require_source_refs: bool = False,
 ) -> list[JsonObject]:
     """Validate and return one canonical Behavior Map item list.
 
@@ -175,7 +174,9 @@ def validate_items(
             status == "omitted" or (status == "already-satisfied" and not allow_runtime)
         ):
             raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
-        refs = _source_refs(raw.get("sourceRefs"), identifier, required=require_source_refs)
+        refs = _source_refs(raw.get("sourceRefs"), identifier)
+        if not allow_runtime and refs and any(ref["type"] == "design" for ref in refs):
+            raise ValueError("new Behavior Map items cannot carry design sourceRefs")
         item: JsonObject = {
             "id": identifier,
             **({"kind": kind} if kind is not None else {}),
@@ -223,10 +224,8 @@ def _required(raw: dict[str, object], field: str, identifier: str) -> str:
     return value
 
 
-def initial_items(value: object, *, require_source_refs: bool = True) -> list[JsonObject]:
-    return validate_items(
-        value, allow_runtime=False, require_source_refs=require_source_refs,
-    )
+def initial_items(value: object) -> list[JsonObject]:
+    return validate_items(value, allow_runtime=False)
 
 
 def runtime_items(value: object) -> list[JsonObject]:
@@ -234,60 +233,7 @@ def runtime_items(value: object) -> list[JsonObject]:
 
 
 def added_items(value: object, existing: list[JsonObject]) -> list[JsonObject]:
-    return validate_items(
-        value, allow_runtime=False, existing=existing, require_source_refs=True,
-    )
-
-
-def validate_design_authority(
-    items: list[JsonObject],
-    evidence_id: str | None,
-    declaration: JsonObject | None,
-    *,
-    require_coverage: bool,
-) -> None:
-    design_refs = lambda entry: [
-        ref for ref in entry.get("sourceRefs", [])
-        if isinstance(ref, dict) and ref.get("type") == "design"
-    ]
-    if evidence_id is None or declaration is None:
-        if any(design_refs(entry) for entry in items):
-            raise ValueError("design sourceRefs require captured governed-design evidence")
-        return
-    if declaration.get("status") == "absent":
-        if any(design_refs(entry) for entry in items):
-            raise ValueError("design-absent workflow cannot carry design sourceRefs")
-        return
-    catalogue = declaration.get("catalogue")
-    labels = catalogue.get("labels") if isinstance(catalogue, dict) else None
-    if not isinstance(labels, list):
-        raise ValueError("captured governed-design evidence has no validated catalogue")
-    by_id = {
-        str(label["id"]): label for label in labels
-        if isinstance(label, dict) and isinstance(label.get("id"), str)
-    }
-    owned: set[str] = set()
-    for entry in items:
-        refs = design_refs(entry)
-        if not refs:
-            raise ValueError(f"behavior {entry['id']} requires a design sourceRef")
-        for ref in refs:
-            if ref.get("evidenceId") != evidence_id:
-                raise ValueError(
-                    f"behavior {entry['id']} design sourceRef is unknown, stale, or foreign"
-                )
-            label = str(ref.get("id"))
-            if label not in by_id:
-                raise ValueError(f"behavior {entry['id']} references unknown design label {label}")
-            owned.add(label)
-    if require_coverage:
-        required = {
-            identifier for identifier, label in by_id.items()
-            if label.get("kind") == "preservation" or label.get("behavioral") is True
-        }
-        missing = sorted(required - owned)
-        if missing:
-            raise ValueError("Behavior Map has no owning item for design label(s): " + ", ".join(missing))
+    return validate_items(value, allow_runtime=False, existing=existing)
 
 
 def clone(items: list[JsonObject]) -> list[JsonObject]:

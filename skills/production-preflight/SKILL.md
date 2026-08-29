@@ -156,7 +156,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 - Explain why it is the shortest correct path.
 - Keep the approach aligned with fail-closed behavior, boundary validation, and minimal diff size.
 - If a governing plan or review artifact exists, state how this pass fits its current owner slice and checklist progression.
-- Carry forward the governing design artifact's `PRES-n`/`ASSUMP-n` labels that constrain this pass, so the reconciled contract and later proof reference the same obligations.
+- Reconcile the approach with the governing design and record observable proof obligations in `behaviorMap`, which is the sole proof authority.
 
 ### `rejectedAlternatives`
 
