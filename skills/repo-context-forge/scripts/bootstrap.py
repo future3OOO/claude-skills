@@ -150,6 +150,11 @@ def _same_content(source: Path, target: Path) -> bool:
     return filecmp.cmp(source, target, shallow=False)
 
 
+# The producer builds these two from the committed head and refuses a dirty target;
+# every other mode overlays the source worktree into the analysis checkout.
+COMMITTED_HEAD_MODES = frozenset({"pr", "repo"})
+
+
 def _overlay_mismatch(root: Path, analysis_repo: Path, head_sha: str, tree: str) -> str:
     """Per-path proof that the analysis worktree materialized the snapshot.
 
@@ -200,6 +205,7 @@ def _snapshot_binding(
         packet = json.loads(packet_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return None, f"the machine packet could not be read: {exc}"
+    mode = str(packet.get("mode") or "") if isinstance(packet, dict) else ""
     target = packet.get("target_state") if isinstance(packet, dict) else None
     target = target if isinstance(target, dict) else {}
     head_sha = str(target.get("head_sha") or "")
@@ -214,6 +220,15 @@ def _snapshot_binding(
         return None, f"the packet base ref does not resolve to a commit: {base_ref}"
     mismatch = _overlay_mismatch(root, Path(analysis_repo), head_sha, tree_before)
     if mismatch:
+        # `pr` and `repo` materialize the committed head and overlay nothing, so a
+        # dirty checkout can never satisfy the per-path check. Naming the path there
+        # reports the symptom; the cause is the mode, and the remedy is the one that
+        # does overlay. Any other mode keeps the per-path measurement.
+        if mode in COMMITTED_HEAD_MODES:
+            return None, (
+                f"mode {mode} analysed the committed head, not the dirty worktree under "
+                f"review (first difference: {mismatch}); rerun with --mode local"
+            )
         return None, mismatch
     # The manifest of the very tree the snapshot names, measured here rather than
     # re-read at commit time: a tracked write landing in between would otherwise

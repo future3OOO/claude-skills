@@ -217,7 +217,12 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 Which generic commands constitute sufficient verification stays lead judgment; that they ran does not. Completion additionally requires the typed `quality-gate` run over the current reviewable tree.
 
 Before the typed run, rerun the Repo Context Forge bootstrap with the same slug
-so the recorded graph evidence is snapshot-bound to the edited candidate tree.
+and `--mode local` so the recorded graph evidence is snapshot-bound to the edited
+candidate tree. The mode is explicit because auto selection tests
+`pr` before it tests dirty: once the branch carries a commit, it chooses a
+committed-head mode, which analyzes a different tree from the one the gate
+measures and refuses to bind. A pass with nothing committed yet resolves to
+`local` anyway, so naming it is correct in both cases.
 The typed runner reads that recorded evidence and hands its gate-shaped context
 to the gate's `--gitnexus-context-json` input; the gate's own binding check
 adjudicates match, stale, or absent. Without the post-edit re-run — or after any

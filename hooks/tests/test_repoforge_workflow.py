@@ -36,6 +36,7 @@ from hooks.lib.workflow_state import evidence_document as w_evidence_document  #
 from hooks.tests.support import build_no_change_document, graph_packet  # noqa: E402
 
 
+
 @unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
 class RepoForgeWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -566,6 +567,20 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(resolved.stdout.strip(), "tree",
                          f"{marker}: the named candidate {candidate} does not resolve in its own repository")
 
+    def test_an_overlay_mode_still_binds_on_the_same_dirty_checkout(self) -> None:
+        """The mode that overlays the dirty worktree is the one that can bind it."""
+        marker = "OVERLAY_MODE_LOST_ITS_BINDING"
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        recorded = self.graph_bootstrap()
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        identity = resolve_repo_identity(str(self.repo))
+        document = w_evidence_document(
+            identity, str(read_workflow(identity)["repoContextForgeEvidence"])) or {}
+        self.assertNotIn("gateContextGap", document,
+                         f"{marker}: local mode recorded a gap: {document.get('gateContextGap')}")
+        self.assertIn("gateContext", document, f"{marker}: local mode recorded no binding")
+        self.assertIn("analysedManifest", document, f"{marker}: local mode recorded no manifest")
+
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_completion_names_the_retired_binding_after_the_real_hook(self) -> None:
         """A pass may not close on a graph its own tree has moved past."""
@@ -822,6 +837,93 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(self.status().get("tddCycleCount"), 2, "an invalid RED counted as a cycle opening")
 
 
+@unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
+@unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+class CommittedHeadModeTests(unittest.TestCase):
+    """The committed-head modes, driven through the installed bootstrap.
+
+    A two-file fixture leaves the producer's `pr` plan with an unresolved check and
+    the adapter blocks on it, so the target repository is a clone of this one: a real
+    checkout with a real history the producer can rank and resolve. The bootstrap
+    under test is this working tree's, invoked against that clone.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="committed-head-"))
+        self.repo = self.tmp / "repo"
+        self.env = os.environ.copy()
+        self.env.update({
+            "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        })
+        subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(ROOT), str(self.repo)],
+                       check=True, capture_output=True)
+        self.git("config", "user.email", "test@example.invalid")
+        self.git("config", "user.name", "Workflow Harness")
+        self.git("commit", "-q", "--allow-empty", "-m", "committed-head probe base")
+        begun = subprocess.run(
+            [sys.executable, str(WORKFLOW), "begin", "--slug", "committed-head",
+             "--intent", "committed-head mode probe", "--repo", str(self.repo)],
+            cwd=self.repo, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def git(self, *args: str) -> None:
+        result = subprocess.run(["git", *args], cwd=self.repo, env=self.env, text=True,
+                                capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def recorded_for(self, mode: str) -> dict[str, object]:
+        run = subprocess.run(
+            [sys.executable, str(BOOTSTRAP), "--repo", str(self.repo),
+             "--workflow-slug", "committed-head", "--mode", mode, "--base", "HEAD~1",
+             "--gitnexus-mode", "auto", "--map-build", "auto", "--top", "5",
+             # Under the test root, because the producer's analysis checkouts are
+             # clones of this repository: left in the shared cache they are tens of
+             # megabytes per run whose source is deleted the moment teardown runs.
+             "--cache-dir", str(self.tmp / "forge-cache"),
+             "--intent", "committed-head mode probe"],
+            cwd=self.repo, env=self.env, text=True, capture_output=True, check=False, timeout=900)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        identity = resolve_repo_identity(str(self.repo))
+        return w_evidence_document(
+            identity, str(read_workflow(identity)["repoContextForgeEvidence"])) or {}
+
+    def test_a_committed_head_mode_names_itself_in_the_gap(self) -> None:
+        """A gap that names a file tells an operator nothing about why it happened.
+
+        `pr` and `repo` materialize the committed head and overlay nothing, so a dirty
+        checkout can never satisfy the per-path snapshot check. Reporting that as a
+        content mismatch names the symptom; the cause is the mode, and the remedy is
+        the mode that does overlay.
+        """
+        marker = "GAP_MODE_TOKEN_NOT_MEASURED"
+        (self.repo / "probe_dirty.py").write_text("VALUE = 1\n", encoding="utf-8")
+        for mode in ("pr", "repo"):
+            with self.subTest(mode=mode):
+                gap = str(self.recorded_for(mode).get("gateContextGap") or "")
+                # The token, not the bare name: the gap quotes the dirty path, and
+                # `probe_dirty.py` contains "pr", so a substring check passes on the
+                # path alone and a mode misreported as another still reads green.
+                self.assertIn(f"mode {mode} ", gap,
+                              f"{marker}: the {mode}-mode gap does not name the mode: {gap}")
+                self.assertIn("--mode local", gap,
+                              f"{marker}: the {mode}-mode gap names no remedy: {gap}")
+
+    def test_a_clean_run_still_binds(self) -> None:
+        """With nothing dirty the head tree is the worktree tree, so the mode binds."""
+        marker = "CLEAN_RUN_LOST_ITS_BINDING_AT_THE_BOOTSTRAP"
+        document = self.recorded_for("pr")
+        self.assertNotIn("gateContextGap", document,
+                         f"{marker}: a clean checkout recorded a gap: {document.get('gateContextGap')}")
+        self.assertIn("gateContext", document, f"{marker}: a clean checkout recorded no binding")
+
+
 class GraphEvidenceContractTests(unittest.TestCase):
     """The producer-result contract, at the validation Interface the Adapter uses.
 
@@ -907,6 +1009,19 @@ class GraphEvidenceContractTests(unittest.TestCase):
                                       text=True, capture_output=True, check=False)
             self.assertEqual(resolved.stdout.strip(), "tree",
                              f"{marker}: {key} {projection[key]} does not resolve in its own repository")
+
+    def test_the_operator_docs_name_the_mode_for_the_post_edit_rerun(self) -> None:
+        """At the governed re-run the checkout is dirty, so auto mode analyses the wrong tree."""
+        marker = "DOCS_OMIT_THE_MODE"
+        for relative, anchor in (
+            ("skills/repo-context-forge/SKILL.md", "rerun the bootstrap wrapper with the same"),
+            ("skills/repo-production-workflow/SKILL.md", "rerun the Repo Context Forge bootstrap"),
+        ):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn(anchor, text, f"{marker}: {relative} no longer names the re-run")
+            instruction = text[text.index(anchor):][:900]
+            self.assertIn("--mode local", instruction,
+                          f"{marker}: {relative} does not pass --mode local at the re-run")
 
     def test_the_fixture_refuses_a_root_that_is_not_a_checkout(self) -> None:
         """An identity Git cannot resolve is the defect, so the fixture never invents one."""
