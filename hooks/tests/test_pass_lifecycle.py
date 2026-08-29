@@ -3266,33 +3266,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(support.workflow_cli({}), support.WORKFLOW,
                          marker + ": the default stopped being the checkout entrypoint")
 
-    def test_closure_refuses_a_replacement_the_finding_never_linked(self) -> None:
-        """Proof closes the finding that reserved it, not proof it merely reaches.
-
-        Following supersession across the whole map let a GREEN item carrying no
-        sourceRef to the finding satisfy that finding's reservation, which is the
-        unrelated proof an exact reservation exists to refuse.
-        """
-        marker, slug = "UNLINKED_REPLACEMENT_CLOSED_THE_FINDING", "unlinked-replacement"
-        wid, intake_id = self.reserved_proof_pass(slug, [
-            # Same Seam, so retirement is admitted as subsumption; no sourceRef to
-            # the finding, so the closure guard is what must refuse it.
-            {"id": "BM_UNLINKED", "kind": "contract", "basis": "unrelated work", "seam": "workflow CLI",
-             "behavior": "proof this finding never reserved", "expected": "value is three",
-             "redFailure": "VALUE_NOT_THREE", "status": "pending", "linked": False},
-        ])
-        self.green_mapped(slug, "BM_UNLINKED", 3, "VALUE_NOT_THREE")
-        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
-        update = self.tmp / "unlinked-supersede.json"
-        update.write_text(json.dumps({"reassessment": "retire onto unrelated proof",
-            "items": [], "dispositions": [{"id": "BM_ADV_1", "status": "superseded", "supersededBy": "BM_UNLINKED",
-                "evidence": "retired onto proof this finding never reserved"}]}), encoding="utf-8")
-        self.assertEqual(self.cli("tdd-map", "--slug", slug, "--workflow-id", wid,
-                                  "--input", str(update)).returncode, 0, marker)
-        closed = self.dispose(slug, wid, "preflight", "addressed",
-                              str(self.mixed_finding_disposition_document(intake_id, "fixed")))
-        self.assertEqual(closed.returncode, 2,
-                         marker + ": unrelated proof closed the finding" + closed.stdout + closed.stderr)
     def reserved_proof_pass(self, slug: str, items: list[dict[str, object]]) -> tuple[str, str]:
         """A pass whose behavioural finding reserved proof against `items`.
 
@@ -3553,9 +3526,17 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(fixed.returncode, 0,
                          marker + f": a preservation obligation could not retire off the linked set: {fixed.stderr.strip()!r}")
 
-    def test_a_contract_obligation_still_may_not_retire_off_the_linked_set(self) -> None:
-        """The narrowing must not reach the rule the exact reservation exists for."""
-        marker, slug = "CONTRACT_STRAY_ADMITTED", "contract-stray"
+    def test_a_contract_supersession_keeps_the_finding_link(self) -> None:
+        """The refusal belongs where the rows are still mutable.
+
+        `_behavioral_finding_closure` already refuses a contract obligation retired
+        onto a terminal the finding never linked, but it refuses at `fixed`, long
+        after `tdd-map` has recorded the rows and the ledger has made them immutable.
+        By then nothing can carry the ref forward, so the pass cannot close at all.
+        It keeps that rule for maps recorded before this check existed, which is now
+        the only way to reach it.
+        """
+        marker, slug = "DROPPED_REF_NOT_IDENTIFIED", "contract-stray"
         wid, intake_id = self.reserved_proof_pass(slug, [
             {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
              "behavior": "reserved contract proof", "expected": "value is four",
@@ -3567,16 +3548,50 @@ class PassLifecycleTests(unittest.TestCase):
         self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
         self.green_mapped(slug, "BM_ADV_RETIRED", 4, "RETIRED_NOT_PROVED")
         self.green_mapped(slug, "BM_ELSEWHERE", 6, "ELSEWHERE_NOT_PROVED")
+        # The retained ref proves the message discriminates: BM_ELSEWHERE carries
+        # SPEC-2 from the same intake, so naming a finding id alone would print one
+        # the replacement still holds.
         update = self.tmp / "stray-reassessment.json"
         update.write_text(json.dumps({"reassessment": "retired onto proof the finding never linked",
             "items": [], "dispositions": [{"id": "BM_ADV_RETIRED", "status": "superseded",
                 "supersededBy": "BM_ELSEWHERE", "evidence": "retired onto an unrelated row"}]}), encoding="utf-8")
         retired = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
-        self.assertEqual(retired.returncode, 0, marker + retired.stdout + retired.stderr)
-        fixed = self.dispose(slug, wid, "preflight", "addressed",
-                             str(self.mixed_finding_disposition_document(intake_id, "fixed")))
-        self.assertEqual(fixed.returncode, 2, marker + ": unrelated contract proof closed the finding")
-        self.assertIn("stay linked to the finding", fixed.stderr, marker)
+        self.assertEqual(retired.returncode, 2,
+                         f"{marker}: tdd-map recorded a supersession that can never close its finding")
+        self.assertIn("BM_ADV_RETIRED", retired.stderr, f"{marker}: the refusal does not name the row")
+        self.assertIn(intake_id, retired.stderr,
+                      f"{marker}: the refusal does not identify the dropped ref by its intake")
+        self.assertIn("SPEC-1", retired.stderr, f"{marker}: the refusal does not name the dropped finding")
+
+    def test_a_linked_terminal_chain_is_still_admitted(self) -> None:
+        """The terminal is what closure judges, so an unlinked link in the middle is fine."""
+        marker, slug = "LINKED_TERMINAL_CHAIN_REFUSED", "linked-terminal-chain"
+        wid, intake_id = self.reserved_proof_pass(slug, [
+            {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
+             "behavior": "reserved contract proof", "expected": "value is four",
+             "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
+            {"id": "BM_MIDDLE", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
+             "behavior": "the unlinked middle of the chain", "expected": "value is six",
+             "redFailure": "MIDDLE_NOT_PROVED", "status": "pending", "linked": False},
+            {"id": "BM_TERMINAL", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
+             "behavior": "the linked terminal the finding closes on", "expected": "value is eight",
+             "redFailure": "TERMINAL_NOT_PROVED", "status": "pending"},
+        ])
+        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
+        self.green_mapped(slug, "BM_ADV_RETIRED", 4, "RETIRED_NOT_PROVED")
+        self.green_mapped(slug, "BM_MIDDLE", 6, "MIDDLE_NOT_PROVED")
+        self.green_mapped(slug, "BM_TERMINAL", 8, "TERMINAL_NOT_PROVED")
+        update = self.tmp / "chain-reassessment.json"
+        update.write_text(json.dumps({"reassessment": "the obligation moves twice and lands back on the finding",
+            "items": [], "dispositions": [
+                {"id": "BM_ADV_RETIRED", "status": "superseded", "supersededBy": "BM_MIDDLE",
+                 "evidence": "retired onto the middle of the chain"},
+                {"id": "BM_MIDDLE", "status": "superseded", "supersededBy": "BM_TERMINAL",
+                 "evidence": "which itself retires onto the linked terminal"},
+            ]}), encoding="utf-8")
+        chained = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(chained.returncode, 0,
+                         f"{marker}: {chained.stdout}{chained.stderr}")
 
     def test_an_envelope_reviewing_another_candidate_marks_how_it_answered(self) -> None:
         """A stale answer is visible, not impossible.

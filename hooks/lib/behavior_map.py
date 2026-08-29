@@ -371,6 +371,30 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
             )
         mapped["status"] = status
         mapped["evidence"] = evidence
+    for identifier in seen:
+        mapped = item(items, identifier)
+        if mapped.get("status") != "superseded" or mapped.get("kind") != "contract":
+            continue
+        # Closure resolves a reserved contract obligation inside the finding's own
+        # linked set and walks to the terminal, so a terminal outside that set can
+        # never close the reservation. It refuses at `fixed`, by which point the
+        # rows are recorded and nothing can carry the ref forward; here they are
+        # still mutable. Preservation retires off the set deliberately.
+        kept = {
+            (str(ref["evidenceId"]), str(ref["id"]))
+            for ref in terminal(items, mapped).get("sourceRefs", [])
+            if isinstance(ref, dict) and ref.get("type") == "finding"
+        }
+        if dropped := sorted(
+            (str(ref["evidenceId"]), str(ref["id"])) for ref in mapped.get("sourceRefs", [])
+            if isinstance(ref, dict) and ref.get("type") == "finding"
+            and (str(ref["evidenceId"]), str(ref["id"])) not in kept
+        ):
+            raise ValueError(
+                f"behavior {identifier} supersession drops finding sourceRef(s) its replacement "
+                "must keep for the finding to close: "
+                + ", ".join(f"{intake}/{finding}" for intake, finding in dropped)
+            )
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:

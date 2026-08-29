@@ -701,12 +701,15 @@ def _map_update(values: list[str]) -> int:
         )
 
     updated = behavior_map.clone(items)
-    if dispositions:
-        behavior_map.apply_dispositions(updated, dispositions)
     added_items: list[JsonObject] = []
     if additions:
         added_items = behavior_map.added_items(additions, updated)
         updated.extend(added_items)
+    # Merged before dispositioned, so a supersession naming a replacement added in
+    # this same update -- the routine case -- can be judged against it rather than
+    # against a map that does not contain it yet.
+    if dispositions:
+        behavior_map.apply_dispositions(updated, dispositions)
     # Supersession is judged over the merged map, so a replacement added in
     # this same update is legal and a broken graph refuses before any commit.
     updated = behavior_map.runtime_items(updated)
