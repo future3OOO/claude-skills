@@ -14,10 +14,12 @@ It turns planning and remediation into durable governing designs under workflow 
 
 For new non-trivial planning work, use this order:
 
-1. delivery-governance skill, when planning needs delivery-shape decisions
-2. execution-planning (this skill)
+1. [repo-production-workflow](../repo-production-workflow/SKILL.md) to begin the workflow state
+2. [repo-context-forge](../repo-context-forge/SKILL.md) to establish repository context
+3. delivery-governance skill, when planning needs delivery-shape decisions
+4. execution-planning (this skill)
 
-If delivery-governance does not apply, start at execution-planning and keep the governing design under the selected workflow state root, outside the Git checkout.
+If delivery-governance does not apply, proceed from Repo Context Forge directly to execution-planning. After the design is written and validated, continue the same workflow pass through the remaining repo-production-workflow steps for the first implementation.
 
 If the work is already governed by [repo-large-implementation](../repo-large-implementation/SKILL.md), use this skill as the durable-design step inside that workflow.
 

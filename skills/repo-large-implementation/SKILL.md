@@ -1,6 +1,6 @@
 ---
 name: repo-large-implementation
-description: Govern large planned repo work — anything spanning multiple PRs, needing a durable governing design, or exceeding the review budget. Pairs delivery-governance with execution-planning, then hands each execution pass to repo-production-workflow. Use before broad plans, PR restructuring, or stacked-branch recovery.
+description: Govern large planned repo work — anything spanning multiple PRs, needing a durable governing design, or exceeding the review budget. Begins repo-production-workflow and Repo Context Forge before delivery-governance and execution-planning, continues that pass for first implementation, and uses new passes for later slices. Use before broad plans, PR restructuring, or stacked-branch recovery.
 ---
 
 # Repo Large Implementation
@@ -14,11 +14,13 @@ It enforces the workflow order that large work must follow in this repo.
 
 For qualifying work, use the following order:
 
-1. delivery-governance skill, when planning needs delivery-shape decisions
-2. [execution-planning](../execution-planning/SKILL.md) to create the durable governing design under the selected workflow state root when the work is new and non-trivial
-3. [repo-production-workflow](../repo-production-workflow/SKILL.md) for each implementation, refactor, bug-fix, or review-comment execution pass
+1. [repo-production-workflow](../repo-production-workflow/SKILL.md) to begin the workflow state
+2. [repo-context-forge](../repo-context-forge/SKILL.md) to establish repository context
+3. delivery-governance skill, when planning needs delivery-shape decisions
+4. [execution-planning](../execution-planning/SKILL.md) to create the durable governing design under the selected workflow state root when the work is new and non-trivial
+5. continue the same repo-production-workflow pass for the first implementation
 
-If delivery-governance does not apply, start at [execution-planning](../execution-planning/SKILL.md). Keep the advisor-bound design outside the Git checkout and include its governed-design label catalogue in the initial write.
+If delivery-governance does not apply, proceed from Repo Context Forge directly to [execution-planning](../execution-planning/SKILL.md). Keep the advisor-bound design outside the Git checkout and include its governed-design label catalogue in the initial write.
 
 If a governing design already exists for the current work, do not rerun [execution-planning](../execution-planning/SKILL.md) for an execution-only pass. Execute against the immutable design through [repo-production-workflow](../repo-production-workflow/SKILL.md). Repository-scoped workflow history and GitHub PR state carry durable progress; Tasks are session-local convenience only, never durable authority. Changing the design after the first completed `preflight-advice` consult begins a new pass.
 
