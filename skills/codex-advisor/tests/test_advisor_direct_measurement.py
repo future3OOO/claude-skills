@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import signal
@@ -629,83 +630,81 @@ class AdvisorConcurrentSessionTest(unittest.TestCase):
                 "--cwd", str(repo), "--design-absent",
                 "concurrency regression has no governing design artifact", "--budget", "80", "--",
             ]
-            slow = subprocess.Popen(
-                common + ['Return only {"schemaVersion":1,"findings":[],"verdict":"completed"}.'],
-                cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, start_new_session=True,
-            )
-            competing = None
-            stopped = False
+            prompt = common + [
+                'Return only {"schemaVersion":1,"findings":[],"verdict":"completed"}.'
+            ]
+            lock_file = sid_file.with_name(f"{state['repo']['key']}-{slug}.lock")
+            lock_file.parent.mkdir(parents=True, exist_ok=True)
+            outputs: list[tuple[int, str, str]] = []
             timed_out = False
-            try:
-                deadline = time.monotonic() + 120
-                while time.monotonic() < deadline:
-                    if sid_file.is_file() and sid_file.read_text(encoding="utf-8").strip():
-                        break
-                    if slow.poll() is not None:
-                        break
-                    time.sleep(0.01)
-                self.assertTrue(sid_file.is_file(), "the first real provider session never started")
-                sid = sid_file.read_text(encoding="utf-8").strip()
-                self.assertTrue(sid, "the first real provider session id is empty")
-
-                os.killpg(slow.pid, signal.SIGSTOP)
-                stopped = True
-                lock_file = sid_file.with_name(f"{state['repo']['key']}-{slug}.lock")
-                held = subprocess.run(
-                    ["flock", "-n", str(lock_file), "true"],
-                    cwd=repo, env=env, capture_output=True, text=True,
-                )
-                self.assertEqual(held.returncode, 1, marker + held.stdout + held.stderr)
-
-                competing = subprocess.Popen(
-                    common + ['Return only {"schemaVersion":1,"findings":[],"verdict":"completed"}.'],
-                    cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            with lock_file.open("w") as barrier:
+                fcntl.flock(barrier, fcntl.LOCK_EX)
+                first = subprocess.Popen(
+                    prompt, cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, start_new_session=True,
                 )
-                waiting_on_flock = False
-                children = Path(f"/proc/{competing.pid}/task/{competing.pid}/children")
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline and competing.poll() is None:
-                    try:
-                        child_pids = children.read_text(encoding="utf-8").split()
-                    except OSError:
-                        child_pids = []
-                    for pid in child_pids:
-                        try:
-                            command = Path(f"/proc/{pid}/cmdline").read_bytes()
-                        except OSError:
-                            continue
-                        if b"flock\x00-x\x009\x00" in command:
-                            waiting_on_flock = True
-                            break
-                    if waiting_on_flock:
-                        break
-                    time.sleep(0.01)
-                self.assertTrue(waiting_on_flock, "the competing wrapper never waited on the real flock")
+                second = subprocess.Popen(
+                    prompt, cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, start_new_session=True,
+                )
+                processes = {"first": first, "second": second}
+                released = False
+                try:
+                    waiting: set[str] = set()
+                    deadline = time.monotonic() + 30
+                    while time.monotonic() < deadline and len(waiting) < len(processes):
+                        for name, process in processes.items():
+                            if name in waiting or process.poll() is not None:
+                                continue
+                            children = Path(f"/proc/{process.pid}/task/{process.pid}/children")
+                            try:
+                                child_pids = children.read_text(encoding="utf-8").split()
+                            except OSError:
+                                child_pids = []
+                            for pid in child_pids:
+                                try:
+                                    command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                                except OSError:
+                                    continue
+                                if b"flock\x00-x\x009\x00" in command:
+                                    waiting.add(name)
+                                    break
+                        if len(waiting) < len(processes):
+                            time.sleep(0.01)
+                    self.assertEqual(
+                        waiting, set(processes),
+                        "both configured-provider wrappers must wait on the real flock",
+                    )
 
-                os.killpg(slow.pid, signal.SIGCONT)
-                stopped = False
-                competing_stdout, competing_stderr = competing.communicate(timeout=420)
-                slow_stdout, slow_stderr = slow.communicate(timeout=420)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-            finally:
-                if stopped and slow.poll() is None:
-                    os.killpg(slow.pid, signal.SIGCONT)
-                for process in (slow, competing):
-                    if process is not None and process.poll() is None:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.communicate()
+                    fcntl.flock(barrier, fcntl.LOCK_UN)
+                    released = True
+                    for process in processes.values():
+                        stdout, stderr = process.communicate(timeout=420)
+                        outputs.append((process.returncode, stdout, stderr))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                finally:
+                    if not released:
+                        fcntl.flock(barrier, fcntl.LOCK_UN)
+                    for process in processes.values():
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.communicate()
             if timed_out:
                 self.fail("configured-provider concurrency proof timed out")
 
-            self.assertEqual(slow.returncode, 0, slow_stdout + slow_stderr)
-            self.assertEqual(competing.returncode, 2, marker + "\n" + competing_stdout + competing_stderr)
-            self.assertIn("checkpoint is not ready", competing_stderr, marker)
-            self.assertNotIn("codex_advisor_session", competing_stderr, marker)
-            self.assertEqual(sid_file.read_text(encoding="utf-8").strip(), sid, marker)
-            self.assertIn(f"sid_prefix={sid[:8]}", slow_stderr, marker)
+            successes = [(stdout, stderr) for code, stdout, stderr in outputs if code == 0]
+            rejections = [(stdout, stderr) for code, stdout, stderr in outputs if code == 2]
+            self.assertEqual(len(successes), 1, marker + f": exit codes {[item[0] for item in outputs]}")
+            self.assertEqual(len(rejections), 1, marker + f": exit codes {[item[0] for item in outputs]}")
+            success_stdout, success_stderr = successes[0]
+            rejection_stderr = rejections[0][1]
+            self.assertIn("checkpoint is not ready", rejection_stderr, marker)
+            self.assertNotIn("codex_advisor_session", rejection_stderr, marker)
+            self.assertTrue(sid_file.is_file(), marker)
+            sid = sid_file.read_text(encoding="utf-8").strip()
+            self.assertTrue(sid, marker)
+            self.assertIn(f"sid_prefix={sid[:8]}", success_stderr, marker)
 
             state = json.loads(run_workflow("status", "--repo", str(repo), cwd=repo, env=env).stdout)
             intake = str(state["advisorPreflight"]["intakeEvidence"])
@@ -716,7 +715,7 @@ class AdvisorConcurrentSessionTest(unittest.TestCase):
                 ).stdout
             )
             self.assertEqual(
-                json.loads(evidence["document"]["raw"]), json.loads(slow_stdout), marker,
+                json.loads(evidence["document"]["raw"]), json.loads(success_stdout), marker,
             )
 
 
