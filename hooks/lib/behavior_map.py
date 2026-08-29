@@ -371,10 +371,13 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
             )
         mapped["status"] = status
         mapped["evidence"] = evidence
-    for identifier in seen:
-        mapped = item(items, identifier)
+    for mapped in items:
         if mapped.get("status") != "superseded" or mapped.get("kind") != "contract":
             continue
+        # Every superseded contract row, not only the one dispositioned here: a later
+        # supersession further along the chain moves an earlier row's terminal, and a
+        # preservation link in between is skipped by the kind test above.
+        identifier = str(mapped["id"])
         # Closure resolves a reserved contract obligation inside the finding's own
         # linked set and walks to the terminal, so a terminal outside that set can
         # never close the reservation. It refuses at `fixed`, by which point the

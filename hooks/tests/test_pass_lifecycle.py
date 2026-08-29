@@ -3563,6 +3563,50 @@ class PassLifecycleTests(unittest.TestCase):
                       f"{marker}: the refusal does not identify the dropped ref by its intake")
         self.assertIn("SPEC-1", retired.stderr, f"{marker}: the refusal does not name the dropped finding")
 
+    def test_a_later_supersession_cannot_drift_a_terminal_off_the_linked_set(self) -> None:
+        """The row that loses its link is not the row being dispositioned.
+
+        Checking only what this update supersedes catches A -> unlinked directly,
+        and misses A -> B -> unlinked when B is superseded later. A preservation
+        middle link makes it worse: preservation rows are skipped by design, so
+        nothing measures the update that moves A's terminal.
+        """
+        marker, slug = "TERMINAL_DRIFTED_OFF_THE_LINKED_SET", "terminal-drift"
+        wid, intake_id = self.reserved_proof_pass(slug, [
+            {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
+             "behavior": "reserved contract proof", "expected": "value is four",
+             "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
+            {"id": "BM_UNLINKED", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
+             "behavior": "proof the finding never linked", "expected": "value is eight",
+             "redFailure": "UNLINKED_NOT_PROVED", "status": "pending", "linked": False},
+        ])
+        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
+        self.green_mapped(slug, "BM_ADV_RETIRED", 4, "RETIRED_NOT_PROVED")
+        self.green_mapped(slug, "BM_UNLINKED", 8, "UNLINKED_NOT_PROVED")
+        # Added after the contract GREENs, the way a touched-Seam obligation appears:
+        # a pending preservation row would block the contract cycle from opening.
+        refs = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        self.green_late_preservation(slug, wid, "BM_MIDDLE", refs, 6, "MIDDLE_NOT_PROVED")
+        first = self.tmp / "drift-one.json"
+        first.write_text(json.dumps({"reassessment": "the obligation retires onto the linked middle",
+            "items": [], "dispositions": [{"id": "BM_ADV_RETIRED", "status": "superseded",
+                "supersededBy": "BM_MIDDLE", "evidence": "retired onto a row the finding does link"}]}),
+            encoding="utf-8")
+        self.assertEqual(self.cli("tdd-map", "--slug", slug, "--workflow-id", wid,
+                                  "--input", str(first)).returncode, 0,
+                         f"{marker}: retiring onto a linked row was refused")
+        second = self.tmp / "drift-two.json"
+        second.write_text(json.dumps({"reassessment": "the middle then retires onto unlinked proof",
+            "items": [], "dispositions": [{"id": "BM_MIDDLE", "status": "superseded",
+                "supersededBy": "BM_UNLINKED", "evidence": "which moves the earlier terminal"}]}),
+            encoding="utf-8")
+        drifted = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(second))
+        self.assertEqual(drifted.returncode, 2,
+                         f"{marker}: the update moved a contract row's terminal off its finding's set")
+        self.assertIn("BM_ADV_RETIRED", drifted.stderr,
+                      f"{marker}: the refusal names the dispositioned row, not the one that lost its link")
+        self.assertIn("SPEC-1", drifted.stderr, f"{marker}: the refusal does not name the dropped finding")
+
     def test_a_linked_terminal_chain_is_still_admitted(self) -> None:
         """The terminal is what closure judges, so an unlinked link in the middle is fine."""
         marker, slug = "LINKED_TERMINAL_CHAIN_REFUSED", "linked-terminal-chain"
