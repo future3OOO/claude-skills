@@ -3384,6 +3384,47 @@ class PassLifecycleTests(unittest.TestCase):
                              str(self.mixed_finding_disposition_document(intake_id, "fixed")))
         self.assertEqual(fixed.returncode, 0,
                          marker + f": the retired row blocked its replacement's closure: {fixed.stderr.strip()!r}")
+
+    def test_a_pending_replacement_can_retire_a_closed_findings_item(self) -> None:
+        """Correcting a proved obligation after its finding closed must stay recordable.
+
+        Supersession requires the replacement to carry the closed finding's
+        sourceRef while closure revalidation refused any pending linked item, so
+        both recording orders refused and a falsified proved row could never be
+        retired. A recorded closure now tolerates later-mapped pending work
+        against the same finding; completion still blocks through the unresolved
+        map until the replacement proves.
+        """
+        marker, slug = "SUPERSEDED_CLOSED_FINDING_UNREACHABLE", "closed-finding-supersession"
+        wid, intake_id = self.reserved_proof_pass(slug, [])
+        self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
+        fixed = self.dispose(slug, wid, "preflight", "addressed",
+                             str(self.mixed_finding_disposition_document(intake_id, "fixed")))
+        self.assertEqual(fixed.returncode, 0, marker + fixed.stdout + fixed.stderr)
+        refs = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        update = self.tmp / "closed-finding-replacement.json"
+        update.write_text(json.dumps({
+            "reassessment": "the proved row's promise was falsified; a bounded replacement takes over",
+            "items": [{"id": "BM_ADV_BOUNDED", "kind": "contract", "basis": "advisor finding",
+                       "seam": "workflow CLI", "behavior": "the bounded reserved proof",
+                       "expected": "value is three", "redFailure": "BOUNDED_NOT_PROVED",
+                       "status": "pending", "sourceRefs": refs}],
+            "dispositions": []}), encoding="utf-8")
+        added = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(added.returncode, 0,
+                         marker + f": the closed finding refused its pending replacement: {added.stderr.strip()!r}")
+        self.green_mapped(slug, "BM_ADV_BOUNDED", 3, "BOUNDED_NOT_PROVED")
+        retire = self.tmp / "closed-finding-supersession.json"
+        retire.write_text(json.dumps({
+            "reassessment": "the falsified row retires onto its proved bounded replacement",
+            "items": [], "dispositions": [{"id": "BM_ADV_1", "status": "superseded",
+                "supersededBy": "BM_ADV_BOUNDED",
+                "evidence": "the recorded promise was measurably falsified; the bounded replacement is proved"}]}),
+            encoding="utf-8")
+        retired = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(retire))
+        self.assertEqual(retired.returncode, 0,
+                         marker + f": the proved replacement could not retire the closed finding's row: {retired.stderr.strip()!r}")
+
     def test_the_rig_drives_the_selected_cli_from_every_launch(self) -> None:
         """An entrypoint selection the helpers ignore is not a selection.
 

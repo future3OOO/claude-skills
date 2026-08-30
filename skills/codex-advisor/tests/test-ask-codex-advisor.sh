@@ -702,8 +702,8 @@ check "design assumptions are falsified" "attempt to falsify its load-bearing as
 check "Behavior Map stays the sole proof authority" "it does not own Behavior Map entries or proof status" "$armh_payload"
 check "the contradictory-contract gate is applied" "may not also require callers to avoid particular operations" "$armh_payload"
 check "discovery is bounded to one additional failure class" "at most one additional material reachable failure class" "$armh_payload"
-check "contract Behavior Map items carry the issue #141 materiality clause" "A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed already-satisfied" "$armh_payload"
-check "a superseded contract item without a GREEN replacement is material" "superseded without a GREEN terminal replacement is material" "$armh_payload"
+check "contract Behavior Map items accept producer-backed post-edit proof" "A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed post-edit-passed with passProof" "$armh_payload"
+check "a superseded contract item needs terminal proof" "superseded without a GREEN or post-edit-passed terminal replacement is material" "$armh_payload"
 if [[ "$preflight_payload" == *"--- recorded production preflight (bounded:"* ]]; then
   printf 'FAIL  preflight-advice must not attach a preflight that does not exist yet\n'; fail=$((fail+1))
 else

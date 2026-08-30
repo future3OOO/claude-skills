@@ -39,7 +39,7 @@ Map:
 - interactions where one behavior can mutate state or invalidate a guarantee owned by another;
 - known load-bearing assumptions that need semantic falsification.
 
-Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. A contract item is `pending` until its RED reaches GREEN; it is never `omitted`, and it becomes `already-satisfied` only when `tdd --phase red` runs its exact mapped surface pre-edit and the surface passes. A preservation item is `pending`, `already-satisfied` with real-Seam evidence, or `omitted` by governing evidence. Proof gaps remain pending. Every applicable category above must be accounted for before the first RED.
+Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. A contract item is `pending` until its own RED reaches GREEN, or until another genuine contract cycle has opened a dirty implementation candidate and its own directly invoked passing test records `post-edit-passed`; it is never `omitted`, and it becomes `already-satisfied` only when `tdd --phase red` runs its exact mapped surface pre-edit and the surface passes. A preservation item is `pending`, `already-satisfied` with real-Seam evidence, or `omitted` by governing evidence. Proof gaps remain pending. Every applicable category above must be accounted for before the first RED.
 
 ## 2. Drive One Mapped Vertical Slice
 
@@ -59,11 +59,15 @@ Do not write all tests first. Settle every preservation item before the first ed
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
 - Do not anticipate later slices.
 
+**POST-EDIT PASS**
+
+If that dirty candidate also satisfies another pending contract, run `tdd --phase green` for that item with its own directly invoked pytest or unittest test. The recorder uses `post-edit-passed`, not GREEN: it requires a prior genuine mapped cycle, a dirty production candidate, no active cycle or reassessment, and at least one genuine terminal pass. It is unavailable to preservation items and opaque, skipped, xfailed, expected-failure, empty, loader-error, or unattributable summary surfaces (forged extra summaries; the recorder owns pytest's terminal reporting verbosity — every pytest surface executes with a canonical `--verbosity=0`, so quiet settings cannot hide the summary, a disabled terminal plugin errors the run out, and the run evidence records that executed invocation). These refusals bind runner-emitted output against demonstrated non-adversarial fake-green shapes; committed repository plugin code can forge byte-identical output, which the recorder does not defend against — the ledger is agent-writable continuity, not attestation. This closes honest current-candidate proof without inventing historical RED evidence.
+
 Several assertions may jointly prove one behavior; every assertion participating in that joint proof carries the same behavior-specific `redFailure` marker, so whichever guarantee breaks first still names the mapped failure. State after success or failure must match the complete observable contract.
 
-## 3. Reassess After Every GREEN
+## 3. Reassess After Every Terminal Proof
 
-GREEN creates architecture, so it also creates new proof obligations. Before another production edit, record a reassessment:
+GREEN and `post-edit-passed` both expose implementation consequences, so each creates a reassessment obligation before another production edit:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
@@ -71,9 +75,9 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --input <map-update.json>
 ```
 
-The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only. During post-GREEN reassessment, `sourceBehaviorId` names the GREEN awaiting review. A GREEN item whose outcome a sharper item now owns is dispositioned `superseded` with `supersededBy` naming its replacement in the same map (it may be added in the same update); it counts as resolved only once its terminal replacement (the end of any supersession chain) is GREEN; a target that is already-satisfied or omitted is refused because it can never be GREEN.
+The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only. During post-proof reassessment, `sourceBehaviorId` names the GREEN or `post-edit-passed` item awaiting review. A proved item whose outcome a sharper item now owns is dispositioned `superseded` with `supersededBy` naming its replacement in the same map (it may be added in the same update); it counts as resolved only once its terminal replacement (the end of any supersession chain) is GREEN or `post-edit-passed`; a target that is already-satisfied or omitted is refused because it can never reach terminal proof.
 
-- identify each load-bearing mechanism or state boundary introduced by the GREEN and drive the cheapest real-Seam probe that could falsify it;
+- identify each load-bearing mechanism or state boundary exercised by the terminal proof and drive the cheapest real-Seam probe that could falsify it;
 - add any newly exposed touched-Seam preservation or interaction behavior;
 - retain a passing falsifier only as material regression evidence;
 - if review finds a behavioral defect, add it to the map and drive a fresh RED before the fix.
@@ -84,6 +88,6 @@ A reassessment with no new item records why. A reassessment that adds items reop
 
 The refactor window opens only after every contract item is resolved and at least one reached GREEN through RED; a baseline `already-satisfied` alone never opens it. Refactor only inside that window and rerun relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
 
-TDD is complete only when every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN, already satisfied, or omitted with evidence — a superseded item of either kind instead needs a GREEN terminal replacement — no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
+TDD is complete only when every contract item is GREEN, `post-edit-passed`, or baseline `already-satisfied`, every preservation item is GREEN, already satisfied, or omitted with evidence — a superseded item of either kind instead needs a GREEN or `post-edit-passed` terminal replacement — no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable terminal proof.
 
-When governed workflow continuity is active, follow [recorder.md](recorder.md). It records bounded map/RED/GREEN evidence; it is not authorization.
+When governed workflow continuity is active, follow [recorder.md](recorder.md). It records bounded map, RED/GREEN, and post-edit pass evidence; it is not authorization.

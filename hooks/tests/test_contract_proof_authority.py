@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 import unittest
@@ -274,6 +275,675 @@ class ContractProofAuthorityTests(unittest.TestCase):
             self.assertEqual(state["tdd"], "pending", marker)
             self.assertIsNone(state.get("tddEvidence"), marker)
 
+    def test_pytest_baseline_reads_only_the_terminal_pass_count(self) -> None:
+        marker = "PYTEST_NONPASS_RECORDED"
+        command = (sys.executable, "-m", "pytest", "-q", "-s", "test_pytest_baseline.py")
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a directly invoked pytest surface",
+            expected="only a genuine pytest pass settles the item",
+            red_failure="PYTEST_NONPASS_RECORDED",
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "import pytest\n\n"
+            "@pytest.mark.xfail\n"
+            "def test_fake_pass():\n"
+            "    print('1 passed')\n"
+            "    assert False\n",
+            encoding="utf-8",
+        )
+        fake = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(fake.returncode, 2, marker + ": " + fake.stdout + fake.stderr)
+        self.assertIn("did not report an executed passing test", fake.stderr, marker)
+        self.assertIsNone(read_workflow(self.identity).get("tddEvidence"), marker)
+
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+
+    def test_sentinel_terminated_genuine_pytest_surface_records_baseline(self) -> None:
+        # pytest treats everything after -- as a path, so the recorder's
+        # canonical verbosity flag must land before a caller's terminal
+        # sentinel or a genuine passing surface errors out unrecorded.
+        marker = "PYTEST_SENTINEL_SURFACE_REFUSED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a directly invoked pytest surface",
+            expected="only a genuine pytest pass settles the item",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--",
+             sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py", "--"],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+
+    def test_sentinel_surface_records_caller_and_executed_commands(self) -> None:
+        # The caller's spelling (trailing -- included) stays the candidate
+        # identity, while the run entry names the executed invocation with
+        # the inert trailing sentinel dropped and the canonical flag last.
+        marker = "SENTINEL_EXECUTION_NOT_ATTRIBUTED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a sentinel-terminated pytest surface",
+            expected="candidate keeps the caller command; the run entry names the executed invocation",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py", "--")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertEqual(
+            recorded["runs"][-1]["command"],
+            shlex.join([*command[:-1], "--verbosity=0"]),
+            marker,
+        )
+
+    def test_sentinel_first_pytest_surface_records_baseline(self) -> None:
+        # An interior -- preceded only by option tokens is a valid caller
+        # shape on pytest 8.4.1: the canonical flag inserted before the
+        # sentinel stays the last option, so the surface records normally.
+        marker = "SENTINEL_FIRST_SURFACE_REFUSED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a sentinel-first interior pytest surface",
+            expected="the surface records a baseline with the flag before the sentinel",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "--", "test_pytest_baseline.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertEqual(
+            recorded["runs"][-1]["command"],
+            shlex.join([*command[:4], "--verbosity=0", *command[4:]]),
+            marker,
+        )
+
+    def test_positional_interior_sentinel_surface_records_baseline(self) -> None:
+        # A positional before an interior -- makes the pre-sentinel flag
+        # placement argparse-invalid on pytest 8.4.1 (rejected before
+        # conftest import), so the recorder walks the insertion point back
+        # to the option/positional boundary; newer parsers accept the first
+        # attempt, so either boundary spelling may be the executed one.
+        marker = "POSITIONAL_BOUNDARY_SURFACE_NOT_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface",
+            expected="the surface records a baseline with the flag at an argparse-valid boundary",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertIn(
+            recorded["runs"][-1]["command"],
+            {
+                shlex.join([*command[:5], "--verbosity=0", *command[5:]]),
+                shlex.join([*command[:4], "--verbosity=0", *command[4:]]),
+            },
+            marker,
+        )
+
+    def test_quiet_positional_interior_sentinel_surface_records_baseline(self) -> None:
+        # A caller -qq must not suppress the summary: the boundary placement
+        # keeps the canonical flag after the quiet flag, so the baseline
+        # records; front placement would lose to -qq and record nothing.
+        marker = "QUIET_POSITIONAL_SENTINEL_NOT_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a quiet positional-then-sentinel pytest surface",
+            expected="the flag outlives the caller quiet flag and the baseline records",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-qq", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertIn(
+            recorded["runs"][-1]["command"],
+            {
+                shlex.join([*command[:5], "--verbosity=0", *command[5:]]),
+                shlex.join([*command[:4], "--verbosity=0", *command[4:]]),
+            },
+            marker,
+        )
+
+    def test_option_value_interior_sentinel_surface_records_baseline(self) -> None:
+        # 'no:cacheprovider' is the value of -p, not a positional, so the
+        # first placement attempt - the flag as the last option before the
+        # sentinel - is argparse-valid on both parser generations and is
+        # the executed spelling.
+        marker = "OPTION_VALUE_PRE_SENTINEL_NOT_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over an option-value-then-sentinel pytest surface",
+            expected="the surface records a baseline with the flag before the sentinel",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                   "--", "test_pytest_baseline.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertEqual(
+            recorded["runs"][-1]["command"],
+            shlex.join([*command[:6], "--verbosity=0", *command[6:]]),
+            marker,
+        )
+
+    def test_sentinel_surface_runs_caller_once(self) -> None:
+        # Boundary discovery must not run caller startup code: a rejected
+        # real placement still imports conftests and plugins before argparse
+        # exits 4, so probing with the real command duplicates their side
+        # effects. A conftest recording each import must fire exactly once.
+        marker = "CALLER_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface with an import-recording conftest",
+            expected="the caller command executes exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "side.log"
+        (self.repo / "conftest.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('conftest\\n')\n",
+            encoding="utf-8",
+        )
+        self.h.git("add", "conftest.py")
+        self.h.git("commit", "-q", "-m", "conftest")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["conftest"], marker)
+
+    def test_sentinel_surface_starts_plugin_once(self) -> None:
+        # PYTEST_DISABLE_PLUGIN_AUTOLOAD only disables entry-point
+        # discovery: a caller -p plugin would still be imported by a parse
+        # probe, so probes must block explicit plugin loading. A plugin
+        # that records each import must fire exactly once per run.
+        marker = "EXPLICIT_PLUGIN_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface naming an import-recording -p plugin",
+            expected="the plugin starts exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "plugin.log"
+        (self.repo / "sideplugin.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('plugin\\n')\n",
+            encoding="utf-8",
+        )
+        self.h.git("add", "sideplugin.py")
+        self.h.git("commit", "-q", "-m", "sideplugin")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "-p", "sideplugin",
+                   "test_pytest_baseline.py", "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["plugin"], marker)
+
+    def test_sentinel_surface_addopts_plugin_once(self) -> None:
+        # -p can arrive from PYTEST_ADDOPTS as well as command tokens, so
+        # the probe environment must rewrite the addopts value too; the
+        # plugin still starts exactly once for the requested run.
+        marker = "ADDOPTS_PLUGIN_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface with PYTEST_ADDOPTS naming an import-recording plugin",
+            expected="the plugin starts exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "plugin.log"
+        (self.repo / "sideplugin.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('plugin\\n')\n",
+            encoding="utf-8",
+        )
+        self.h.git("add", "sideplugin.py")
+        self.h.git("commit", "-q", "-m", "sideplugin")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env={**self.h.env, "PYTEST_ADDOPTS": "-p sideplugin"}, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["plugin"], marker)
+
+    def test_sentinel_surface_ini_plugin_once(self) -> None:
+        # -p can also arrive from committed ini addopts, which probes must
+        # override; the plugin still starts exactly once per requested run.
+        marker = "INI_ADDOPTS_PLUGIN_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface whose committed ini addopts names an import-recording plugin",
+            expected="the plugin starts exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "plugin.log"
+        (self.repo / "sideplugin.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('plugin\\n')\n",
+            encoding="utf-8",
+        )
+        (self.repo / "pytest.ini").write_text(
+            "[pytest]\naddopts = -p sideplugin\n", encoding="utf-8",
+        )
+        self.h.git("add", "sideplugin.py", "pytest.ini")
+        self.h.git("commit", "-q", "-m", "sideplugin via ini addopts")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["plugin"], marker)
+
+    def test_recorded_pytest_run_names_the_executed_command(self) -> None:
+        # The recorder executes pytest with its canonical --verbosity=0, a
+        # caller-visible option; the run evidence must name that executed
+        # invocation, not attribute the output to the caller's spelling.
+        marker = "EXECUTED_COMMAND_NOT_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a directly invoked pytest surface",
+            expected="the run evidence names the executed canonical invocation",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertEqual(
+            recorded["runs"][-1]["command"],
+            shlex.join([*command, "--verbosity=0"]),
+            marker,
+        )
+
+    def test_atexit_forged_pytest_summary_cannot_settle_a_contract(self) -> None:
+        # atexit output lands after pytest's genuine final write, so a forged
+        # full summary line becomes the terminal line; the pass count is only
+        # attributable when the output carries exactly one summary-shaped line.
+        marker = "PYTEST_FORGED_SUMMARY_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a directly invoked pytest surface",
+            expected="only a genuine pytest pass settles the item",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "import atexit\n"
+            "import pytest\n\n"
+            "atexit.register(lambda: print('1 passed in 0.01s'))\n\n"
+            "@pytest.mark.xfail\n"
+            "def test_fake_pass():\n"
+            "    assert False\n",
+            encoding="utf-8",
+        )
+        forged = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--",
+             sys.executable, "-m", "pytest", "-q", "-s", "test_pytest_baseline.py"],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(forged.returncode, 2, marker + ": " + forged.stdout + forged.stderr)
+        state = read_workflow(self.identity)
+        self.assertEqual(state["tdd"], "pending", marker)
+        self.assertIsNone(state.get("tddEvidence"), marker)
+
+    def test_atexit_forged_unittest_summary_cannot_settle_a_contract(self) -> None:
+        # The same forgery against unittest: an appended Ran/OK block after the
+        # runner's genuine expected-failure result must not count as a pass.
+        marker = "UNITTEST_FORGED_SUMMARY_RECORDED"
+        behavior = contract(
+            "BM_UNITTEST",
+            seam="workflow.py tdd over a directly invoked unittest surface",
+            expected="only a genuine unittest pass settles the item",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_unittest_baseline.py").write_text(
+            "import atexit\n"
+            "import unittest\n\n"
+            "atexit.register(lambda: print('Ran 1 test in 0.001s\\n\\nOK'))\n\n"
+            "class Probe(unittest.TestCase):\n"
+            "    @unittest.expectedFailure\n"
+            "    def test_fake_pass(self):\n"
+            "        self.assertTrue(False)\n",
+            encoding="utf-8",
+        )
+        forged = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_UNITTEST", "--",
+             sys.executable, "-m", "unittest", "test_unittest_baseline"],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(forged.returncode, 2, marker + ": " + forged.stdout + forged.stderr)
+        state = read_workflow(self.identity)
+        self.assertEqual(state["tdd"], "pending", marker)
+        self.assertIsNone(state.get("tddEvidence"), marker)
+
+    def test_suppressed_summary_pytest_forgery_cannot_settle_a_contract(self) -> None:
+        # pytest at net quiet -2 (-qq directly, or PYTEST_ADDOPTS=-qq) emits no
+        # genuine summary line, so a single forged summary would be the only
+        # summary-shaped output; pass proof refuses summary-suppressing
+        # verbosity outright instead of attributing test-controlled text.
+        marker = "PYTEST_SUPPRESSED_SUMMARY_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a directly invoked pytest surface",
+            expected="only a genuine pytest pass settles the item",
+            red_failure=marker,
+        )
+        forged = (
+            "import atexit\n"
+            "import pytest\n\n"
+            "atexit.register(lambda: print('1 passed in 0.01s'))\n\n"
+            "@pytest.mark.xfail\n"
+            "def test_fake_pass():\n"
+            "    assert False\n"
+        )
+        for extra_args, env in (
+            (("-qq",), self.h.env),
+            ((), dict(self.h.env, PYTEST_ADDOPTS="-qq")),
+        ):
+            slug, _ = self.h.begin_to_preflight([behavior])
+            (self.repo / "test_pytest_baseline.py").write_text(forged, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+                 "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--",
+                 sys.executable, "-m", "pytest", *extra_args, "-s", "test_pytest_baseline.py"],
+                cwd=self.repo, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
+            state = read_workflow(self.identity)
+            self.assertEqual(state["tdd"], "pending", marker)
+            self.assertIsNone(state.get("tddEvidence"), marker)
+
+    def test_suppression_spellings_cannot_settle_a_contract(self) -> None:
+        # --verbosity=-2 suppresses the summary while netting 0 in -q/-v
+        # tokens, and -p no:terminal drops all runner output, so a forged
+        # atexit line becomes the only summary-shaped text in both cases.
+        marker = "PYTEST_SUPPRESSION_SPELLING_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a directly invoked pytest surface",
+            expected="only a genuine pytest pass settles the item",
+            red_failure=marker,
+        )
+        forged = (
+            "import atexit\n"
+            "import pytest\n\n"
+            "atexit.register(lambda: print('1 passed in 0.01s'))\n\n"
+            "@pytest.mark.xfail\n"
+            "def test_fake_pass():\n"
+            "    assert False\n"
+        )
+        for extra_args in (("--verbosity=-2",), ("-p", "no:terminal")):
+            slug, _ = self.h.begin_to_preflight([behavior])
+            (self.repo / "test_pytest_baseline.py").write_text(forged, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+                 "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--",
+                 sys.executable, "-m", "pytest", *extra_args, "-s", "test_pytest_baseline.py"],
+                cwd=self.repo, env=self.h.env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
+            state = read_workflow(self.identity)
+            self.assertEqual(state["tdd"], "pending", marker)
+            self.assertIsNone(state.get("tddEvidence"), marker)
+
+    def test_clustered_quiet_pytest_forgery_cannot_settle_a_contract(self) -> None:
+        # pytest accepts clustered short flags (-qqs) and repository config
+        # addopts, so quiet -2 can reach the runner without any pure -q token
+        # on the command line; both measured shapes suppress the genuine
+        # summary, leaving a forged atexit line as the only summary-shaped
+        # output unless the recorder restores the runner's own report.
+        marker = "PYTEST_CLUSTERED_QUIET_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a directly invoked pytest surface",
+            expected="only a genuine pytest pass settles the item",
+            red_failure=marker,
+        )
+        forged = (
+            "import atexit\n"
+            "import pytest\n\n"
+            "atexit.register(lambda: print('1 passed in 0.01s'))\n\n"
+            "@pytest.mark.xfail\n"
+            "def test_fake_pass():\n"
+            "    assert False\n"
+        )
+        for extra_args, ini in ((("-qqs",), None), (("-s",), "[pytest]\naddopts = -qq\n")):
+            slug, _ = self.h.begin_to_preflight([behavior])
+            (self.repo / "test_pytest_baseline.py").write_text(forged, encoding="utf-8")
+            if ini is not None:
+                (self.repo / "pytest.ini").write_text(ini, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+                 "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--",
+                 sys.executable, "-m", "pytest", *extra_args, "test_pytest_baseline.py"],
+                cwd=self.repo, env=self.h.env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            (self.repo / "pytest.ini").unlink(missing_ok=True)
+            self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
+            state = read_workflow(self.identity)
+            self.assertEqual(state["tdd"], "pending", marker)
+            self.assertIsNone(state.get("tddEvidence"), marker)
+
     def test_baseline_counts_only_genuinely_passing_tests(self) -> None:
         # unittest exits 0 and counts skipped and expected-failure tests in
         # "Ran N", so the Ran count alone is not a pass; test-printed OK lines
@@ -348,6 +1018,134 @@ class ContractProofAuthorityTests(unittest.TestCase):
         baseline = self.h.tdd(slug, "red", "BM_P", "import app; assert app.value == 2, 'IMPORT_PATH_REGRESSED'")
         self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
         self.assertEqual(json.loads(baseline.stdout.strip().splitlines()[-1]).get("status"), "already-satisfied", marker)
+
+    def test_shared_edit_can_record_separate_post_edit_contract_proof(self) -> None:
+        marker = "POST_EDIT_CONTRACT_REMAINS_PENDING"
+        slug, workflow_id = self.h.begin_to_preflight([
+            contract("BM_A"),
+            contract("BM_B", red_failure="VALUE_NOT_TWO_B"),
+        ])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        assessed = self.h.update_map(slug, workflow_id, {
+            "sourceBehaviorId": "BM_A",
+            "reassessment": "The same dirty candidate also satisfies BM_B.",
+            "items": [],
+        })
+        self.assertEqual(assessed.returncode, 0, marker + ": " + assessed.stdout + assessed.stderr)
+
+        proved = self.h.tdd(
+            slug,
+            "green",
+            "BM_B",
+            "import app; assert app.value == 2, 'VALUE_NOT_TWO_B'",
+        )
+        self.assertEqual(proved.returncode, 0, marker + ": " + proved.stdout + proved.stderr)
+        self.assertEqual(json.loads(proved.stdout.strip().splitlines()[-1])["status"], "post-edit-passed", marker)
+        state = read_workflow(self.identity)
+        self.assertEqual(state["tddCycleCount"], 1, marker)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, marker + ": " + document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        [bm_b] = [entry for entry in recorded["behaviorMap"] if entry["id"] == "BM_B"]
+        self.assertEqual(bm_b["status"], "post-edit-passed", marker)
+        self.assertEqual(recorded["reassessmentPending"], "BM_B", marker)
+        self.assertEqual(recorded["runs"][-1]["passProof"]["quality"], "baseline-passed", marker)
+
+        assessed = self.h.update_map(slug, workflow_id, {
+            "sourceBehaviorId": "BM_B",
+            "reassessment": "The shared candidate exposed no further obligation.",
+            "items": [],
+        })
+        self.assertEqual(assessed.returncode, 0, marker + ": " + assessed.stdout + assessed.stderr)
+        self.assertEqual(read_workflow(self.identity)["tdd"], "passed", marker)
+
+    def test_post_edit_contract_proof_requires_every_admission_gate(self) -> None:
+        marker = "POST_EDIT_PROOF_ADMISSION_BROKEN"
+
+        slug, _ = self.h.begin_to_preflight([contract("BM_B")])
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        ran = self.repo / "post-edit-proof-ran"
+        no_cycle = self.h.tdd(
+            slug,
+            "green",
+            "BM_B",
+            f"from pathlib import Path; Path({str(ran)!r}).touch(); import app; assert app.value == 2",
+        )
+        self.assertEqual(no_cycle.returncode, 2, marker + ": " + no_cycle.stdout + no_cycle.stderr)
+        self.assertFalse(ran.exists(), marker)
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+
+        slug, workflow_id = self.h.begin_to_preflight([
+            contract("BM_A"),
+            contract("BM_B", red_failure="VALUE_NOT_TWO_B"),
+        ])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        pending_reassessment = self.h.tdd(
+            slug,
+            "green",
+            "BM_B",
+            f"from pathlib import Path; Path({str(ran)!r}).touch(); import app; assert app.value == 2",
+        )
+        self.assertEqual(
+            pending_reassessment.returncode,
+            2,
+            marker + ": " + pending_reassessment.stdout + pending_reassessment.stderr,
+        )
+        self.assertFalse(ran.exists(), marker)
+        assessed = self.h.update_map(slug, workflow_id, {
+            "sourceBehaviorId": "BM_A",
+            "reassessment": "Exercise the post-edit admission gates.",
+            "items": [preservation("BM_P", red_failure="PRESERVATION_PROOF_BYPASSED")],
+        })
+        self.assertEqual(assessed.returncode, 0, marker + ": " + assessed.stdout + assessed.stderr)
+
+        preservation_proof = self.h.tdd(
+            slug,
+            "green",
+            "BM_P",
+            "import app; assert app.value == 2, 'PRESERVATION_PROOF_BYPASSED'",
+        )
+        self.assertEqual(
+            preservation_proof.returncode,
+            2,
+            marker + ": " + preservation_proof.stdout + preservation_proof.stderr,
+        )
+        before = read_workflow(self.identity)["tddEvidence"]
+        opaque = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "green", "--behavior-id", "BM_B", "--",
+             sys.executable, "-c", "pass"],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(opaque.returncode, 2, marker + ": " + opaque.stdout + opaque.stderr)
+        self.assertIn("directly invoked pytest or unittest", opaque.stderr, marker)
+        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+
+        slug, workflow_id = self.h.begin_to_preflight([
+            contract("BM_A"),
+            contract("BM_BASE", expected="value is one", red_failure="VALUE_NOT_ONE"),
+        ])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        assessed = self.h.update_map(slug, workflow_id, {
+            "sourceBehaviorId": "BM_A",
+            "reassessment": "No new obligation.",
+            "items": [],
+        })
+        self.assertEqual(assessed.returncode, 0, marker + ": " + assessed.stdout + assessed.stderr)
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        no_dirty_candidate = self.h.tdd(
+            slug,
+            "green",
+            "BM_BASE",
+            "import app; assert app.value == 1, 'VALUE_NOT_ONE'",
+        )
+        self.assertEqual(
+            no_dirty_candidate.returncode,
+            2,
+            marker + ": " + no_dirty_candidate.stdout + no_dirty_candidate.stderr,
+        )
 
     def test_complete_applies_map_closure_inside_its_transaction(self) -> None:
         # The CLI precheck is diagnostic; complete() must refuse from the
@@ -517,20 +1315,20 @@ class ContractProofAuthorityTests(unittest.TestCase):
     def test_supersede_refuses_a_pending_source(self) -> None:
         """Retiring a pending obligation forward was considered and not shipped.
 
-        The guard admits a GREEN source only, so the descoped case has a retained
+        The guard admits a proved source only, so the descoped case has a retained
         regression here rather than resting on the adjacent settled-source test,
         which exercises a different status.
         """
         marker = "PENDING_SUPERSESSION_ADMITTED"
         slug, workflow_id = self.green_pair()
         self.assert_map_refused(slug, workflow_id, self.supersede("BM_OTHER", "BM_A", pending="BM_A"),
-                                "only a GREEN item can be superseded", marker)
+                                "only a proved item can be superseded", marker)
 
     def test_supersede_refuses_a_settled_source(self) -> None:
-        """Only a GREEN item can be superseded; a settled one has nothing left to retire.
+        """Only a proved item can be superseded; a settled one has nothing left to retire.
 
         Retiring a pending obligation forward was considered and deliberately not
-        shipped, so the guard admits a GREEN source only. An item that already
+        shipped, so the guard admits a proved source only. An item that already
         reached another settled status is not in that position either: superseding
         it would hide a recorded outcome rather than move an open obligation.
         """

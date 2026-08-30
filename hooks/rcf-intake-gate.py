@@ -72,7 +72,7 @@ def main() -> int:
     if not ready:
         deny(
             "BLOCKED by workflow intake: production edits require recorded preflight, "
-            "a valid mapped RED, and post-GREEN reassessment. Missing: "
+            "a valid mapped RED, and post-proof reassessment. Missing: "
             + ", ".join(missing)
             + "."
         )

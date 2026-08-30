@@ -22,7 +22,7 @@ for you, carrying the caller and upstream-impact halves; it holds no callee fact
 so callee context stays yours to supply. The advisor challenges scope and design; it does not create
 the preflight artifact or approve implementation. It treats the lead question
 as a claim, measures accessible premises before inferring, and makes supplied
-contract items without GREEN/baseline proof material. Design prose is evidence
+contract items without terminal or baseline proof material. Design prose is evidence
 to challenge, not a second proof-obligation registry.
 
 Every phased consult carries a governing-design declaration: `--design-file`
@@ -232,7 +232,7 @@ dispositions; it never restates a finding:
 Every disposition carries `kind`, `premise`, `occurrence`, and `materialConsequence` at both stages.
 A behavioral finding first uses `accepted-for-proof` with unique `reservedBehaviorIds`, its real Seam,
 and preservation obligations. At preflight, `record-preflight` consumes that exact reservation; initial
-or pre-GREEN `fixed` is invalid, while later explicit `fixed` requires those items GREEN and reassessed.
+or pre-proof `fixed` is invalid, while later explicit `fixed` requires those items to reach terminal proof and be reassessed.
 `report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
 findings-plus-dispositions form remains compatible for measured nonbehavioral
 results, but cannot create proof reservations. A refusal mutates no state.

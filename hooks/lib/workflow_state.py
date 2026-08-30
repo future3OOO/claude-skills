@@ -457,7 +457,7 @@ def _validate_finding_reservation(reservation: JsonObject, linked: dict[str, Jso
     # Every reserved id must be linked, so a finding is never closed by unrelated
     # proof. Requiring the reserved set to stay the *whole* linked set also refused
     # the honest case the work exposes later obligations for; those still have to
-    # reach GREEN below, so admitting them costs no strictness. A legacy record
+    # reach terminal proof below, so admitting them costs no strictness. A legacy record
     # carries no seam or obligations, so its id set is the whole of its contract
     # and keeps the exact-set rule it was recorded under.
     if (set(linked) != expected if legacy else expected - set(linked)) or not expected:
@@ -1061,12 +1061,12 @@ def _behavioral_finding_closure(
     expected = _validate_finding_reservation(reservation, linked, str(finding_id))
     # A retired obligation defers to its replacement here as it does everywhere
     # else: behavior_map owns the terminal walk, and judging a linked item by its
-    # raw status instead let a superseded row block the closure its own GREEN
+    # raw status instead let a superseded row block the closure its terminal
     # replacement had already proved. Reserved contract proof still resolves
     # inside the finding's own linked set, because a replacement the finding never
     # linked is exactly the unrelated proof an exact reservation exists to refuse,
-    # however GREEN it is elsewhere. A preservation obligation is not that shape -
-    # `behavior_map.unresolved` already closes one through any GREEN terminal
+    # however proved it is elsewhere. A preservation obligation is not that shape -
+    # `behavior_map.unresolved` already closes one through any proved terminal
     # replacement - so retiring one off the linked set stays admitted.
     terminal = {identifier: behavior_map.terminal(items, entry) for identifier, entry in linked.items()}
     if strayed := sorted(
@@ -1076,16 +1076,23 @@ def _behavioral_finding_closure(
         raise WorkflowError(
             "behavioral fixed requires the replacement to stay linked to the finding: " + ", ".join(strayed)
         )
-    not_green = sorted(
+    not_proved = sorted(
         identifier for identifier, entry in terminal.items()
-        if entry.get("status") != "green"
+        if entry.get("status") not in behavior_map.PROOF_STATUSES
         and not (entry.get("kind") == "preservation" and entry.get("status") == "already-satisfied")
+        # A closure recorded against proved items is not invalidated by work
+        # mapped against the same finding afterwards - a correction's pending
+        # replacement has to carry this finding's ref to keep supersession
+        # closable at all. Completion still blocks through the unresolved map
+        # until that item proves; only revalidation of a recorded closure
+        # tolerates it, never the initial fixed disposition.
+        and not (reservation.get("fixed") and entry.get("status") in {"pending", "red"})
     )
-    if not_green:
-        raise WorkflowError("behavioral fixed requires linked GREEN item(s): " + ", ".join(not_green))
+    if not_proved:
+        raise WorkflowError("behavioral fixed requires linked proved item(s): " + ", ".join(not_proved))
     pending = tdd_document.get("reassessmentPending") if isinstance(tdd_document, dict) else None
     if pending in expected:
-        raise WorkflowError("behavioral fixed requires post-GREEN reassessment")
+        raise WorkflowError("behavioral fixed requires post-proof reassessment")
 
 
 def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject) -> list[str]:
