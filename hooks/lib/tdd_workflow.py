@@ -430,6 +430,10 @@ def _run_tdd(values: list[str]) -> int:
         }
 
     command, command_text, surface = _candidate_command(args.runner_command)
+    if not legacy:
+        refusal = tdd_surface.repository_resolution(surface, identity.root)
+        if refusal is not None:
+            raise WorkflowError("mapped proof surfaces must resolve inside the repository: " + refusal)
     same_instance = (
         isinstance(candidate, dict) and candidate.get("workflowId") == workflow_id
     )
@@ -584,6 +588,7 @@ def _run_tdd(values: list[str]) -> int:
                 opens_cycle = not matches
             elif phase == "green" and valid:
                 updated_item["status"] = "green"
+                updated_item["proofCommand"] = command_text
                 next_active = None
                 reassessment_pending = args.behavior_id
                 action = "in-progress"

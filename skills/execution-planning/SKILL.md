@@ -1,6 +1,6 @@
 ---
 name: execution-planning
-description: Create durable advisor-bound governing designs outside the Git checkout. Use when planning multi-PR implementation, branch strategy, recovery, or review remediation; the immutable design owns scope, PR ownership and order, verification gates, preservation obligations, and load-bearing assumptions.
+description: Create durable advisor-bound governing designs outside the Git checkout. Use when planning multi-PR implementation, branch strategy, recovery, or review remediation; the design owns scope, PR ownership and order, verification gates, preservation obligations, and load-bearing assumptions, and deepens append-only in the same unpushed workflow.
 ---
 
 # Execution Planning
@@ -23,7 +23,7 @@ If delivery-governance does not apply, proceed from Repo Context Forge directly 
 
 If the work is already governed by [repo-large-implementation](../repo-large-implementation/SKILL.md), use this skill as the durable-design step inside that workflow.
 
-For later implementation against an existing design, do **not** invoke execution-planning again. Execute each pass through [repo-production-workflow](../repo-production-workflow/SKILL.md), follow the immutable design, and use the durable progress authorities defined below.
+For later implementation against an existing design, do **not** invoke execution-planning again. Execute each pass through [repo-production-workflow](../repo-production-workflow/SKILL.md), follow the governing design, and use the durable progress authorities defined below.
 
 The design owns architecture, scope, and delivery order. Mutable execution status never goes into the advisor-bound design.
 
@@ -39,26 +39,24 @@ The workflow's public status Interface supplies `<workflowId>`; callers do not d
 
 ## Governing Design Format
 
-Create exactly one advisor-bound governing design for the planned work. Start from the reference template so the first write already contains exactly one `<!-- governed-design-labels:v1 -->` marker followed immediately by a fenced JSON catalogue. Before validation, the design must contain:
+Create exactly one advisor-bound governing design for the planned work. Before the first advisor consult, the design must contain:
 
 - the complete decided design and delivery map
-- every preservation obligation as a stable `PRES-n` label
-- every load-bearing assumption as a stable `ASSUMP-n` label with its behavioral classification
-- a catalogue exactly matching those labels
+- every material preservation obligation and load-bearing assumption, stated in prose the Behavior Map can turn into concrete attacks
+- every unverified falsifiable prediction explicitly marked unresolved
 
-Call the installed `hooks.lib.workflow_documents.design_file_declaration(path)` Interface before the first advisor consult. A validation failure blocks the consult; correct the design rather than invoking the advisor and repairing it afterward.
+The wrapper records the design's declaration (its SHA-256, or a stated absence) as workflow evidence at each consult.
 
-## Syntactic And Semantic Ownership
+## Semantic Ownership
 
-- `design_file_declaration(path)` owns UTF-8 parsing, the single marker, fenced JSON shape, valid label records, and exact equality between reserved prose IDs and catalogue IDs.
-- The lead owns semantic completeness: every material preservation obligation and load-bearing assumption must be expressed and labelled.
-- Preflight Advisor challenges omissions before the design freezes.
-- Production preflight binds every preservation and behavioral-assumption label through Behavior Map `sourceRefs`.
-- Final Advisor rechecks those obligations and assumptions against the implementation and proof.
+- The lead owns semantic completeness: every material preservation obligation and load-bearing assumption must be expressed.
+- The Preflight Advisor derives the load-bearing promises from the original request and challenges omissions and missing attacks.
+- Production preflight turns those obligations into Behavior Map falsifiers; findings own their attacks through finding `sourceRefs`.
+- The Final Advisor re-derives the attack surface from the original request and public Interface before checking declared evidence.
 
-The first completed `preflight-advice` consult binds the design. From then on it is immutable for that pass. If its architecture, scope, labels, or delivery order must change, begin a new workflow pass and consult again with the replacement design.
+The design is a falsifiable hypothesis, not an immutable authority. Deepen it append-only in the same unpushed workflow and carry the current file to each consult; a changed declaration records as new workflow evidence and never by itself requires another `begin`, another preflight consult, or a Repo Context Forge rerun.
 
-Create a tracked document under `docs/plans/` or `docs/reviews/` only when the user explicitly requests that document as a deliverable. A tracked deliverable is not the advisor-bound design and is not updated merely to reflect execution progress.
+Create a tracked document under `docs/plans/` or `docs/reviews/` only when the user explicitly requests that document as a deliverable. A tracked deliverable is not the advisor-bound design and is never updated merely to reflect execution progress.
 
 ## Existing Tracked Artifacts
 
@@ -190,9 +188,7 @@ Do not call the design ready unless it names all of the following:
 - net-line budget per PR, with no unapproved slice above the split threshold
 - verification commands
 - regroup or consolidation rule
-- stable preservation and assumption labels
-- a matching governed-design JSON catalogue
-- a successful `design_file_declaration()` validation
+- every material preservation obligation and load-bearing assumption in prose
 
 For all code work, also require:
 
@@ -215,16 +211,16 @@ For transaction-sensitive work, also require:
 - proofPlan
 - combined workflow proof
 
-## Immutability And Progress Discipline
+## Deepening And Progress Discipline
 
-After the first completed `preflight-advice` consult, later agents read the advisor-bound design but never update it. Authority is divided deliberately:
+Authority is divided deliberately:
 
-- The immutable design owns architecture, scope, PR ownership, and execution order.
+- The governing design owns architecture, scope, PR ownership, and execution order, and deepens append-only in the same unpushed workflow; the ledger keeps every prior declaration.
 - Repository-scoped workflow history owns each pass's durable lifecycle, evidence, blockers, and findings.
 - GitHub PR state owns committed, pushed, review, and merge status for delivered slices.
 - The Task list is a session-local convenience, never durable authority.
 
-A changed architecture, scope, label catalogue, PR ownership, or execution order requires a replacement design and a new workflow pass. Do not mutate the current design to avoid refreshing candidate-bound evidence.
+Correcting the design or its attack set never by itself requires a replacement design, a new workflow pass, another preflight consult, or a Repo Context Forge rerun; only changed production behavior invalidates the proof it can affect. Mutable execution status still never goes into the design.
 
 ## Required Handoff Prompt
 
@@ -234,7 +230,7 @@ Rules for that prompt:
 
 - point to the design path under workflow state
 - say explicitly: do not create a new plan or re-plan this pass
-- say explicitly: do not modify the design after the first completed `preflight-advice` consult; use workflow history and GitHub PR state for durable progress, with Tasks only as session-local convenience
+- say explicitly: deepen the design append-only when new obligations surface; use workflow history and GitHub PR state for durable progress, with Tasks only as session-local convenience
 - when the work targets an existing PR, require realignment of the exact checkout to the live PR head before edits, then commit and push before resolving review threads as fixed
 - keep the PR near the review-budget target unless the user approved a concrete exception
 - require the affected-surface rewalk before edits and completion; include the full transaction-system rewalk when applicable
@@ -260,8 +256,7 @@ Keep the final design lean. Do not fill sections with boilerplate.
 This skill is complete only when:
 
 - the governing design exists under the repository's workflow state directory
-- the design has the required structure and initial label catalogue
-- `design_file_declaration()` accepts it
+- the design has the required structure
 - PR ownership, order, and verification are explicit
 - workflow history and, when applicable, GitHub PR state carry the durable execution facts
 - later agents could execute without reconstructing the design from chat or session-local Tasks

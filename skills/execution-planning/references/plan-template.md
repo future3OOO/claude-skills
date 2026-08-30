@@ -1,6 +1,6 @@
 # Governing Design Template
 
-Copy the fenced design body to the repository's workflow-state `designs/` directory, not into the Git checkout. Remove unused optional sections and keep the label catalogue synchronized before validation.
+Copy the fenced design body to the repository's workflow-state `designs/` directory, not into the Git checkout. Remove unused optional sections.
 
 ````md
 # <Title>
@@ -11,7 +11,7 @@ Copy the fenced design body to the repository's workflow-state `designs/` direct
 - workflow slug:
 - design path: `<workflow-state-root>/<repo-key>/designs/<workflowId>.md`
 - created:
-- freeze rule: immutable after the first completed `preflight-advice` consult; a replacement requires a new workflow pass
+- deepening rule: append-only corrections in the same unpushed workflow; the ledger keeps every prior declaration
 
 ## Objective
 
@@ -44,11 +44,11 @@ Copy the fenced design body to the repository's workflow-state `designs/` direct
 
 ## Preservation Obligations
 
-- PRES-1: <observable behavior that must remain true>
+- <observable behavior that must remain true>
 
 ## Load-Bearing Assumptions
 
-- ASSUMP-1 (behavioral): <falsifiable assumption and real-Seam measurement>
+- <falsifiable load-bearing assumption and its real-Seam measurement>
 
 ## Affected Surface
 
@@ -121,8 +121,4 @@ Pass lifecycle, evidence, blockers, and findings live in repository-scoped workf
 
 - ...
 
-<!-- governed-design-labels:v1 -->
-```json
-{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"},{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}
-```
 ````

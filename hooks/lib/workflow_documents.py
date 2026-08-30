@@ -7,23 +7,21 @@ import os
 import re
 import sys
 from pathlib import Path
-from .behavior_map import IDENTIFIER
 from .state_store import utc_timestamp
 
 JsonObject = dict[str, object]
 REVIEWER_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
-REVIEWER_DISPOSITIONS = REVIEWER_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
+REVIEWER_DISPOSITIONS = REVIEWER_RESOLVED | {"accepted-follow-up"}
 ADVISOR_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
-ADVISOR_DISPOSITIONS = ADVISOR_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
+ADVISOR_DISPOSITIONS = ADVISOR_RESOLVED | {"accepted-follow-up"}
 MEASUREMENT_SHAPE = '{"claim":non-empty text,"command":non-empty text,"result":non-empty text}'
 COUNTED_OCCURRENCE_SHAPE = '{"domain":non-empty text,"count":int>=0,"complete":bool,"command":non-empty text,"result":non-empty text}'
 SEAM_OCCURRENCE_SHAPE = '{"seam":non-empty text,"reproduction":{"command":non-empty text,"result":non-empty text}}'
 DISPOSITION_REQUIREMENTS = {
-    "fixed": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
+    "fixed": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true; behavioral fixed always requires the counted occurrence with count=0 and complete=true over the finding's recorded domain",
     "rejected-with-evidence": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
     "report-only": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; materialConsequence.result strips and lowercases to false",
     "accepted-follow-up": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; reference=non-empty text",
-    "accepted-for-proof": f"premise={MEASUREMENT_SHAPE}; occurrence={SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE} with result not stripping/lowercasing to false; reservedBehaviorIds=[unique BM ids including one contract id plus one id per preservation obligation]; seam=non-empty text equal to occurrence.seam after trimming; preservationObligations=[unique non-empty text values]",
 }
 DISPOSITION_SHAPES = {status: f'{{"finding_id":non-empty text,"status":"{status}","kind":"behavioral" or "nonbehavioral"}} plus {requirements}' for status, requirements in DISPOSITION_REQUIREMENTS.items()}
 
@@ -103,79 +101,32 @@ def advisor_envelope(
 FINAL_ENVELOPE_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
 
 
-DESIGN_MARKER = "<!-- governed-design-labels:v1 -->"
-DESIGN_ID = re.compile(r"^(?:PRES|ASSUMP)-[1-9][0-9]*$")
-RESERVED_DESIGN_TOKEN = re.compile(r"(?<![A-Z0-9-])(?:PRES|ASSUMP)-[0-9]+(?![A-Z0-9-])")
-DESIGN_FILE_SHAPE = (f'{DESIGN_MARKER} followed by ```json and '
-    '{"schemaVersion":1,"labels":[{"id":"PRES-n","kind":"preservation"},{"id":"ASSUMP-n","kind":"assumption","behavioral":bool}]}; '
-    "reserved tokens in prose must equal catalogue ids")
+DESIGN_FILE_SHAPE = (
+    'a readable non-empty UTF-8 design narrative; the declaration is '
+    '{"schemaVersion":1,"status":"present","sha256":"<64 hex>"} or '
+    '{"schemaVersion":1,"status":"absent","reason":"..."}'
+)
 DOCUMENT_SHAPES = {**DISPOSITION_SHAPES, "governed-design": DESIGN_FILE_SHAPE}
 DOCUMENT_SHAPE_TABLE = "\n".join(["| Surface | Expected shape |", "|---|---|", *(f"| `{name}` | {shape} |" for name, shape in DOCUMENT_SHAPES.items())])
 
 
-def _design_file_error(message: str) -> str:
-    return f"{message}; governed-design expected shape: {DESIGN_FILE_SHAPE}"
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> JsonObject:
-    result: JsonObject = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"governed design catalogue repeats a key: {key}")
-        result[key] = value
-    return result
-
-
-def _catalogue(value: object) -> JsonObject:
-    if not isinstance(value, dict) or set(value) != {"schemaVersion", "labels"}:
-        raise ValueError("governed design catalogue requires only schemaVersion and labels")
-    labels = value.get("labels")
-    if value.get("schemaVersion") != 1 or not isinstance(labels, list):
-        raise ValueError("governed design catalogue requires schemaVersion 1 and a labels array")
-    result: list[JsonObject] = []
-    seen: set[str] = set()
-    for position, raw in enumerate(labels, 1):
-        if not isinstance(raw, dict):
-            raise ValueError(f"governed design label {position} must be an object")
-        identifier, kind = raw.get("id"), raw.get("kind")
-        if not isinstance(identifier, str) or not DESIGN_ID.fullmatch(identifier):
-            raise ValueError(f"governed design label {position} has an invalid id")
-        if identifier in seen:
-            raise ValueError(f"governed design label id is duplicated: {identifier}")
-        seen.add(identifier)
-        if identifier.startswith("PRES-"):
-            if set(raw) != {"id", "kind"} or kind != "preservation":
-                raise ValueError(f"governed design label {identifier} must be a preservation")
-            result.append({"id": identifier, "kind": kind})
-        else:
-            if (
-                set(raw) != {"id", "kind", "behavioral"}
-                or kind != "assumption"
-                or not isinstance(raw.get("behavioral"), bool)
-            ):
-                raise ValueError(
-                    f"governed design label {identifier} must be an assumption with behavioral boolean"
-                )
-            result.append({"id": identifier, "kind": kind, "behavioral": raw["behavioral"]})
-    return {"schemaVersion": 1, "labels": result}
-
-
 def validate_design_declaration(value: object) -> JsonObject:
+    """The design is a falsifiable hypothesis under attack, not a label registry.
+
+    A declaration recorded before the catalogue was retired still loads: its
+    extra ``catalogue`` field is dropped rather than refused, because prior
+    evidence is append-only history, never a schema hostage.
+    """
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("governed design declaration requires schemaVersion 1")
     status = value.get("status")
     if status == "present":
-        if set(value) != {"schemaVersion", "status", "sha256", "catalogue"}:
+        if not set(value) <= {"schemaVersion", "status", "sha256", "catalogue"}:
             raise ValueError("present governed design declaration has unknown or missing fields")
         digest = value.get("sha256")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("present governed design declaration requires a SHA-256 digest")
-        return {
-            "schemaVersion": 1,
-            "status": "present",
-            "sha256": digest,
-            "catalogue": _catalogue(value.get("catalogue")),
-        }
+        return {"schemaVersion": 1, "status": "present", "sha256": digest}
     if status == "absent":
         if set(value) != {"schemaVersion", "status", "reason"} or not _text(value.get("reason")):
             raise ValueError("absent governed design declaration requires only a non-empty reason")
@@ -190,39 +141,15 @@ def design_declaration(path: str) -> JsonObject:
 def design_file_declaration(path: str) -> JsonObject:
     try:
         raw = Path(path).read_bytes()
-        text = raw.decode("utf-8")
+        raw.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"cannot read governed design: {exc}") from exc
-    if text.count(DESIGN_MARKER) != 1:
-        raise ValueError(_design_file_error("governed design requires exactly one labels marker"))
-    tail = text.split(DESIGN_MARKER, 1)[1]
-    match = re.match(r"\s*```json[ \t]*\r?\n(.*?)\r?\n```", tail, re.DOTALL)
-    if match is None:
-        raise ValueError(_design_file_error("governed design marker must be followed by one fenced json block"))
-    try:
-        catalogue = _catalogue(json.loads(match.group(1), object_pairs_hook=_unique_object))
-    except json.JSONDecodeError as exc:
-        raise ValueError(_design_file_error(f"cannot parse governed design catalogue JSON: {exc}")) from exc
-    except ValueError as exc:
-        raise ValueError(_design_file_error(str(exc))) from exc
-    declared = {str(label["id"]) for label in catalogue["labels"]}
-    reserved = set(RESERVED_DESIGN_TOKEN.findall(text[: text.index(DESIGN_MARKER)]))
-    reserved.update(RESERVED_DESIGN_TOKEN.findall(tail[match.end():]))
-    if declared != reserved:
-        missing = sorted(reserved - declared)
-        unused = sorted(declared - reserved)
-        details = "; ".join(filter(None, (
-            "uncatalogued: " + ", ".join(missing) if missing else "",
-            "catalogue-only: " + ", ".join(unused) if unused else "",
-        )))
-        raise ValueError(_design_file_error(
-            "governed design reserved tokens must equal catalogue ids" + (f": {details}" if details else ""),
-        ))
+    if not raw.strip():
+        raise ValueError(f"governed design is empty; expected shape: {DESIGN_FILE_SHAPE}")
     return {
         "schemaVersion": 1,
         "status": "present",
         "sha256": hashlib.sha256(raw).hexdigest(),
-        "catalogue": catalogue,
     }
 
 
@@ -528,30 +455,10 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
             consequence = _measurement(item.get("materialConsequence"), f"finding {identifier} materialConsequence")
         except ValueError as exc:
             raise ValueError(_disposition_error(status, str(exc))) from exc
-        if status == "accepted-for-proof":
-            extra = {"reservedBehaviorIds", "seam", "preservationObligations"}
-            reserved, preserved = item.get("reservedBehaviorIds"), item.get("preservationObligations")
-            canonical_reserved = [str(entry).strip() for entry in reserved] if isinstance(reserved, list) else []
-            canonical_preserved = [str(entry).strip() for entry in preserved] if isinstance(preserved, list) else []
-            if not (
-                isinstance(reserved, list) and reserved and all(_text(entry) for entry in reserved)
-                and len(set(canonical_reserved)) == len(reserved) and all(IDENTIFIER.fullmatch(entry) for entry in canonical_reserved) and _text(item.get("seam"))
-                and isinstance(preserved, list) and preserved and all(_text(entry) for entry in preserved)
-                and len(set(canonical_preserved)) == len(preserved)
-                and len(canonical_reserved) >= len(canonical_preserved) + 1
-            ):
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations, including one contract behavior ID plus preservation behavior IDs"))
-            demonstrated = ("reproduction" in occurrence
-                and occurrence.get("seam", "").strip() == str(item["seam"]).strip())
-            if not demonstrated:
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires demonstrated occurrence at its Seam"))
-            if consequence["result"].strip().lower() == "false":
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires material consequence"))
-        else:
-            field = "reference" if status == "accepted-follow-up" else "evidence"
-            extra = {field}
-            if not _text(item.get(field)):
-                raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
+        field = "reference" if status == "accepted-follow-up" else "evidence"
+        extra = {field}
+        if not _text(item.get(field)):
+            raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
         if set(item) != common | extra:
             raise ValueError(_disposition_error(status, f"finding {identifier} {status} has unknown or missing fields"))
         if status in {"fixed", "rejected-with-evidence"} and not (
@@ -560,6 +467,17 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
         ):
             raise ValueError(_disposition_error(
                 status, f"finding {identifier} {status} requires a false premise or zero occurrence on a complete domain",
+            ))
+        # A behavioral fix keeps its finding's whole recorded domain: only a
+        # measured zero over a complete domain closes it, so a narrow attack
+        # cannot silently stand in for the full caller-reachable surface.
+        if status == "fixed" and kind == "behavioral" and not (
+            occurrence.get("count") == 0 and occurrence.get("complete") is True
+        ):
+            raise ValueError(_disposition_error(
+                status,
+                f"finding {identifier} behavioral fixed requires zero occurrence on a complete domain "
+                "covering the finding's recorded caller-reachable surface",
             ))
         if status == "report-only" and consequence["result"].strip().lower() != "false":
             raise ValueError(_disposition_error(status, f"finding {identifier} report-only requires no material consequence"))
@@ -665,7 +583,7 @@ def advisor_disposition_document(
         if set(item) != {"id", "claim"} or not _text(item.get("claim")):
             raise ValueError(f"finding {identifier} requires a claim")
         claims.add(identifier)
-    typed = _finding_dispositions(dispositions, allowed - {"accepted-for-proof"})
+    typed = _finding_dispositions(dispositions, allowed)
     if stage == "preflight" and any(item["status"] == "fixed" for item in typed):
         raise ValueError("legacy preflight fixed requires immutable finding intake")
     if any(str(item["finding_id"]) not in claims for item in typed):
@@ -673,5 +591,5 @@ def advisor_disposition_document(
     if {str(item["finding_id"]) for item in typed} != claims:
         raise ValueError("every finding requires one lead disposition")
     if any(item["kind"] == "behavioral" for item in typed):
-        raise ValueError("behavioral advisor findings require immutable intake and accepted-for-proof")
+        raise ValueError("behavioral advisor findings require immutable finding intake and a map-owned attack")
     return {**common, "findings": findings, "dispositions": typed}

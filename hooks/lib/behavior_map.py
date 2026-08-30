@@ -14,9 +14,8 @@ KINDS = frozenset({"contract", "preservation"})
 REQUIRED_FIELDS = frozenset({
     "id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status",
 })
-OPTIONAL_FIELDS = frozenset({"evidence", "supersededBy", "sourceRefs"})
+OPTIONAL_FIELDS = frozenset({"evidence", "supersededBy", "sourceRefs", "proofCommand"})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
-DESIGN_LABEL = re.compile(r"^(?:PRES|ASSUMP)-[1-9][0-9]*$")
 _CONTRACT_DISPOSITION_REFUSED = (
     "behavior {} is a contract item: it is never omitted, and already-satisfied "
     "is recorded only by tdd --phase red passing its mapped surface"
@@ -92,8 +91,8 @@ def _validate_red_failure(value: object, identifier: str) -> str:
     return marker
 
 
-def _source_refs(value: object, identifier: str, *, required: bool) -> list[JsonObject] | None:
-    if value is None and not required:
+def _source_refs(value: object, identifier: str) -> list[JsonObject] | None:
+    if value is None:
         return None
     if not isinstance(value, list):
         raise ValueError(f"behavior {identifier} sourceRefs must be an array")
@@ -105,10 +104,7 @@ def _source_refs(value: object, identifier: str, *, required: bool) -> list[Json
                 f"behavior {identifier} sourceRef {position} requires only type, evidenceId, and id"
             )
         reference_type, evidence_id, label = raw.get("type"), _text(raw.get("evidenceId")), _text(raw.get("id"))
-        valid = (
-            reference_type == "design" and label is not None and DESIGN_LABEL.fullmatch(label)
-        ) or (reference_type == "finding" and label is not None)
-        if evidence_id is None or not valid:
+        if evidence_id is None or label is None or reference_type not in {"design", "finding"}:
             raise ValueError(f"behavior {identifier} sourceRef {position} is not a valid design or finding reference")
         key = (str(reference_type), evidence_id, str(label))
         if key in seen:
@@ -123,7 +119,6 @@ def validate_items(
     *,
     allow_runtime: bool,
     existing: Iterable[JsonObject] = (),
-    require_source_refs: bool = False,
 ) -> list[JsonObject]:
     """Validate and return one canonical Behavior Map item list.
 
@@ -175,7 +170,7 @@ def validate_items(
             status == "omitted" or (status == "already-satisfied" and not allow_runtime)
         ):
             raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
-        refs = _source_refs(raw.get("sourceRefs"), identifier, required=require_source_refs)
+        refs = _source_refs(raw.get("sourceRefs"), identifier)
         item: JsonObject = {
             "id": identifier,
             **({"kind": kind} if kind is not None else {}),
@@ -189,6 +184,10 @@ def validate_items(
         }
         if "evidence" in raw and not isinstance(raw.get("evidence"), str):
             raise ValueError(f"behavior {identifier} evidence must be text")
+        # The runner stamps the exact proving command at GREEN, so the executed
+        # attack rides beside the declared one wherever the item travels.
+        if "proofCommand" in raw:
+            item["proofCommand"] = _required(raw, "proofCommand", identifier)
         evidence = _text(raw.get("evidence"))
         if status in EVIDENCED_STATUSES:
             if evidence is None:
@@ -205,7 +204,7 @@ def validate_items(
         result.append(item)
     whole = [*existing, *result]
     for entry in whole:
-        _terminal(whole, entry)
+        terminal_item(whole, entry)
     if not allow_runtime and any(
         entry["status"] == "pending" for entry in whole
     ) and not any(entry.get("kind") == "contract" for entry in whole):
@@ -223,10 +222,8 @@ def _required(raw: dict[str, object], field: str, identifier: str) -> str:
     return value
 
 
-def initial_items(value: object, *, require_source_refs: bool = True) -> list[JsonObject]:
-    return validate_items(
-        value, allow_runtime=False, require_source_refs=require_source_refs,
-    )
+def initial_items(value: object) -> list[JsonObject]:
+    return validate_items(value, allow_runtime=False)
 
 
 def runtime_items(value: object) -> list[JsonObject]:
@@ -234,60 +231,7 @@ def runtime_items(value: object) -> list[JsonObject]:
 
 
 def added_items(value: object, existing: list[JsonObject]) -> list[JsonObject]:
-    return validate_items(
-        value, allow_runtime=False, existing=existing, require_source_refs=True,
-    )
-
-
-def validate_design_authority(
-    items: list[JsonObject],
-    evidence_id: str | None,
-    declaration: JsonObject | None,
-    *,
-    require_coverage: bool,
-) -> None:
-    design_refs = lambda entry: [
-        ref for ref in entry.get("sourceRefs", [])
-        if isinstance(ref, dict) and ref.get("type") == "design"
-    ]
-    if evidence_id is None or declaration is None:
-        if any(design_refs(entry) for entry in items):
-            raise ValueError("design sourceRefs require captured governed-design evidence")
-        return
-    if declaration.get("status") == "absent":
-        if any(design_refs(entry) for entry in items):
-            raise ValueError("design-absent workflow cannot carry design sourceRefs")
-        return
-    catalogue = declaration.get("catalogue")
-    labels = catalogue.get("labels") if isinstance(catalogue, dict) else None
-    if not isinstance(labels, list):
-        raise ValueError("captured governed-design evidence has no validated catalogue")
-    by_id = {
-        str(label["id"]): label for label in labels
-        if isinstance(label, dict) and isinstance(label.get("id"), str)
-    }
-    owned: set[str] = set()
-    for entry in items:
-        refs = design_refs(entry)
-        if not refs:
-            raise ValueError(f"behavior {entry['id']} requires a design sourceRef")
-        for ref in refs:
-            if ref.get("evidenceId") != evidence_id:
-                raise ValueError(
-                    f"behavior {entry['id']} design sourceRef is unknown, stale, or foreign"
-                )
-            label = str(ref.get("id"))
-            if label not in by_id:
-                raise ValueError(f"behavior {entry['id']} references unknown design label {label}")
-            owned.add(label)
-    if require_coverage:
-        required = {
-            identifier for identifier, label in by_id.items()
-            if label.get("kind") == "preservation" or label.get("behavioral") is True
-        }
-        missing = sorted(required - owned)
-        if missing:
-            raise ValueError("Behavior Map has no owning item for design label(s): " + ", ".join(missing))
+    return validate_items(value, allow_runtime=False, existing=existing)
 
 
 def clone(items: list[JsonObject]) -> list[JsonObject]:
@@ -301,7 +245,7 @@ def item(items: list[JsonObject], identifier: str) -> JsonObject:
         raise ValueError(f"behavior id is not in the recorded map: {identifier}") from exc
 
 
-def _terminal(items: list[JsonObject], entry: JsonObject) -> JsonObject:
+def terminal_item(items: list[JsonObject], entry: JsonObject) -> JsonObject:
     """The item a superseded entry finally defers to; self-reference, cycles, and missing targets refuse."""
     seen = {entry["id"]}
     while entry.get("status") == "superseded":
@@ -376,7 +320,7 @@ def unresolved(items: list[JsonObject]) -> list[str]:
         if entry.get("status") in {"pending", "red"}
         or (
             entry.get("status") == "superseded"
-            and _terminal(items, entry).get("status") != "green"
+            and terminal_item(items, entry).get("status") != "green"
         )
     ]
 

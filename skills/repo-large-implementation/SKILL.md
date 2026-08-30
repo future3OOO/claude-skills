@@ -20,9 +20,9 @@ For qualifying work, use the following order:
 4. [execution-planning](../execution-planning/SKILL.md) to create the durable governing design under the selected workflow state root when the work is new and non-trivial
 5. continue the same repo-production-workflow pass for the first implementation
 
-If delivery-governance does not apply, proceed from Repo Context Forge directly to [execution-planning](../execution-planning/SKILL.md). Keep the advisor-bound design outside the Git checkout and include its governed-design label catalogue in the initial write.
+If delivery-governance does not apply, proceed from Repo Context Forge directly to [execution-planning](../execution-planning/SKILL.md). Keep the advisor-bound design outside the Git checkout.
 
-If a governing design already exists for the current work, do not rerun [execution-planning](../execution-planning/SKILL.md) for an execution-only pass. Execute against the immutable design through [repo-production-workflow](../repo-production-workflow/SKILL.md). Repository-scoped workflow history and GitHub PR state carry durable progress; Tasks are session-local convenience only, never durable authority. Changing the design after the first completed `preflight-advice` consult begins a new pass.
+If a governing design already exists for the current work, do not rerun [execution-planning](../execution-planning/SKILL.md) for an execution-only pass. Execute against the governing design through [repo-production-workflow](../repo-production-workflow/SKILL.md). Repository-scoped workflow history and GitHub PR state carry durable progress; Tasks are session-local convenience only, never durable authority. The design deepens append-only in the same unpushed workflow; a metadata-only correction never begins a new pass.
 
 Do not skip the planning step for new non-trivial work and jump straight into implementation edits.
 
@@ -62,8 +62,8 @@ owns, and no review-local plan may narrow that surrounding surface.
 
 - WSL-native paths and tools are authoritative for this repo.
 - For new non-trivial plans or remediation programs, create the governing design in the durable workflow-state format defined by [execution-planning](../execution-planning/SKILL.md).
-- The design is an on-disk Markdown artifact keyed by the workflow's public `workflowId` under the selected workflow state root, outside the Git checkout. It includes explicit PR ownership, PR order, verification, and the governed-design label catalogue from its initial write.
-- Validate the completed design through the installed `design_file_declaration()` Interface before the first advisor consult. After the first completed `preflight-advice` consult, keep it immutable; use repository-scoped workflow history and GitHub PR state for durable execution progress, with Tasks only as session-local convenience.
+- The design is an on-disk Markdown artifact keyed by the workflow's public `workflowId` under the selected workflow state root, outside the Git checkout. It includes explicit PR ownership, PR order, and verification from its initial write.
+- Deepen the design append-only when execution surfaces new obligations; use repository-scoped workflow history and GitHub PR state for durable execution progress, with Tasks only as session-local convenience.
 - Create a tracked planning document under `docs/plans/` or `docs/reviews/` only when the user explicitly requests that document as a deliverable. It is not the advisor-bound design.
 - Existing tracked governing artifacts already controlling in-flight work remain authoritative under their existing contracts; do not migrate, rename, or rewrite them merely to adopt this policy.
 - Keep the root repo read-only when running a multi-worktree recovery or reconciliation program.

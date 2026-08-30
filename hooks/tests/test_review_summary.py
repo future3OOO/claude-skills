@@ -322,7 +322,7 @@ class ReviewSummaryTests(unittest.TestCase):
         from hooks.lib import workflow_documents
         shapes = workflow_documents.DOCUMENT_SHAPES
         table = workflow_documents.DOCUMENT_SHAPE_TABLE
-        self.assertEqual(list(shapes), ["fixed", "rejected-with-evidence", "report-only", "accepted-follow-up", "accepted-for-proof", "governed-design"], marker)
+        self.assertEqual(list(shapes), ["fixed", "rejected-with-evidence", "report-only", "accepted-follow-up", "governed-design"], marker)
         for name, shape in shapes.items():
             self.assertIn(f"| `{name}` | {shape} |", table, marker)
             self.assertEqual(f"| `{name}` | {shape} |".count("|"), 3, "DOCUMENT_SHAPE_TABLE_HAS_EXTRA_COLUMN")
@@ -344,15 +344,8 @@ class ReviewSummaryTests(unittest.TestCase):
         intake = self.record_review(path, "review-shape-intake")
         intake_id = json.loads(intake.stdout)["summaryId"]
         corrected = self.disposition_document(
-            intake_id, "SPEC-1", "accepted-for-proof", kind="behavioral",
-            reservedBehaviorIds=["BM_SPEC_1", "BM_SPEC_1_PRESERVE"], seam="workflow CLI",
-            preservationObligations=["preserve review state"],
+            intake_id, "SPEC-1", "rejected-with-evidence", kind="behavioral",
         )
-        item = corrected["dispositions"][0]
-        item.pop("evidence")
-        item["occurrence"] = {"seam": "workflow CLI", "reproduction": {
-            "command": "run record-review", "result": "wrong shape refused",
-        }}
         wrong = json.loads(json.dumps(corrected))
         wrong["dispositions"][0]["occurrence"] = {}
         path.write_text(json.dumps(wrong), encoding="utf-8")
@@ -360,7 +353,7 @@ class ReviewSummaryTests(unittest.TestCase):
         refused = self.record_review(path, "review-shape-refusal")
         self.assertEqual((refused.returncode, (self.run_script(WORKFLOW, "status").stdout, self.event_count())),
                          (2, before), marker + refused.stdout + refused.stderr)
-        self.assertIn("accepted-for-proof expected shape", refused.stderr, marker)
+        self.assertIn("rejected-with-evidence expected shape", refused.stderr, marker)
         self.assertIn('"finding_id"', refused.stderr, marker)
         self.assertIn('"kind"', refused.stderr, marker)
         path.write_text(json.dumps(corrected), encoding="utf-8")
@@ -387,11 +380,11 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertIn("candidateTree", refused.stderr)
         subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "same tree"],
                        cwd=self.repo, env=self.env, check=True)
-        unlinked = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
-        path.write_text(json.dumps(unlinked), encoding="utf-8")
-        refused = self.record_review(path, "unlinked-proof")
+        retired = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
+        path.write_text(json.dumps(retired), encoding="utf-8")
+        refused = self.record_review(path, "retired-reservation")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-        self.assertIn("ids, Seam, and preservation obligations", refused.stderr)
+        self.assertIn("invalid or duplicate disposition", refused.stderr)
         report_only = self.disposition_document(intake_id, "SPEC-1", "report-only")
         path.write_text(json.dumps(report_only), encoding="utf-8")
         material = self.record_review(path, "material-report-only")

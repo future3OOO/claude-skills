@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Mapping, Sequence
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 SURFACE_SCHEMA_VERSION = 1
 INTERPRETER = re.compile(r"^python(3(\.\d+)?)?$")
@@ -67,6 +67,86 @@ def identify(command: Sequence[str]) -> dict[str, object]:
         else:
             ignored.add(dropped)
     return _surface(runner, shlex.join(prefix), arguments, sorted(ignored), None)
+
+
+UNITTEST_VALUE_OPTIONS = frozenset({"-k"})
+UNITTEST_DISCOVER_VALUE_OPTIONS = frozenset({
+    "-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "-k",
+})
+UNITTEST_START_OPTIONS = frozenset({"-s", "--start-directory"})
+PYTEST_VALUE_OPTIONS = frozenset({"-k", "-m", "-o", "-p"})
+
+
+def repository_resolution(surface: Mapping[str, object], root: object) -> str | None:
+    """Why the mapped proof targets do not resolve inside ``root``, or None.
+
+    The narrowed promise is target-name resolution: unittest selectors,
+    discover start directories, and pytest targets must resolve under the
+    repository root. Deliberately routing executed test source from outside
+    the repository through an in-repo re-export, load_tests, or conftest
+    delegation remains the audited fabrication class, not a mechanical
+    refusal - the ledger is continuity, not an attestation system.
+    """
+    runner = surface.get("runner")
+    if runner not in {"unittest", "pytest"}:
+        return None
+    top = Path(str(root)).resolve()
+    raw = surface.get("arguments")
+    tokens = [token for token in raw if isinstance(token, str)] if isinstance(raw, list) else []
+    discover = runner == "unittest" and bool(tokens) and tokens[0] == "discover"
+    value_options = (
+        UNITTEST_DISCOVER_VALUE_OPTIONS if discover
+        else UNITTEST_VALUE_OPTIONS if runner == "unittest" else PYTEST_VALUE_OPTIONS
+    )
+    targets: list[str] = []
+    pending_start = False
+    pending_value = False
+    for token in tokens[1 if discover else 0:]:
+        if pending_value:
+            if pending_start:
+                targets.append(token)
+            pending_start = pending_value = False
+            continue
+        if token == "--":
+            continue
+        if token.startswith("-"):
+            name, _, inline = token.partition("=")
+            if name in value_options:
+                if inline:
+                    if discover and name in UNITTEST_START_OPTIONS:
+                        targets.append(inline)
+                else:
+                    pending_value = True
+                    pending_start = discover and name in UNITTEST_START_OPTIONS
+            continue
+        targets.append(token)
+    if discover and not targets:
+        targets.append(".")
+    unresolved: list[str] = []
+    for target in targets:
+        selector = target.split("::", 1)[0] if runner == "pytest" else target
+        if (
+            runner == "unittest"
+            and not discover
+            and "/" not in selector
+            and "\\" not in selector
+            and not selector.endswith(".py")
+        ):
+            head = selector.split(".", 1)[0]
+            if not ((top / f"{head}.py").exists() or (top / head).is_dir()):
+                unresolved.append(target)
+            continue
+        candidate = Path(selector)
+        try:
+            resolved = (candidate if candidate.is_absolute() else top / candidate).resolve()
+            in_repo = resolved.is_relative_to(top) and resolved.exists()
+        except OSError:
+            in_repo = False
+        if not in_repo:
+            unresolved.append(target)
+    if unresolved:
+        return "proof target(s) do not resolve under the repository root: " + ", ".join(sorted(set(unresolved)))
+    return None
 
 
 def differences(

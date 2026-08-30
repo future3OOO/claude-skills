@@ -156,9 +156,10 @@ implementation returns to verification.
 
 Behavioral findings from the lead's code review or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. The behavioral/non-behavioral classification is a lead-owned obligation, not a machine-validated edge: the recorder validates the reassessment's structure and blocks completion until one is recorded, but it cannot judge the classification itself - a behavioral defect routed through a why-only reassessment is a doctrine violation the reviews are expected to catch, not a state the hooks can refuse. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
 
-A finding envelope is one correction batch. Its first disposition classifies every
-finding; later documents name only changed findings and preserve append-only
-history. Until finding, reservation, GREEN, or reassessment closure is complete,
+A finding envelope is one correction batch. A pending behavioral finding rides
+the pass as a map-owned attack obligation; dispositions may cover any subset,
+and later documents preserve append-only history. Until finding, GREEN, or
+reassessment closure is complete,
 `verify`, the typed gate, a new lead-review intake, the final checkpoint, and
 `complete` refuse before broad work runs. Targeted TDD and direct changed-Seam
 probes remain available. Final rejections use one context-matched appeal response:

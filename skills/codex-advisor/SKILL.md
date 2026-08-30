@@ -17,12 +17,14 @@ phase belongs in `--phase`, not in the slug.
 
 Run after Repo Context Forge, before production preflight and before edits.
 Supply the focused scope question; the workflow checkpoint supplies the
-pass-owned advisor projection, workflow binding, and current-pass diff anchors.
-The advisor challenges scope and design; it does not create the preflight
-artifact or approve implementation. It treats the lead question as a claim,
-measures accessible premises before inferring, and makes supplied contract items
-without GREEN/baseline proof plus unowned `PRES-n` or behavioral `ASSUMP-n`
-obligations material.
+pass-owned advisor projection, the recorded original request, workflow binding,
+and current-pass diff anchors. The advisor derives the load-bearing promises of
+the public Interface from the original request, enumerates the caller-reachable
+operations able to falsify each promise — interruption and cancellation,
+transaction control, lifecycle re-entry, shared-state writers, persistence —
+and makes any material promise without a planned real-Seam attack a finding.
+It challenges scope and design; it does not create the preflight artifact or
+approve implementation.
 
 Every phased consult carries a governing-design declaration: `--design-file`
 with the durable design artifact, or `--design-absent` with the specific
@@ -39,17 +41,14 @@ consult.
 
 A design artifact carries: the chosen architecture and rationale; every
 architecture family exploration or planning produced, with the technical
-rejection reason for each rejected family; the verified exploration findings that constrain the design
-and how each was measured; stable `PRES-n` preservation-obligation labels;
-stable `ASSUMP-n` load-bearing-assumption labels; and every unverified
-falsifiable prediction explicitly marked unresolved. The labels and the
-behavioral/non-behavioral classification below are the handoff surface
-Behavior Map `sourceRefs` reference. The wrapper captures and validates the
-catalogue once, records that canonical declaration as workflow evidence, and
-requires final review to present the identical declaration; preflight and
-completion enforce reference integrity and required-label ownership. The
-wrapper sends the canonical declaration and the complete design body as framed
-evidence, and the advisor never owns dispositions.
+rejection reason for each rejected family; the verified exploration findings
+that constrain the design and how each was measured; and every unverified
+falsifiable prediction explicitly marked unresolved. The design is a falsifiable
+hypothesis, not an immutable authority: deepen it append-only in the same
+unpushed workflow and carry the current file to each consult — a changed
+declaration records as new workflow evidence while the ledger keeps every prior
+version. The wrapper sends the declaration and the complete design body as
+framed evidence, and the advisor never owns dispositions.
 
 The canonical imaginary-risk ban and the premise/occurrence checks in the
 repo's `CLAUDE.md` govern architecture-family decisions; this checkpoint adds
@@ -66,12 +65,18 @@ whether it is behavioral or non-behavioral.
 Run after implementation, verification, and the lead's structured code-review
 pass when required. This is the workflow's independent review checkpoint: it
 challenges the lead's review rather than trusting it. The wrapper sends the
-checkpoint's retained advisor projection, the same governing-design declaration
-(carry the identical `--design-file` or `--design-absent` on both checkpoints),
-and one direct `passStartOid^{tree} -> activeCandidateTree` diff. The advisor
-uses only those supplied channels to challenge the changed Module shape,
-minimality, security boundary, candidate binding, and visible regression coverage;
-checkpoint readiness remains wrapper-owned. It returns only this strict envelope:
+recorded original request, the checkpoint's retained advisor projection, the
+current governing-design declaration (a deepened design records as new
+evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff.
+The advisor answers in order: what the original request and public Interface
+promise; which production operations can falsify each load-bearing promise;
+which of those are unattacked through the real Seam in the supplied evidence;
+whether any finding disposition narrows or loses part of its original domain;
+and only then the changed Module shape, minimality, security boundary,
+candidate binding, and visible regression coverage. A promised load-bearing
+surface with no attack forbids `commit-ready` even when every declared map item
+is green; checkpoint readiness remains wrapper-owned. It returns only this
+strict envelope:
 
 ```json
 {"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"fix-before-commit"}
@@ -167,10 +172,11 @@ review. No nonce, skip file, stamp, attestation, or audited exception authorizes
 completion.
 
 The lead validates every advisor finding against current code and proof, then
-records it as fixed, rejected-with-evidence, or accepted follow-up. The first
-disposition classifies the complete intake; later correction documents name
-only changed findings and append supersession links. While classification,
-correction, mapped GREEN, reassessment, reservation closure, or disagreement
+records it as fixed, rejected-with-evidence, or accepted follow-up — or leaves a
+behavioral finding pending as a map-owned attack obligation until its owning
+attack is GREEN. Dispositions may cover any subset of an intake; later
+correction documents name only changed findings and append supersession links.
+While classification, correction, mapped GREEN, reassessment, or disagreement
 remains open, generic verification, the typed gate, lead review, and completion
 refuse. An appeal always blocks completion; when its current candidate bindings
 remain valid it also blocks those broad reruns, while candidate invalidation
@@ -199,12 +205,14 @@ dispositions; it never restates a finding:
 ```
 
 Every disposition carries `kind`, `premise`, `occurrence`, and `materialConsequence` at both stages.
-A behavioral finding first uses `accepted-for-proof` with unique `reservedBehaviorIds`, its real Seam,
-and preservation obligations. At preflight, `record-preflight` consumes that exact reservation; initial
-or pre-GREEN `fixed` is invalid, while later explicit `fixed` requires those items GREEN and reassessed.
+A behavioral finding rides the pass undispositioned: it directly owns Behavior
+Map attack items through finding `sourceRefs` (record-preflight refuses an
+unowned pending behavioral finding; tdd-map adds owners later), and `fixed`
+requires an owning attack GREEN through its recorded RED plus a zero-count
+complete-domain occurrence over the finding's recorded surface.
 `report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
 findings-plus-dispositions form remains compatible for measured nonbehavioral
-results, but cannot create proof reservations. A refusal mutates no state.
+results. A refusal mutates no state.
 Print the canonical disposition and governed-design shape table, generated from
 its installed validator declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
 `--findings none` takes no document.

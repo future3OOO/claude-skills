@@ -86,12 +86,17 @@ The active `workflowId` comes from `workflow.py status`. A disposition is
 bound to that instance and cannot create or alter immutable advisor intake.
 For strict findings, `--findings addressed --input <document>` carries current
 workflow/candidate context, intake identity, and measured dispositions at either stage.
-Behavioral `accepted-for-proof` reserves exact Behavior Map IDs, a real Seam, and preservation obligations.
-At preflight, `record-preflight` consumes the exact reservation; initial or pre-GREEN `fixed` is invalid,
-while later explicit `fixed` requires consumed GREEN proof and reassessment. `report-only` requires false material consequence.
-The legacy form remains compatible for measured nonbehavioral results but cannot
-reserve proof. Refusal mutates nothing. An unavailable consult requires `--reason` with the
-measured transport failure and needs no disposition.
+A material behavioral finding needs no disposition to proceed: leave it pending
+and it rides the pass as a direct attack obligation — `record-preflight` refuses
+a map that does not own it through a finding `sourceRefs` attack item, and
+`tdd-map` adds owners later in the same pass. `fixed` for a behavioral finding
+requires an owning attack GREEN through its recorded RED plus a zero-count
+complete-domain occurrence over the finding's recorded surface; a narrowed
+Interface or a measured false premise is recorded as `rejected-with-evidence`.
+`report-only` requires false material consequence. The legacy inline form
+remains compatible for measured nonbehavioral results. Refusal mutates nothing.
+An unavailable consult requires `--reason` with the measured transport failure
+and needs no disposition.
 
 ### 5. Production preflight
 
@@ -250,23 +255,30 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 A no-finding intake binds the reviewed tree and passes immediately. A finding
 intake stays pending until its appended dispositions resolve every material
-finding. Its first disposition classifies the whole intake; later correction
-documents name only changed findings. Broad verification, the typed gate, and a
-new lead review refuse while current classification, reservation, mapped GREEN,
+finding. Dispositions may cover any subset of an intake; every finding still
+needs a terminal disposition before completion. Broad verification, the typed
+gate, and a new lead review refuse while current classification, mapped GREEN,
 or reassessment work remains open. A false premise records normalized `result`
 exactly `false`; otherwise
 rejection requires zero occurrence on a complete domain. `report-only` resolves
-completion without authorizing an edit and cannot later become `fixed`. Before
-fixing a behavioral finding, reserve its exact
-Behavior Map IDs, real Seam, and preservation obligations with
-`accepted-for-proof`, then drive RED/GREEN and reassessment; nonbehavioral
-corrections record their current-tree evidence directly.
+completion without authorizing an edit and cannot later become `fixed`. A
+behavioral finding is fixed by owning it: add the attack item with its finding
+`sourceRefs` through `tdd-map`, drive RED/GREEN and reassessment, then record
+`fixed` with the zero-count complete-domain occurrence; nonbehavioral
+corrections record their current-tree evidence directly. A later map update
+that would leave a fixed finding without its owning attack refuses.
 
 ### 11. Independent final Codex Advisor review
 
 The final Codex Advisor review is the workflow's sole independent reviewer; do
 not spawn a second review agent. Invoke it against the live diff with wrapper
-phase `final-review`, the same slug, and the base ref. It challenges the lead's
+phase `final-review`, the same slug, and the base ref. It re-derives the attack
+surface before checking declared evidence: what the recorded original request
+and public Interface promise, which operations can falsify each promise, which
+of those are unattacked through the real Seam, and whether any disposition
+narrowed its finding's domain — only then implementation detail and declared-map
+closure. A promised load-bearing surface with no attack forbids `commit-ready`
+even when every declared item is green. It challenges the lead's
 review rather than trusting it. Address and disposition material findings. The
 wrapper leaves final findings pending; the lead explicitly records `none` or
 `addressed` only after validating the output. Any production edit repeats
