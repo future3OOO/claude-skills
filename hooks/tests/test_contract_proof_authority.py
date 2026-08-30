@@ -345,6 +345,392 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
         self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
 
+    def test_sentinel_surface_records_caller_and_executed_commands(self) -> None:
+        # The caller's spelling (trailing -- included) stays the candidate
+        # identity, while the run entry names the executed invocation with
+        # the inert trailing sentinel dropped and the canonical flag last.
+        marker = "SENTINEL_EXECUTION_NOT_ATTRIBUTED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a sentinel-terminated pytest surface",
+            expected="candidate keeps the caller command; the run entry names the executed invocation",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py", "--")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertEqual(
+            recorded["runs"][-1]["command"],
+            shlex.join([*command[:-1], "--verbosity=0"]),
+            marker,
+        )
+
+    def test_sentinel_first_pytest_surface_records_baseline(self) -> None:
+        # An interior -- preceded only by option tokens is a valid caller
+        # shape on pytest 8.4.1: the canonical flag inserted before the
+        # sentinel stays the last option, so the surface records normally.
+        marker = "SENTINEL_FIRST_SURFACE_REFUSED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a sentinel-first interior pytest surface",
+            expected="the surface records a baseline with the flag before the sentinel",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "--", "test_pytest_baseline.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertEqual(
+            recorded["runs"][-1]["command"],
+            shlex.join([*command[:4], "--verbosity=0", *command[4:]]),
+            marker,
+        )
+
+    def test_positional_interior_sentinel_surface_records_baseline(self) -> None:
+        # A positional before an interior -- makes the pre-sentinel flag
+        # placement argparse-invalid on pytest 8.4.1 (rejected before
+        # conftest import), so the recorder walks the insertion point back
+        # to the option/positional boundary; newer parsers accept the first
+        # attempt, so either boundary spelling may be the executed one.
+        marker = "POSITIONAL_BOUNDARY_SURFACE_NOT_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface",
+            expected="the surface records a baseline with the flag at an argparse-valid boundary",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertIn(
+            recorded["runs"][-1]["command"],
+            {
+                shlex.join([*command[:5], "--verbosity=0", *command[5:]]),
+                shlex.join([*command[:4], "--verbosity=0", *command[4:]]),
+            },
+            marker,
+        )
+
+    def test_quiet_positional_interior_sentinel_surface_records_baseline(self) -> None:
+        # A caller -qq must not suppress the summary: the boundary placement
+        # keeps the canonical flag after the quiet flag, so the baseline
+        # records; front placement would lose to -qq and record nothing.
+        marker = "QUIET_POSITIONAL_SENTINEL_NOT_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a quiet positional-then-sentinel pytest surface",
+            expected="the flag outlives the caller quiet flag and the baseline records",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-qq", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertIn(
+            recorded["runs"][-1]["command"],
+            {
+                shlex.join([*command[:5], "--verbosity=0", *command[5:]]),
+                shlex.join([*command[:4], "--verbosity=0", *command[4:]]),
+            },
+            marker,
+        )
+
+    def test_option_value_interior_sentinel_surface_records_baseline(self) -> None:
+        # 'no:cacheprovider' is the value of -p, not a positional, so the
+        # first placement attempt - the flag as the last option before the
+        # sentinel - is argparse-valid on both parser generations and is
+        # the executed spelling.
+        marker = "OPTION_VALUE_PRE_SENTINEL_NOT_RECORDED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over an option-value-then-sentinel pytest surface",
+            expected="the surface records a baseline with the flag before the sentinel",
+            red_failure=marker,
+        )
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                   "--", "test_pytest_baseline.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(document.returncode, 0, document.stdout + document.stderr)
+        recorded = json.loads(document.stdout)["document"]
+        self.assertEqual(recorded["command"], shlex.join(command), marker)
+        self.assertEqual(
+            recorded["runs"][-1]["command"],
+            shlex.join([*command[:6], "--verbosity=0", *command[6:]]),
+            marker,
+        )
+
+    def test_sentinel_surface_runs_caller_once(self) -> None:
+        # Boundary discovery must not run caller startup code: a rejected
+        # real placement still imports conftests and plugins before argparse
+        # exits 4, so probing with the real command duplicates their side
+        # effects. A conftest recording each import must fire exactly once.
+        marker = "CALLER_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface with an import-recording conftest",
+            expected="the caller command executes exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "side.log"
+        (self.repo / "conftest.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('conftest\\n')\n",
+            encoding="utf-8",
+        )
+        self.h.git("add", "conftest.py")
+        self.h.git("commit", "-q", "-m", "conftest")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["conftest"], marker)
+
+    def test_sentinel_surface_starts_plugin_once(self) -> None:
+        # PYTEST_DISABLE_PLUGIN_AUTOLOAD only disables entry-point
+        # discovery: a caller -p plugin would still be imported by a parse
+        # probe, so probes must block explicit plugin loading. A plugin
+        # that records each import must fire exactly once per run.
+        marker = "EXPLICIT_PLUGIN_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface naming an import-recording -p plugin",
+            expected="the plugin starts exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "plugin.log"
+        (self.repo / "sideplugin.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('plugin\\n')\n",
+            encoding="utf-8",
+        )
+        self.h.git("add", "sideplugin.py")
+        self.h.git("commit", "-q", "-m", "sideplugin")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "-p", "sideplugin",
+                   "test_pytest_baseline.py", "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["plugin"], marker)
+
+    def test_sentinel_surface_addopts_plugin_once(self) -> None:
+        # -p can arrive from PYTEST_ADDOPTS as well as command tokens, so
+        # the probe environment must rewrite the addopts value too; the
+        # plugin still starts exactly once for the requested run.
+        marker = "ADDOPTS_PLUGIN_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface with PYTEST_ADDOPTS naming an import-recording plugin",
+            expected="the plugin starts exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "plugin.log"
+        (self.repo / "sideplugin.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('plugin\\n')\n",
+            encoding="utf-8",
+        )
+        self.h.git("add", "sideplugin.py")
+        self.h.git("commit", "-q", "-m", "sideplugin")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env={**self.h.env, "PYTEST_ADDOPTS": "-p sideplugin"}, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["plugin"], marker)
+
+    def test_sentinel_surface_ini_plugin_once(self) -> None:
+        # -p can also arrive from committed ini addopts, which probes must
+        # override; the plugin still starts exactly once per requested run.
+        marker = "INI_ADDOPTS_PLUGIN_STARTUP_DUPLICATED"
+        behavior = contract(
+            "BM_PYTEST",
+            seam="workflow.py tdd over a positional-then-sentinel pytest surface whose committed ini addopts names an import-recording plugin",
+            expected="the plugin starts exactly once and the baseline records",
+            red_failure=marker,
+        )
+        log = self.h.tmp / "plugin.log"
+        (self.repo / "sideplugin.py").write_text(
+            "import pathlib\n"
+            f"with pathlib.Path({str(log)!r}).open('a') as sink:\n"
+            "    sink.write('plugin\\n')\n",
+            encoding="utf-8",
+        )
+        (self.repo / "pytest.ini").write_text(
+            "[pytest]\naddopts = -p sideplugin\n", encoding="utf-8",
+        )
+        self.h.git("add", "sideplugin.py", "pytest.ini")
+        self.h.git("commit", "-q", "-m", "sideplugin via ini addopts")
+        slug, _ = self.h.begin_to_preflight([behavior])
+        (self.repo / "test_pytest_baseline.py").write_text(
+            "def test_real_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_pytest_other.py").write_text(
+            "def test_other_pass():\n"
+            "    assert True\n",
+            encoding="utf-8",
+        )
+        command = (sys.executable, "-m", "pytest", "-q", "test_pytest_baseline.py",
+                   "--", "test_pytest_other.py")
+        genuine = subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo),
+             "--slug", slug, "--phase", "red", "--behavior-id", "BM_PYTEST", "--", *command],
+            cwd=self.repo, env=self.h.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(genuine.returncode, 0, marker + ": " + genuine.stdout + genuine.stderr)
+        self.assertEqual(json.loads(genuine.stdout.strip().splitlines()[-1])["status"], "already-satisfied", marker)
+        imports = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(imports, ["plugin"], marker)
+
     def test_recorded_pytest_run_names_the_executed_command(self) -> None:
         # The recorder executes pytest with its canonical --verbosity=0, a
         # caller-visible option; the run evidence must name that executed

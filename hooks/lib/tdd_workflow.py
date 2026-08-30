@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import sys
@@ -372,6 +373,53 @@ def _baseline_proof(
     return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, ""
 
 
+def _block_plugins(tokens: list[str]) -> list[str]:
+    # The measured plugin preload spellings are a bare -p token and the
+    # fused -pNAME form (option clusters never preload); both are
+    # rewritten to their no:-blocked equivalents, token count unchanged.
+    blocked = list(tokens)
+    for index, token in enumerate(blocked):
+        if token == "-p" and index + 1 < len(blocked):
+            if not blocked[index + 1].startswith("no:"):
+                blocked[index + 1] = "no:" + blocked[index + 1]
+        elif token.startswith("-p") and not token.startswith(("-pno:", "--")) and token[2:]:
+            blocked[index] = "-pno:" + token[2:]
+    return blocked
+
+
+def _parse_probe_accepts(
+    command: list[str], prefix: int, position: int, identity: RepoIdentity, timeout: float
+) -> bool:
+    # Parse-only acceptance probe: --noconftest and a plugin-free
+    # environment keep caller code out, and --markers exits after argument
+    # parsing, before collection. Disabled autoload covers entry points
+    # only, so the caller must pass the command with -p values already
+    # rewritten to their no:-blocked form, and the remaining plugin
+    # sources are handled here - PYTEST_PLUGINS cleared, the
+    # PYTEST_ADDOPTS value rewritten with the same blocking, and ini
+    # addopts overridden away with -o addopts= (which does not reach the
+    # environment value, so both are needed); a blocked plugin's options
+    # degrade to unknowns the rejection rule tolerates. Rejection is exit
+    # 4 naming the bare -- token among the unrecognized arguments; an
+    # unknown caller option at a valid position also exits 4 but never
+    # lists --. Anything else - timeout included - accepts, so the real
+    # run surfaces the failure.
+    probe = [
+        *command[:prefix], "--noconftest", "--markers", "-o", "addopts=",
+        *command[prefix:position], "--verbosity=0", *command[position:],
+    ]
+    env = {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_PLUGINS": ""}
+    env["PYTEST_ADDOPTS"] = shlex.join(_block_plugins(shlex.split(env.get("PYTEST_ADDOPTS", ""))))
+    raw, exit_code, timed_out = _run(probe, identity, timeout, env=env)
+    if timed_out or exit_code != 4:
+        return True
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        _, marker, extras = line.partition("unrecognized arguments:")
+        if marker and "--" in extras.split():
+            return False
+    return True
+
+
 def _run_tdd(values: list[str]) -> int:
     """Run the one mapped-or-imported-legacy candidate-cycle lifecycle."""
     dash = values.index("--") if "--" in values else None
@@ -495,19 +543,50 @@ def _run_tdd(values: list[str]) -> int:
         if active is not None and not matches:
             raise WorkflowError("finish the active mapped cycle before selecting another item")
 
-    # pytest runs execute with one owner-inserted --verbosity=0, placed
-    # before the first -- sentinel because pytest reads everything after it
-    # as a path. Measured: the last --verbosity wins over every earlier quiet
-    # source (-qq, clustered -qqs/-sqq, PYTEST_ADDOPTS=-qq, config
-    # addopts=-qq, --verbosity=-2), so pytest's own summary is always emitted
-    # and the one-summary attribution rule in _baseline_proof stays sound;
-    # under -p no:terminal the option is unrecognised and the run errors out
-    # instead of reporting silently. The candidate identity stays the caller's
-    # command; the run entry records the executed invocation.
+    # pytest runs execute with one owner-inserted --verbosity=0 that must be
+    # the last verbosity source, so every earlier quiet spelling (-qq,
+    # clustered -qqs/-sqq, PYTEST_ADDOPTS=-qq, config addopts=-qq,
+    # --verbosity=-2) is overridden and pytest's own summary always feeds
+    # the one-summary attribution rule in _baseline_proof. One inert
+    # trailing bare -- is dropped (it terminates nothing; 8.4.1 rejects
+    # 'positional --verbosity=0 --'); without a sentinel the flag is
+    # appended. For an interior -- the last valid position is the
+    # option/positional boundary, which is statically unknowable (an option
+    # value like 'no:cacheprovider' and a positional look identical). It is
+    # discovered with the parse-only probes in _parse_probe_accepts - never
+    # by rerunning the caller's command, whose conftest and plugin startup
+    # effects must happen exactly once. The walk from the sentinel stops at
+    # the first accepted position, falling back to just after the last dash
+    # token; the accepted position sits after every caller option and
+    # value, so the flag wins on either parser generation and no raw-valid
+    # spelling is refused or broken. The candidate identity stays the
+    # caller's command; the run entry records the executed invocation.
     executed = list(command)
     if surface.get("runner") == "pytest":
-        sentinel = executed.index("--") if "--" in executed else len(executed)
-        executed.insert(sentinel, "--verbosity=0")
+        if executed and executed[-1] == "--":
+            executed.pop()
+        if "--" in executed:
+            sentinel = executed.index("--")
+            lower = prefix = len(shlex.split(str(surface["invocation"])))
+            for index in range(prefix, sentinel):
+                if executed[index].startswith("-"):
+                    lower = index + 1
+            blocked = [
+                *executed[:prefix],
+                *_block_plugins(executed[prefix:sentinel]),
+                *executed[sentinel:],
+            ]
+            position = next(
+                (
+                    index
+                    for index in range(sentinel, lower, -1)
+                    if _parse_probe_accepts(blocked, prefix, index, identity, args.timeout)
+                ),
+                lower,
+            )
+            executed = [*executed[:position], "--verbosity=0", *executed[position:]]
+        else:
+            executed = [*executed, "--verbosity=0"]
     raw, exit_code, timed_out = _run(executed, identity, args.timeout)
     output = raw.decode("utf-8", errors="replace")
     prior_runs = (
