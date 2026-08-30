@@ -86,11 +86,12 @@ The active `workflowId` comes from `workflow.py status`. A disposition is
 bound to that instance and cannot create or alter immutable advisor intake.
 For strict findings, `--findings addressed --input <document>` carries current
 workflow/candidate context, intake identity, and measured dispositions at either stage.
-Behavioral `accepted-for-proof` reserves exact Behavior Map IDs, a real Seam, and preservation obligations.
-At preflight, `record-preflight` consumes the exact reservation; initial or pre-proof `fixed` is invalid,
-while later explicit `fixed` requires consumed terminal proof and reassessment. `report-only` requires false material consequence.
-The legacy form remains compatible for measured nonbehavioral results but cannot
-reserve proof. Refusal mutates nothing. An unavailable consult requires `--reason` with the
+Behavioral `accepted-for-proof` is a payload-free acknowledgment; the Behavior Map's
+`sourceRefs` own the finding, pre-proof `fixed` is invalid, and later explicit `fixed`
+requires every linked item terminally proved and reassessed plus a complete
+zero-occurrence domain or explicit split/narrowed coverage. `report-only` requires false material consequence.
+The legacy form remains compatible for measured nonbehavioral results on a stage
+with a recorded consult. Refusal mutates nothing. An unavailable consult requires `--reason` with the
 measured transport failure and needs no disposition.
 
 ### 5. Production preflight
@@ -260,9 +261,9 @@ intake stays pending until its appended dispositions resolve every material
 finding. A false premise records normalized `result` exactly `false`; otherwise
 rejection requires zero occurrence on a complete domain. `report-only` resolves
 completion without authorizing an edit and cannot later become `fixed`. Before
-fixing a behavioral finding, reserve its exact
-Behavior Map IDs, real Seam, and preservation obligations with
-`accepted-for-proof`, then drive RED/GREEN or an admissible post-edit pass and reassessment; nonbehavioral
+fixing a behavioral finding, acknowledge it with a payload-free
+`accepted-for-proof`, map attack items carrying the finding's `sourceRefs`,
+then drive RED/GREEN or an admissible post-edit pass and reassessment; nonbehavioral
 corrections record their current-tree evidence directly.
 
 ### 11. Independent final Codex Advisor review
@@ -276,10 +277,11 @@ wrapper leaves final findings pending; the lead explicitly records `none` or
 verification, code review where required, and final review.
 
 A material finding the lead closes itself - fixed, rejected-with-evidence, or
-report-only - opens one appeal that only a strict advisor envelope answers; a
-bare verdict does not. Omission accepts it, a material re-raise blocks on
-`needs-human-owner-adjudication`, and a `context-mismatch` envelope answers
-nothing. While the batch is open, `nextAction` names the correction it owes and
+report-only - never releases completion on its own: the pass still owes a fresh
+strict commit-ready envelope, and a bare verdict does not stand in for one. A
+`context-mismatch` envelope answers nothing and asks for re-consultation. A
+material re-raise in a later envelope reopens the finding for remeasurement.
+While a correction batch is open, `nextAction` names the correction it owes and
 withholds verification, the typed gate, and lead review. Correct an erroneous
 settled record with an appended supersession, not a rewrite.
 

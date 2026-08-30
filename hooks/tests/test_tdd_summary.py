@@ -144,7 +144,8 @@ class TddSummaryTests(unittest.TestCase):
         begun = self.run_script(WORKFLOW, "begin", "--repo", str(self.repo), "--slug", "tdd-summary")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         identity = record_context_forge(self.repo, self.tmp)
-        record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed")
+        self.design = {"schemaVersion": 1, "status": "absent", "reason": "test pass has no governing design"}
+        record_advisor_result(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "codex-advisor", "completed", design=self.design)
         advisor_disposition(identity, "tdd-summary", read_workflow(identity)["workflowId"], "preflight", "none")
         self.record_preflight_evidence()
 
@@ -724,7 +725,16 @@ class TddSummaryTests(unittest.TestCase):
                                   "--kind", "quality-gate", "--base-ref", "HEAD")
         self.assertEqual(quality.returncode, 0, quality.stdout + quality.stderr)
         set_phase(identity, "code-review", "passed", findings="none")
-        record_advisor_result(identity, "tdd-summary", wid, "final", "codex-advisor", "commit-ready")
+        envelope = self.tmp / "final-envelope.json"
+        envelope.write_text('{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}', encoding="utf-8")
+        declaration = self.tmp / "design-absent.json"
+        declaration.write_text(json.dumps({
+            "schemaVersion": 1, "status": "absent", "reason": "test pass has no governing design",
+        }), encoding="utf-8")
+        answered = self.run_script(WORKFLOW, "advisor-result", "--repo", str(self.repo), "--slug", "tdd-summary",
+                                   "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor",
+                                   "--input", str(envelope), "--design-declaration", str(declaration))
+        self.assertEqual(answered.returncode, 0, answered.stdout + answered.stderr)
         advisor_disposition(identity, "tdd-summary", wid, "final", "none")
         completed = self.run_script(WORKFLOW, "complete", "--repo", str(self.repo))
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)

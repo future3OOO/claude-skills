@@ -75,9 +75,9 @@ observation, never proof — and makes unreconciled design/preflight
 divergence a finding. It requires the design's concrete preservation
 obligations rechecked against the diff, its load-bearing assumptions falsified
 against the implementation, the contradictory-contract gate applied to the
-changed Interface, and at most
-one additional material reachable failure class beyond the design and
-recorded proof. The advisor reconciles the governed slice, real-seam proof,
+changed Interface, and every material reachable failure class introduced by
+the changed Interface or state boundary and absent from both the design and
+the recorded proof reported. The advisor reconciles the governed slice, real-seam proof,
 module shape, minimality, and regression coverage, returning only this strict
 envelope:
 
@@ -230,12 +230,13 @@ dispositions; it never restates a finding:
 ```
 
 Every disposition carries `kind`, `premise`, `occurrence`, and `materialConsequence` at both stages.
-A behavioral finding first uses `accepted-for-proof` with unique `reservedBehaviorIds`, its real Seam,
-and preservation obligations. At preflight, `record-preflight` consumes that exact reservation; initial
-or pre-proof `fixed` is invalid, while later explicit `fixed` requires those items to reach terminal proof and be reassessed.
-`report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
+A behavioral finding is first acknowledged with a payload-free `accepted-for-proof`; the Behavior Map
+then carries items whose `sourceRefs` name the finding, and `fixed` requires every linked item
+terminally proved and reassessed, plus a complete zero-occurrence domain or an explicit
+split/narrowed `coverage`. Pre-proof `fixed` is refused.
+`report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`; `accepted-for-proof` owes no closure payload. The legacy
 findings-plus-dispositions form remains compatible for measured nonbehavioral
-results, but cannot create proof reservations. A refusal mutates no state.
+results on a stage with a recorded consult. A refusal mutates no state.
 Print the canonical disposition and governed-design shape table, generated from
 its installed validator declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
 `--findings none` takes no document.

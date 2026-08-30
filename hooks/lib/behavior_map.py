@@ -13,9 +13,9 @@ DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded"}
 KINDS = frozenset({"contract", "preservation"})
 REQUIRED_FIELDS = frozenset({
-    "id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status",
+    "id", "kind", "behavior", "seam", "expected", "redFailure", "status",
 })
-OPTIONAL_FIELDS = frozenset({"evidence", "supersededBy", "sourceRefs"})
+OPTIONAL_FIELDS = frozenset({"basis", "evidence", "supersededBy", "sourceRefs"})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
 DESIGN_LABEL = re.compile(r"^(?:PRES|ASSUMP)-[1-9][0-9]*$")
 _CONTRACT_DISPOSITION_REFUSED = (
@@ -181,7 +181,7 @@ def validate_items(
         item: JsonObject = {
             "id": identifier,
             **({"kind": kind} if kind is not None else {}),
-            "basis": _required(raw, "basis", identifier),
+            **({"basis": _required(raw, "basis", identifier)} if "basis" in raw else {}),
             "behavior": _required(raw, "behavior", identifier),
             "seam": _required(raw, "seam", identifier),
             "expected": _required(raw, "expected", identifier),
@@ -325,9 +325,9 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
         # supersession further along the chain moves an earlier row's terminal, and a
         # preservation link in between is skipped by the kind test above.
         identifier = str(mapped["id"])
-        # Closure resolves a reserved contract obligation inside the finding's own
+        # Closure resolves a linked contract obligation inside the finding's own
         # linked set and walks to the terminal, so a terminal outside that set can
-        # never close the reservation. It refuses at `fixed`, by which point the
+        # never close the finding. It refuses at `fixed`, by which point the
         # rows are recorded and nothing can carry the ref forward; here they are
         # still mutable. Preservation retires off the set deliberately.
         kept = {
@@ -443,7 +443,6 @@ def no_change_item(evidence: str) -> JsonObject:
     return {
         "id": "BM_NO_CHANGE",
         "kind": "preservation",
-        "basis": "governing evidence",
         "behavior": "No production behavior changes in this pass",
         "seam": "workflow preflight evidence",
         "expected": "TDD is not required",

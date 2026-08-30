@@ -220,14 +220,14 @@ Do not pause for ceremonial approval after evidence has resolved the decision.
 
 ### `behaviorMap`
 
-Record a non-empty JSON array. Every item has these eight required fields:
+Record a non-empty JSON array. Every item has these seven required fields
+(`basis` may be added as optional prose):
 
 ```json
 [
   {
     "id": "BM_ATOMICITY",
     "kind": "preservation",
-    "basis": "touched-Seam preservation",
     "behavior": "a caught inner failure remains atomic under the new transaction path",
     "seam": "the public operation through that path",
     "expected": "no partial inner write survives",
@@ -238,7 +238,7 @@ Record a non-empty JSON array. Every item has these eight required fields:
 ```
 
 - IDs are stable uppercase identifiers used by RED/GREEN evidence.
-- `kind` is `contract` for the requested behavior and `preservation` for what the change must keep true. List contract items first. A map with any pending item carries at least one contract item; `basis` is prose and carries no authority.
+- `kind` is `contract` for the requested behavior and `preservation` for what the change must keep true. List contract items first. A map with any pending item carries at least one contract item; `basis`, when present, is prose and carries no authority.
 - `redFailure` names the product failure. A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`).
 - A contract item starts `pending`: it is never `omitted`, and only `tdd --phase red` passing its exact mapped surface pre-edit records it `already-satisfied`. A preservation item starts `pending`, `already-satisfied`, or `omitted`; `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
 - Map every declared success/failure, meaningful state transition, material guarantee at a wrapped or rerouted Seam, visible interaction, and known architecture assumption needing falsification.

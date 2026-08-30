@@ -115,29 +115,29 @@ readiness for the advisor phases without mutating anything.
 
 ### Finding lifecycle
 
-A material final-review finding the lead closes itself opens one appeal, bound to
-that finding, its immutable intake, and the candidate tree the closure measured.
-Only a strict advisor envelope answers it: a bare recorded verdict carries no
-findings intake, so its silence is not the advisor omitting the appealed id.
-Omission in the next context-matched envelope accepts the closure and terminalizes
-it, whatever else that envelope raises; a material re-raise of the same id records
-persistent disagreement and blocks completion with
-`needs-human-owner-adjudication`, which ordinary progress does not clear. The
-answer records whether it reviewed the bound candidate, so a stale acceptance
-stays auditable without the appeal becoming unanswerable when the pass corrects
-something else. A `context-mismatch` envelope answers nothing, consumes no
-appeal, and contributes no findings, while remaining recorded as evidence.
+A material final-review finding the lead closes itself never releases
+completion: the standing verdict is not commit-ready, so the pass still owes a
+fresh strict commit-ready envelope, and a bare recorded verdict carries no
+findings intake and cannot stand in for one. The ids a fresh envelope raises
+form their own immutable blocking intake, and a material re-raise of a settled
+id reopens that finding for remeasurement. A `context-mismatch` envelope
+answers nothing and contributes no findings, while remaining recorded as
+evidence.
 
 One recorded envelope is one correction batch. While a stage-final finding is
-unresolved or a review-stage reservation is not both consumed and fixed,
-`nextAction` names the correction the batch owes - `tdd` for an open reservation,
-otherwise `address-review-findings` - and never generic verification, the typed
-gate, or lead review. The batch is keyed on the immutable intake, so a correction
-edit does not close it.
+unresolved, `nextAction` names the correction the batch owes -
+`address-review-findings`, or `tdd` while a reassessment is pending - and never
+generic verification, the typed gate, or lead review. The batch is keyed on the
+immutable intake, so a correction edit does not close it.
+
+A behavioral finding closes `fixed` only through conservation: at least one
+Behavior Map item carries the finding's `sourceRef`, every linked item is
+terminally proved, and the closure measures a complete zero-occurrence domain
+or names explicit split/narrowed coverage.
 
 A closure document references only the findings it changes; untouched terminal
 findings stay terminal without being re-copied. An erroneous settled record,
-including one carrying a consumed proof reservation, is corrected only by an
+including one proof closed, is corrected only by an
 appended supersession naming what it replaces and why - never by rewriting
 history, and never on a record that has settled nothing.
 
@@ -164,9 +164,8 @@ changes HEAD. A local commit is a reversible snapshot, not publication.
 - preflight, production-code, and verification each carrying their producer's
   evidence reference;
 - lead code review passed/not required with material findings addressed;
-- final review from `codex-advisor` with `commit-ready` and no pending material
-  findings, no appeal still awaiting a strict envelope, and no recorded
-  persistent disagreement;
+- final review from `codex-advisor` with `commit-ready` recorded through the
+  strict envelope intake and no pending material findings;
 - the reviewable working tree unchanged since the recorded lead review.
 
 The historical `pass-state.py`, recorder, TDD, and verification scripts are temporary compatibility adapters. They call the same unified CLI Module and contain no persistence or path logic; new callers use `workflow.py` directly.

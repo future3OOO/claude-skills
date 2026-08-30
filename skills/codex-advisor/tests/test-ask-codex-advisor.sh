@@ -278,7 +278,7 @@ identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
 w.begin(identity, slug)
 advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)
 wid = str(w.instance_id(w.read_workflow(identity)))
-w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-ready")
+w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-ready", intake={"workflowId": wid, "stage": "final", "producer": "codex-advisor", "verdict": "commit-ready", "findings": []})
 w.advisor_disposition(identity, slug, wid, "final", "none")
 w.complete(identity)' completed-pass
 out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
@@ -701,7 +701,7 @@ check "design preservation obligations are rechecked" "Recheck the concrete pres
 check "design assumptions are falsified" "attempt to falsify its load-bearing assumptions" "$armh_payload"
 check "Behavior Map stays the sole proof authority" "it does not own Behavior Map entries or proof status" "$armh_payload"
 check "the contradictory-contract gate is applied" "may not also require callers to avoid particular operations" "$armh_payload"
-check "discovery is bounded to one additional failure class" "at most one additional material reachable failure class" "$armh_payload"
+check "discovery reports every material reachable failure class" "Report every material reachable failure class introduced by the changed Interface or state boundary" "$armh_payload"
 check "contract Behavior Map items accept producer-backed post-edit proof" "A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed post-edit-passed with passProof" "$armh_payload"
 check "a superseded contract item needs terminal proof" "superseded without a GREEN or post-edit-passed terminal replacement is material" "$armh_payload"
 if [[ "$preflight_payload" == *"--- recorded production preflight (bounded:"* ]]; then
