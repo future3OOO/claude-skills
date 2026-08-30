@@ -18,8 +18,10 @@ flowchart LR
     NR --> PC
     PC --> I[implementation]
     I -->|active RED| TG[mapped GREEN]
+    I -->|co-satisfied pending contract| TP[post-edit pass]
     I -->|not-required map| V
-    TG --> TM[post-GREEN map reassessment]
+    TG --> TM[post-proof map reassessment]
+    TP --> TM
     TM -->|new obligation| TR
     TM -->|map resolved| V[verification]
     V --> CR[lead structured code review when non-trivial]
@@ -45,8 +47,8 @@ workflow evidence              # read one logical evidence record
 workflow set-phase             # lead-owned implementation and trivial review
 workflow record-preflight      # validates 13 text sections + Behavior Map
 workflow record-production-code # validates the bundled gate verdict
-workflow tdd                   # mapped RED/GREEN or records not-required
-workflow tdd-map               # dispositions and post-GREEN map updates
+workflow tdd                   # mapped RED/GREEN, post-edit pass, or not-required
+workflow tdd-map               # dispositions and post-proof map updates
 workflow verify                # generic commands or typed final-tree quality gate
 workflow record-review         # structured lead review plus tree manifest
 workflow advisor-result|advisor-disposition
@@ -70,7 +72,7 @@ as logical evidence, inserted in the same SQLite transaction as the accepted eve
 findings-none advisor disposition intentionally carries no document, and a
 refusal names the missing evidence and mutates nothing. The preflight document
 owns the initial Behavior Map; mapped TDD evidence carries its stable IDs,
-RED/GREEN runs, current dispositions, and pending reassessment. A plan may show
+RED/GREEN and post-edit pass runs, current dispositions, and pending reassessment. A plan may show
 the map but is not an evidence owner.
 
 Exit 2 alone does not prove a refusal: the verification, TDD, and review
@@ -83,8 +85,11 @@ it, so a bare replay can never resurrect prior evidence. TDD and code review
 instead keep a current producer reference across their own non-passed states —
 TDD while in-progress and when not-required, code review while pending — so a
 later run can validate or supersede it. Only TDD's in-progress reference serves
-GREEN's validation of the RED it follows. TDD entry demands recorded preflight
-evidence and, for new governed passes, a mapped behavior ID. Each producer stamps
+GREEN's validation of the RED it follows. A `post-edit-passed` run instead requires
+a prior producer-counted cycle, dirty production candidate, settled cycle and
+reassessment, pending contract item, and directly invoked pytest or unittest
+terminal pass; it does not claim item-specific RED history. TDD entry demands
+recorded preflight evidence and, for new governed passes, a mapped behavior ID. Each producer stamps
 the workflow instance into its evidence and the ledger keeps its logical
 identity, so a passed Repo Context Forge, preflight, production-code, or
 verification phase without one — legacy state, or a bare library claim — reads
@@ -96,9 +101,9 @@ The database and its containing directory are private and agent-writable. Commit
 commit or HEAD change does not invalidate it. After production preflight,
 test-like edits are admitted while TDD is pending. Production edits are admitted
 after the production-code baseline for an active valid mapped RED, a fully
-dispositioned `not-required` map, or a resolved and reassessed GREEN map. A GREEN
-blocks the next production edit until `tdd-map` records the required architecture,
-preservation, and interaction reassessment. A later edit against a resolved map
+dispositioned `not-required` map, or a resolved and reassessed proof map. GREEN and
+`post-edit-passed` each block the next production edit until `tdd-map` records the
+required architecture, preservation, and interaction reassessment. A later edit against a resolved map
 stays admitted but flags completion for another reassessment. A normally
 completed workflow is terminal: every mutation except `begin` is rejected.
 
@@ -150,9 +155,9 @@ changes HEAD. A local commit is a reversible snapshot, not publication.
 - advisor preflight completed with findings dispositioned, or explicitly
   unavailable with a measured reason;
 - production preflight completed with a non-empty Behavior Map;
-- every contract map item GREEN, or `already-satisfied` by the recorder's own baseline run (its exact mapped surface passed before any edit);
-- every preservation map item GREEN, already satisfied, or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a GREEN terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
-- no pending proof gap or post-GREEN map reassessment;
+- every contract map item GREEN, `post-edit-passed`, or `already-satisfied` by the recorder's own baseline run (its exact mapped surface passed before any edit);
+- every preservation map item GREEN, already satisfied, or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a GREEN or `post-edit-passed` terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
+- no pending proof gap or post-proof map reassessment;
 - TDD passed or not required;
 - production-code recorded;
 - implementation and verification passed;
@@ -231,7 +236,7 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; after the production-code baseline admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed GREEN map; after GREEN block the next production edit until map reassessment |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; after the production-code baseline admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed proof map; after GREEN or `post-edit-passed` block the next production edit until map reassessment |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
 | `Stop` | Completion latch plus context: blocks with the exact `nextAction` while canonical completion readiness reports missing work and no pause is recorded; authoritative workflow or mapped-evidence corruption remains repair-only and cannot be released by `pause`. It permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound waits for ordinary external blockers, advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success because any Stop output re-prompts the model. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there and counts one selection event, not a firing or outcome |

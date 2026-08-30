@@ -148,7 +148,7 @@ def edit_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
     if items is None:
         return []
     if isinstance(document, dict) and document.get("reassessmentPending"):
-        return ["post-GREEN Behavior Map reassessment via workflow tdd-map"]
+        return ["post-proof Behavior Map reassessment via workflow tdd-map"]
     active = document.get("activeBehaviorId") if isinstance(document, dict) else None
     reason = behavior_map.edit_blocker(items, active if isinstance(active, str) else None)
     return [reason] if reason else []
@@ -329,10 +329,16 @@ def _baseline_proof(
     if runner == "unittest":
         # unittest exits 0 with skipped and expected-failure tests inside its
         # Ran count; only its own result line says how many did not genuinely
-        # pass. That line is the first OK line after the last Ran line: test
-        # output either precedes Ran (unbuffered) or flushes after the runner
-        # has finished (buffered), never between the two runner writes.
+        # pass. Test-controlled output (a print, an atexit hook) can place a
+        # forged Ran/OK block before or after the runner's own writes, so the
+        # result is attributable only when exactly one Ran line exists; its
+        # result line is then the first OK line after it.
         runs = list(tdd_surface.UNITTEST_RAN.finditer(output))
+        if len(runs) > 1:
+            return None, (
+                f"unittest output carries {len(runs)} 'Ran N tests' lines; "
+                "a genuine run reports exactly one, so the result is unattributable"
+            )
         executed = int(runs[-1].group(1)) if runs else 0
         result = re.search(r"(?m)^OK(?: \((.*)\))?$", output[runs[-1].end():]) if runs else None
         executed -= sum(
@@ -340,8 +346,26 @@ def _baseline_proof(
             for count in re.findall(r"(?:skipped|expected failures)=(\d+)", result.group(1) or "")
         ) if result else 0
     else:
-        executed = sum(
-            int(value) for value in re.findall(r"(?<!\d)(\d+) passed\b", output.lower())
+        # pytest ends its genuine run with one summary line (" in N.NNs");
+        # test-controlled output can print another before it (a test print)
+        # or after it (an atexit hook), so the pass count is attributable
+        # only when exactly one summary-shaped line exists. The executed
+        # command carries an owner-appended trailing --verbosity=0 (see
+        # _run_tdd), measured to restore that summary against every quiet
+        # source (-qq, clustered -qqs, PYTEST_ADDOPTS, config addopts,
+        # --verbosity=-2) and to error the run out under -p no:terminal,
+        # so a missing summary here means zero attributable passes.
+        stripped = (line.strip().strip("=").strip().lower() for line in output.splitlines())
+        summaries = [line for line in stripped if re.search(r" in \d+(?:\.\d+)?s$", line)]
+        if len(summaries) > 1:
+            return None, (
+                f"pytest output carries {len(summaries)} summary-shaped lines; "
+                "a genuine run reports exactly one, so the pass count is unattributable"
+            )
+        executed = (
+            sum(int(value) for value in re.findall(r"(?<!\d)(\d+) passed\b", summaries[0]))
+            if summaries
+            else 0
         )
     if executed < 1:
         return None, f"{runner} did not report an executed passing test"
@@ -385,6 +409,7 @@ def _run_tdd(values: list[str]) -> int:
         if isinstance(state.get("tddEvidence"), str)
         else None
     )
+    post_edit_candidate = False
     if legacy:
         behavior = str(args.behavior or "").strip()
         seam = str(args.seam or "").strip()
@@ -401,23 +426,33 @@ def _run_tdd(values: list[str]) -> int:
             raise ValueError("--behavior-id is required for mapped RED/GREEN")
         if isinstance(current, dict) and current.get("reassessmentPending"):
             raise WorkflowError(
-                "record the pending post-GREEN Behavior Map reassessment before another cycle"
+                "record the pending post-proof Behavior Map reassessment before another cycle"
             )
         mapped = behavior_map.item(items, args.behavior_id)
         status = str(mapped["status"])
-        if phase == "red" and status not in {"pending", "red"}:
-            raise WorkflowError(
-                f"behavior {args.behavior_id} is {status}; add a new map item for a new defect"
-            )
-        if phase == "green" and status != "red":
-            raise WorkflowError(f"behavior {args.behavior_id} has no valid mapped RED")
         candidate = (
             current
             if isinstance(current, dict) and current.get("kind") == "cycle"
             else None
         )
         active = candidate.get("activeBehaviorId") if isinstance(candidate, dict) else None
-        if phase == "green" and active != args.behavior_id:
+        post_edit_candidate = (
+            phase == "green"
+            and status == "pending"
+            and mapped.get("kind") == "contract"
+            and active is None
+            and state.get("tddCycleCount", 0) > 0
+            and bool(production_changes(identity, "HEAD"))
+        )
+        if phase == "red" and status not in {"pending", "red"}:
+            raise WorkflowError(
+                f"behavior {args.behavior_id} is {status}; add a new map item for a new defect"
+            )
+        if phase == "green" and status != "red" and not post_edit_candidate:
+            raise WorkflowError(
+                f"behavior {args.behavior_id} has no valid mapped RED or dirty post-edit candidate"
+            )
+        if phase == "green" and not post_edit_candidate and active != args.behavior_id:
             raise WorkflowError(
                 f"behavior {args.behavior_id} has no active mapped RED candidate"
             )
@@ -460,7 +495,20 @@ def _run_tdd(values: list[str]) -> int:
         if active is not None and not matches:
             raise WorkflowError("finish the active mapped cycle before selecting another item")
 
-    raw, exit_code, timed_out = _run(command, identity, args.timeout)
+    # pytest runs execute with one owner-inserted --verbosity=0, placed
+    # before the first -- sentinel because pytest reads everything after it
+    # as a path. Measured: the last --verbosity wins over every earlier quiet
+    # source (-qq, clustered -qqs/-sqq, PYTEST_ADDOPTS=-qq, config
+    # addopts=-qq, --verbosity=-2), so pytest's own summary is always emitted
+    # and the one-summary attribution rule in _baseline_proof stays sound;
+    # under -p no:terminal the option is unrecognised and the run errors out
+    # instead of reporting silently. The candidate identity stays the caller's
+    # command; the run entry records the executed invocation.
+    executed = list(command)
+    if surface.get("runner") == "pytest":
+        sentinel = executed.index("--") if "--" in executed else len(executed)
+        executed.insert(sentinel, "--verbosity=0")
+    raw, exit_code, timed_out = _run(executed, identity, args.timeout)
     output = raw.decode("utf-8", errors="replace")
     prior_runs = (
         candidate.get("runs")
@@ -477,6 +525,7 @@ def _run_tdd(values: list[str]) -> int:
     proof_error = ""
     red_ok = False
     baseline = False
+    post_edit_pass = False
     if phase == "red" and not timed_out and exit_code != 0:
         if legacy:
             red_ok = bool(expected) and expected in output
@@ -500,11 +549,18 @@ def _run_tdd(values: list[str]) -> int:
                 "changed: " + ", ".join(edited)
             )
         baseline = proof is not None
-    valid = red_ok if phase == "red" else not timed_out and exit_code == 0 and prior_red
+    elif phase == "green" and post_edit_candidate and not timed_out and exit_code == 0:
+        proof, proof_error = _baseline_proof(surface, output)
+        post_edit_pass = proof is not None
+    valid = (
+        red_ok
+        if phase == "red"
+        else not timed_out and exit_code == 0 and (prior_red or post_edit_pass)
+    )
 
     fields: dict[str, object] = {
         "phase": phase,
-        "command": command_text,
+        "command": shlex.join(executed),
         "valid": valid,
     }
     if legacy:
@@ -512,9 +568,9 @@ def _run_tdd(values: list[str]) -> int:
     else:
         fields["expectedFailure"] = expected if phase == "red" else None
         if proof is not None:
-            fields["redProof"] = proof
-        elif phase == "red" and proof_error:
-            fields["redProofFailure"] = proof_error
+            fields["passProof" if post_edit_pass else "redProof"] = proof
+        elif proof_error:
+            fields["passProofFailure" if phase == "green" else "redProofFailure"] = proof_error
     run = _run_entry(raw, exit_code, timed_out, **fields)
 
     document: JsonObject | None = None
@@ -583,7 +639,9 @@ def _run_tdd(values: list[str]) -> int:
                 action = "in-progress" if matches else "reopen"
                 opens_cycle = not matches
             elif phase == "green" and valid:
-                updated_item["status"] = "green"
+                updated_item["status"] = (
+                    "post-edit-passed" if post_edit_pass else "green"
+                )
                 next_active = None
                 reassessment_pending = args.behavior_id
                 action = "in-progress"
@@ -628,6 +686,8 @@ def _run_tdd(values: list[str]) -> int:
         payload["behaviorId"] = args.behavior_id
     if baseline:
         payload["status"] = "already-satisfied"
+    elif post_edit_pass:
+        payload["status"] = "post-edit-passed"
     _emit_json(payload)
     if valid or baseline:
         return 0
@@ -646,8 +706,11 @@ def _run_tdd(values: list[str]) -> int:
             file=sys.stderr,
         )
     else:
+        reason = f" {proof_error}" if proof_error else ""
         print(
-            "GREEN must pass after a valid RED for the same mapped behavior and surface.",
+            "GREEN must pass after a valid RED for the same mapped behavior and surface, "
+            "or post-edit proof must report an executed passing pytest or unittest test."
+            + reason,
             file=sys.stderr,
         )
     return 2
@@ -691,13 +754,13 @@ def _map_update(values: list[str]) -> int:
             )
     elif source is not None:
         raise ValueError(
-            "sourceBehaviorId is valid only for a pending post-GREEN reassessment"
+            "sourceBehaviorId is valid only for a pending post-proof reassessment"
         )
     elif not additions and not dispositions and not (
         isinstance(current, dict) and current.get("postEditReassessment")
     ):
         raise ValueError(
-            "a map update outside post-GREEN reassessment must add or disposition an item"
+            "a map update outside post-proof reassessment must add or disposition an item"
         )
 
     updated = behavior_map.clone(items)

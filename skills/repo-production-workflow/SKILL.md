@@ -87,8 +87,8 @@ bound to that instance and cannot create or alter immutable advisor intake.
 For strict findings, `--findings addressed --input <document>` carries current
 workflow/candidate context, intake identity, and measured dispositions at either stage.
 Behavioral `accepted-for-proof` reserves exact Behavior Map IDs, a real Seam, and preservation obligations.
-At preflight, `record-preflight` consumes the exact reservation; initial or pre-GREEN `fixed` is invalid,
-while later explicit `fixed` requires consumed GREEN proof and reassessment. `report-only` requires false material consequence.
+At preflight, `record-preflight` consumes the exact reservation; initial or pre-proof `fixed` is invalid,
+while later explicit `fixed` requires consumed terminal proof and reassessment. `report-only` requires false material consequence.
 The legacy form remains compatible for measured nonbehavioral results but cannot
 reserve proof. Refusal mutates nothing. An unavailable consult requires `--reason` with the
 measured transport failure and needs no disposition.
@@ -124,7 +124,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <targeted-command>
 ```
 
-A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose, and a preservation item may additionally be dispositioned through `tdd-map`.
+A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose, and a preservation item may additionally be dispositioned through `tdd-map`. After another genuine contract cycle has opened a dirty implementation candidate, `tdd --phase green` may record a separate pending contract as `post-edit-passed` from its own directly invoked passing pytest or unittest surface. That status proves the current candidate, not an item-specific RED/GREEN history; it is unavailable without a prior cycle, dirty production change, settled active cycle and reassessment, or genuine terminal pass.
 
 In this governed workflow the public TDD producers are required; `set-phase` does not accept the `tdd` phase. They keep bounded evidence and advance state but are not proof by themselves. For genuinely non-behavioral work, `--not-required` is available only after every map item is already satisfied or omitted by governing evidence:
 
@@ -134,7 +134,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --not-required "<specific non-behavioral reason>"
 ```
 
-After production preflight, test-like edits are admitted while TDD is pending. Production edits require the production-code baseline in step 7 plus a valid RED for an active `contract` item, with every other preservation item GREEN, `already-satisfied`, or `omitted`; a preservation RED alone, a baseline `already-satisfied`, and a `--not-required` decision open nothing. Once every contract item is resolved and at least one reached GREEN through RED, further production edits (refactoring while GREEN) stay admitted with TDD `passed`; each such edit flags the map, and completion then demands one recorded `tdd-map` reassessment - the behavioral item, or the recorded why-non-behavioral. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
+After production preflight, test-like edits are admitted while TDD is pending. Production edits require the production-code baseline in step 7 plus a valid RED for an active `contract` item, with every other preservation item GREEN, `already-satisfied`, or `omitted`; a preservation RED alone, a baseline `already-satisfied`, a `post-edit-passed` item, and a `--not-required` decision open nothing. Once every contract item is resolved and at least one reached GREEN through RED, further production edits (refactoring while GREEN) stay admitted with TDD `passed`; each such edit flags the map, and completion then demands one recorded `tdd-map` reassessment - the behavioral item, or the recorded why-non-behavioral. TDD remains in progress through implementation, terminal proof, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
 
 ### 7. Production code
 
@@ -179,7 +179,9 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <same test surface>
 ```
 
-After every GREEN, record a `workflow.py tdd-map` reassessment before another
+For a separate pending contract already satisfied by that dirty candidate, use the same `--phase green` form with the item's own direct pytest or unittest surface; the recorder returns `status: post-edit-passed` without claiming an item-specific RED.
+
+After every GREEN or `post-edit-passed`, record a `workflow.py tdd-map` reassessment before another
 production edit:
 
 ```bash
@@ -188,10 +190,10 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --input <map-update.json>
 ```
 
-The JSON document accepts `sourceBehaviorId` (the GREEN under review),
+The JSON document accepts `sourceBehaviorId` (the GREEN or `post-edit-passed` item under review),
 `reassessment`, `items`, and `dispositions` only. Add newly exposed touched-Seam preservation, interaction,
 semantic falsification, or review-discovered behavior; an empty addition records
-why the GREEN created no further obligation. Only after GREEN and reassessment
+why the terminal proof created no further obligation. Only after terminal proof and reassessment
 leave TDD `passed` or `not-required` may implementation be recorded passed:
 
 ```bash
@@ -260,7 +262,7 @@ rejection requires zero occurrence on a complete domain. `report-only` resolves
 completion without authorizing an edit and cannot later become `fixed`. Before
 fixing a behavioral finding, reserve its exact
 Behavior Map IDs, real Seam, and preservation obligations with
-`accepted-for-proof`, then drive RED/GREEN and reassessment; nonbehavioral
+`accepted-for-proof`, then drive RED/GREEN or an admissible post-edit pass and reassessment; nonbehavioral
 corrections record their current-tree evidence directly.
 
 ### 11. Independent final Codex Advisor review
@@ -288,7 +290,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   complete --repo "$PWD"
 ```
 
-`complete` refuses, from inside its transaction, unless every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, the final source is `codex-advisor` with `commit-ready`, the reviewable working tree still matches the manifest recorded by the lead review, and every evidence phase carries its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
+`complete` refuses, from inside its transaction, unless every contract item is GREEN, `post-edit-passed`, or baseline `already-satisfied`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN or `post-edit-passed` terminal replacement — no post-proof reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, the final source is `codex-advisor` with `commit-ready`, the reviewable working tree still matches the manifest recorded by the lead review, and every evidence phase carries its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion
 
@@ -323,4 +325,4 @@ re-stop conditions. Unavailable blast-radius impact is reported as `unknown`.
 
 ## Final response
 
-Report Behavior Map dispositions, behavior-specific RED/GREEN proof, post-GREEN reassessments, verification, review findings and dispositions, both advisor outcomes, workflow completion, reviewer-loop state, and any explicitly unverified surface. Never describe state summaries as proof, authorization, or tamper-resistant evidence.
+Report Behavior Map dispositions, behavior-specific RED/GREEN and post-edit pass proof, post-proof reassessments, verification, review findings and dispositions, both advisor outcomes, workflow completion, reviewer-loop state, and any explicitly unverified surface. Never describe state summaries as proof, authorization, or tamper-resistant evidence.

@@ -7,7 +7,8 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green", "superseded"}
+PROOF_STATUSES = frozenset({"green", "post-edit-passed"})
+RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | {"red", "superseded"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded"}
 KINDS = frozenset({"contract", "preservation"})
@@ -260,13 +261,13 @@ def terminal(items: list[JsonObject], entry: JsonObject) -> JsonObject:
         entry = item(items, str(target))
     if len(seen) > 1 and entry.get("status") in DISPOSITION_STATUSES:
         raise ValueError(
-            f"behavior {entry['id']} is {entry['status']} and can never be GREEN; it cannot replace a superseded item"
+            f"behavior {entry['id']} is {entry['status']} and can never reach terminal proof; it cannot replace a superseded item"
         )
     return entry
 
 
 def apply_dispositions(items: list[JsonObject], value: object) -> None:
-    """Apply no-edit dispositions to pending items, and supersession to GREEN ones, in place.
+    """Apply no-edit dispositions to pending items, and supersession to proved ones, in place.
 
     The supersession graph is checked by the caller's validation of the merged
     map, so a replacement added in the same update is legal.
@@ -297,14 +298,14 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
             raise ValueError(f"behavior {identifier} disposition requires evidence")
         mapped = item(items, identifier)
         if status == "superseded":
-            # Only a GREEN item can be superseded. Retiring a pending obligation
+            # Only a proved item can be superseded. Retiring a pending obligation
             # forward was considered and deliberately not shipped, so the pending
             # case is out of scope here rather than merely unimplemented, and a
             # settled item has nothing left to supersede either. Closure is
-            # unweakened: the replacement must still reach GREEN terminally.
-            if mapped.get("status") != "green":
+            # unweakened: the replacement must still reach terminal proof.
+            if mapped.get("status") not in PROOF_STATUSES:
                 raise ValueError(
-                    f"behavior {identifier} is {mapped.get('status')}; only a GREEN item can be superseded"
+                    f"behavior {identifier} is {mapped.get('status')}; only a proved item can be superseded"
                 )
             mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
         elif "supersededBy" in raw:
@@ -347,14 +348,14 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:
-    """Closure: pending, red, and superseded whose terminal replacement is not GREEN."""
+    """Closure: pending, red, and superseded without terminal proof."""
     return [
         str(entry["id"])
         for entry in items
         if entry.get("status") in {"pending", "red"}
         or (
             entry.get("status") == "superseded"
-            and terminal(items, entry).get("status") != "green"
+            and terminal(items, entry).get("status") not in PROOF_STATUSES
         )
     ]
 
