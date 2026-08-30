@@ -938,10 +938,11 @@ def _behavioral_finding_closure(
 ) -> None:
     """Conservation gate: proved ref-carrying attacks over the finding's whole domain.
 
-    Ownership is the sourceRef link itself. A behavioral fixed closes only when
-    every Behavior Map item carrying this finding's ref has terminal proof, and
-    the occurrence either measured the complete domain or the disposition names
-    an explicit coverage route.
+    Ownership is the sourceRef link itself. A behavioral fixed — and a
+    nonbehavioral fixed claiming split coverage — closes only when every
+    Behavior Map item carrying this finding's ref has terminal proof, and the
+    occurrence either measured the complete domain or the disposition names an
+    explicit coverage route.
     """
     tdd_document = transaction.evidence(state.get("tddEvidence"))
     preflight_document = transaction.evidence(state.get("preflightEvidence"))
@@ -1071,7 +1072,11 @@ def _apply_finding_dispositions(
                 "intakeEvidenceId": intake_id, "findingId": identifier,
                 "from": current, "to": status, "reason": str(disposition["supersedes"]).strip(),
             })
-        if status == "fixed" and kind == "behavioral":
+        coverage = disposition.get("coverage")
+        if status == "fixed" and (
+            kind == "behavioral"
+            or (isinstance(coverage, dict) and coverage.get("kind") == "split")
+        ):
             _behavioral_finding_closure(transaction, state, intake_id, identifier, disposition)
         # The final reviewer adjudicates what was measured, not a status word, so
         # the disposition's measurement travels with the finding state it settles.

@@ -203,6 +203,45 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
         self.assertEqual(json.loads(final.stdout)["status"], "passed")
 
+    def test_a_nonbehavioral_fixed_cannot_claim_coverage(self) -> None:
+        """A coverage claim runs the closure walk for any kind; a nonbehavioral fixed
+        cannot waive the complete-domain requirement by naming a split over attack
+        items it never owned."""
+        marker = "REVIEW_ROUTE_COVERAGE_ACCEPTED"
+        path = self.tmp / "coverage-intake.json"
+        path.write_text(json.dumps({"findings": [self.review_finding()]}), encoding="utf-8")
+        intake = self.record_review(path, "coverage-intake")
+        self.assertEqual(intake.returncode, 0, marker + intake.stdout + intake.stderr)
+        intake_id = json.loads(intake.stdout)["summaryId"]
+        before_events = self.event_count()
+        document = self.disposition_document(
+            intake_id, "SPEC-1", "fixed", complete=False,
+            coverage={"kind": "split", "items": ["BM_BOGUS_A", "BM_BOGUS_B"]})
+        path.write_text(json.dumps(document), encoding="utf-8")
+        refused = self.record_review(path, "coverage-disposition")
+        self.assertEqual(refused.returncode, 2,
+                         f"{marker}: a nonbehavioral fixed closed through split coverage: "
+                         + refused.stdout + refused.stderr)
+        self.assertIn("behavioral", refused.stderr, marker + refused.stderr)
+        self.assertEqual(self.event_count(), before_events, marker + ": a refusal appended an event")
+
+    def test_a_nonbehavioral_narrowed_coverage_still_closes(self) -> None:
+        """The split gate leaves the narrowed route untouched: a nonbehavioral fixed
+        with an incomplete domain and named narrowing evidence closes as before."""
+        marker = "NONBEHAVIORAL_NARROWED_BLOCKED"
+        path = self.tmp / "narrowed-intake.json"
+        path.write_text(json.dumps({"findings": [self.review_finding()]}), encoding="utf-8")
+        intake = self.record_review(path, "narrowed-intake")
+        self.assertEqual(intake.returncode, 0, marker + intake.stdout + intake.stderr)
+        intake_id = json.loads(intake.stdout)["summaryId"]
+        document = self.disposition_document(
+            intake_id, "SPEC-1", "fixed", complete=False,
+            coverage={"kind": "narrowed", "evidence": "the interface was narrowed to the measured domain"})
+        path.write_text(json.dumps(document), encoding="utf-8")
+        closed = self.record_review(path, "narrowed-disposition")
+        self.assertEqual(closed.returncode, 0, marker + closed.stdout + closed.stderr)
+        self.assertEqual(json.loads(closed.stdout)["status"], "passed", marker + closed.stdout)
+
     def test_legacy_empty_document_is_a_no_finding_intake(self) -> None:
         path = self.tmp / "legacy-empty.json"
         path.write_text(json.dumps({"findings": [], "dispositions": []}), encoding="utf-8")

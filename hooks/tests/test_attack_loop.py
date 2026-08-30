@@ -108,6 +108,25 @@ class AttackLoopTests(unittest.TestCase):
         }), encoding="utf-8")
         return path
 
+    def nonbehavioral_fixed_document(self, intake_id: str, occurrence: dict[str, object],
+                                     evidence: str, coverage: dict[str, object]) -> Path:
+        self.h.documents += 1
+        path = self.h.tmp / f"nonbehavioral-fixed-{self.h.documents}.json"
+        path.write_text(json.dumps({
+            "context": self.h.disposition_context(), "intakeEvidenceId": intake_id,
+            "dispositions": [{
+                "finding_id": "SPEC-1", "status": "fixed", "kind": "nonbehavioral",
+                "premise": {"claim": "the defect exists", "command": "inspect the candidate",
+                            "result": "true"},
+                "occurrence": occurrence,
+                "materialConsequence": {"claim": "the finding is material",
+                                        "command": "inspect the candidate", "result": "true"},
+                "evidence": evidence,
+                "coverage": coverage,
+            }],
+        }), encoding="utf-8")
+        return path
+
     def complete_domain_occurrence(self) -> dict[str, object]:
         return {"domain": "the finding's caller-reachable operations", "count": 0,
                 "complete": True, "command": "run the mapped attack suite", "result": "count=0"}
@@ -172,6 +191,28 @@ class AttackLoopTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 2,
                              f"{marker}: split {coverage} closed the finding: "
                              + refused.stdout + refused.stderr)
+        self.assertEqual(self.status(), before_state, marker + ": a refusal mutated state")
+        self.assertEqual(len(self.h.history_events()), before_events,
+                         marker + ": a refusal appended an event")
+
+    def test_a_nonbehavioral_fixed_cannot_claim_coverage(self) -> None:
+        """A coverage claim runs the closure walk for any kind; a nonbehavioral fixed
+        with a split over unlinked bogus BM ids and an incomplete domain never resolves."""
+        marker = "NONBEHAVIORAL_COVERAGE_ACCEPTED"
+        slug = "attack-nonbehavioral-coverage"
+        wid, intake = self.h.advance_to_final_intake(
+            slug, '{"id":"SPEC-1","claim":"a material defect","material":true,"kind":"nonbehavioral"}')
+        before_state, before_events = self.status(), len(self.h.history_events())
+        document = self.nonbehavioral_fixed_document(
+            intake,
+            {"domain": "one convenient corner of the candidate", "count": 0,
+             "complete": False, "command": "inspect one file", "result": "count=0"},
+            "no complete-domain measurement exists",
+            {"kind": "split", "items": ["BM_BOGUS_A", "BM_BOGUS_B"]})
+        refused = self.h.dispose(slug, wid, "final", "addressed", str(document))
+        self.assertEqual(refused.returncode, 2,
+                         f"{marker}: a nonbehavioral fixed closed through split coverage: "
+                         + refused.stdout + refused.stderr)
         self.assertEqual(self.status(), before_state, marker + ": a refusal mutated state")
         self.assertEqual(len(self.h.history_events()), before_events,
                          marker + ": a refusal appended an event")
@@ -269,6 +310,28 @@ class AttackLoopTests(unittest.TestCase):
         document = self.behavioral_fixed_document(
             intake, self.partial_domain_occurrence(),
             coverage={"kind": "split", "items": ["BM_ATT_A", "BM_ATT_B"]})
+        fixed = self.h.dispose(slug, wid, "final", "addressed", str(document))
+        self.assertEqual(fixed.returncode, 0, marker + fixed.stdout + fixed.stderr)
+        states = json.loads(fixed.stdout)["findingStates"]
+        self.assertEqual([entry["status"] for entry in states if entry["findingId"] == "SPEC-1"],
+                         ["fixed"], marker + f": finding states were {states}")
+
+    def test_a_nonbehavioral_linked_split_closes(self) -> None:
+        """The split contract holds for both finding kinds: a nonbehavioral fixed
+        whose split names sourceRef-linked, terminally proved attack items closes."""
+        marker = "NONBEHAVIORAL_LINKED_SPLIT_BLOCKED"
+        slug = "attack-nonbehavioral-split"
+        wid, intake = self.h.advance_to_final_intake(
+            slug, '{"id":"SPEC-1","claim":"a material defect","material":true,"kind":"nonbehavioral"}')
+        mapped = self.map_attack_items(slug, wid, intake, marker, "BM_NB_A", "BM_NB_B")
+        self.assertEqual(mapped.returncode, 0, marker + mapped.stdout + mapped.stderr)
+        self.prove_attack(slug, wid, "BM_NB_A", marker, 1, 2)
+        self.prove_attack(slug, wid, "BM_NB_B", marker, 2, 3)
+
+        document = self.nonbehavioral_fixed_document(
+            intake, self.partial_domain_occurrence(),
+            "every ref-carrying attack item reached terminal proof",
+            {"kind": "split", "items": ["BM_NB_A", "BM_NB_B"]})
         fixed = self.h.dispose(slug, wid, "final", "addressed", str(document))
         self.assertEqual(fixed.returncode, 0, marker + fixed.stdout + fixed.stderr)
         states = json.loads(fixed.stdout)["findingStates"]
