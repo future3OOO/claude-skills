@@ -1357,5 +1357,57 @@ class PerEditOverheadTests(HookHarness):
                          marker + ": the reassessment flag must land exactly once per dirty streak")
 
 
+@unittest.skipUnless(shutil.which("bwrap"), "bwrap unavailable: producer absence is exercised natively on hosts without the producer install")
+class RevalidateWithoutProducerTests(HookHarness):
+    """Issue #182 CI fix: wrapper-owned --revalidate refusals precede the
+    producer-existence blocker. The bwrap tmpfs masks the real producer install
+    path, driving genuine absence through the real CLI on hosts that have it."""
+
+    PRODUCER_ROOT = "/home/prop_/.local/share/repo-context-forge"
+
+    def masked_bootstrap(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bwrap", "--dev-bind", "/", "/", "--tmpfs", self.PRODUCER_ROOT, "--",
+             sys.executable, str(RCF_BOOTSTRAP), *args],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    def test_revalidate_refusals_fire_before_the_producer_blocker(self) -> None:
+        marker = "PRODUCER_BLOCKER_PREEMPTS_REVALIDATE_REFUSAL"
+        bare = self.second_repo("masked")
+        missing_slug = self.masked_bootstrap("--repo", str(bare), "--revalidate")
+        tail = (missing_slug.stderr.strip().splitlines() or [""])[-1]
+        self.assertEqual(missing_slug.returncode, 2, marker + ": " + tail)
+        self.assertIn("revalidate", tail.lower(), marker + ": " + tail)
+        self.assertIn("workflow", tail.lower(), marker + ": " + tail)
+        bad_mode = self.masked_bootstrap("--repo", str(bare), "--workflow-slug", "masked",
+                                         "--revalidate", "--mode", "local", "--mode", "pr")
+        tail = (bad_mode.stderr.strip().splitlines() or [""])[-1]
+        self.assertEqual(bad_mode.returncode, 2, marker + ": " + tail)
+        self.assertIn("local", tail.lower(), marker + ": " + tail)
+        self.assertIn("mode", tail.lower(), marker + ": " + tail)
+
+    def test_a_mode_abbreviation_cannot_defeat_forced_local(self) -> None:
+        # The producer's argparse honors abbreviations and the last occurrence,
+        # so --mod pr after an exact local must refuse just like --mode pr.
+        marker = "MODE_ABBREVIATION_DEFEATS_FORCED_LOCAL"
+        bare = self.second_repo("masked-abbrev")
+        abbreviated = self.masked_bootstrap("--repo", str(bare), "--workflow-slug", "masked",
+                                            "--revalidate", "--mode", "local", "--mod", "pr")
+        tail = (abbreviated.stderr.strip().splitlines() or [""])[-1]
+        self.assertEqual(abbreviated.returncode, 2, marker + ": " + tail)
+        self.assertIn("local", tail.lower(), marker + ": " + tail)
+        self.assertIn("mode", tail.lower(), marker + ": " + tail)
+
+    def test_a_nonrevalidate_run_still_hits_the_producer_blocker_first(self) -> None:
+        marker = "NONREVALIDATE_ERROR_SURFACE_CHANGED"
+        bare = self.second_repo("masked-plain")
+        dangling = self.masked_bootstrap("--repo", str(bare), "--workflow-slug")
+        combined = dangling.stdout + dangling.stderr
+        self.assertEqual(dangling.returncode, 2, marker + ": " + combined)
+        self.assertIn("repo-context-forge source bootstrap not found", combined, marker + ": " + combined)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

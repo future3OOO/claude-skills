@@ -205,6 +205,43 @@ def _snapshot_binding(
 
 
 def main(argv: list[str]) -> int:
+    revalidate = "--revalidate" in argv
+    if revalidate:
+        # Fast post-intake revalidation (issue #182): the typed gate needs a
+        # candidate-bound graph projection, not another SoulForge map build.
+        # These wrapper-owned refusals run before the producer-existence
+        # check, so they hold in every environment — CI without the producer
+        # installed included — while non-revalidate invocations keep the
+        # established producer-first ordering.
+        try:
+            probe_args, probe_slug = _remove_option(list(argv), "--workflow-slug")
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 2
+        if not probe_slug:
+            sys.stderr.write(
+                "error: --revalidate refuses without --workflow-slug: fast revalidation "
+                "re-records graph evidence on an active governed workflow\n"
+            )
+            return 2
+        # Every occurrence, not just the first, and every argparse-recognized
+        # abbreviation ("--mo", "--mod" resolve unambiguously to --mode; "--m"
+        # is ambiguous and the producer refuses it itself): the producer honors
+        # the last mode occurrence, so any admitted non-local one defeats the
+        # forced-local invariant.
+        def mode_option(token: str) -> bool:
+            head = token.split("=", 1)[0]
+            return "--mode".startswith(head) and len(head) >= 4
+        modes = [probe_args[i + 1] for i, arg in enumerate(probe_args)
+                 if mode_option(arg) and "=" not in arg and i + 1 < len(probe_args)]
+        modes += [arg.split("=", 1)[1] for arg in probe_args
+                  if mode_option(arg) and "=" in arg]
+        if any(mode != "local" for mode in modes):
+            sys.stderr.write(
+                "error: --revalidate analyzes the dirty candidate in local mode; "
+                f"refusing modes {sorted(set(modes))!r}\n"
+            )
+            return 2
     if not BOOTSTRAP.exists():
         sys.stderr.write(
             f"<blocker>repo-context-forge source bootstrap not found at {BOOTSTRAP}</blocker>\n"
@@ -215,36 +252,15 @@ def main(argv: list[str]) -> int:
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 2
-    revalidate = "--revalidate" in args
     if revalidate:
-        # Fast post-intake revalidation (issue #182): the typed gate needs a
-        # candidate-bound graph projection, not another SoulForge map build.
-        # The map phase is the producer's only skippable heavy phase from this
-        # wrapper (measured ~23s of ~60s); target selection and summaries cost
-        # ~1s and stay, so the evidence remains honestly produced for the
-        # current dirty candidate. Requires the governed workflow so the
-        # refreshed evidence lands on the pass it revalidates.
+        # Slug and modes were validated above; the map phase is the producer's
+        # only wrapper-skippable heavy phase (measured ~23s of ~60s), while
+        # target selection and summaries cost ~1s and stay, so the evidence
+        # remains honestly produced for the current dirty candidate.
         args = [arg for arg in args if arg != "--revalidate"]
-        if not workflow_slug:
-            sys.stderr.write(
-                "error: --revalidate refuses without --workflow-slug: fast revalidation "
-                "re-records graph evidence on an active governed workflow\n"
-            )
-            return 2
-        # Every occurrence, not just the first: the producer's argparse honors
-        # the last --mode, so one non-local occurrence anywhere defeats the
-        # forced-local invariant.
-        modes = [args[i + 1] for i, arg in enumerate(args)
-                 if arg == "--mode" and i + 1 < len(args)]
-        modes += [arg.split("=", 1)[1] for arg in args if arg.startswith("--mode=")]
-        if any(mode != "local" for mode in modes):
-            sys.stderr.write(
-                "error: --revalidate analyzes the dirty candidate in local mode; "
-                f"refusing modes {sorted(set(modes))!r}\n"
-            )
-            return 2
-        if not modes:
-            args += ["--mode", "local"]
+        # Always trailing: the producer honors the last occurrence, so this
+        # wins over any earlier spelling the validation above admitted.
+        args += ["--mode", "local"]
         args, _ = _remove_option(args, "--map-build")
         args += ["--map-build", "never"]
     if "--enforce-intake" not in args:
