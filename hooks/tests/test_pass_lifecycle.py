@@ -25,7 +25,7 @@ ADVISOR = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
 
 from hooks.lib.preflight_document import SECTIONS as PREFLIGHT_SECTIONS  # noqa: E402
 from hooks.tests.support import (  # noqa: E402
-    build_document, build_no_change_document, graph_packet, record_context_forge,
+    build_no_change_document, graph_packet, record_context_forge,
     wait_for_trace_writes,
 )
 
