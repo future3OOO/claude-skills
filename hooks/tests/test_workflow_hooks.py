@@ -30,11 +30,15 @@ QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_g
 FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
+RCF_BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
 STOP = ROOT / "hooks" / "post-edit-blast-radius.py"
 SESSION = "real-hook-session"
 
 
-class WorkflowHookTests(unittest.TestCase):
+class HookHarness(unittest.TestCase):
+    """Fixture repository, state root, and workflow drivers shared by the hook
+    suites; carries no tests of its own so subclasses never duplicate them."""
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="workflow-hooks-"))
         self.repo = self.tmp / "repo"
@@ -242,6 +246,7 @@ class WorkflowHookTests(unittest.TestCase):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+class WorkflowHookTests(HookHarness):
     def test_production_edit_requires_the_recorded_before_edit_sequence(self) -> None:
         blocked = self.intake("app.py")
         self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
@@ -423,37 +428,14 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(decision["permissionDecision"], "deny")
         self.assertIn("new active workflow", decision["permissionDecisionReason"])
 
-    def test_review_readiness_is_reset_before_failed_quality_feedback(self) -> None:
-        # Not completed: a terminal pass is no longer reopened by an edit, so the
-        # reset this test is about is only observable on a live workflow.
-        self.complete_workflow(finish=False)
-        escape = "TO" + "DO"
-        (self.repo / "app.py").write_text(f"value = 2  # {escape}: invalid production escape\n", encoding="utf-8")
-
-        result = self.post_edit("app.py")
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("production-code gate FAILED", result.stderr)
-
-        status = self.state("status")
-        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
-        state = json.loads(status.stdout)
-        self.assertEqual(state["phase"], "implementation")
-        self.assertEqual(state["nextAction"], "reassess-behavior-map")
-        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
-        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
-
-    def test_active_warnings_are_visible_while_the_hook_exits_zero(self) -> None:
-        # Warning-only means non-blocking feedback, not discarded output: the
-        # real PostToolUse hook surfaces active QG54 warnings on its supported
-        # feedback channel (additionalContext) and still returns zero.
+    def test_a_clean_edit_emits_no_gate_feedback(self) -> None:
+        # Issue #182: per-edit feedback is limited to genuinely local signals.
+        # A lint-clean edit produces no output at all — full gate analysis and
+        # its warnings live at the verification boundaries.
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
         result = self.post_edit("app.py")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        feedback = json.loads(result.stdout)
-        context = feedback["hookSpecificOutput"]["additionalContext"]
-        self.assertEqual(feedback["hookSpecificOutput"]["hookEventName"], "PostToolUse")
-        self.assertIn("QG54-GROWTH-CUMULATIVE", context)
-        self.assertIn("QG54-ANALYSIS-INCOMPLETE", context)
+        self.assertEqual(result.stdout, "", "a clean edit re-injected gate feedback")
 
     def test_python_edit_surfaces_ruff_findings_in_the_feedback(self) -> None:
         # Real-time lint: a Python edit whose content pyflakes rejects must
@@ -489,22 +471,23 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertIn("F821", context)
         self.assertNotIn("production quality gate warnings", context)
 
-    def test_gate_failure_feedback_still_carries_the_ruff_findings(self) -> None:
-        # "Always" includes refused edits: when the gate fails the edit, the
-        # stderr detail the model reads still carries the lint findings.
+    def test_conflict_markers_surface_as_lint_findings(self) -> None:
+        # The genuinely-local error class stays per-edit through ruff: conflict
+        # markers are a syntax error the single-file lint names immediately,
+        # with no gate subprocess involved.
         (self.repo / "app.py").write_text(
             "<<<<<<< HEAD\nx = undefined_thing\n=======\ny = 2\n>>>>>>> other\n",
             encoding="utf-8",
         )
         result = self.post_edit("app.py")
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("merge conflict markers", result.stderr)
-        self.assertIn("invalid-syntax", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("invalid-syntax", context)
+        self.assertNotIn("production-code gate FAILED", result.stdout + result.stderr)
 
     def broken_ruff_edit(self, name: str, shim: bytes, mode: int) -> subprocess.CompletedProcess[str]:
-        """A gate-failing Python edit in an environment whose only PATH ruff
-        is the given broken shim — the shared seam for every launch-failure
-        cause."""
+        """A Python edit in an environment whose only PATH ruff is the given
+        broken shim — the shared seam for every launch-failure cause."""
         shim_dir = self.tmp / name
         shim_dir.mkdir()
         (shim_dir / "ruff").write_bytes(shim)
@@ -516,22 +499,22 @@ class WorkflowHookTests(unittest.TestCase):
         )
         return self.post_edit("app.py", env_extra={"PATH": os.pathsep.join(entries)})
 
-    def test_malformed_ruff_executable_names_the_gap_and_keeps_the_refusal_channel(self) -> None:
+    def test_malformed_ruff_executable_names_the_gap(self) -> None:
         # A malformed +x ruff (exec format error) is the third measured
-        # launch-failure cause: the notice appears and the refusal channel
-        # still fires instead of the hook crashing.
+        # launch-failure cause: the notice appears on the feedback channel
+        # instead of the hook crashing.
         result = self.broken_ruff_edit("malformed-bin", b"\x7fGARBAGE-not-a-binary\n", 0o755)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("production-code gate FAILED", result.stderr)
-        self.assertIn("ruff could not run: python lint skipped", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("ruff could not run: python lint skipped", context)
 
-    def test_unrunnable_ruff_names_the_gap_and_keeps_the_refusal_channel(self) -> None:
+    def test_unrunnable_ruff_names_the_gap(self) -> None:
         # A PATH-resolvable but non-executable ruff must not crash the hook:
-        # the lint gap is named and the gate's refusal channel still fires.
+        # the lint gap is named on the feedback channel.
         result = self.broken_ruff_edit("noexec-bin", b"#!/bin/sh\nexit 0\n", 0o644)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("production-code gate FAILED", result.stderr)
-        self.assertIn("ruff could not run: python lint skipped", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("ruff could not run: python lint skipped", context)
 
     def test_missing_ruff_is_named_not_silently_skipped(self) -> None:
         # Honest absence: without ruff on PATH the hook names the lint gap on
@@ -544,23 +527,11 @@ class WorkflowHookTests(unittest.TestCase):
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("ruff could not run: python lint skipped", context)
 
-    def test_a_pass_without_a_recorded_base_keeps_the_honest_growth_gap(self) -> None:
-        # Falsification for the recorded-base wiring: a governed pass that never
-        # recorded a base gets no derived one — the hook passes nothing and the
-        # gate keeps naming the base-binding gap.
-        begun = self.state("begin", "--slug", "no-base")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        (self.repo / "app.py").write_text("value = 5\n", encoding="utf-8")
-        result = self.post_edit("app.py")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("no caller-supplied base", context)
-
-    def test_a_recorded_base_reaches_the_per_edit_gate_and_stays_first_wins(self) -> None:
+    def test_the_recorded_base_stays_first_wins(self) -> None:
         # The recorder is the one production writer of the pass base (the
         # bootstrap Interface is proven in test_repoforge_workflow): it demands
-        # a commit OID, keeps the first record, and the hook then measures the
-        # edit against that base instead of reporting the base-binding gap.
+        # a commit OID and keeps the first record; the typed quality-gate run
+        # consumes it at verification.
         begun = self.state("begin", "--slug", "with-base")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
@@ -579,36 +550,6 @@ class WorkflowHookTests(unittest.TestCase):
             record_base_oid(identity, "with-base", wid, "base-main")
         self.assertEqual(record_base_oid(identity, "with-base", wid, base).get("baseOid"), base)
         self.assertEqual(record_base_oid(identity, "with-base", wid, other).get("baseOid"), base)
-
-        (self.repo / "app.py").write_text("value = 6\n", encoding="utf-8")
-        result = self.post_edit("app.py")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        if result.stdout:
-            context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-            self.assertNotIn("no caller-supplied base", context)
-
-    def test_failed_gate_feedback_renders_the_verdict_errors_concisely(self) -> None:
-        escape = "TO" + "DO"
-        (self.repo / "app.py").write_text(f"value = 3  # {escape}: escape for failure rendering\n", encoding="utf-8")
-        result = self.post_edit("app.py")
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("production-code gate FAILED", result.stderr)
-        # The relayed failure is the verdict's error list, not a raw JSON dump.
-        self.assertIn("- quality escapes detected", result.stderr)
-        self.assertNotIn('"schemaVersion"', result.stderr)
-
-    def test_gate_child_stderr_noise_cannot_block_a_passing_edit(self) -> None:
-        # The verdict travels on stdout alone; import-trace noise on the child's
-        # stderr (a real, driver-inducible stream) must not fail a clean edit.
-        (self.repo / "app.py").write_text("value = 4\n", encoding="utf-8")
-        payload: dict[str, object] = {"tool_input": {"file_path": str(self.repo / "app.py")}, "session_id": SESSION}
-        result = subprocess.run(
-            [str(POST_EDIT)], cwd=self.repo, env={**self.env, "PYTHONVERBOSE": "1"}, text=True,
-            input=json.dumps(payload), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
-        feedback = json.loads(result.stdout)
-        self.assertIn("QG54-GROWTH-CUMULATIVE", feedback["hookSpecificOutput"]["additionalContext"])
 
     def test_non_code_production_edit_invalidates_but_docs_do_not(self) -> None:
         self.complete_workflow(finish=False)
@@ -940,14 +881,13 @@ class WorkflowHookTests(unittest.TestCase):
             "a payload with no session id recorded an association anyway",
         )
         # The association is the only thing withheld. Invalidation is visible in
-        # the phase; the gate is only proven by a payload it must reject, since a
-        # clean tree exits zero whether the gate ran or not.
+        # the phase; the surviving per-edit feedback channel is proven by a
+        # payload lint must flag, since a clean edit emits nothing either way.
         self.assertEqual(json.loads(self.state("status").stdout)["phase"], "implementation")
-        escape = "TO" + "DO"
-        (self.repo / "app.py").write_text(f"value = 2  # {escape}: invalid production escape\n", encoding="utf-8")
-        gated = self.post_edit("app.py", session=None)
-        self.assertEqual(gated.returncode, 2, gated.stdout + gated.stderr)
-        self.assertIn("production-code gate FAILED", gated.stderr)
+        (self.repo / "app.py").write_text("value = undefined_name\n", encoding="utf-8")
+        linted = self.post_edit("app.py", session=None)
+        self.assertEqual(linted.returncode, 0, linted.stdout + linted.stderr)
+        self.assertIn("F821", json.loads(linted.stdout)["hookSpecificOutput"]["additionalContext"])
 
     def test_only_a_repository_with_a_pass_is_recorded_as_an_association(self) -> None:
         elsewhere = self.second_repo("elsewhere")
@@ -983,13 +923,12 @@ class WorkflowHookTests(unittest.TestCase):
         # its own reason while every other outcome must stay exactly as it was.
         self.complete_workflow(finish=False)
         (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions").write_text("not a directory\n", encoding="utf-8")
-        escape = "TO" + "DO"
-        (self.repo / "app.py").write_text(f"value = 2  # {escape}: invalid production escape\n", encoding="utf-8")
+        (self.repo / "app.py").write_text("value = undefined_name\n", encoding="utf-8")
 
         result = self.post_edit("app.py")
         self.assertIn("session association unavailable", result.stderr)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("production-code gate FAILED", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("F821", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
         state = json.loads(self.state("status").stdout)
         self.assertEqual(state["phase"], "implementation")
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
@@ -1275,6 +1214,147 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(recursive.returncode, 0, recursive.stdout + recursive.stderr)
         recursive_payload = json.loads(recursive.stdout) if recursive.stdout else {}
         self.assertNotIn("decision", recursive_payload, "hook-triggered re-stop must not block without progress")
+
+
+class PerEditOverheadTests(HookHarness):
+    """Issue 182: per-edit path carries only the cheap transition and local
+    signals; full gate authority lives at the existing boundaries."""
+
+    def history_length(self, kind: str | None = None) -> int:
+        events = json.loads(self.state("history").stdout)["events"]
+        return len([e for e in events if kind is None or e.get("kind") == kind])
+
+    def test_a_gate_failing_ruff_clean_edit_gets_local_feedback_only(self) -> None:
+        marker = "PER_EDIT_GATE_SUBPROCESS_STILL_CHARGED"
+        self.complete_workflow(finish=False)
+        escape = "TO" + "DO"
+        (self.repo / "app.py").write_text(f"value = 2  # {escape}: escape\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, marker + ": " + combined)
+        self.assertNotIn("production quality gate", combined, marker)
+        self.assertNotIn("production-code gate FAILED", combined, marker)
+        state = json.loads(self.state("status").stdout)
+        self.assertEqual(state["phase"], "implementation", marker)
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"}, marker)
+
+    def test_a_second_dirty_edit_appends_no_ledger_event(self) -> None:
+        marker = "REDUNDANT_INVALIDATION_COMMITTED"
+        self.complete_workflow(finish=False)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        first = self.post_edit("app.py")
+        self.assertEqual(first.returncode, 0, marker + ": " + first.stdout + first.stderr)
+        before = self.history_length()
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        second = self.post_edit("app.py")
+        self.assertEqual(second.returncode, 0, marker + ": " + second.stdout + second.stderr)
+        self.assertEqual(self.history_length(), before,
+                         marker + ": a no-op dirty edit committed a ledger event")
+
+    def test_a_repeated_governance_edit_appends_no_ledger_event(self) -> None:
+        marker = "REDUNDANT_GOVERNANCE_INVALIDATION_COMMITTED"
+        self.complete_workflow(finish=False)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.post_edit("app.py")
+        (self.repo / "CLAUDE.md").write_text("# rules\n", encoding="utf-8")
+        self.post_edit("CLAUDE.md")
+        before = self.history_length()
+        (self.repo / "CLAUDE.md").write_text("# rules v2\n", encoding="utf-8")
+        repeated = self.post_edit("CLAUDE.md")
+        self.assertEqual(repeated.returncode, 0, marker + ": " + repeated.stdout + repeated.stderr)
+        self.assertEqual(self.history_length(), before,
+                         marker + ": a no-op governance edit committed a ledger event")
+
+    def test_revalidate_refuses_without_an_active_workflow(self) -> None:
+        marker = "REVALIDATE_FLAG_ABSENT_OR_RUNS_PRODUCER_BLIND"
+        bare = self.second_repo("no-workflow")
+        result = subprocess.run(
+            [sys.executable, str(RCF_BOOTSTRAP), "--repo", str(bare), "--revalidate"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        tail = (result.stderr.strip().splitlines() or [""])[-1]
+        self.assertEqual(result.returncode, 2, marker + ": " + tail)
+        self.assertIn("revalidate", tail.lower(), marker + ": " + tail)
+        self.assertIn("workflow", tail.lower(), marker + ": " + tail)
+
+    def test_revalidate_pins_every_mode_occurrence_to_local(self) -> None:
+        marker = "REPEATED_MODE_DEFEATS_FORCED_LOCAL"
+        bare = self.second_repo("mode-pin")
+        # The producer's argparse honors the last --mode, so the wrapper must
+        # refuse on any non-local occurrence, not just the first.
+        for shape in (["--mode", "pr"], ["--mode", "local", "--mode", "pr"]):
+            result = subprocess.run(
+                [sys.executable, str(RCF_BOOTSTRAP), "--repo", str(bare),
+                 "--workflow-slug", "mode-pin", "--revalidate", *shape],
+                cwd=ROOT, env=self.env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            tail = (result.stderr.strip().splitlines() or [""])[-1]
+            self.assertEqual(result.returncode, 2, marker + ": " + tail)
+            self.assertIn("local", tail.lower(), marker + ": " + tail)
+            self.assertIn("mode", tail.lower(), marker + ": " + tail)
+
+    def test_the_typed_gate_still_rejects_a_failing_candidate(self) -> None:
+        marker = "BOUNDARY_GATE_AUTHORITY_LOST"
+        self.complete_workflow(slug="boundary", finish=False)
+        escape = "TO" + "DO"
+        (self.repo / "app.py").write_text(f"value = 2  # {escape}: escape\n", encoding="utf-8")
+        self.post_edit("app.py")
+        wid = json.loads(self.state("status").stdout)["workflowId"]
+        update = self.tmp / "reassess.json"
+        update.write_text(json.dumps({
+            "reassessment": "probe candidate deliberately carries a quality escape; non-behavioral for this fixture",
+            "items": [], "dispositions": [],
+        }), encoding="utf-8")
+        recorded = self.state("tdd-map", "--slug", "boundary", "--workflow-id", wid,
+                              "--input", str(update))
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        self.owner_phase("implementation", "passed")
+        quality = self.state("verify", "--slug", "boundary", "--kind", "quality-gate",
+                             "--base-ref", "HEAD")
+        combined = quality.stdout + quality.stderr
+        self.assertNotEqual(quality.returncode, 0, marker + ": the typed gate accepted a failing candidate")
+        self.assertIn("quality escapes", combined, marker + ": " + combined[-300:])
+
+    def test_first_edit_after_review_still_resets_downstream(self) -> None:
+        marker = "FIRST_EDIT_TRANSITION_LOST"
+        self.complete_workflow(finish=False)
+        before = self.history_length("production-edit-invalidated")
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        result = self.post_edit("app.py")
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        state = json.loads(self.state("status").stdout)
+        self.assertEqual(state["phase"], "implementation", marker)
+        self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"}, marker)
+        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"}, marker)
+        self.assertEqual(self.history_length("production-edit-invalidated"), before + 1,
+                         marker + ": the first edit after review must commit exactly one transition")
+
+    def test_an_edit_clears_a_recorded_pause(self) -> None:
+        marker = "PAUSE_SURVIVED_EDIT"
+        self.complete_workflow(finish=False)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.post_edit("app.py")
+        wid = json.loads(self.state("status").stdout)["workflowId"]
+        paused = self.state("pause", "--slug", "hook-sequence", "--workflow-id", wid,
+                            "--reason", "hold for probe")
+        self.assertEqual(paused.returncode, 0, marker + ": " + paused.stdout + paused.stderr)
+        self.assertIn("paused", json.loads(self.state("status").stdout), marker)
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        cleared = self.post_edit("app.py")
+        self.assertEqual(cleared.returncode, 0, marker + ": " + cleared.stdout + cleared.stderr)
+        self.assertNotIn("paused", json.loads(self.state("status").stdout), marker)
+
+    def test_reassessment_flags_once_across_a_dirty_streak(self) -> None:
+        marker = "REASSESSMENT_FLAG_DUPLICATED"
+        self.complete_workflow(finish=False)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.post_edit("app.py")
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        self.post_edit("app.py")
+        self.assertEqual(self.history_length("tdd-annotated"), 1,
+                         marker + ": the reassessment flag must land exactly once per dirty streak")
 
 
 if __name__ == "__main__":

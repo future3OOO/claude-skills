@@ -58,6 +58,11 @@ When your changes create orphans:
 
 The test: every changed line should trace directly to the user's request.
 
+Smallest change means the smallest final diff, not the smallest tool call:
+prepare coherent multi-hunk edits per file, and batch independent edits to
+different files in one message. A run of consecutive single-line edits to the
+same file is the smell this rule exists to prevent.
+
 Cleanup loop, every pass:
 
 - Before handoff, inspect the delta and remove bloat, duplication, redundant code, speculative flexibility, and unnecessary files.

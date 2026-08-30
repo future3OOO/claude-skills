@@ -204,13 +204,18 @@ commits. Remove unintended
 changes.
 
 On a governed pass, also rerun the bootstrap wrapper with the same
-`--workflow-slug` after the final production edits, before typed quality-gate
-verification. The re-run analyzes the dirty candidate and re-records the graph
-evidence with a gate-shaped context bound to the measured snapshot tree; the
-typed runner hands that context to the gate, whose binding check alone
-adjudicates match, stale, or absent. Evidence recorded before the last edit
-stays honestly stale, so the re-run is what lets the owner-competition rules
-evaluate.
+`--workflow-slug` and `--revalidate` after the final production edits, before
+typed quality-gate verification. `--revalidate` is the fast post-intake form:
+it refuses without an active governed workflow, forces `--mode local`, and
+skips the SoulForge map rebuild (`--map-build never`) — the one heavy producer
+phase the gate never consumes — while the producer still analyzes the dirty
+candidate and re-records the graph evidence with a gate-shaped context bound
+to the measured snapshot tree. The typed runner hands that context to the
+gate, whose binding check alone adjudicates match, stale, or absent. Evidence
+recorded before the last edit stays honestly stale, so the re-run is what lets
+the owner-competition rules evaluate. The remaining revalidation cost is the
+producer's GitNexus phase; reducing it below the current ~30s is producer-side
+work tracked on issue #182.
 
 Measured producer limit: the producer's GitNexus freshness check is keyed on
 the committed head, so a same-head re-run whose overlay adds new symbols can

@@ -60,6 +60,7 @@ The decision is complete only when one outcome is recorded:
 - Use Ousterhout-style depth: a small, stable public interface hiding meaningful implementation complexity. File size is not the measure.
 - Do not add orchestration layers, control-plane hops, or indirection that the requirement does not need.
 - Prefer readable, direct code over verbose generated patterns.
+- Smallest change means the smallest final diff, not the smallest tool call: prepare coherent multi-hunk edits per file and batch independent edits in one message; consecutive single-line edits to one file are the smell this rule prevents.
 - If the current work is governed by a tracked plan or review artifact that includes an execution checklist, follow that artifact during implementation instead of drifting to an unwritten plan.
 
 ## Non-Negotiable Rules
