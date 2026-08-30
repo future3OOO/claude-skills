@@ -19,11 +19,11 @@ MEASUREMENT_SHAPE = '{"claim":non-empty text,"command":non-empty text,"result":n
 COUNTED_OCCURRENCE_SHAPE = '{"domain":non-empty text,"count":int>=0,"complete":bool,"command":non-empty text,"result":non-empty text}'
 SEAM_OCCURRENCE_SHAPE = '{"seam":non-empty text,"reproduction":{"command":non-empty text,"result":non-empty text}}'
 DISPOSITION_REQUIREMENTS = {
-    "fixed": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
+    "fixed": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true; optional coverage={{\"kind\":\"split\",\"items\":[>=2 distinct BM ids carrying the finding sourceRef]}} or {{\"kind\":\"narrowed\",\"evidence\":non-empty text}} stands in for complete=true",
     "rejected-with-evidence": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
     "report-only": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; materialConsequence.result strips and lowercases to false",
     "accepted-follow-up": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; reference=non-empty text",
-    "accepted-for-proof": f"premise={MEASUREMENT_SHAPE}; occurrence={SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE} with result not stripping/lowercasing to false; reservedBehaviorIds=[unique BM ids]; seam=non-empty text equal to occurrence.seam after trimming; preservationObligations=[unique non-empty text values]",
+    "accepted-for-proof": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}",
 }
 DISPOSITION_SHAPES = {status: f'{{"finding_id":non-empty text,"status":"{status}","kind":"behavioral" or "nonbehavioral"}} plus {requirements}' for status, requirements in DISPOSITION_REQUIREMENTS.items()}
 
@@ -383,6 +383,37 @@ def _disposition_context(value: object) -> JsonObject:
     return dict(value)
 
 
+def _coverage(value: object, identifier: str, status: str) -> None:
+    """An explicit route covering a finding's domain when one occurrence run cannot.
+
+    `split` enumerates the attackable partition; each named Behavior Map item
+    must carry the finding's ref and terminal proof, which the closure gate
+    checks against the recorded map. `narrowed` names the evidence that the
+    changed Interface no longer promises the excluded part of the domain.
+    """
+    if isinstance(value, dict) and value.get("kind") == "split":
+        items = value.get("items")
+        named = [str(entry).strip() for entry in items] if isinstance(items, list) else []
+        if (
+            set(value) == {"kind", "items"}
+            and len(named) >= 2 and len(set(named)) == len(named)
+            and all(IDENTIFIER.fullmatch(entry) for entry in named)
+        ):
+            return
+        raise ValueError(_disposition_error(
+            status, f"finding {identifier} split coverage requires at least two distinct enumerated BM ids",
+        ))
+    if isinstance(value, dict) and value.get("kind") == "narrowed":
+        if set(value) == {"kind", "evidence"} and _text(value.get("evidence")):
+            return
+        raise ValueError(_disposition_error(
+            status, f"finding {identifier} narrowed coverage requires its evidence",
+        ))
+    raise ValueError(_disposition_error(
+        status, f"finding {identifier} coverage requires kind split with enumerated items or kind narrowed with evidence",
+    ))
+
+
 def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
     if not isinstance(value, list) or not value:
         raise ValueError("disposition requires a non-empty dispositions array")
@@ -408,29 +439,16 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
             consequence = _measurement(item.get("materialConsequence"), f"finding {identifier} materialConsequence")
         except ValueError as exc:
             raise ValueError(_disposition_error(status, str(exc))) from exc
-        if status == "accepted-for-proof":
-            extra = {"reservedBehaviorIds", "seam", "preservationObligations"}
-            reserved, preserved = item.get("reservedBehaviorIds"), item.get("preservationObligations")
-            canonical_reserved = [str(entry).strip() for entry in reserved] if isinstance(reserved, list) else []
-            canonical_preserved = [str(entry).strip() for entry in preserved] if isinstance(preserved, list) else []
-            if not (
-                isinstance(reserved, list) and reserved and all(_text(entry) for entry in reserved)
-                and len(set(canonical_reserved)) == len(reserved) and all(IDENTIFIER.fullmatch(entry) for entry in canonical_reserved) and _text(item.get("seam"))
-                and isinstance(preserved, list) and preserved and all(_text(entry) for entry in preserved)
-                and len(set(canonical_preserved)) == len(preserved)
-            ):
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations"))
-            demonstrated = ("reproduction" in occurrence
-                and occurrence.get("seam", "").strip() == str(item["seam"]).strip())
-            if not demonstrated:
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires demonstrated occurrence at its Seam"))
-            if consequence["result"].strip().lower() == "false":
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires material consequence"))
-        else:
-            field = "reference" if status == "accepted-follow-up" else "evidence"
-            extra = {field}
-            if not _text(item.get(field)):
-                raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
+        # An acknowledgment owes no closure payload: ownership is the sourceRef
+        # link on the map items, so the classification carries measurements only.
+        field = (None if status == "accepted-for-proof"
+                 else "reference" if status == "accepted-follow-up" else "evidence")
+        extra = set() if field is None else {field}
+        if status == "fixed" and "coverage" in item:
+            extra = extra | {"coverage"}
+            _coverage(item.get("coverage"), identifier, status)
+        if field is not None and not _text(item.get(field)):
+            raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
         if "supersedes" in item:
             # Correcting a settled record is append-only: the reason travels with
             # the replacement so history keeps both halves of the correction.
@@ -441,7 +459,8 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
             raise ValueError(_disposition_error(status, f"finding {identifier} {status} has unknown or missing fields"))
         if status in {"fixed", "rejected-with-evidence"} and not (
             premise["result"].strip().lower() == "false"
-            or occurrence.get("count") == 0 and occurrence.get("complete") is True
+            or occurrence.get("count") == 0
+            and (occurrence.get("complete") is True or "coverage" in item)
         ):
             raise ValueError(_disposition_error(
                 status, f"finding {identifier} {status} requires a false premise or zero occurrence on a complete domain",
@@ -550,7 +569,7 @@ def advisor_disposition_document(
         if set(item) != {"id", "claim"} or not _text(item.get("claim")):
             raise ValueError(f"finding {identifier} requires a claim")
         claims.add(identifier)
-    typed = _finding_dispositions(dispositions, allowed - {"accepted-for-proof"})
+    typed = _finding_dispositions(dispositions, allowed)
     if stage == "preflight" and any(item["status"] == "fixed" for item in typed):
         raise ValueError("legacy preflight fixed requires immutable finding intake")
     if any(str(item["finding_id"]) not in claims for item in typed):
@@ -558,5 +577,5 @@ def advisor_disposition_document(
     if {str(item["finding_id"]) for item in typed} != claims:
         raise ValueError("every finding requires one lead disposition")
     if any(item["kind"] == "behavioral" for item in typed):
-        raise ValueError("behavioral advisor findings require immutable intake and accepted-for-proof")
+        raise ValueError("behavioral advisor findings require immutable finding intake")
     return {**common, "findings": findings, "dispositions": typed}

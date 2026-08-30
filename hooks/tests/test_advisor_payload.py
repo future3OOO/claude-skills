@@ -22,9 +22,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.tests.support import WORKFLOW, graph_packet, record_context_forge  # noqa: E402
+from hooks.tests.support import (  # noqa: E402
+    WORKFLOW, build_no_change_document, graph_packet, record_context_forge,
+)
 
 WRAPPER = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
+QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 # The callee answers as well as captures: the wrapper persists a session only
 # after a turn actually lands, so a silent provider would leave the run refusing
 # on empty output and nothing to observe about resumption.
@@ -527,6 +530,143 @@ class AdvisorPayloadTests(unittest.TestCase):
         self.assertEqual(run.returncode, 2, f"{marker}: consulted on a graph carrying no projection")
         self.assertIn("rerun the Repo Context Forge bootstrap", run.stderr,
                       "REMEDY_NOT_NAMED: the refusal does not name the missing graph result")
+
+
+    PROBE_CLAIM = "the payload rig probe finding names a domain the map never attacked"
+
+    def advance_to_final_review_ready(self) -> None:
+        """Drive the rig's pass to final-review checkpoint readiness through the
+        public producers, holding one dispositioned preflight advisor finding."""
+        provider = self.home / "bin" / "claude"
+        provider.write_text(PROVIDER.replace(
+            "printf 'answered\\n'",
+            "printf '%s\\n' '{\"schemaVersion\":1,\"findings\":[{\"id\":\"SPEC-9\","
+            f"\"claim\":\"{self.PROBE_CLAIM}\","
+            "\"material\":false,\"kind\":\"nonbehavioral\"}],\"verdict\":\"completed\"}'",
+        ), encoding="utf-8")
+        provider.chmod(0o755)
+        consult = self.wrapper("--slug", "payload", "--phase", "preflight-advice",
+                               "--design-absent", "payload rig: no plan artifact",
+                               "--", "scope question")
+        self.assertEqual(consult.returncode, 0, consult.stdout + consult.stderr)
+        provider.write_text(PROVIDER, encoding="utf-8")
+        provider.chmod(0o755)
+
+        sys.path.insert(0, str(ROOT))
+        import hashlib
+
+        from hooks.lib.repo_identity import resolve_repo_identity
+        from hooks.lib.state_store import tree_manifest
+        from hooks.lib.workflow_state import set_phase
+        os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = self.env["CLAUDE_WORKFLOW_STATE_ROOT"]
+        state = json.loads(self.run_workflow("status").stdout)
+        wid = state["workflowId"]
+        identity = resolve_repo_identity(str(self.repo))
+        candidate = hashlib.sha256(json.dumps(
+            tree_manifest(identity), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        disposition = self.tmp / "probe-disposition.json"
+        disposition.write_text(json.dumps({
+            "context": {"workflowId": wid, "candidateTree": candidate},
+            "intakeEvidenceId": state["advisorPreflight"]["intakeEvidence"],
+            "dispositions": [{
+                "finding_id": "SPEC-9", "status": "report-only", "kind": "nonbehavioral",
+                "premise": {"claim": "the named domain exists", "command": "inspect the rig",
+                            "result": "true"},
+                "occurrence": {"domain": "the rig's complete map", "count": 1, "complete": True,
+                               "command": "inspect the rig map", "result": "one unattacked domain"},
+                "materialConsequence": {"claim": "the rig ships a defect",
+                                        "command": "inspect the rig", "result": "false"},
+                "evidence": "probe finding retained for prompt rendering",
+            }],
+        }), encoding="utf-8")
+        disposed = self.run_workflow(
+            "advisor-disposition", "--slug", "payload", "--workflow-id", wid,
+            "--stage", "preflight", "--findings", "addressed", "--input", str(disposition))
+        self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
+
+        preflight = self.tmp / "rig-preflight.json"
+        preflight.write_text(json.dumps(build_no_change_document("payload rig preflight")),
+                             encoding="utf-8")
+        recorded = self.run_workflow("record-preflight", "--slug", "payload",
+                                     "--workflow-id", wid, "--input", str(preflight))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        set_phase(identity, "tdd", "not-required")
+
+        gate = subprocess.run(
+            [sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        gate_payload = self.tmp / "rig-gate.json"
+        gate_payload.write_text(gate.stdout, encoding="utf-8")
+        recorded = self.run_workflow("record-production-code", "--slug", "payload",
+                                     "--workflow-id", wid, "--input", str(gate_payload))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        advanced = self.run_workflow("set-phase", "--phase", "implementation", "--status", "passed")
+        self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+
+        generic = subprocess.run(
+            [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo),
+             "--slug", "payload", "--", sys.executable, "-c", "pass"],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(generic.returncode, 0, generic.stdout + generic.stderr)
+        typed = self.run_workflow("verify", "--slug", "payload",
+                                  "--kind", "quality-gate", "--base-ref", "HEAD")
+        self.assertEqual(typed.returncode, 0, typed.stdout + typed.stderr)
+        set_phase(identity, "code-review", "passed", findings="none")
+
+    def test_the_final_prompt_derives_completeness_before_declared_closure(self) -> None:
+        """The final consult attacks the recorded intent and public Interface first,
+        with the finding intake claims rendered beside their dispositions, and
+        without the one-failure-class exploration cap."""
+        marker = "DECLARATION_RELATIVE_FINAL_PROMPT"
+        self.advance_to_final_review_ready()
+        rendered = self.payload("--slug", "payload", "--phase", "final-review",
+                                "--design-absent", "payload rig: no plan artifact",
+                                "--", "completion question")
+        self.assertNotIn(
+            "at most one additional material reachable failure class", rendered,
+            f"{marker}: the completeness derivation is still capped to one failure class")
+        self.assertIn(
+            "Derive completeness from the recorded intent and the changed public Interface"
+            " before any declared-map closure", rendered,
+            f"{marker}: the prompt does not put intent/Interface derivation first")
+        self.assertIn(
+            "commit-ready is invalid while a promised load-bearing surface has no"
+            " real-Seam attack", rendered,
+            f"{marker}: the prompt does not make an unattacked promised surface blocking")
+        self.assertIn(self.PROBE_CLAIM, rendered,
+                      f"{marker}: the recorded intake claim is not rendered for adjudication")
+        self.assertIn("report-only", rendered,
+                      f"{marker}: the claim is rendered without its recorded disposition")
+
+    def test_the_final_payload_carries_the_disposition_measurements(self) -> None:
+        """The reviewer adjudicates what was measured, not a closure count: each
+        disposed finding renders its occurrence, coverage, and evidence beside the
+        claim and status."""
+        marker = "FINAL_PAYLOAD_HID_MEASUREMENTS"
+        self.advance_to_final_review_ready()
+        rendered = self.payload("--slug", "payload", "--phase", "final-review",
+                                "--design-absent", "payload rig: no plan artifact",
+                                "--", "completion question")
+        self.assertIn("the rig's complete map", rendered,
+                      f"{marker}: the disposition's occurrence domain is not rendered")
+        self.assertIn('"complete": true', rendered,
+                      f"{marker}: the occurrence completeness is not rendered")
+        self.assertIn("probe finding retained for prompt rendering", rendered,
+                      f"{marker}: the disposition evidence is not rendered")
+
+    def test_the_final_payload_carries_the_adjudication_basis(self) -> None:
+        """A report-only or false-premise disposition is only adjudicable when the
+        payload renders the premise and materialConsequence that justify it."""
+        marker = "FINAL_PAYLOAD_HID_ADJUDICATION_BASIS"
+        self.advance_to_final_review_ready()
+        rendered = self.payload("--slug", "payload", "--phase", "final-review",
+                                "--design-absent", "payload rig: no plan artifact",
+                                "--", "completion question")
+        self.assertIn("the named domain exists", rendered,
+                      f"{marker}: the disposition's premise claim is not rendered")
+        self.assertIn("the rig ships a defect", rendered,
+                      f"{marker}: the materialConsequence claim is not rendered")
 
 
 if __name__ == "__main__":

@@ -238,9 +238,7 @@ class PassLifecycleTests(unittest.TestCase):
     ) -> Path:
         self.documents += 1
         path = self.tmp / f"finding-disposition-{self.documents}.json"
-        owed = ({"reservedBehaviorIds": ["BM_ADV_1", "BM_ADV_PRESERVE"], "seam": "workflow CLI",
-                 "preservationObligations": ["preserve advisor intake"]}
-                if status == "accepted-for-proof" else {"reference": "issue-1"}
+        owed = ({} if status == "accepted-for-proof" else {"reference": "issue-1"}
                 if status == "accepted-follow-up" else {"evidence": "linked proof"})
         occurrence = ({"seam": "workflow CLI", "reproduction": {"command": "run proof", "result": "failed"}}
                       if status == "accepted-for-proof" else {"domain": "advisor finding", "count": 0,
@@ -271,9 +269,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.documents += 1
         path = self.tmp / f"review-finding-disposition-{self.documents}.json"
         fixed = status == "fixed"
-        extra = ({"reservedBehaviorIds": ["BM_ADV_1", "BM_ADV_PRESERVE"], "seam": "app module",
-                  "preservationObligations": ["preserve unrelated app behavior"]}
-                 if not fixed else {"evidence": "GREEN and reassessment recorded"})
+        extra = {} if not fixed else {"evidence": "GREEN and reassessment recorded"}
         occurrence = ({"domain": "the complete fixture repository", "count": 0, "complete": True,
                        "command": "python -m unittest test_review_fix", "result": "passes"}
                       if fixed else {"seam": "app module", "reproduction": {
@@ -333,11 +329,8 @@ class PassLifecycleTests(unittest.TestCase):
         wid = self.begin_slug(slug)
         self.advance_to_verification(slug, wid)
         self.owner_phase("code-review", "passed", findings="none")
-        self.run_cli(
-            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
-            ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--findings", "none"),
-            ("complete",),
-        )
+        self.finalize(slug, wid)
+        self.run_cli(("complete",))
         return wid
 
     def shell(self, script: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -350,9 +343,12 @@ class PassLifecycleTests(unittest.TestCase):
     def finalize(self, slug: str, wid: str) -> None:
         """The final consult and its lead disposition. Recording the review is left to
         each test: it refreshes the manifest, so where it happens is the behavior."""
+        self.documents += 1
+        envelope = self.tmp / f"finalize-{self.documents}-envelope.json"
+        envelope.write_text('{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}', encoding="utf-8")
         self.run_cli(
             ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
-             "--source", "codex-advisor", "--verdict", "commit-ready"),
+             "--source", "codex-advisor", "--input", str(envelope)),
             ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--findings", "none"),
         )
 
@@ -1472,10 +1468,7 @@ class PassLifecycleTests(unittest.TestCase):
             "--input", str(review),
         )
         self.assertEqual(recorded_review.returncode, 0, "LEGACY_FINDINGLESS_FLOW_REGRESSED" + recorded_review.stdout + recorded_review.stderr)
-        final = self.cli(
-            "advisor-result", "--slug", "pr2-replacement", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor",
-            "--verdict", "commit-ready",
-        )
+        final = self.record_final_envelope("pr2-replacement", wid, "ordinary-commit", "", verdict="commit-ready")
         self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
         disposed = self.cli("advisor-disposition", "--slug", "pr2-replacement", "--workflow-id", wid, "--stage", "final", "--findings", "none")
         self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
@@ -1484,6 +1477,8 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         state = json.loads(completed.stdout)
         self.assertEqual(state["phase"], "complete")
+        intake = state["finalReview"].pop("intakeEvidence", None)
+        self.assertTrue(intake, "completion admitted a final review with no envelope intake")
         self.assertEqual(state["finalReview"], {
             "findings": "none",
             "source": "codex-advisor",
@@ -1686,7 +1681,7 @@ class PassLifecycleTests(unittest.TestCase):
         refused = self.dispose(slug, wid, "preflight", "addressed", str(path))
         after = self.cli("status").stdout, len(self.history_events())
         self.assertEqual((refused.returncode, after), (2, before), marker + refused.stdout + refused.stderr)
-        self.assertIn("immutable intake and accepted-for-proof", refused.stderr, marker)
+        self.assertIn("immutable finding intake", refused.stderr, marker)
 
     def test_legacy_preflight_state_requires_an_explicit_findings_disposition(self) -> None:
         wid = self.begin_slug("legacy-advisor-state")
@@ -1715,8 +1710,9 @@ class PassLifecycleTests(unittest.TestCase):
         self.advance_to_context_forge()
 
         orphan = self.dispose("producer-owned-advice", wid, "preflight", "addressed", self.disposition_document("accepted-follow-up"))
-        self.assertEqual(orphan.returncode, 2, orphan.stdout + orphan.stderr)
-        self.assertIn("cannot create", orphan.stderr)
+        self.assertEqual(orphan.returncode, 2,
+                         "LEGACY_DOCUMENT_FABRICATED_AN_ADVISOR_RESULT: " + orphan.stdout + orphan.stderr)
+        self.assertIn("cannot create", orphan.stderr, "LEGACY_DOCUMENT_FABRICATED_AN_ADVISOR_RESULT")
 
         direct = self.cli(
             "advisor-result", "--slug", "producer-owned-advice", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor",
@@ -1752,87 +1748,15 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(after, {"source": "codex-advisor", "status": "completed", "findings": "addressed", "reason": None})
         self.assertEqual(self.evidence(disposition_id)["stage"], "preflight")
 
-    def test_proof_reservation_constraints_are_enforced_atomically(self) -> None:
-        marker, canonical_marker, text_marker, duplicate_marker, invalid_marker = (
-            "RESERVATION_CONSTRAINTS_BYPASSED", "RESERVATION_SEAM_CANONICALIZATION_BROKEN",
-            "RESERVATION_TEXT_CANONICALIZATION_BROKEN", "CANONICAL_RESERVATION_DUPLICATES_ACCEPTED",
-            "UNREPRESENTABLE_RESERVATION_ID_ACCEPTED")
-        outcomes, intake_outcomes, diagnostics = [], [], ""
-        ids, obligations = ["BM_ADV_1", "BM_ADV_PRESERVE"], ["preserve advisor intake"]
-        for suffix, reserved_ids, reserved_obligations, reservation_seam, contract_seam, preserved_behavior in (
-            ("seam", ids, obligations, "workflow CLI", "different seam", "preserve advisor intake"),
-            ("preservation", ids, obligations, "workflow CLI", "workflow CLI", "different preservation obligation"),
-            ("canonical-seam", ids, obligations, " workflow CLI ", " workflow CLI ", "preserve advisor intake"),
-            ("canonical-text", [" BM_ADV_1 ", " BM_ADV_PRESERVE "], [" preserve advisor intake "],
-             "workflow CLI", "workflow CLI", " preserve advisor intake "),
-            ("legacy", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
-            ("legacy-alias", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
-            ("duplicate", ["BM_ADV_1", " BM_ADV_1 ", "BM_ADV_PRESERVE"],
-             ["preserve advisor intake", " preserve advisor intake "], "workflow CLI", "workflow CLI",
-             "preserve advisor intake"),
-            ("invalid-id", ["bad id", "BM_ADV_PRESERVE"], obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
-            ("occurrence-seam", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"), ("count-only", ids, obligations, "workflow CLI", "workflow CLI", "preserve advisor intake"),
-        ):
-            slug = f"reservation-{suffix}"
-            wid = self.begin_slug(slug)
-            self.advance_to_context_forge()
-            envelope = self.tmp / f"{slug}-envelope.json"
-            envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [{
-                "id": "SPEC-1", "claim": "proof is missing", "material": True, "kind": "behavioral",
-            }], "verdict": "completed"}), encoding="utf-8")
-            recorded = self.cli("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
-                                "--source", "codex-advisor", "--input", str(envelope))
-            self.assertEqual(recorded.returncode, 0, marker + recorded.stdout + recorded.stderr)
-            intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
-            disposition = self.finding_disposition_document(intake_id)
-            document = json.loads(disposition.read_text(encoding="utf-8"))
-            document["dispositions"][0].update({"reservedBehaviorIds": reserved_ids,
-                "preservationObligations": reserved_obligations, "seam": reservation_seam})
-            if suffix == "occurrence-seam": document["dispositions"][0]["occurrence"]["seam"] = "different seam"
-            if suffix == "count-only": document["dispositions"][0]["occurrence"] = {"domain": "fixture", "count": 1, "complete": True, "command": "inspect", "result": "count=1"}
-            disposition.write_text(json.dumps(document), encoding="utf-8")
-            before_intake = self.cli("status").stdout, len(self.history_events())
-            accepted = self.dispose(slug, wid, "preflight", "addressed", str(disposition))
-            if suffix in {"duplicate", "invalid-id", "occurrence-seam", "count-only"}:
-                intake_outcomes.append((accepted.returncode, (self.cli("status").stdout,
-                    len(self.history_events())) == before_intake))
-                diagnostics += accepted.stdout + accepted.stderr
-                continue
-            self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
-            if suffix.startswith("legacy"):
-                def legacy_shape(state):
-                    reservation = state["findingReservations"][0]
-                    reservation.pop("seam"); reservation.pop("preservationObligations")
-                    if suffix == "legacy-alias": reservation["reservedBehaviorIds"] = ["BM_ADV_1", " BM_ADV_1 ", "BM_ADV_PRESERVE"]
-                self.rewrite_latest_state(legacy_shape)
-            source_ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
-            preflight = self.preflight_document()
-            preflight["behaviorMap"] = [{
-                "id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding",
-                "behavior": "close the finding through proof", "seam": contract_seam,
-                "expected": "explicit fixed closes", "redFailure": marker, "status": "pending",
-                "sourceRefs": source_ref,
-            }, {
-                "id": "BM_ADV_PRESERVE", "kind": "preservation", "basis": "advisor finding",
-                "behavior": preserved_behavior, "seam": "advisor intake",
-                "expected": "advisor intake remains valid", "redFailure": marker,
-                "status": "already-satisfied", "evidence": "current intake is preserved",
-                "sourceRefs": source_ref,
-            }]
-            before = self.cli("status").stdout, len(self.history_events())
-            result = self.record_preflight(wid, preflight)
-            outcomes.append((result.returncode, (self.cli("status").stdout, len(self.history_events())) == before))
-            diagnostics += result.stdout + result.stderr
-        self.assertEqual(outcomes[:2], [(2, True), (2, True)], marker + diagnostics)
-        self.assertEqual(outcomes[2], (0, False), canonical_marker + diagnostics)
-        self.assertEqual(outcomes[3], (0, False), text_marker + diagnostics)
-        self.assertEqual(outcomes[4:6], [(0, False), (2, True)], "LEGACY_RESERVATION_UPGRADE_BROKEN" + diagnostics)
-        self.assertEqual(intake_outcomes[0], (2, True), duplicate_marker + diagnostics)
-        self.assertEqual(intake_outcomes[1:], [(2, True)] * 3, invalid_marker + diagnostics)
+    def test_a_preflight_behavioral_finding_closes_through_proved_attacks(self) -> None:
+        """A payload-free accepted-for-proof acknowledges the finding; proof closes it.
 
-    def test_preflight_proof_reservation_closes_only_after_green_and_reassessment(self) -> None:
+        The acknowledgment carries no reservation payload: ownership is the
+        sourceRef link on the preflight map items, and fixed refuses until every
+        ref-carrying item reaches terminal proof.
+        """
         marker, mixed_marker, slug = (
-            "PREFLIGHT_PROOF_LIFECYCLE_BROKEN",
+            "PLAIN_ACCEPTED_FOR_PROOF_REFUSED",
             "MIXED_INTAKE_FIXED_CLOSURE_BLOCKED",
             "accepted-proof",
         )
@@ -1853,6 +1777,8 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual((json.loads(self.cli("status").stdout), len(self.history_events())), (before_state, before_events), marker)
         accepted = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "accepted-for-proof")))
         self.assertEqual(accepted.returncode, 0, marker + accepted.stdout + accepted.stderr)
+        self.assertEqual(json.loads(accepted.stdout)["advisorPreflight"]["findings"], "addressed",
+                         marker + ": the acknowledged finding kept preflight blocked")
         source_ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
         mapped = {"id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding",
             "behavior": "preflight proof closes only after mapped GREEN", "seam": "workflow CLI", "redFailure": marker,
@@ -1862,16 +1788,10 @@ class PassLifecycleTests(unittest.TestCase):
             "behavior": "preserve advisor intake", "seam": "advisor intake", "redFailure": marker,
             "expected": "advisor intake remains valid", "status": "already-satisfied",
             "evidence": "the current advisor intake is preserved", "sourceRefs": source_ref}
-        for behavior_map in ([{**mapped, "sourceRefs": []}], [{**mapped, "id": "BM_WRONG"}]):
-            document = self.preflight_document()
-            document["behaviorMap"] = behavior_map
-            rejected = self.record_preflight(wid, document)
-            self.assertEqual(rejected.returncode, 2, marker + rejected.stdout + rejected.stderr)
         document = self.preflight_document()
         document["behaviorMap"] = [mapped, preserved]
         preflight = self.record_preflight(wid, document)
         self.assertEqual(preflight.returncode, 0, marker + preflight.stdout + preflight.stderr)
-        self.assertTrue(json.loads(self.cli("status").stdout)["findingReservations"][0]["consumed"], marker)
         early = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
         self.assertEqual(early.returncode, 2, marker + early.stdout + early.stderr)
         (self.repo / "test_preflight_proof.py").write_text("import app, unittest\nclass Proof(unittest.TestCase):\n"
@@ -1889,22 +1809,9 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(reassessed.returncode, 0, marker + reassessed.stdout + reassessed.stderr)
         pending = json.loads(self.cli("status").stdout)
         self.assertEqual(pending["findingStates"][0]["status"], "accepted-for-proof", marker)
-        self.assertNotIn("fixed", pending["findingReservations"][0], marker)
-        self.rewrite_latest_state(
-            lambda state: state["findingReservations"][0].__setitem__("seam", "different seam")
-        )
-        before_state, before_events = json.loads(self.cli("status").stdout), len(self.history_events())
-        mismatch = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
-        self.assertEqual(mismatch.returncode, 2, marker + mismatch.stdout + mismatch.stderr)
-        self.assertIn("requires Seam", mismatch.stderr, marker)
-        self.assertEqual((json.loads(self.cli("status").stdout), len(self.history_events())), (before_state, before_events), marker)
-        self.rewrite_latest_state(
-            lambda state: state["findingReservations"][0].__setitem__("seam", "workflow CLI")
-        )
         fixed = self.dispose(slug, wid, "preflight", "addressed", str(self.mixed_finding_disposition_document(intake_id, "fixed")))
         self.assertEqual(fixed.returncode, 0, mixed_marker + fixed.stdout + fixed.stderr)
-        closed = json.loads(fixed.stdout)
-        self.assertEqual((closed["findingStates"][0]["status"], closed["findingReservations"][0]["fixed"]), ("fixed", True), marker)
+        self.assertEqual(json.loads(fixed.stdout)["findingStates"][0]["status"], "fixed", marker)
         self.record_real_gate(wid)
         self.run_cli(("set-phase", "--phase", "implementation", "--status", "passed"))
         self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0, marker)
@@ -2034,8 +1941,8 @@ class PassLifecycleTests(unittest.TestCase):
         verified = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(verified.returncode, 0, marker + verified.stdout + verified.stderr)
         self.owner_phase("code-review", "passed", findings="none")
-        # The lead closed a material finding, so the appeal is released by a strict
-        # envelope that omits it rather than by a bare verdict.
+        # The lead closed a material finding, so completion still owes a fresh
+        # strict commit-ready envelope rather than a bare verdict.
         answering = self.record_final_envelope(slug, wid, "answering", "", verdict="commit-ready")
         self.assertEqual(answering.returncode, 0, completion_marker + answering.stdout + answering.stderr)
         self.run_cli(
@@ -2045,7 +1952,7 @@ class PassLifecycleTests(unittest.TestCase):
         completed = self.cli("complete")
         self.assertEqual(completed.returncode, 0, completion_marker + completed.stdout + completed.stderr)
 
-    def test_review_finding_reservation_is_consumed_by_tdd_map_and_green_closes_fixed(self) -> None:
+    def test_a_review_finding_is_mapped_by_tdd_map_and_green_closes_fixed(self) -> None:
         marker, slug = "REVIEW_FINDING_NOT_FIXED", "review-finding-proof"
         wid = self.begin_slug(slug)
         self.advance_to_verification(slug, wid)
@@ -2612,7 +2519,7 @@ class PassLifecycleTests(unittest.TestCase):
             self.checkpoint("final-review")["ready"],
             "revalidation closed the final review it exists to re-run",
         )
-        final = self.cli("advisor-result", "--slug", "terminal-state", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready")
+        final = self.record_final_envelope("terminal-state", wid, "revalidated", "", verdict="commit-ready")
         self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
         disposed = self.cli("advisor-disposition", "--slug", "terminal-state", "--workflow-id", wid, "--stage", "final", "--findings", "none")
         self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
@@ -2696,11 +2603,8 @@ class PassLifecycleTests(unittest.TestCase):
         legacy_verified = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(legacy_verified.returncode, 0, legacy_verified.stdout + legacy_verified.stderr)
         self.owner_phase("code-review", "passed", findings="none")
-        self.run_cli(
-            ("advisor-result", "--slug", "production-code-lifetime", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready"),
-            ("advisor-disposition", "--slug", "production-code-lifetime", "--workflow-id", wid, "--stage", "final", "--findings", "none"),
-            ("complete",),
-        )
+        self.finalize("production-code-lifetime", wid)
+        self.run_cli(("complete",))
         invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
         self.assertEqual(json.loads(self.cli("status").stdout)["productionCode"], "passed",
                          "governance revalidation erased the production-code step")
@@ -2843,7 +2747,8 @@ class PassLifecycleTests(unittest.TestCase):
             before = json.loads(self.cli("status").stdout), len(self.history_events())
             refused = self.cli("advisor-result", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--input", str(envelope))
             self.assertEqual((refused.returncode, json.loads(self.cli("status").stdout), len(self.history_events())), (2, *before), marker + refused.stdout + refused.stderr)
-        self.assertEqual(self.cli("advisor-result", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready").returncode, 0)
+        self.assertEqual(self.record_final_envelope(
+            "completion-contract", wid, "completion-ready", "", verdict="commit-ready").returncode, 0)
         self.assertEqual(self.cli("complete").returncode, 2, "undispositioned final review completed")
         disposed = self.dispose(
             "completion-contract", wid, "final", "addressed",
@@ -2911,10 +2816,10 @@ class PassLifecycleTests(unittest.TestCase):
         """The advisor, not the lead, answers a material finding.
 
         Every one of the three resolved labels closes a finding without changing
-        the candidate, so nothing invalidates the pass and no fresh envelope is
-        forced. Asserting only that `complete` refuses would pass for the raw
-        verdict's reason, which this change removes; the refusal must name the
-        appeal that keeps the advisor in the loop.
+        the candidate, so nothing invalidates the pass. What keeps the advisor
+        in the loop is the fresh-envelope requirement: the standing verdict is
+        fix-before-commit, so completion refuses until a new commit-ready
+        envelope is recorded.
         """
         marker = "LEAD_SELF_COMPLETION_ADMITTED"
         for status in self.RESOLVED_LABELS:
@@ -2929,10 +2834,16 @@ class PassLifecycleTests(unittest.TestCase):
                 completed = self.cli("complete")
                 self.assertEqual(completed.returncode, 2, marker + completed.stdout + completed.stderr)
                 self.assertIn(
-                    "appeal", completed.stderr,
+                    "finalReview", completed.stderr,
                     marker + f": {status} completed without the advisor answering; "
                     + f"the refusal named {completed.stderr.strip()!r}",
                 )
+                answered = self.record_final_envelope(slug, wid, f"answer-{status}", "", verdict="commit-ready")
+                self.assertEqual(answered.returncode, 0, marker + answered.stdout + answered.stderr)
+                self.run_cli(("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                              "--stage", "final", "--findings", "none"))
+                final = self.cli("complete")
+                self.assertEqual(final.returncode, 0, marker + final.stdout + final.stderr)
 
     def record_final_envelope(self, slug: str, wid: str, name: str, findings: str,
                               verdict: str = "fix-before-commit") -> subprocess.CompletedProcess[str]:
@@ -2943,8 +2854,8 @@ class PassLifecycleTests(unittest.TestCase):
         return self.cli("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
                         "--source", "codex-advisor", "--input", str(envelope))
 
-    def appeal_pending_pass(self, slug: str, status: str = "rejected-with-evidence") -> str:
-        """A pass whose single material finding the lead closed, leaving its appeal pending."""
+    def lead_closed_material_pass(self, slug: str, status: str = "rejected-with-evidence") -> str:
+        """A pass whose single material finding the lead closed; the final verdict still stands at fix-before-commit."""
         wid, intake = self.advance_to_final_intake(
             slug, '{"id":"SPEC-1","claim":"a material defect","material":true,"kind":"nonbehavioral"}',
         )
@@ -2953,71 +2864,20 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(disposed.returncode, 0, disposed.stdout + disposed.stderr)
         return wid
 
-    def test_an_appeal_response_omitting_the_appealed_finding_accepts_the_closure(self) -> None:
-        """Omission is the advisor's acceptance, and new ids do not change that.
-
-        The appealed finding is answered by the envelope that leaves it out; the
-        ids that envelope raises are a fresh intake governed independently.
-        """
-        marker = "APPEAL_OMISSION_NOT_ACCEPTED"
-        slug = "appeal-omission"
-        wid = self.appeal_pending_pass(slug)
-        self.assertIn("final appeal pending for SPEC-1", self.cli("complete").stderr,
-                      "the rejection did not open an appeal")
-
+    def test_a_new_envelope_finding_forms_its_own_blocking_intake(self) -> None:
+        """The ids a fresh envelope raises are a fresh intake governed independently."""
+        marker = "NEW_ENVELOPE_FINDING_NOT_BLOCKING"
+        slug = "fresh-envelope-intake"
+        wid = self.lead_closed_material_pass(slug)
         answered = self.record_final_envelope(
-            slug, wid, "appeal-response",
+            slug, wid, "fresh-envelope",
             '{"id":"SPEC-9","claim":"an unrelated later defect","material":true,"kind":"nonbehavioral"}',
         )
         self.assertEqual(answered.returncode, 0, marker + answered.stdout + answered.stderr)
         blocked = self.cli("complete")
         self.assertEqual(blocked.returncode, 2, marker + blocked.stdout + blocked.stderr)
-        self.assertNotIn("final appeal pending for SPEC-1", blocked.stderr,
-                         marker + f": the omitted finding stayed appealed; complete named {blocked.stderr.strip()!r}")
         self.assertIn("SPEC-9", blocked.stderr,
                       marker + ": the new finding did not form its own blocking intake")
-
-    def test_a_material_re_raise_records_disagreement_and_blocks_completion(self) -> None:
-        """When the advisor stands by a finding the lead rejected, neither side wins.
-
-        The appeal is spent, the disagreement is recorded, and the pass stops for a
-        human owner instead of escalating into another paid round.
-        """
-        marker = "MATERIAL_RERAISE_DID_NOT_BLOCK"
-        slug = "appeal-reraise"
-        wid = self.appeal_pending_pass(slug)
-        answered = self.record_final_envelope(
-            slug, wid, "reraise",
-            '{"id":"SPEC-1","claim":"the same material defect, restated","material":true,"kind":"nonbehavioral"}',
-        )
-        self.assertEqual(answered.returncode, 0, marker + answered.stdout + answered.stderr)
-        self.assertEqual(
-            json.loads(self.cli("status").stdout)["nextAction"], "needs-human-owner-adjudication",
-            marker + ": the re-raise did not stop the pass for a human owner",
-        )
-        blocked = self.cli("complete")
-        self.assertEqual(blocked.returncode, 2, marker + blocked.stdout + blocked.stderr)
-        self.assertIn("needs-human-owner-adjudication", blocked.stderr,
-                      marker + f": completion named {blocked.stderr.strip()!r}")
-
-    def test_a_recorded_disagreement_survives_ordinary_progress(self) -> None:
-        """Unlike a pause, an adjudication blocker is not cleared by advancing.
-
-        A pause is popped by nearly every commit path, which is right for an
-        ordinary external wait and wrong for a standing disagreement: a blocker
-        that ordinary progress clears is decorative.
-        """
-        marker = "DISAGREEMENT_CLEARED_BY_PROGRESS"
-        slug = "disagreement-survives"
-        wid = self.appeal_pending_pass(slug)
-        self.record_final_envelope(
-            slug, wid, "reraise-survives",
-            '{"id":"SPEC-1","claim":"the same material defect, restated","material":true,"kind":"nonbehavioral"}',
-        )
-        self.owner_phase("implementation", "passed")
-        self.assertEqual(json.loads(self.cli("status").stdout)["nextAction"],
-                         "needs-human-owner-adjudication", marker)
-        self.assertIn("needs-human-owner-adjudication", self.cli("complete").stderr, marker)
 
     def test_pass_start_oid_is_the_begin_head_and_never_moves(self) -> None:
         """The pass's own start is a separate identity from the integration base.
@@ -3042,25 +2902,25 @@ class PassLifecycleTests(unittest.TestCase):
     def test_a_context_mismatch_envelope_advances_nothing(self) -> None:
         """A review of the wrong context is not a review of this one.
 
-        It answers no appeal, releases no readiness, and asks for the consult to
-        be run again rather than for findings to be dispositioned.
+        It releases no readiness, and asks for the consult to be run again
+        rather than for findings to be dispositioned.
         """
         marker = "CONTEXT_MISMATCH_ADVANCED_READINESS"
         slug = "context-mismatch"
-        wid = self.appeal_pending_pass(slug)
+        wid = self.lead_closed_material_pass(slug)
         mismatched = self.record_final_envelope(slug, wid, "mismatch", "", verdict="context-mismatch")
         self.assertEqual(mismatched.returncode, 0, mismatched.stdout + mismatched.stderr)
         blocked = self.cli("complete")
         self.assertEqual(blocked.returncode, 2, marker + blocked.stdout + blocked.stderr)
-        self.assertIn("final appeal pending for SPEC-1", blocked.stderr,
-                      marker + ": the mismatched envelope consumed the appeal")
+        self.assertIn("finalReview", blocked.stderr,
+                      marker + ": the mismatched envelope released completion readiness")
         self.assertEqual(json.loads(self.cli("status").stdout)["nextAction"], "final-review",
                          marker + ": the mismatched envelope did not ask for re-consultation")
 
-    def test_one_finding_carries_at_most_one_appeal(self) -> None:
-        """The appeal is spent once; a rejection cannot be re-lodged."""
-        marker = "SECOND_APPEAL_ADMITTED"
-        slug = "appeal-once"
+    def test_a_refused_re_disposition_changes_nothing(self) -> None:
+        """A settled finding's second closure without supersession is refused atomically."""
+        marker = "REFUSED_REDISPOSITION_MUTATED_STATE"
+        slug = "re-disposition"
         wid, intake = self.advance_to_final_intake(
             slug, '{"id":"SPEC-1","claim":"a material defect","material":true,"kind":"nonbehavioral"}',
         )
@@ -3073,7 +2933,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(second.returncode, 2, marker + second.stdout + second.stderr)
         self.assertEqual(
             (json.loads(self.cli("status").stdout), len(self.history_events())), before,
-            marker + ": the refused second appeal changed recorded state",
+            marker + ": the refused re-disposition changed recorded state",
         )
 
     def test_a_closure_document_references_only_the_findings_it_changes(self) -> None:
@@ -3091,33 +2951,6 @@ class PassLifecycleTests(unittest.TestCase):
         blocked = self.cli("complete")
         self.assertIn("SPEC-1", blocked.stderr,
                       marker + ": the unreferenced finding stopped blocking completion")
-
-    def test_an_appeal_answer_records_what_answered_it(self) -> None:
-        """Acceptance is a lifecycle decision; what produced it is evidence.
-
-        Ids are unique only within one envelope, so an answer that omits the
-        appealed id may be genuine acceptance or an id that drifted. The
-        lifecycle still follows omission, and it degrades to a new blocking
-        intake rather than to readiness -- but the appeal records which envelope
-        answered it, so the two cases are distinguishable after the fact instead
-        of being silently identical.
-        """
-        marker = "ID_DRIFT_REACHED_READINESS"
-        slug = "appeal-id-drift"
-        wid = self.appeal_pending_pass(slug)
-        drifted = self.record_final_envelope(
-            slug, wid, "drifted",
-            '{"id":"SPEC-7","claim":"a material defect","material":true,"kind":"nonbehavioral"}',
-        )
-        self.assertEqual(drifted.returncode, 0, drifted.stdout + drifted.stderr)
-        answering = json.loads(drifted.stdout)["finalReview"]["intakeEvidence"]
-        blocked = self.cli("complete")
-        self.assertEqual(blocked.returncode, 2, marker + blocked.stdout + blocked.stderr)
-        self.assertIn("SPEC-7", blocked.stderr,
-                      marker + ": the drifted re-raise reached readiness instead of a new intake")
-        appeals = json.loads(self.cli("status").stdout)["findingAppeals"]
-        self.assertEqual([entry.get("answeredBy") for entry in appeals], [answering],
-                         marker + ": the appeal did not record the envelope that answered it")
 
     def test_a_settled_finding_record_is_corrected_only_by_supersession(self) -> None:
         """A wrong terminal record is repaired forward, never rewritten.
@@ -3205,16 +3038,17 @@ class PassLifecycleTests(unittest.TestCase):
 
     # --- issue #152 PR A: final-review correction batch ---------------------
 
-    def test_only_a_strict_envelope_answers_an_appeal(self) -> None:
-        """The advisor answers an appeal; a bare verdict is not the advisor answering.
+    def test_a_bare_verdict_cannot_stand_in_for_a_fresh_envelope(self) -> None:
+        """The advisor answers with a strict envelope; a bare verdict is not one.
 
         `advisor-result --verdict commit-ready` carries no findings intake, so
-        treating its silence as omission let the lead close a material finding,
-        record a verdict for it, and complete without any independent review.
+        treating it as the strict envelope would let the lead close a material
+        finding, record a verdict for it, and complete without any independent
+        review.
         """
-        marker = "LEGACY_VERDICT_ANSWERED_THE_APPEAL"
+        marker = "LEGACY_VERDICT_STOOD_IN_FOR_THE_ENVELOPE"
         slug = "envelope-only"
-        wid = self.appeal_pending_pass(slug)
+        wid = self.lead_closed_material_pass(slug)
         legacy = self.cli("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
                           "--source", "codex-advisor", "--verdict", "commit-ready")
         self.assertEqual(legacy.returncode, 0, legacy.stdout + legacy.stderr)
@@ -3225,65 +3059,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(blocked.returncode, 2,
                          marker + ": a bare verdict with no envelope completed the pass"
                          + blocked.stdout + blocked.stderr)
-        self.assertIn("appeal", blocked.stderr, marker)
-
-    def test_an_appeal_binds_the_candidate_it_was_lodged_against(self) -> None:
-        """The rejection is bound to the tree it measured, not to the finding alone."""
-        marker = "APPEAL_NOT_BOUND_TO_CANDIDATE"
-        slug = "appeal-binding"
-        self.appeal_pending_pass(slug)
-        appeals = json.loads(self.cli("status").stdout)["findingAppeals"]
-        self.assertEqual([entry.get("candidateTree") for entry in appeals],
-                         [self.disposition_context()["candidateTree"]],
-                         marker + ": the appeal records no candidate binding")
-
-    def test_superseding_a_settled_finding_does_not_lodge_a_second_appeal(self) -> None:
-        """One finding carries one appeal, and correcting its record does not buy another."""
-        marker = "SECOND_APPEAL_LODGED_BY_SUPERSESSION"
-        slug = "supersede-appeal"
-        wid = self.appeal_pending_pass(slug, "report-only")
-        answered = self.record_final_envelope(slug, wid, "accepting", "", verdict="commit-ready")
-        self.assertEqual(answered.returncode, 0, answered.stdout + answered.stderr)
-        intake = json.loads(self.cli("status").stdout)["findingAppeals"][0]["intakeEvidenceId"]
-        self.documents += 1
-        path = self.tmp / f"supersede-appeal-{self.documents}.json"
-        path.write_text(json.dumps({
-            "context": self.disposition_context(), "intakeEvidenceId": intake,
-            "dispositions": [{
-                "finding_id": "SPEC-1", "status": "fixed", "kind": "nonbehavioral",
-                "premise": {"claim": "the defect exists", "command": "inspect", "result": "false"},
-                "occurrence": {"domain": "the complete current candidate", "count": 0, "complete": True,
-                               "command": "inspect", "result": "count=0"},
-                "materialConsequence": {"claim": "material", "command": "inspect", "result": "true"},
-                "evidence": "corrected after the answering envelope",
-                "supersedes": "report-only understated a defect that did need a change",
-            }],
-        }), encoding="utf-8")
-        superseded = self.dispose(slug, wid, "final", "addressed", str(path))
-        self.assertEqual(superseded.returncode, 0, superseded.stdout + superseded.stderr)
-        appeals = json.loads(self.cli("status").stdout)["findingAppeals"]
-        self.assertEqual(len(appeals), 1,
-                         marker + f": correcting one record produced {len(appeals)} appeals")
-
-    def test_an_open_reservation_routes_the_batch_to_tdd(self) -> None:
-        """An unconsumed proof reservation is TDD work, not generic correction.
-
-        Naming the same action for every open batch tells the lead to look at
-        findings when what the batch actually owes is a mapped RED.
-        """
-        marker = "BATCH_DID_NOT_NAME_TDD"
-        slug = "batch-tdd"
-        wid, intake = self.advance_to_final_intake(
-            slug, '{"id":"SPEC-1","claim":"a behavioural defect","material":true,"kind":"behavioral"}',
-        )
-        reserved = self.dispose(slug, wid, "final", "addressed",
-                                str(self.finding_disposition_document(intake, "accepted-for-proof")))
-        self.assertEqual(reserved.returncode, 0, reserved.stdout + reserved.stderr)
-        state = json.loads(self.cli("status").stdout)
-        self.assertEqual([entry.get("consumed") for entry in state["findingReservations"]], [False],
-                         "the probe did not leave an unconsumed reservation")
-        self.assertEqual(state["nextAction"], "tdd",
-                         marker + f": the open reservation offered {state['nextAction']!r}")
+        self.assertIn("envelope", blocked.stderr, marker)
 
     def test_the_harness_drives_the_cli_the_operator_selects(self) -> None:
         """Installed proof needs the installed entrypoint, not a same-named copy.
@@ -3301,11 +3077,11 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(support.workflow_cli({}), support.WORKFLOW,
                          marker + ": the default stopped being the checkout entrypoint")
 
-    def reserved_proof_pass(self, slug: str, items: list[dict[str, object]]) -> tuple[str, str]:
-        """A pass whose behavioural finding reserved proof against `items`.
+    def acknowledged_proof_pass(self, slug: str, items: list[dict[str, object]]) -> tuple[str, str]:
+        """A pass whose acknowledged behavioural finding is mapped against `items`.
 
-        The three reservation-closure rows differ only in what the map links and
-        which item reaches GREEN, so the scaffold that gets them there -- intake,
+        The closure rows differ only in what the map links and which item
+        reaches GREEN, so the scaffold that gets them there -- intake,
         accepted-for-proof, and the recorded preflight carrying the finding's
         sourceRefs -- belongs in one place.
         """
@@ -3320,14 +3096,14 @@ class PassLifecycleTests(unittest.TestCase):
                             "--source", "codex-advisor", "--input", str(envelope))
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
-        reserved = self.dispose(slug, wid, "preflight", "addressed",
-                                str(self.mixed_finding_disposition_document(intake_id, "accepted-for-proof")))
-        self.assertEqual(reserved.returncode, 0, reserved.stdout + reserved.stderr)
+        acknowledged = self.dispose(slug, wid, "preflight", "addressed",
+                                    str(self.mixed_finding_disposition_document(intake_id, "accepted-for-proof")))
+        self.assertEqual(acknowledged.returncode, 0, acknowledged.stdout + acknowledged.stderr)
         refs = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
         document = self.preflight_document()
         document["behaviorMap"] = [
             {"id": "BM_ADV_1", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
-             "behavior": "the reserved proof", "expected": "value is two", "redFailure": "VALUE_NOT_TWO",
+             "behavior": "the finding's proof", "expected": "value is two", "redFailure": "VALUE_NOT_TWO",
              "status": "pending", "sourceRefs": refs},
             *({k: v for k, v in item.items() if k != "linked"}
               | {"sourceRefs": refs if item.get("linked", True) else []} for item in items),
@@ -3367,7 +3143,7 @@ class PassLifecycleTests(unittest.TestCase):
         block the closure its own GREEN replacement had already proved.
         """
         marker, slug = "SUPERSEDED_LINKED_ITEM_BLOCKED_CLOSURE", "superseded-closure"
-        wid, intake_id = self.reserved_proof_pass(slug, [
+        wid, intake_id = self.acknowledged_proof_pass(slug, [
             {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
              "behavior": "an obligation a sharper row later replaces", "expected": "value is four",
              "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
@@ -3396,7 +3172,7 @@ class PassLifecycleTests(unittest.TestCase):
         map until the replacement proves.
         """
         marker, slug = "SUPERSEDED_CLOSED_FINDING_UNREACHABLE", "closed-finding-supersession"
-        wid, intake_id = self.reserved_proof_pass(slug, [])
+        wid, intake_id = self.acknowledged_proof_pass(slug, [])
         self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
         fixed = self.dispose(slug, wid, "preflight", "addressed",
                              str(self.mixed_finding_disposition_document(intake_id, "fixed")))
@@ -3406,7 +3182,7 @@ class PassLifecycleTests(unittest.TestCase):
         update.write_text(json.dumps({
             "reassessment": "the proved row's promise was falsified; a bounded replacement takes over",
             "items": [{"id": "BM_ADV_BOUNDED", "kind": "contract", "basis": "advisor finding",
-                       "seam": "workflow CLI", "behavior": "the bounded reserved proof",
+                       "seam": "workflow CLI", "behavior": "the bounded finding proof",
                        "expected": "value is three", "redFailure": "BOUNDED_NOT_PROVED",
                        "status": "pending", "sourceRefs": refs}],
             "dispositions": []}), encoding="utf-8")
@@ -3579,13 +3355,13 @@ class PassLifecycleTests(unittest.TestCase):
     def test_a_preservation_obligation_retires_onto_an_unlinked_replacement(self) -> None:
         """`behavior_map.unresolved` already lets a preservation obligation close that way.
 
-        The exact-reservation rule owns contract proof: a replacement the finding
+        Direct sourceRef ownership owns contract proof: a replacement the finding
         never linked is unrelated proof however GREEN it is elsewhere. A preservation
         obligation is not that shape, and the predicate said so in prose two lines
         above while refusing it in code.
         """
         marker, slug = "PRESERVATION_RETIREMENT_REFUSED", "preservation-retirement"
-        wid, intake_id = self.reserved_proof_pass(slug, [])
+        wid, intake_id = self.acknowledged_proof_pass(slug, [])
         self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
         refs = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
         self.green_late_preservation(slug, wid, "BM_ADV_KEPT", refs, 4, "KEPT_NOT_PROVED")
@@ -3613,9 +3389,9 @@ class PassLifecycleTests(unittest.TestCase):
         the only way to reach it.
         """
         marker, slug = "DROPPED_REF_NOT_IDENTIFIED", "contract-stray"
-        wid, intake_id = self.reserved_proof_pass(slug, [
+        wid, intake_id = self.acknowledged_proof_pass(slug, [
             {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
-             "behavior": "reserved contract proof", "expected": "value is four",
+             "behavior": "linked contract proof", "expected": "value is four",
              "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
             {"id": "BM_ELSEWHERE", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
              "behavior": "proved on its own, outside the finding", "expected": "value is six",
@@ -3648,9 +3424,9 @@ class PassLifecycleTests(unittest.TestCase):
         nothing measures the update that moves A's terminal.
         """
         marker, slug = "TERMINAL_DRIFTED_OFF_THE_LINKED_SET", "terminal-drift"
-        wid, intake_id = self.reserved_proof_pass(slug, [
+        wid, intake_id = self.acknowledged_proof_pass(slug, [
             {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
-             "behavior": "reserved contract proof", "expected": "value is four",
+             "behavior": "linked contract proof", "expected": "value is four",
              "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
             {"id": "BM_UNLINKED", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
              "behavior": "proof the finding never linked", "expected": "value is eight",
@@ -3686,9 +3462,9 @@ class PassLifecycleTests(unittest.TestCase):
     def test_a_linked_terminal_chain_is_still_admitted(self) -> None:
         """The terminal is what closure judges, so an unlinked link in the middle is fine."""
         marker, slug = "LINKED_TERMINAL_CHAIN_REFUSED", "linked-terminal-chain"
-        wid, intake_id = self.reserved_proof_pass(slug, [
+        wid, intake_id = self.acknowledged_proof_pass(slug, [
             {"id": "BM_ADV_RETIRED", "kind": "contract", "basis": "advisor finding", "seam": "workflow CLI",
-             "behavior": "reserved contract proof", "expected": "value is four",
+             "behavior": "linked contract proof", "expected": "value is four",
              "redFailure": "RETIRED_NOT_PROVED", "status": "pending"},
             {"id": "BM_MIDDLE", "kind": "contract", "basis": "this pass", "seam": "workflow CLI",
              "behavior": "the unlinked middle of the chain", "expected": "value is six",
@@ -3712,37 +3488,6 @@ class PassLifecycleTests(unittest.TestCase):
         chained = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
         self.assertEqual(chained.returncode, 0,
                          f"{marker}: {chained.stdout}{chained.stderr}")
-
-    def test_an_envelope_reviewing_another_candidate_marks_how_it_answered(self) -> None:
-        """A stale answer is visible, not impossible.
-
-        Refusing to resolve an appeal whose bound tree moved reads well until the
-        pass legitimately corrects something else: the rejection then has no
-        answerable tree left and the pass deadlocks. The answer is recorded with
-        whether it reviewed the bound candidate, so staleness is auditable while
-        the lifecycle still terminates.
-        """
-        marker = "APPEAL_ANSWERED_FOR_ANOTHER_CANDIDATE"
-        slug = "appeal-stale-candidate"
-        wid = self.appeal_pending_pass(slug)
-        bound = json.loads(self.cli("status").stdout)["findingAppeals"][0]["candidateTree"]
-        # An ordinary correction round: the candidate moves, and verification and
-        # lead review are refreshed onto it, so the next envelope is legitimately
-        # recordable -- against a different tree than the rejection measured.
-        (self.repo / "app.py").write_text("value = 41\n", encoding="utf-8")
-        self.assertNotEqual(self.disposition_context()["candidateTree"], bound,
-                            "the probe did not change the candidate")
-        self.assertEqual(self.verify_run(sys.executable, "-c", "pass").returncode, 0, marker)
-        self.assertEqual(self.cli("verify", "--slug", slug, "--kind", "quality-gate",
-                                  "--base-ref", "HEAD").returncode, 0, marker)
-        self.owner_phase("code-review", "passed", findings="none")
-        answered = self.record_final_envelope(slug, wid, "other-candidate", "", verdict="commit-ready")
-        self.assertEqual(answered.returncode, 0, answered.stdout + answered.stderr)
-        appeal = json.loads(self.cli("status").stdout)["findingAppeals"][0]
-        self.assertEqual(appeal["status"], "accepted",
-                         marker + ": the appeal was left unanswerable rather than answered and marked")
-        self.assertIs(appeal["answeredOnBoundCandidate"], False,
-                      marker + ": the answer did not record that it reviewed a different candidate")
 
     def test_a_context_mismatch_envelope_contributes_no_findings(self) -> None:
         """An envelope that reviewed another context advances nothing, including its findings."""
@@ -3769,12 +3514,12 @@ class PassLifecycleTests(unittest.TestCase):
     def test_a_settled_behavioural_record_is_superseded_append_only(self) -> None:
         """A wrong terminal record is repaired forward even when proof closed it.
 
-        The records most worth correcting are the ones that carry a consumed
-        reservation: they are the ones a lead can only reach by mistake after
-        real proof, and refusing them left contract 5 unmet for exactly that case.
+        The records most worth correcting are the ones proof closed: they are
+        the ones a lead can only reach by mistake after real proof, and
+        refusing them left contract 5 unmet for exactly that case.
         """
         marker, slug = "BEHAVIOURAL_SUPERSESSION_REFUSED", "behavioural-supersession"
-        wid, intake_id = self.reserved_proof_pass(slug, [])
+        wid, intake_id = self.acknowledged_proof_pass(slug, [])
         self.green_mapped(slug, "BM_ADV_1", 2, "VALUE_NOT_TWO")
         self.assertEqual(self.dispose(slug, wid, "preflight", "addressed",
                                       str(self.mixed_finding_disposition_document(intake_id, "fixed"))
@@ -3794,7 +3539,8 @@ class PassLifecycleTests(unittest.TestCase):
             [(entry["from"], entry["to"]) for entry in json.loads(self.cli("status").stdout)["findingSupersessions"]],
             [("fixed", "report-only")], marker)
         self.assertGreater(len(self.history_events()), before, marker + ": the correction appended no event")
-    def test_the_selected_cli_carries_the_appeal_contract(self) -> None:
+
+    def test_the_selected_cli_carries_the_completion_contract(self) -> None:
         """The suite proves whichever entrypoint the operator selected.
 
         Run bare it proves the checkout Seam, which is what CI executes. Run with
@@ -3802,12 +3548,12 @@ class PassLifecycleTests(unittest.TestCase):
         installed acceptance is this same assertion rather than a claim about it.
         """
         marker = "INSTALLED_SEAM_NOT_GREEN"
-        slug = "selected-cli-appeal"
-        self.appeal_pending_pass(slug)
+        slug = "selected-cli-completion"
+        self.lead_closed_material_pass(slug)
         blocked = self.cli("complete")
         self.assertEqual(blocked.returncode, 2, marker + blocked.stdout + blocked.stderr)
-        self.assertIn("appeal", blocked.stderr,
-                      marker + f": {WORKFLOW} does not carry the appeal contract; it named "
+        self.assertIn("finalReview", blocked.stderr,
+                      marker + f": {WORKFLOW} does not carry the completion contract; it named "
                       + repr(blocked.stderr.strip()))
 
     def test_a_pending_reassessment_names_tdd(self) -> None:
@@ -3817,7 +3563,7 @@ class PassLifecycleTests(unittest.TestCase):
         it could do was point somewhere else while it waited.
         """
         marker, slug = "PENDING_REASSESSMENT_DID_NOT_NAME_TDD", "pending-reassessment"
-        wid, _ = self.reserved_proof_pass(slug, [])
+        wid, _ = self.acknowledged_proof_pass(slug, [])
         module = "test_pending_reassessment"
         (self.repo / f"{module}.py").write_text(
             "import app, unittest\nclass Proof(unittest.TestCase):\n"

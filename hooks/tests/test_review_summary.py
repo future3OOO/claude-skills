@@ -304,8 +304,6 @@ class ReviewSummaryTests(unittest.TestCase):
         intake_id = json.loads(intake.stdout)["summaryId"]
         corrected = self.disposition_document(
             intake_id, "SPEC-1", "accepted-for-proof", kind="behavioral",
-            reservedBehaviorIds=["BM_SPEC_1"], seam="workflow CLI",
-            preservationObligations=["preserve review state"],
         )
         item = corrected["dispositions"][0]
         item.pop("evidence")
@@ -348,11 +346,11 @@ class ReviewSummaryTests(unittest.TestCase):
             refused = self.record_review(path, f"stale-{field}")
             self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
             self.assertIn(diagnostic, refused.stderr)
-        unlinked = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
-        path.write_text(json.dumps(unlinked), encoding="utf-8")
-        refused = self.record_review(path, "unlinked-proof")
+        overloaded = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
+        path.write_text(json.dumps(overloaded), encoding="utf-8")
+        refused = self.record_review(path, "overloaded-acknowledgment")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-        self.assertIn("ids, Seam, and preservation obligations", refused.stderr)
+        self.assertIn("unknown or missing fields", refused.stderr)
         report_only = self.disposition_document(intake_id, "SPEC-1", "report-only")
         path.write_text(json.dumps(report_only), encoding="utf-8")
         material = self.record_review(path, "material-report-only")

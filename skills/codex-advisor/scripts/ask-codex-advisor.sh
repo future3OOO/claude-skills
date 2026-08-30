@@ -420,7 +420,7 @@ case "$phase" in
 Load /codebase-design, /tdd, and /code-quality. Challenge task scope, packet caller/callee coverage, Module/Interface/Seam choice, reuse, first real-seam RED, no-change surfaces, and demonstrated risks. The governing design artifact below is the decided design under review: try to falsify it — unsupported assumptions, contracts it violates, reachable operations that defeat it, exploration findings it fails to disposition. You may recommend a different architecture family; the decision is settled by measurement, not by this consult. Label any claim about existing behavior, tests, compatibility, or runtime semantics you have not directly observed as inferred/unverified and name the smallest real-Seam measurement that settles it. For work proposing a new Module, public Seam, or choosing between architecture families, an absent design artifact is itself a top-ranked finding. Contract coverage: treat every supplied contract item not GREEN or producer-backed baseline as material. Design review: extract concrete preservation obligations and load-bearing assumptions from the prose, challenge whether the proposed real-Seam proof would falsify them, and report omissions or contradictions. The Behavior Map is recorded later and is the sole proof-obligation authority; design prose and source references do not own entries. Framing: the lead question is a claim; measure any premise it states as fact before relying on it. A preflight question that asserted a reviewer premise as fact without a measurement is a finding. Measure before you infer: run the test, CLI, or probe and quote the command and result; an advisor-generated claim you could measure but did not is not material. Return only one JSON object: {"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"completed"}. Use kind behavioral or nonbehavioral; findings may be empty.' ;;
   final-review)
     phase_prompt='Checkpoint Interface: final-review
-Load /code-review, /codebase-design, /tdd, and /code-quality. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. Precedence: the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof. Unreconciled divergence between the design and the recorded preflight is a finding. Recheck the concrete preservation obligations in the design against the live diff, and attempt to falsify its load-bearing assumptions against the implementation. Apply the contradictory-contract gate: an Interface that admits arbitrary caller behavior may not also require callers to avoid particular operations — such a caveat is the defect. After the named checks, identify at most one additional material reachable failure class introduced by the changed Interface or state boundary and absent from both the design and the recorded proof; no broad exploration. Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation. A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed post-edit-passed with passProof for its exact surface, producer-backed already-satisfied with baseline-passed evidence for its exact surface and the pass unchanged for it, or superseded with a GREEN or post-edit-passed terminal replacement; a contract item that is omitted, already-satisfied by prose, RED, unresolved, stale, or superseded without a GREEN or post-edit-passed terminal replacement is material. Contract coverage: treat every contract item without GREEN, producer-backed post-edit-passed, or producer-backed baseline proof as material. Design review: design prose can expose an omission or divergence, but it does not own Behavior Map entries or proof status. Report every material finding you encounter while running the required checks -- design, recorded preflight and Behavior Map, and recorded proof against the current candidate -- and you may then explore at most one further reachable failure class and report what it finds; you are not required to predict defects a later correction introduces. When you re-raise a finding the lead rejected, reuse that exact finding id, and never reuse an appealed id for a different claim. Framing: the lead question is a claim; measure any premise it states as fact before relying on it. A preflight question that asserted a reviewer premise as fact without a measurement is a finding. Measure before you infer: run the test, CLI, or probe and quote the command and result; an advisor-generated claim you could measure but did not is not material. Return only one JSON object with schemaVersion 1, findings objects carrying exactly id, claim, material, and kind (behavioral or nonbehavioral), and verdict commit-ready, fix-before-commit, or context-mismatch. Use fix-before-commit only when at least one finding is material true; use commit-ready when context matches and none is material; preserve context-mismatch for mismatched review context.' ;;
+Load /code-review, /codebase-design, /tdd, and /code-quality. Derive completeness from the recorded intent and the changed public Interface before any declared-map closure: enumerate the load-bearing surfaces the intent promises and the changed Interface exposes, then check each against the recorded proof for a real-Seam attack. commit-ready is invalid while a promised load-bearing surface has no real-Seam attack. Reconcile the live diff against the governed slice, real-seam RED/GREEN proof, module depth, minimality, fake-green risk, and no-change surfaces. Precedence: the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof. Unreconciled divergence between the design and the recorded preflight is a finding. Recheck the concrete preservation obligations in the design against the live diff, and attempt to falsify its load-bearing assumptions against the implementation. Apply the contradictory-contract gate: an Interface that admits arbitrary caller behavior may not also require callers to avoid particular operations — such a caveat is the defect. Re-adjudicate each recorded finding intake claim against its recorded disposition in the current candidate. Report every material reachable failure class introduced by the changed Interface or state boundary and absent from both the design and the recorded proof. Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation. A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed post-edit-passed with passProof for its exact surface, producer-backed already-satisfied with baseline-passed evidence for its exact surface and the pass unchanged for it, or superseded with a GREEN or post-edit-passed terminal replacement; a contract item that is omitted, already-satisfied by prose, RED, unresolved, stale, or superseded without a GREEN or post-edit-passed terminal replacement is material. Contract coverage: treat every contract item without GREEN, producer-backed post-edit-passed, or producer-backed baseline proof as material. Design review: design prose can expose an omission or divergence, but it does not own Behavior Map entries or proof status. Report every material finding you encounter while running the required checks -- intent-derived completeness, design, recorded preflight and Behavior Map, recorded finding intake, and recorded proof against the current candidate; you are not required to predict defects a later correction introduces. When you re-raise a finding the lead rejected, reuse that exact finding id, and never reuse a settled id for a different claim. Framing: the lead question is a claim; measure any premise it states as fact before relying on it. A preflight question that asserted a reviewer premise as fact without a measurement is a finding. Measure before you infer: run the test, CLI, or probe and quote the command and result; an advisor-generated claim you could measure but did not is not material. Return only one JSON object with schemaVersion 1, findings objects carrying exactly id, claim, material, and kind (behavioral or nonbehavioral), and verdict commit-ready, fix-before-commit, or context-mismatch. Use fix-before-commit only when at least one finding is material true; use commit-ready when context matches and none is material; preserve context-mismatch for mismatched review context.' ;;
 esac
 
 evidence=""
@@ -492,7 +492,44 @@ print(json.dumps({"sourceEvidenceId": sys.argv[1], "items": [
 ]}, indent=1))' "$behavior_source_id")
     [[ -n "$behavior_projection" ]] && bounded_section behavior_map_section behavior-map "current Behavior Map" "$behavior_projection" 12000
   fi
+  findings_section=""
   if [[ "$phase" == "final-review" && -n "$active_wid" ]]; then
+    # Each recorded finding renders its intake claim beside its disposition, so
+    # the delegate adjudicates what was claimed, not a closure count.
+    finding_records=""
+    while IFS= read -r intake_id; do
+      [[ -n "$intake_id" ]] || continue
+      intake_doc=$(owned_record "$intake_id" "$active_wid")
+      [[ -n "$intake_doc" ]] && finding_records+="$intake_id"$'\t'"$intake_doc"$'\n'
+    done < <(printf '%s' "$checkpoint_json" | python3 -c 'import json,sys
+seen = []
+for entry in json.load(sys.stdin).get("findingStates") or []:
+    ref = entry.get("intakeEvidenceId") if isinstance(entry, dict) else None
+    if isinstance(ref, str) and ref not in seen:
+        seen.append(ref)
+        print(ref)')
+    findings_projection=$(printf '%s' "$checkpoint_json" | INTAKES="$finding_records" python3 -c 'import json,os,sys
+claims = {}
+for line in os.environ.get("INTAKES", "").splitlines():
+    ref, _, doc = line.partition("\t")
+    try:
+        record = json.loads(doc)
+    except ValueError:
+        continue
+    for finding in record.get("findings") or []:
+        if isinstance(finding, dict):
+            claims[(ref, str(finding.get("id")))] = finding.get("claim")
+rows = [{
+    "findingId": entry.get("findingId"), "stage": entry.get("stage"),
+    "producer": entry.get("producer"), "kind": entry.get("kind"),
+    "material": entry.get("material"), "disposition": entry.get("status"),
+    "intakeEvidenceId": entry.get("intakeEvidenceId"),
+    "claim": claims.get((entry.get("intakeEvidenceId"), str(entry.get("findingId")))),
+    **(entry.get("disposition") if isinstance(entry.get("disposition"), dict) else {}),
+} for entry in json.load(sys.stdin).get("findingStates") or []]
+sys.stdout.write(json.dumps(rows, indent=1) if rows else "")')
+    [[ -n "$findings_projection" ]] && bounded_section findings_section findings \
+      "recorded finding intake claims and dispositions" "$findings_projection" 8000
     if [[ "$active_tdd" != "pending" && -n "$tdd_doc" ]]; then
       bounded_section tdd_section tdd "recorded TDD summary" "$tdd_doc" 4000
     fi
@@ -527,7 +564,8 @@ ${preflight_section}
 --- current-pass diff, ${pass_start_oid:-<no pass start>} to the recorded candidate ${active_candidate:-<unbound>} ---
 ${current_diff:-<empty>}
 ${verification_section}
-${behavior_map_section}
+${behavior_map_section}${findings_section:+
+$findings_section}
 ${tdd_section}
 ${review_section}"
 fi

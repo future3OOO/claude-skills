@@ -57,7 +57,6 @@ STEP_STATUSES = {"pending", "in-progress", "passed", "not-required", "unavailabl
 FINDING_STATUSES = {"pending", "none", "addressed"}
 REVIEW_SOURCES = {"codex-advisor"}
 FINAL_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
-RESOLVED_DISPOSITIONS = {"fixed", "rejected-with-evidence", "report-only"}
 NO_INSTANCE_ID = "this state predates workflow instance identity and can no longer advance; begin a new workflow"
 SLUG_MISMATCH = "--slug does not match the active workflow"
 INSTANCE_MISMATCH = "--workflow-id does not match the active workflow instance"
@@ -173,7 +172,6 @@ def _allows_next(state: JsonObject, phase: str) -> bool:
             and review.get("source") in REVIEW_SOURCES
             and review.get("status") == "commit-ready"
             and review.get("findings") in {"none", "addressed"}
-            and _open_appeal(state) is None
         )
     return False
 
@@ -201,23 +199,15 @@ def _open_correction_batch(state: JsonObject) -> str:
     # Keyed on the immutable intake, not on finalReview: a correction edit resets
     # that record, and a batch that closed itself the moment the lead started
     # correcting would gate nothing.
-    states, reservations = state.get("findingStates"), state.get("findingReservations")
+    states = state.get("findingStates")
     open_findings = isinstance(states, list) and any(
         _finding_unresolved(entry) for entry in states
         if isinstance(entry, dict) and entry.get("stage") == "final"
     )
-    open_reservations = isinstance(reservations, list) and any(
-        not entry.get("consumed") or not entry.get("fixed") for entry in reservations
-        if isinstance(entry, dict) and entry.get("stage") in {"final", "code-review"}
-    )
-    # An unconsumed or unclosed reservation owes a mapped RED, not a reading of
-    # the findings list, so the batch names the work it actually owes.
-    return "tdd" if open_reservations else ("address-review-findings" if open_findings else "")
+    return "address-review-findings" if open_findings else ""
 
 
 def _derive_next_action(state: JsonObject) -> str:
-    if _appeal_in(state, "disagreed"):
-        return "needs-human-owner-adjudication"
     if state.get("reassessmentPending"):
         return "tdd"
     if batch := _open_correction_batch(state):
@@ -451,61 +441,17 @@ def _map_items(document: JsonObject | None) -> list[JsonObject] | None:
     return behavior_map.runtime_items(value) if value is not None else None
 
 
-def _validate_finding_reservation(reservation: JsonObject, linked: dict[str, JsonObject], finding_id: str) -> set[str]:
-    legacy = "seam" not in reservation and "preservationObligations" not in reservation
-    expected = {str(value) if legacy else str(value).strip() for value in reservation["reservedBehaviorIds"]}
-    # Every reserved id must be linked, so a finding is never closed by unrelated
-    # proof. Requiring the reserved set to stay the *whole* linked set also refused
-    # the honest case the work exposes later obligations for; those still have to
-    # reach terminal proof below, so admitting them costs no strictness. A legacy record
-    # carries no seam or obligations, so its id set is the whole of its contract
-    # and keeps the exact-set rule it was recorded under.
-    if (set(linked) != expected if legacy else expected - set(linked)) or not expected:
-        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires exactly: " + ", ".join(sorted(expected)))
-    if legacy: return expected
-    contract_seams = {str(entry["seam"]) for entry in linked.values() if entry.get("kind") == "contract"}
-    if str(reservation["seam"]).strip() not in contract_seams:
-        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires Seam: {reservation['seam']}")
-    obligations = {str(value).strip() for value in reservation["preservationObligations"]}
-    preserved = {str(entry["behavior"]) for entry in linked.values() if entry.get("kind") == "preservation"}
-    if obligations - preserved:
-        raise WorkflowError(f"accepted-for-proof reservation for {finding_id} requires preservation obligations: " + ", ".join(sorted(obligations)))
-    return expected
-
-
-def _consume_finding_reservations(
-    transaction: LedgerMutation, state: JsonObject, document: JsonObject, stage: str,
-) -> None:
-    items = _map_items(document) or []
-    reservations = state.get("findingReservations", [])
-    if not isinstance(reservations, list):
-        raise WorkflowError("recorded finding reservations are corrupt")
-    by_ref: dict[tuple[str, str], dict[str, JsonObject]] = {}
-    for entry in items:
+def _validate_finding_refs(transaction: LedgerMutation, document: JsonObject) -> None:
+    """Every finding sourceRef must name a recorded intake carrying that finding."""
+    for entry in _map_items(document) or []:
         for ref in entry.get("sourceRefs", []):
             if isinstance(ref, dict) and ref.get("type") == "finding":
-                key = (str(ref.get("evidenceId")), str(ref.get("id")))
-                intake = transaction.evidence(key[0])
+                intake = transaction.evidence(str(ref.get("evidenceId")))
                 findings = intake.get("findings") if isinstance(intake, dict) else None
-                if not isinstance(findings, list) or key[1] not in {
+                if not isinstance(findings, list) or str(ref.get("id")) not in {
                     str(finding.get("id")) for finding in findings if isinstance(finding, dict)
                 }:
                     raise WorkflowError(f"behavior {entry['id']} finding sourceRef is unrecorded, stale, or foreign")
-                by_ref.setdefault(key, {})[str(entry["id"])] = entry
-    stage_names = {stage} if stage == "preflight" else {"code-review", "final"}
-    pending = [entry for entry in reservations if isinstance(entry, dict)
-               and entry.get("stage") in stage_names and not entry.get("consumed")]
-    reserved_refs = {
-        (str(entry.get("intakeEvidenceId")), str(entry.get("findingId")))
-        for entry in reservations if isinstance(entry, dict)
-    }
-    if set(by_ref) - reserved_refs:
-        raise WorkflowError("Behavior Map carries an unreserved finding sourceRef")
-    for reservation in pending:
-        key = (str(reservation["intakeEvidenceId"]), str(reservation["findingId"]))
-        _validate_finding_reservation(reservation, by_ref.get(key, {}), key[1])
-    for reservation in pending:
-        reservation["consumed"] = True
 
 
 def commit_tdd(
@@ -537,13 +483,7 @@ def commit_tdd(
         if state.get("tddEvidence") != expected_evidence_id:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
         if summary_doc is not None:
-            _consume_finding_reservations(transaction, state, summary_doc, "review")
-            reservations = state.get("findingReservations", [])
-            if not isinstance(reservations, list):
-                raise WorkflowError("recorded finding reservations are corrupt")
-            for reservation in reservations:
-                if isinstance(reservation, dict) and reservation.get("fixed"):
-                    _behavioral_finding_closure(transaction, state, reservation, summary_doc)
+            _validate_finding_refs(transaction, summary_doc)
         writes: list[EvidenceWrite] = []
         evidence_id: str | None = None
         if summary_doc is not None:
@@ -559,7 +499,15 @@ def commit_tdd(
             state["tdd"] = "in-progress"
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
-            _reset_downstream(state)
+            if summary_doc is not None and summary_doc.get("kind") == "map":
+                # A map update moves no tree: the verified candidate, its graph
+                # binding, and the lead review still describe the code being
+                # completed. Only the completeness judgment is stale, so only the
+                # final review is re-earned; the edit path keeps the full reset.
+                state["finalReview"] = {"source": None, "status": "pending", "findings": "pending"}
+                state["nextAction"] = _derive_next_action(state)
+            else:
+                _reset_downstream(state)
         else:
             state["tdd"] = action
             state["phase"] = "tdd"
@@ -625,56 +573,6 @@ def _validate_disposition_context(identity: RepoIdentity, state: JsonObject, doc
     return manifest, head
 
 
-def _resolve_appeals(state: JsonObject, verdict: str, intake: JsonObject | None, answered_by: str | None,
-                     reviewed_tree: str) -> None:
-    """Bind the next context-matched envelope as the answer to every pending appeal.
-
-    Omitting an appealed id accepts the lead's closure and terminalizes it, whatever
-    else the envelope raises: the ids it does raise are their own intake, governed by
-    their own dispositions. A context-mismatch envelope matches no context, so it
-    answers nothing and consumes no appeal.
-    """
-    if verdict == "context-mismatch" or intake is None:
-        # A bare verdict carries no findings intake, so its silence is not the
-        # advisor omitting the appealed id - it is the advisor never being asked.
-        # Reading it as acceptance let the lead close a material finding, record a
-        # verdict for it, and complete with no independent review at all.
-        return
-    raised = {
-        str(item.get("id")): item for item in (intake or {}).get("findings", [])
-        if isinstance(item, dict)
-    }
-    for appeal in state.get("findingAppeals", []):
-        if not isinstance(appeal, dict) or appeal.get("status") != "pending":
-            continue
-        # Refusing to resolve an appeal whose bound tree moved deadlocks the pass:
-        # correcting any other finding in the same batch leaves the rejection with
-        # no answerable tree, which is the caller caveat the contradictory-contract
-        # gate forbids. The answer is recorded with whether it reviewed the bound
-        # candidate instead, so a stale acceptance stays auditable.
-        appeal["answeredOnBoundCandidate"] = appeal.get("candidateTree") == reviewed_tree
-        answer = raised.get(str(appeal.get("findingId")))
-        appeal["status"] = "accepted" if answer is None or answer.get("material") is not True else "disagreed"
-        appeal["answeredBy"] = answered_by
-
-
-def _appeal_in(state: JsonObject, status: str) -> JsonObject | None:
-    appeals = state.get("findingAppeals")
-    return next((entry for entry in appeals if isinstance(entry, dict) and entry.get("status") == status),
-                None) if isinstance(appeals, list) else None
-
-
-def _open_appeal(state: JsonObject) -> JsonObject | None:
-    """The one material final finding the lead closed that the advisor has not answered.
-
-    Closing a material finding with any resolved disposition leaves the candidate
-    untouched, so nothing invalidates the pass and no fresh envelope is forced. The
-    appeal is what keeps the independent reviewer in the loop; readiness and
-    completion both refuse while one is pending.
-    """
-    return _appeal_in(state, "pending")
-
-
 def _finding_unresolved(entry: JsonObject) -> bool:
     return entry.get("status") in {"pending", "accepted-for-proof"} or (entry.get("status") == "accepted-follow-up" and entry.get("material") is True)
 
@@ -713,7 +611,7 @@ def commit_review(
             review_manifest, review_head = _validate_disposition_context(identity, state, summary_doc)
             intake_id = str(summary_doc["intakeEvidenceId"])
             unresolved = _apply_finding_dispositions(
-                transaction, state, intake_id, summary_doc["dispositions"], "code-review", "code-review",
+                transaction, state, intake_id, summary_doc["dispositions"], "code-review",
             )
             status, findings = ("pending", "pending") if unresolved else ("passed", "addressed")
             manifest = _apply_step(identity, state, "code-review", status, findings, review_manifest, review_head)
@@ -779,7 +677,7 @@ def commit_evidence_phase(
                 manifests.append(binding)
                 state["graphManifestId"] = binding.manifest_id
         if phase == "preflight":
-            _consume_finding_reservations(transaction, state, evidence_doc, "preflight")
+            _validate_finding_refs(transaction, evidence_doc)
         _apply_step(identity, state, phase, status)
         write = evidence_write(str(state["workflowId"]), phase, evidence_doc)
         state[latest_field] = write.evidence_id
@@ -969,9 +867,6 @@ def record_advisor_result(
         elif stage == "final":
             state.pop("paused", None)
             _require_predecessor(state, "final-review")
-            _resolve_appeals(state, verdict, intake,
-                             intake_write.evidence_id if intake_write is not None else None,
-                             _candidate_tree(identity))
             if verdict not in FINAL_VERDICTS:
                 raise ValueError(f"unsupported final-review verdict: {verdict}")
             if drift := _binding_drift(identity, state, "review", transaction):
@@ -1038,16 +933,19 @@ def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: st
 
 
 def _behavioral_finding_closure(
-    transaction: LedgerMutation, state: JsonObject, reservation: JsonObject,
-    tdd_document: JsonObject | None = None,
+    transaction: LedgerMutation, state: JsonObject, intake_id: str, finding_id: str,
+    disposition: JsonObject,
 ) -> None:
-    if not reservation.get("consumed"):
-        raise WorkflowError("behavioral fixed requires its accepted-for-proof reservation to be consumed")
-    if tdd_document is None:
-        tdd_document = transaction.evidence(state.get("tddEvidence"))
+    """Conservation gate: proved ref-carrying attacks over the finding's whole domain.
+
+    Ownership is the sourceRef link itself. A behavioral fixed closes only when
+    every Behavior Map item carrying this finding's ref has terminal proof, and
+    the occurrence either measured the complete domain or the disposition names
+    an explicit coverage route.
+    """
+    tdd_document = transaction.evidence(state.get("tddEvidence"))
     preflight_document = transaction.evidence(state.get("preflightEvidence"))
     items = behavior_map.recorded_map(tdd_document, preflight_document) or []
-    intake_id, finding_id = reservation["intakeEvidenceId"], reservation["findingId"]
     linked = {
         str(entry["id"]): entry for entry in items
         if any(
@@ -1058,76 +956,79 @@ def _behavioral_finding_closure(
             for ref in entry.get("sourceRefs", [])
         )
     }
-    expected = _validate_finding_reservation(reservation, linked, str(finding_id))
-    # A retired obligation defers to its replacement here as it does everywhere
-    # else: behavior_map owns the terminal walk, and judging a linked item by its
-    # raw status instead let a superseded row block the closure its terminal
-    # replacement had already proved. Reserved contract proof still resolves
-    # inside the finding's own linked set, because a replacement the finding never
-    # linked is exactly the unrelated proof an exact reservation exists to refuse,
-    # however proved it is elsewhere. A preservation obligation is not that shape -
-    # `behavior_map.unresolved` already closes one through any proved terminal
-    # replacement - so retiring one off the linked set stays admitted.
-    terminal = {identifier: behavior_map.terminal(items, entry) for identifier, entry in linked.items()}
-    if strayed := sorted(
-        identifier for identifier, entry in terminal.items()
-        if linked[identifier].get("kind") == "contract" and entry["id"] not in linked
-    ):
+    if not linked:
         raise WorkflowError(
-            "behavioral fixed requires the replacement to stay linked to the finding: " + ", ".join(strayed)
+            f"behavioral fixed for {finding_id} requires Behavior Map attack item(s) carrying its finding sourceRef"
         )
+    # A retired obligation defers to its replacement: behavior_map owns the
+    # terminal walk, and its supersession rules already refuse a replacement
+    # that drops the finding's ref, so the walk cannot escape the linked set.
+    terminal = {identifier: behavior_map.terminal(items, entry) for identifier, entry in linked.items()}
     not_proved = sorted(
         identifier for identifier, entry in terminal.items()
         if entry.get("status") not in behavior_map.PROOF_STATUSES
         and not (entry.get("kind") == "preservation" and entry.get("status") == "already-satisfied")
-        # A closure recorded against proved items is not invalidated by work
-        # mapped against the same finding afterwards - a correction's pending
-        # replacement has to carry this finding's ref to keep supersession
-        # closable at all. Completion still blocks through the unresolved map
-        # until that item proves; only revalidation of a recorded closure
-        # tolerates it, never the initial fixed disposition.
-        and not (reservation.get("fixed") and entry.get("status") in {"pending", "red"})
     )
     if not_proved:
         raise WorkflowError("behavioral fixed requires linked proved item(s): " + ", ".join(not_proved))
+    proved = {
+        identifier for identifier, entry in terminal.items()
+        if entry.get("status") in behavior_map.PROOF_STATUSES
+    }
+    if not proved:
+        raise WorkflowError(
+            f"behavioral fixed for {finding_id} requires at least one terminally proved linked attack item"
+        )
+    occurrence = disposition.get("occurrence")
+    complete_domain = (
+        isinstance(occurrence, dict)
+        and occurrence.get("count") == 0
+        and occurrence.get("complete") is True
+    )
+    if not complete_domain:
+        coverage = disposition.get("coverage")
+        route = coverage.get("kind") if isinstance(coverage, dict) else None
+        if route == "split":
+            named = {str(value) for value in coverage.get("items", [])}
+            if unlinked := sorted(named - set(linked)):
+                raise WorkflowError(
+                    f"split coverage for {finding_id} names item(s) without its finding sourceRef: "
+                    + ", ".join(unlinked)
+                )
+            if unproved := sorted(named - proved):
+                raise WorkflowError(
+                    f"split coverage for {finding_id} names item(s) not terminally proved: "
+                    + ", ".join(unproved)
+                )
+        elif route != "narrowed":
+            raise WorkflowError(
+                f"behavioral fixed for {finding_id} requires zero occurrence on the complete domain "
+                "or an explicit coverage route"
+            )
     pending = tdd_document.get("reassessmentPending") if isinstance(tdd_document, dict) else None
-    if pending in expected:
+    if pending in linked:
         raise WorkflowError("behavioral fixed requires post-proof reassessment")
 
 
 def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject) -> list[str]:
     states = state.get("findingStates", [])
-    reservations = state.get("findingReservations", [])
-    if not isinstance(states, list) or not isinstance(reservations, list):
+    if not isinstance(states, list):
         return ["finding lifecycle evidence is corrupt"]
-    for reservation in reservations:
-        if isinstance(reservation, dict) and reservation.get("fixed"):
-            _behavioral_finding_closure(transaction, state, reservation)
     unresolved = [
         f"{entry.get('stage')}:{entry.get('findingId')}"
         for entry in states
         if isinstance(entry, dict) and _finding_unresolved(entry)
     ]
-    dangling = [
-        f"{entry.get('stage')}:{entry.get('findingId')}"
-        for entry in reservations
-        if isinstance(entry, dict) and (not entry.get("consumed") or not entry.get("fixed"))
-    ]
-    result: list[str] = []
-    if unresolved:
-        result.append("pending findings: " + ", ".join(unresolved))
-    if dangling:
-        result.append("unclosed accepted-for-proof findings: " + ", ".join(dangling))
-    return result
+    return ["pending findings: " + ", ".join(unresolved)] if unresolved else []
 
 
 def _apply_finding_dispositions(
     transaction: LedgerMutation, state: JsonObject, intake_id: str,
-    dispositions: list[JsonObject], stage: str, producer: str, candidate_tree: str | None = None,
+    dispositions: list[JsonObject], stage: str,
 ) -> bool:
     intake = transaction.evidence(intake_id)
     if not isinstance(intake, dict) or any(intake.get(field) != expected for field, expected in (
-        ("workflowId", state["workflowId"]), ("stage", stage), ("producer", producer),
+        ("workflowId", state["workflowId"]), ("stage", stage),
     )):
         raise WorkflowError("disposition references an unrecorded, stale, or foreign finding intake")
     findings = {str(item["id"]): item for item in intake.get("findings", []) if isinstance(item, dict)}
@@ -1139,8 +1040,8 @@ def _apply_finding_dispositions(
     # by the shape of one document. Duplicates stay refused upstream.
     if not referenced or referenced - set(findings):
         raise WorkflowError("dispositions must reference findings recorded in the intake")
-    reservations, states = state.setdefault("findingReservations", []), state.get("findingStates", [])
-    if not isinstance(reservations, list) or not isinstance(states, list):
+    states = state.get("findingStates", [])
+    if not isinstance(states, list):
         raise WorkflowError("recorded finding lifecycle is corrupt")
     for disposition in dispositions:
         identifier, status = str(disposition["finding_id"]), str(disposition["status"])
@@ -1153,7 +1054,6 @@ def _apply_finding_dispositions(
         current = finding_state.get("status")
         if kind != findings[identifier].get("kind"):
             raise WorkflowError(f"finding {identifier} disposition kind differs from immutable intake")
-        superseding = False
         if _finding_unresolved(finding_state) and str(disposition.get("supersedes") or "").strip():
             # Admitting a supersession reason on a record that has settled nothing
             # let a document claim a correction it never made; the field says what
@@ -1164,7 +1064,6 @@ def _apply_finding_dispositions(
                 continue
             if not str(disposition.get("supersedes") or "").strip():
                 raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
-            superseding = True
             supersessions = state.setdefault("findingSupersessions", [])
             if not isinstance(supersessions, list):
                 raise WorkflowError("recorded finding lifecycle is corrupt")
@@ -1172,40 +1071,19 @@ def _apply_finding_dispositions(
                 "intakeEvidenceId": intake_id, "findingId": identifier,
                 "from": current, "to": status, "reason": str(disposition["supersedes"]).strip(),
             })
-        reservation = next((entry for entry in reservations if isinstance(entry, dict)
-                            and entry.get("intakeEvidenceId") == intake_id
-                            and entry.get("findingId") == identifier), None)
-        if status == "accepted-for-proof":
-            if kind != "behavioral" or reservation is not None or current != "pending":
-                raise WorkflowError(f"finding {identifier} cannot record accepted-for-proof")
-            reservations.append({
-                "stage": stage, "intakeEvidenceId": intake_id, "findingId": identifier,
-                "reservedBehaviorIds": list(disposition["reservedBehaviorIds"]), "consumed": False,
-                "seam": disposition["seam"],
-                "preservationObligations": list(disposition["preservationObligations"]),
-            })
-        elif reservation is not None and status != "fixed" and not superseding:
-            # The one-way rule guards a reservation still owed its proof. A record
-            # that already settled has been proved; correcting it is a repair, and
-            # refusing that left the records most worth repairing unrepairable.
-            raise WorkflowError(f"accepted-for-proof finding {identifier} can only transition to fixed")
-        elif status == "fixed" and kind == "behavioral":
-            if reservation is None or current != "accepted-for-proof":
-                raise WorkflowError(f"behavioral fixed requires prior accepted-for-proof for {identifier}")
-            _behavioral_finding_closure(transaction, state, reservation)
-            reservation["fixed"] = True
+        if status == "fixed" and kind == "behavioral":
+            _behavioral_finding_closure(transaction, state, intake_id, identifier, disposition)
+        # The final reviewer adjudicates what was measured, not a status word, so
+        # the disposition's measurement travels with the finding state it settles.
+        measured = {
+            key: disposition[key]
+            for key in ("premise", "occurrence", "coverage", "materialConsequence", "evidence")
+            if key in disposition
+        }
+        if measured:
+            finding_state["disposition"] = measured
         finding_state["status"] = status
-        if stage == "final" and status in RESOLVED_DISPOSITIONS and finding_state.get("material") is True:
-            appeals = state.setdefault("findingAppeals", [])
-            if not isinstance(appeals, list):
-                raise WorkflowError("recorded finding lifecycle is corrupt")
-            # One finding, one appeal: correcting a settled record repairs the
-            # disposition, and a repair is not a second turn at the advisor.
-            if not any(isinstance(entry, dict) and entry.get("intakeEvidenceId") == intake_id
-                       and entry.get("findingId") == identifier for entry in appeals):
-                appeals.append({"intakeEvidenceId": intake_id, "findingId": identifier,
-                                "candidateTree": candidate_tree, "openedBy": status, "status": "pending"})
-    return any(_finding_unresolved(entry) for entry in states if isinstance(entry, dict) and entry.get("stage") == stage and entry.get("producer") == producer)
+    return any(_finding_unresolved(entry) for entry in states if isinstance(entry, dict) and entry.get("stage") == stage)
 
 
 def advisor_disposition(
@@ -1237,24 +1115,25 @@ def advisor_disposition(
             and record.get("source") in REVIEW_SOURCES
             and (record.get("status") == "completed" if stage == "preflight" else record.get("status") in FINAL_VERDICTS)
         )
-        if not recorded:
+        # A disposition answers an immutable intake, not the standing verdict
+        # record: a Behavior Map reopen resets the record, and refusing the
+        # closure then would strand the very findings the reopen was for. Only
+        # an intake-referenced document is anchored to a recorded consult, so
+        # anything else still needs a recorded result to answer.
+        if not isinstance(record, dict) or (not recorded and (document is None or "intakeEvidenceId" not in document)):
             raise WorkflowError("advisor disposition cannot create a result; record the consult first")
         if document is not None:
             _validate_disposition_context(identity, state, document)
         if document is not None and "intakeEvidenceId" in document:
             intake_id = str(document["intakeEvidenceId"])
             _apply_finding_dispositions(
-                transaction, state, intake_id, document["dispositions"], stage, str(record["source"]),
-                # The rejection measured one exact tree; the appeal carries that
-                # binding so a later envelope answers the candidate it was lodged
-                # against rather than the finding id alone.
-                str(document["context"]["candidateTree"]),
+                transaction, state, intake_id, document["dispositions"], stage,
             )
         states = state.get("findingStates", [])
         if not isinstance(states, list):
             raise WorkflowError("recorded finding states are corrupt")
         unresolved = any(isinstance(entry, dict) and entry.get("stage") == stage and
-                         entry.get("producer") == record["source"] and _finding_unresolved(entry) and (stage != "preflight" or entry.get("status") != "accepted-for-proof") for entry in states)
+                         _finding_unresolved(entry) and (stage != "preflight" or entry.get("status") != "accepted-for-proof") for entry in states)
         if findings == "none" and unresolved:
             raise WorkflowError("findings none conflicts with an undispositioned finding intake")
         writes: list[EvidenceWrite] = []
@@ -1294,12 +1173,14 @@ def completion_missing(state: JsonObject) -> list[str]:
         missing.append("advisorPreflight")
     if not _allows_next(state, "code-review"):
         missing.append("codeReview")
-    if appeal := _open_appeal(state):
-        missing.append(f"final appeal pending for {appeal.get('findingId')}")
-    if appeal := _appeal_in(state, "disagreed"):
-        missing.append(f"needs-human-owner-adjudication for {appeal.get('findingId')}")
     if not _allows_next(state, "final-review"):
         missing.append("finalReview")
+    else:
+        review = state.get("finalReview")
+        # A bare verdict is a claim; completion certifies only a commit-ready
+        # whose strict envelope was recorded as immutable finding intake.
+        if isinstance(review, dict) and not review.get("intakeEvidence"):
+            missing.append("final review strict envelope intake")
     return missing
 
 
@@ -1390,6 +1271,10 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
             "verification": state.get("verificationLatestEvidence"),
         },
         "intent": state.get("intent"),
+        # Every recorded finding travels with the readiness that admits the consult,
+        # so final review adjudicates intake claims beside their dispositions rather
+        # than trusting a closure count.
+        "findingStates": [entry for entry in state.get("findingStates") or [] if isinstance(entry, dict)],
         # The one action this descriptor's reader is owed. Readiness says whether
         # the consult may run; this says what the pass is waiting on when it may not,
         # so a consumer never has to re-derive an answer from the missing list.

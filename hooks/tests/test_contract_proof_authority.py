@@ -28,7 +28,6 @@ from hooks.lib.workflow_state import (  # noqa: E402
 from hooks.tests.support import build_document, pending_behavior, record_context_forge  # noqa: E402
 # Module alias only: binding the TestCase name here would make unittest.main
 # rediscover and re-run the whole behavior-map suite inside this file.
-from hooks.lib.workflow_state import WorkflowError, _validate_finding_reservation  # noqa: E402
 from hooks.tests import test_behavior_map_workflow as bmw  # noqa: E402
 
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
@@ -987,51 +986,6 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
         for target in ("BM_DONE", "BM_GONE"):
             self.assert_map_refused(slug, workflow_id, self.supersede("BM_A", target, pending="BM_A"), target, marker)
-    def test_a_late_linked_item_still_closes_an_exact_reservation(self) -> None:
-        """Proof discovered after the reservation belongs to it, not against it.
-
-        Reserving exact ids is what stops a finding being closed by unrelated
-        proof. Demanding that the reserved set stay the whole linked set also
-        refused the honest case -- a further obligation the work exposed -- so the
-        reservation is satisfied when every reserved id is linked and GREEN,
-        while every linked item still has to reach GREEN before `fixed`.
-        """
-        marker = "LATE_LINKED_ITEM_BLOCKED_CLOSURE"
-        slug, workflow_id = self.begin("late-linked")
-        recorded = self.record_preflight(slug, workflow_id, [
-            contract("BM_KEEP", expected="value is two", red_failure="VALUE_NOT_TWO"),
-        ])
-        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
-        self.green(slug, "BM_KEEP", 2, "VALUE_NOT_TWO")
-        closed = self.h.update_map(slug, workflow_id,
-                                   {"sourceBehaviorId": "BM_KEEP", "reassessment": "no new obligation", "items": []})
-        self.assertEqual(closed.returncode, 0, closed.stdout + closed.stderr)
-        try:
-            resolved = _validate_finding_reservation(
-                {"reservedBehaviorIds": ["BM_A"], "seam": "the seam", "preservationObligations": ["kept"]},
-                {"BM_A": {"id": "BM_A", "kind": "contract", "seam": "the seam"},
-                 "BM_LATE": {"id": "BM_LATE", "kind": "preservation", "behavior": "kept"}},
-                "SPEC-1",
-            )
-        except WorkflowError as refusal:
-            self.fail(marker + f": a linked item the reservation did not name refused the closure: {refusal}")
-        self.assertEqual(resolved, {"BM_A"}, marker)
-
-    def test_a_legacy_reservation_keeps_its_exact_set_requirement(self) -> None:
-        """The relaxation is for the current reservation shape, not for legacy records.
-
-        A legacy reservation carries no seam or preservation obligations, so the
-        id set is the whole of its contract; widening that would change a recorded
-        shape this pass promised to preserve.
-        """
-        marker = "LEGACY_RESERVATION_SEMANTICS_CHANGED"
-        with self.assertRaises(WorkflowError, msg=marker):
-            _validate_finding_reservation(
-                {"reservedBehaviorIds": ["BM_A"]},
-                {"BM_A": {"id": "BM_A", "kind": "contract", "seam": "the seam"},
-                 "BM_LATE": {"id": "BM_LATE", "kind": "contract", "seam": "the seam"}},
-                "SPEC-1",
-            )
 
 
 if __name__ == "__main__":
