@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import sys
@@ -464,7 +465,17 @@ def _run_tdd(values: list[str]) -> int:
         if active is not None and not matches:
             raise WorkflowError("finish the active mapped cycle before selecting another item")
 
-    raw, exit_code, timed_out = _run(command, identity, args.timeout)
+    env = None
+    if surface.get("runner") == "pytest":
+        # The recorded command is the executed surface: pytest's environment
+        # and configuration addopts channels could append --pyargs or targets
+        # the repository-resolution check never saw. Later override-ini
+        # assignments win, so the neutralizer goes after the caller's options,
+        # before any -- positional region.
+        env = {**os.environ, "PYTEST_ADDOPTS": ""}
+        sentinel = command.index("--") if "--" in command else len(command)
+        command = [*command[:sentinel], "--override-ini=addopts=", *command[sentinel:]]
+    raw, exit_code, timed_out = _run(command, identity, args.timeout, env=env)
     output = raw.decode("utf-8", errors="replace")
     prior_runs = (
         candidate.get("runs")

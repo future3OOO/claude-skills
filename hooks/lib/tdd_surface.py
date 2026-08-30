@@ -74,7 +74,24 @@ UNITTEST_DISCOVER_VALUE_OPTIONS = frozenset({
     "-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "-k",
 })
 UNITTEST_START_OPTIONS = frozenset({"-s", "--start-directory"})
-PYTEST_VALUE_OPTIONS = frozenset({"-k", "-m", "-o", "-p"})
+# The complete value-taking core option domain measured from pytest's own
+# parser (every registered option whose action stores a value); plugin options
+# stay under the fail-closed target-shape rule.
+PYTEST_VALUE_OPTIONS = frozenset({
+    "-W", "-c", "-k", "-m", "-o", "-p", "-r",
+    "--assert", "--basetemp", "--cache-show", "--capture", "--code-highlight",
+    "--color", "--confcutdir", "--config-file", "--debug", "--deselect",
+    "--doctest-glob", "--doctest-report", "--durations", "--durations-min",
+    "--ignore", "--ignore-glob", "--import-mode", "--junit-prefix",
+    "--junit-xml", "--junitprefix", "--junitxml", "--last-failed-no-failures",
+    "--lfnf", "--log-auto-indent", "--log-cli-date-format", "--log-cli-format",
+    "--log-cli-level", "--log-date-format", "--log-disable", "--log-file",
+    "--log-file-date-format", "--log-file-format", "--log-file-level",
+    "--log-file-mode", "--log-format", "--log-level", "--max-warnings",
+    "--maxfail", "--override-ini", "--pastebin", "--pdbcls",
+    "--pythonwarnings", "--report-chars", "--rootdir", "--show-capture",
+    "--tb", "--verbosity",
+})
 
 
 def repository_resolution(surface: Mapping[str, object], root: object) -> str | None:
@@ -93,6 +110,8 @@ def repository_resolution(surface: Mapping[str, object], root: object) -> str | 
     top = Path(str(root)).resolve()
     raw = surface.get("arguments")
     tokens = [token for token in raw if isinstance(token, str)] if isinstance(raw, list) else []
+    if runner == "pytest" and "--pyargs" in tokens:
+        return "--pyargs selects import targets whose location the repository root cannot establish; use repository path targets"
     discover = runner == "unittest" and bool(tokens) and tokens[0] == "discover"
     value_options = (
         UNITTEST_DISCOVER_VALUE_OPTIONS if discover
@@ -118,6 +137,14 @@ def repository_resolution(surface: Mapping[str, object], root: object) -> str | 
                 else:
                     pending_value = True
                     pending_start = discover and name in UNITTEST_START_OPTIONS
+            continue
+        if runner == "pytest" and not (
+            "/" in token or "\\" in token or "::" in token
+            or token.endswith(".py") or (top / token).exists()
+        ):
+            # A bare word or number that names nothing under the root is an
+            # unknown option's value, not a pytest target; path-shaped tokens
+            # stay in target validation so the boundary remains fail-closed.
             continue
         targets.append(token)
     if discover and not targets:

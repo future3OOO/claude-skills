@@ -172,6 +172,51 @@ class AttackHarness(unittest.TestCase):
                  "reproduction": {"command": "python -m unittest test_attack_probe",
                                   "result": "expected 2, got 1"}}
 
+    def open_pytest_pass(self, slug: str, marker: str) -> str:
+        wid = self.begin(slug)
+        self.ok("advisor-result", "--slug", slug, "--workflow-id", wid,
+                "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed")
+        self.ok("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                "--stage", "preflight", "--findings", "none")
+        owned = self.record_preflight(slug, wid, [{
+            "id": "BM_ATTACK", "kind": "contract", "basis": "requested behavior",
+            "behavior": "the reviewed value is corrected", "seam": "fixture app module",
+            "expected": "app.value is 2", "redFailure": marker, "status": "pending",
+            "sourceRefs": [],
+        }])
+        self.assertEqual(owned.returncode, 0, marker + ": " + owned.stdout + owned.stderr)
+        return wid
+
+    def mapped_tdd(self, slug: str, phase: str, command: list[str],
+                   env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
+                               "--slug", slug, "--phase", phase, "--behavior-id", "BM_ATTACK",
+                               "--", *command],
+                              cwd=ROOT, env=env or self.env, text=True, capture_output=True,
+                              check=False)
+
+    def write_probe(self, marker: str) -> None:
+        (self.repo / "test_probe.py").write_text(
+            "import app, unittest\n"
+            "class T(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n",
+            encoding="utf-8",
+        )
+
+    def plant_external_victim(self, marker: str) -> dict[str, str]:
+        """Empty in-repo victim/ shadowing an external importable package."""
+        (self.repo / "victim").mkdir()
+        external = self.tmp / "outside" / "victim"
+        external.mkdir(parents=True)
+        (external / "__init__.py").write_text("", encoding="utf-8")
+        (external / "test_external.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertTrue(False, {marker!r})\n",
+            encoding="utf-8",
+        )
+        return dict(self.env, PYTHONPATH=str(self.tmp / "outside"))
+
 
 class CheckpointIntent(AttackHarness):
     def test_checkpoint_exposes_the_recorded_verbatim_intent(self) -> None:
@@ -484,10 +529,6 @@ class LedgerConcurrentProbe(AttackHarness):
         self.assertNotIn("paused", self.status(), marker)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class FindingLedgerAtFinal(AttackHarness):
     def test_the_final_checkpoint_carries_each_findings_claim_and_owning_attacks(self) -> None:
         marker = "FINAL_REVIEW_BLIND_TO_FINDING_DOMAINS"
@@ -547,18 +588,7 @@ class LedgerCarriesProofCommand(AttackHarness):
 class MappedProofStaysInRepository(AttackHarness):
     def test_an_out_of_repository_proof_target_is_refused_at_cycle_open(self) -> None:
         marker = "MAPPED_PROOF_ESCAPES_REPOSITORY"
-        wid = self.begin("proof-scope")
-        self.ok("advisor-result", "--slug", "proof-scope", "--workflow-id", wid,
-                "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed")
-        self.ok("advisor-disposition", "--slug", "proof-scope", "--workflow-id", wid,
-                "--stage", "preflight", "--findings", "none")
-        owned = self.record_preflight("proof-scope", wid, [{
-            "id": "BM_ATTACK", "kind": "contract", "basis": "requested behavior",
-            "behavior": "the reviewed value is corrected", "seam": "fixture app module",
-            "expected": "app.value is 2", "redFailure": marker, "status": "pending",
-            "sourceRefs": [],
-        }])
-        self.assertEqual(owned.returncode, 0, marker + ": " + owned.stdout + owned.stderr)
+        self.open_pytest_pass("proof-scope", marker)
         outside = self.tmp / "outside"
         outside.mkdir()
         (outside / "outside_repo_probe.py").write_text(
@@ -592,3 +622,120 @@ class MappedProofStaysInRepository(AttackHarness):
                               "--", sys.executable, "-m", "unittest", "test_inside_probe"],
                              cwd=ROOT, env=env, text=True, capture_output=True, check=False)
         self.assertEqual(red.returncode, 0, marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
+
+
+class PytestOptionValueStaysOptionValue(AttackHarness):
+    def test_separate_value_pytest_options_reach_the_mapped_assertion(self) -> None:
+        marker = "PYTEST_OPTION_VALUE_MISREAD_AS_TARGET"
+        self.open_pytest_pass("pytest-opts", marker)
+        self.write_probe(marker)
+        surface = [sys.executable, "-m", "pytest", "--maxfail", "1", "--tb", "short",
+                   "--durations", "10", "--color", "no",
+                   "--basetemp", str(self.tmp / "pt-basetemp"), "test_probe.py"]
+        red = self.mapped_tdd("pytest-opts", "red", surface)
+        self.assertEqual(red.returncode, 0,
+                         marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.mapped_tdd("pytest-opts", "green", surface)
+        self.assertEqual(green.returncode, 0,
+                         marker + ": " + (green.stderr.strip().splitlines() or [""])[-1])
+
+
+class PyargsImportSelectionRefused(AttackHarness):
+    def test_pyargs_import_selection_is_refused_at_cycle_open(self) -> None:
+        marker = "PYARGS_IMPORT_ESCAPED_REPOSITORY_BOUNDARY"
+        self.open_pytest_pass("pyargs-refused", marker)
+        env = self.plant_external_victim(marker)
+        before = self.status()
+        refused = self.mapped_tdd("pyargs-refused", "red",
+                                  [sys.executable, "-m", "pytest", "--pyargs", "victim"], env=env)
+        tail = (refused.stderr.strip().splitlines() or [""])[-1]
+        self.assertEqual(refused.returncode, 2, marker + ": " + tail)
+        self.assertIn("--pyargs", tail, marker)
+        self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
+
+
+class PytestPathBoundaryStillRefused(AttackHarness):
+    def test_an_out_of_repository_pytest_path_target_stays_refused(self) -> None:
+        marker = "OUT_OF_REPO_TARGET_ADMITTED_TO_MAPPED_PROOF"
+        self.open_pytest_pass("pytest-boundary", marker)
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "test_external.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertTrue(False, {marker!r})\n",
+            encoding="utf-8",
+        )
+        before = self.status()
+        refused = self.mapped_tdd("pytest-boundary", "red",
+                                  [sys.executable, "-m", "pytest", "../outside/test_external.py"])
+        tail = (refused.stderr.strip().splitlines() or [""])[-1]
+        self.assertEqual(refused.returncode, 2, marker + ": " + tail)
+        self.assertIn("resolve inside the repository", tail, marker)
+        self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
+
+
+class PytestDebugOptionValue(AttackHarness):
+    def test_the_debug_separate_value_reaches_the_mapped_assertion(self) -> None:
+        marker = "DEBUG_OPTION_VALUE_MISREAD_AS_TARGET"
+        self.open_pytest_pass("pytest-debug", marker)
+        self.write_probe(marker)
+        debug_dir = self.tmp / "pt-debug"
+        debug_dir.mkdir()
+        red = self.mapped_tdd("pytest-debug", "red",
+                              [sys.executable, "-m", "pytest", "--debug",
+                               str(debug_dir / "pt-debug.log"), "test_probe.py"])
+        self.assertEqual(red.returncode, 0,
+                         marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
+
+
+class AddoptsPyargsNeutralized(AttackHarness):
+    def test_env_addopts_pyargs_cannot_route_execution_outside(self) -> None:
+        marker = "ADDOPTS_PYARGS_ESCAPED_REPOSITORY_BOUNDARY"
+        self.open_pytest_pass("addopts-pyargs", marker)
+        env = dict(self.plant_external_victim(marker), PYTEST_ADDOPTS="--pyargs")
+        before = self.status()
+        run = self.mapped_tdd("addopts-pyargs", "red",
+                              [sys.executable, "-m", "pytest", "victim"], env=env)
+        tail = (run.stderr.strip().splitlines() or [""])[-1] or (run.stdout.strip().splitlines() or [""])[-1]
+        self.assertNotEqual(run.returncode, 0,
+                            marker + ": the inherited env addopts opened a mapped cycle: " + tail)
+        self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
+
+
+class PytestConfigFileOptionValue(AttackHarness):
+    def test_the_config_file_separate_value_reaches_the_mapped_assertion(self) -> None:
+        marker = "CONFIG_FILE_OPTION_VALUE_MISREAD_AS_TARGET"
+        self.open_pytest_pass("pytest-config", marker)
+        self.write_probe(marker)
+        alt_config = self.tmp / "alt-pytest.ini"
+        alt_config.write_text("[pytest]\n", encoding="utf-8")
+        red = self.mapped_tdd("pytest-config", "red",
+                              [sys.executable, "-m", "pytest", "--config-file",
+                               str(alt_config), "test_probe.py"])
+        self.assertEqual(red.returncode, 0,
+                         marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
+
+
+class ConfigAddoptsNeutralized(AttackHarness):
+    def test_config_addopts_pyargs_cannot_route_execution_outside(self) -> None:
+        marker = "CONFIG_ADDOPTS_ESCAPED_REPOSITORY_BOUNDARY"
+        self.open_pytest_pass("config-addopts", marker)
+        env = self.plant_external_victim(marker)
+        injected = self.tmp / "pytest.ini"
+        injected.write_text("[pytest]\naddopts = --pyargs\n", encoding="utf-8")
+        before = self.status()
+        for attempt in (
+            [sys.executable, "-m", "pytest", "-c", str(injected), "victim"],
+            [sys.executable, "-m", "pytest", "-o", "addopts=--pyargs", "victim"],
+        ):
+            run = self.mapped_tdd("config-addopts", "red", attempt, env=env)
+            tail = (run.stderr.strip().splitlines() or [""])[-1] or (run.stdout.strip().splitlines() or [""])[-1]
+            self.assertNotEqual(run.returncode, 0,
+                                marker + ": injected addopts opened a mapped cycle: " + tail)
+            self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

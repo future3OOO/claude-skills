@@ -19,7 +19,8 @@ GROUP_POLL_SECONDS = 0.05
 
 
 def run(
-    command: list[str], identity: RepoIdentity, timeout: float
+    command: list[str], identity: RepoIdentity, timeout: float,
+    env: dict[str, str] | None = None,
 ) -> tuple[bytes, int, bool]:
     """Run one command; a command is complete when its owned process group is.
 
@@ -34,6 +35,7 @@ def run(
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=os.name == "posix",
+            env=env,
         )
         timed_out = not _group_exits_by(process, deadline)
         if timed_out:
