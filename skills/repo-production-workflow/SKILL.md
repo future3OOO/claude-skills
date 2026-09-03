@@ -273,8 +273,9 @@ that would leave a fixed finding without its owning attack refuses.
 ### 11. Independent final Codex Advisor review
 
 Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" checkpoint --repo "$PWD" --phase final-review` first and act
-on its `missing` list; a consult launched against an unready checkpoint is
-refused after the turns were already spent.
+on its `missing` list; the wrapper refuses a consult whose checkpoint is not
+ready before any advisor turn is spent, but the lead's turns to launch, read
+the refusal, and relaunch are already gone.
 The final Codex Advisor review is the workflow's sole independent reviewer; do
 not spawn a second review agent. Invoke it against the live diff with wrapper
 phase `final-review`, the same slug, and the base ref. It re-derives the attack
