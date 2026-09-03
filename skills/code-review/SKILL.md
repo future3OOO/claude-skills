@@ -92,6 +92,11 @@ Both documents use the same command:
   --review-context-id "<review-context-id>" --input -
 ```
 
+A disposition's claimed domain may not exceed the union of its linked items'
+executed attacks — claim wide over narrow is the defect, not a style issue —
+and a rejection's evidence quotes the executed measurement command and output;
+a document rejecting three or more material findings draws a recorded
+bulk-rejection warning.
 A false premise records the normalized premise `result` as exactly `false`;
 otherwise rejection requires zero occurrence on a complete domain. `report-only`
 resolves completion without authorizing an edit and is terminal. A behavioral

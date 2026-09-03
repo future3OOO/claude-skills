@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import uuid
 from typing import Sequence
 
@@ -1269,6 +1270,22 @@ def _apply_finding_dispositions(
             finding_state["appealStatus"] = (
                 "disagreement" if state.get("finalAppealConsumed") else "pending"
             )
+    bulk = sum(
+        1 for item in dispositions
+        if str(item.get("status")) == "rejected-with-evidence"
+        and findings[str(item["finding_id"])].get("material") is True
+    )
+    if bulk >= 3:
+        # Observability, not refusal: X6R7 bulk-closed 10 material findings in
+        # one document and 7 were re-raised, 2 with attacks proven fake. The
+        # shape check cannot verify a measurement is real; the warning makes
+        # the batch visible where the lead and reviewers read stderr.
+        print(
+            f"bulk-rejection warning: {bulk} material findings rejected-with-evidence "
+            f"in one document (stage={stage}, intake={intake_id}); a rejection without "
+            "its quoted measurement is indistinguishable from one ignored",
+            file=sys.stderr,
+        )
     return any(_finding_unresolved(entry) for entry in states if isinstance(entry, dict) and entry.get("stage") == stage and entry.get("producer") == producer)
 
 

@@ -1409,5 +1409,139 @@ class RevalidateWithoutProducerTests(HookHarness):
         self.assertIn("repo-context-forge source bootstrap not found", combined, marker + ": " + combined)
 
 
+ADVISOR_WRAPPER = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
+
+PROVIDER_SHIM = """#!/usr/bin/env bash
+set -u
+count_file="$CAPTURE_DIR/count"
+count=0; [[ -f "$count_file" ]] && count=$(cat "$count_file")
+count=$((count + 1)); printf '%s\\n' "$count" >"$count_file"
+cat >"$CAPTURE_DIR/payload-$count"
+printf '%s\\n' "$@" >"$CAPTURE_DIR/args-$count"
+if [[ " $* " == *" --resume "* ]]; then
+  printf '%s\\n' '{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}'
+else
+  printf '%s\\n' '{"schemaVersion":1,"findings":[],"verdict":"completed"}'
+fi
+"""
+
+DESIGN_BODY = """UNIQUE-DESIGN-BODY-MARKER
+Chosen architecture preserves PRES-1 and records ASSUMP-1.
+<!-- governed-design-labels:v1 -->
+```json
+{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"},{"id":"ASSUMP-1","kind":"assumption","behavioral":false}]}
+```
+"""
+
+BATCH_DEMAND = "do not ration findings across rounds"
+VERDICT_SYMMETRY = "names no measured or concretely reachable failure is not material"
+BOUNDARY_SEAM = "outgoing process boundary is the real Seam"
+
+
+class WrapperPromptTests(HookHarness):
+    """Issue #186 part 4 and its root cause: the assembled final-review prompt
+    demands batched enumeration and binds both sides of the verdict, and the
+    delegate role names the outgoing-boundary Seam. Drives the real wrapper
+    with the suite's provider-capture contract."""
+
+    def wrapper_rig(self) -> dict[str, str]:
+        rig = self.tmp / "advisor-rig"
+        for name in ("bin", "capture", "home", "claude"):
+            (rig / name).mkdir(parents=True)
+        provider = rig / "bin" / "claude"
+        provider.write_text(PROVIDER_SHIM, encoding="utf-8")
+        provider.chmod(0o755)
+        (rig / "home" / ".bashrc").write_text(
+            "alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid "
+            "ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \\\n"
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \\\n"
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 claude --model offline-model'\n",
+            encoding="utf-8",
+        )
+        (rig / "design.md").write_text(DESIGN_BODY, encoding="utf-8")
+        self.git("remote", "add", "origin", "https://example.invalid/prompt-rig.git")
+        return dict(self.env, PATH=f"{rig / 'bin'}{os.pathsep}{self.env['PATH']}",
+                    HOME=str(rig / "home"), CLAUDE_HOME=str(rig / "claude"),
+                    CAPTURE_DIR=str(rig / "capture"))
+
+    def run_advisor(self, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(ADVISOR_WRAPPER), "--cwd", str(self.repo), *args],
+                              cwd=ROOT, env=env, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def payload(self, env: dict[str, str], index: int) -> str:
+        return (Path(env["CAPTURE_DIR"]) / f"payload-{index}").read_text(encoding="utf-8")
+
+    def preflight_consult(self, env: dict[str, str], slug: str) -> None:
+        begun = self.state("begin", "--slug", slug)
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        record_context_forge(self.repo, self.tmp)
+        rig = Path(env["CAPTURE_DIR"]).parent
+        result = self.run_advisor(env, "--slug", slug, "--phase", "preflight-advice",
+                                  "--design-file", str(rig / "design.md"), "--", "scope question")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_preflight_prompt_lacks_the_batch_demand(self) -> None:
+        marker = "PREFLIGHT_PROMPT_CONTAMINATED"
+        env = self.wrapper_rig()
+        self.preflight_consult(env, "prompt-pre")
+        self.assertNotIn(BATCH_DEMAND, self.payload(env, 1), marker)
+
+    def final_consult(self, env: dict[str, str], slug: str) -> str:
+        """Advance a no-change pass to final review and return the final payload."""
+        self.preflight_consult(env, slug)
+        wid = json.loads(self.state("status").stdout)["workflowId"]
+        self.assertEqual(self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                                    "--stage", "preflight", "--findings", "none").returncode, 0)
+        state = json.loads(self.state("status").stdout)
+        document = build_no_change_document("prompt rig")
+        document["behaviorMap"][0]["sourceRefs"] = [{"type": "design",
+            "evidenceId": state["governedDesignEvidence"], "id": "PRES-1"}]
+        doc_path = self.tmp / "prompt-preflight.json"
+        doc_path.write_text(json.dumps(document), encoding="utf-8")
+        recorded = self.state("record-preflight", "--slug", slug, "--workflow-id", wid,
+                              "--input", str(doc_path))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.owner_phase("tdd", "not-required")
+        self.record_gate_evidence(slug, wid)
+        self.assertEqual(self.state("set-phase", "--phase", "implementation",
+                                    "--status", "passed").returncode, 0)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "not-required", findings="none")
+        rig = Path(env["CAPTURE_DIR"]).parent
+        result = self.run_advisor(env, "--slug", slug, "--phase", "final-review",
+                                  "--design-file", str(rig / "design.md"), "--", "final question")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        count = int((Path(env["CAPTURE_DIR"]) / "count").read_text().strip())
+        return self.payload(env, count)
+
+    def test_the_final_prompt_demands_batched_enumeration(self) -> None:
+        marker = "FINAL_RUBRIC_RATIONS_FINDINGS"
+        env = self.wrapper_rig()
+        payload = self.final_consult(env, "prompt-final")
+        self.assertIn(BATCH_DEMAND, payload, marker)
+        self.assertIn("every additional material reachable failure class", payload, marker)
+
+    def test_the_final_prompt_binds_both_sides_of_the_verdict(self) -> None:
+        # Root cause of the six-round SPEC-2 loop: the rubric named conditions
+        # that invalidate commit-ready and none that invalidate fix-before-commit.
+        marker = "VERDICT_ONE_DIRECTIONAL"
+        env = self.wrapper_rig()
+        payload = self.final_consult(env, "prompt-verdict")
+        self.assertIn(VERDICT_SYMMETRY, payload, marker)
+        self.assertIn("new measurement contradicting", payload, marker)
+        self.assertNotIn(VERDICT_SYMMETRY, self.payload(env, 1), marker)
+
+    def test_the_delegate_role_names_the_outgoing_boundary_seam(self) -> None:
+        # The role reaches the provider as --append-system-prompt, not stdin.
+        marker = "OUTGOING_BOUNDARY_SEAM_UNDEFINED"
+        env = self.wrapper_rig()
+        self.preflight_consult(env, "prompt-role")
+        args = (Path(env["CAPTURE_DIR"]) / "args-1").read_text(encoding="utf-8")
+        self.assertIn("never RED/GREEN or production proof", args, marker)
+        self.assertIn(BOUNDARY_SEAM, args, marker)
+        self.assertIn("inside the asserted contract", args, marker)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

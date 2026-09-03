@@ -8,6 +8,7 @@ Use the closest real production Interface available:
 - **Filesystem/local runtime:** use a temporary filesystem or real local runtime that executes the production contract.
 - **Owned remote service:** use the owned integration environment or a real service instance configured for tests.
 - **Third-party provider:** use its sandbox/test tenant or an owned end-to-end environment. Captured fixtures may support contract analysis but do not replace the live production Seam.
+- **Outgoing process boundary:** for assertions about what a Module emits to an external process, capture at that Module's own boundary; that capture is the real Seam, and the ban targets substituted collaborators inside the asserted contract. The provider's own behavior still needs the live Seam.
 - **Browser/device behavior:** use the authenticated staging flow or strongest real runtime harness available.
 
 When proving an application failure or adversarial input, drive the real reachable precondition through the production Seam.

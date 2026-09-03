@@ -75,8 +75,12 @@ whether any finding disposition narrows or loses part of its original domain;
 and only then the changed Module shape, minimality, security boundary,
 candidate binding, and visible regression coverage. A promised load-bearing
 surface with no attack forbids `commit-ready` even when every declared map item
-is green; checkpoint readiness remains wrapper-owned. It returns only this
-strict envelope:
+is green; checkpoint readiness remains wrapper-owned. The rubric binds both
+sides of the verdict: it demands every demonstrable additional material
+failure class batched in one envelope, a finding that names no measured or
+concretely reachable failure is not material, and a re-raise of a finding whose
+recorded rejection quotes a measurement is material only with a new
+contradicting measurement. It returns only this strict envelope:
 
 ```json
 {"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"fix-before-commit"}
@@ -99,6 +103,16 @@ concedes it, while a material re-raise blocks with
 Git.
 
 ## Invocation
+
+Before launching either phased consult, run the free read-only readiness query
+and clear its `missing` list first — discovering unreadiness through a refused
+launch wastes the turns to launch, read, redo, and re-launch (measured twice on
+one benchmark run):
+
+```bash
+python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
+  checkpoint --repo "$PWD" --phase final-review
+```
 
 Run the wrapper in a dedicated/background chat pane so the calling agent can
 keep transport output separate. Capture stdout and stderr independently and
@@ -176,6 +190,12 @@ records it as fixed, rejected-with-evidence, or accepted follow-up — or leaves
 behavioral finding pending as a map-owned attack obligation until its owning
 attack is GREEN. Dispositions may cover any subset of an intake; later
 correction documents name only changed findings and append supersession links.
+A rejection's evidence quotes the executed measurement command and its output —
+a rejection without its quoted measurement is indistinguishable from one
+ignored, and a document rejecting three or more material findings draws a
+recorded bulk-rejection warning. A `fixed` disposition's occurrence domain may
+claim only what the union of its linked items' attacks executed; anything wider
+is split into further pending items or the domain is narrowed.
 While classification, correction, mapped GREEN, reassessment, or disagreement
 remains open, generic verification, the typed gate, lead review, and completion
 refuse. An appeal always blocks completion; when its current candidate bindings

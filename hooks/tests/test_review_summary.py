@@ -25,7 +25,10 @@ WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 
-class ReviewSummaryTests(unittest.TestCase):
+class ReviewSummaryHarness(unittest.TestCase):
+    """Fixture repository and review-stage drivers shared by the suites below;
+    carries no tests of its own so subclasses never duplicate them."""
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="review-summary-"))
         self.repo = self.tmp / "repo"
@@ -142,6 +145,7 @@ class ReviewSummaryTests(unittest.TestCase):
             "--resolved-model", model, "--review-context-id", context, "--input", str(path),
         )
 
+class ReviewSummaryTests(ReviewSummaryHarness):
     def test_material_findings_require_intake_then_appended_disposition(self) -> None:
         finding = {
             "id": "SPEC-1", "axis": "Spec", "severity": "high", "material": True,
@@ -481,6 +485,82 @@ class ReviewSummaryTests(unittest.TestCase):
         )
         self.assertEqual(premature.returncode, 2, "a premature recorder call was accepted before verification")
         self.assertEqual(self.event_count(), before_events, "a rejected recorder call appended an event")
+
+
+class BulkRejectionReviewTests(ReviewSummaryHarness):
+    """Issue #186 part 3: bulk material rejections through the review caller."""
+
+    def rejection_review(self, count: int, *, valid: bool = True, material: int | None = None,
+                         rejected: int | None = None) -> subprocess.CompletedProcess[str]:
+        material = count if material is None else material
+        rejected = count if rejected is None else rejected
+        findings = [dict(self.review_finding(), id=f"SPEC-{i}", material=(i <= material))
+                    for i in range(1, count + 1)]
+        intake_path = self.tmp / "bulk-intake.json"
+        intake_path.write_text(json.dumps({"findings": findings}), encoding="utf-8")
+        recorded = self.record_review(intake_path)
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        summary_id = json.loads(recorded.stdout)["summaryId"]
+        premise_result = "false" if valid else "the premise held on inspection"
+        document = {"context": self.disposition_context(), "intakeEvidenceId": summary_id,
+                    "dispositions": [{
+                        "finding_id": f"SPEC-{i}",
+                        "status": "rejected-with-evidence" if i <= rejected else "report-only",
+                        "kind": "nonbehavioral",
+                        "premise": {"claim": f"claimed defect {i}", "command": "inspect app.py",
+                                    "result": premise_result},
+                        "occurrence": {"domain": "the complete fixture repository",
+                                       "count": 0 if valid else 2, "complete": valid,
+                                       "command": "inspect app.py", "result": "measured"},
+                        "materialConsequence": {"claim": "the fixture is affected",
+                                                "command": "inspect app.py",
+                                                "result": "measured" if i <= rejected else "false"},
+                        "evidence": "measured rejection evidence",
+                    } for i in range(1, count + 1)]}
+        doc_path = self.tmp / "bulk-dispositions.json"
+        doc_path.write_text(json.dumps(document), encoding="utf-8")
+        return self.record_review(doc_path)
+
+    def review_states(self) -> list[str]:
+        result = self.run_script(WORKFLOW, "status")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return [entry["status"] for entry in json.loads(result.stdout).get("findingStates", [])
+                if entry.get("stage") == "code-review"]
+
+    def test_three_material_rejections_warn_on_the_review_caller(self) -> None:
+        marker = "BULK_REJECTION_UNFLAGGED_REVIEW"
+        result = self.rejection_review(3)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+        self.assertIn("3", result.stderr, marker)
+        self.assertEqual(self.review_states(), ["rejected-with-evidence"] * 3,
+                         marker + ": statuses did not persist")
+
+    def test_two_rejections_stay_silent_on_the_review_caller(self) -> None:
+        marker = "SMALL_DOC_FALSELY_FLAGGED"
+        result = self.rejection_review(2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_three_rejections_with_two_material_stay_silent_on_the_review_caller(self) -> None:
+        # The warning counts MATERIAL rejections, not total rejections.
+        marker = "IMMATERIAL_REJECTIONS_MISCOUNTED"
+        result = self.rejection_review(3, material=2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_three_material_with_two_rejected_stay_silent_on_the_review_caller(self) -> None:
+        # The warning counts REJECTIONS, not every material disposition.
+        marker = "NONREJECTION_DISPOSITIONS_MISCOUNTED"
+        result = self.rejection_review(3, rejected=2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_an_unmeasured_rejection_still_refuses_on_the_review_caller(self) -> None:
+        marker = "REJECTION_SHAPE_ENFORCEMENT_LOST"
+        result = self.rejection_review(1, valid=False)
+        self.assertNotEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertIn("false premise or zero occurrence", result.stdout + result.stderr, marker)
 
 
 if __name__ == "__main__":

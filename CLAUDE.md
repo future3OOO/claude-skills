@@ -32,7 +32,7 @@ procedure, but may not weaken or duplicate them. The isolated advisor delegate
 receives one necessary copy because it does not inherit this context.
 
 <!-- HARD_INVARIANT_REAL_SEAM -->
-- **Mock ban.** Tests, smokes, and verification must cross the real production Interface/Seam. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. If the real seam cannot be driven, report the proof gap instead of manufacturing green evidence.
+- **Mock ban.** Tests, smokes, and verification must cross the real production Interface/Seam. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. A capture at a Module's own outgoing process boundary is the real Seam for assertions about what that Module emits; the ban targets substituted collaborators inside the asserted contract. If the real seam cannot be driven, report the proof gap instead of manufacturing green evidence.
 <!-- HARD_INVARIANT_DEMONSTRATED_RISK -->
 - **Imaginary-risk ban.** An undemonstrated theoretical failure may be reported, but it cannot justify guards, fallbacks, retries, configuration, abstractions, or code. Require a verified mechanism and demonstrated occurrence before changing production behavior. A real-Seam reproduction of behavior admitted by the supported Interface is occurrence; caller enumeration proves absence only on a closed, complete execution surface.
 <!-- HARD_INVARIANT_CONTRADICTORY_CONTRACT -->

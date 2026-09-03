@@ -737,5 +737,96 @@ class ConfigAddoptsNeutralized(AttackHarness):
             self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
 
 
+class BulkRejectionAdvisorTests(AttackHarness):
+    """Issue #186 part 3: bulk material rejections through the advisor caller."""
+
+    def material_intake(self, slug: str, wid: str, count: int, *, material: int | None = None) -> str:
+        material = count if material is None else material
+        envelope = self.json_file("envelope.json", {"schemaVersion": 1, "findings": [
+            {"id": f"SPEC-{i}", "claim": f"claimed defect {i}", "material": i <= material,
+             "kind": "nonbehavioral"}
+            for i in range(1, count + 1)
+        ], "verdict": "completed"})
+        recorded = self.ok("advisor-result", "--slug", slug, "--workflow-id", wid,
+                           "--stage", "preflight", "--source", "codex-advisor",
+                           "--input", str(envelope))
+        return str(recorded["advisorPreflight"]["intakeEvidence"])
+
+    def rejection_doc(self, wid: str, intake_id: str, count: int, *, valid: bool = True,
+                      rejected: int | None = None) -> Path:
+        rejected = count if rejected is None else rejected
+        premise_result = "false" if valid else "the premise held on inspection"
+        return self.json_file("rejections.json", {
+            "context": {"workflowId": wid,
+                        "candidateTree": _active_candidate_tree(resolve_repo_identity(self.repo))},
+            "intakeEvidenceId": intake_id,
+            "dispositions": [{
+                "finding_id": f"SPEC-{i}",
+                "status": "rejected-with-evidence" if i <= rejected else "report-only",
+                "kind": "nonbehavioral",
+                "premise": {"claim": f"claimed defect {i}", "command": "inspect app.py",
+                            "result": premise_result},
+                "occurrence": {"domain": "the complete fixture repository", "count": 0 if valid else 2,
+                               "complete": valid, "command": "inspect app.py", "result": "measured"},
+                "materialConsequence": {"claim": "the fixture is affected", "command": "inspect app.py",
+                                        "result": "measured" if i <= rejected else "false"},
+                "evidence": "measured rejection evidence",
+            } for i in range(1, count + 1)],
+        })
+
+    def reject(self, slug: str, wid: str, count: int, *, valid: bool = True,
+               material: int | None = None, rejected: int | None = None) -> subprocess.CompletedProcess[str]:
+        intake_id = self.material_intake(slug, wid, count, material=material)
+        return self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                        "--stage", "preflight", "--findings", "addressed",
+                        "--input", str(self.rejection_doc(wid, intake_id, count, valid=valid,
+                                                          rejected=rejected)))
+
+    def test_three_material_rejections_warn_on_the_advisor_caller(self) -> None:
+        marker = "BULK_REJECTION_UNFLAGGED_ADVISOR"
+        wid = self.begin("bulk-advisor")
+        result = self.reject("bulk-advisor", wid, 3)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+        self.assertIn("3", result.stderr, marker)
+        states = json.loads(self.cli("status").stdout).get("findingStates", [])
+        self.assertEqual([s["status"] for s in states], ["rejected-with-evidence"] * 3, marker)
+
+    def test_two_rejections_stay_silent_on_the_advisor_caller(self) -> None:
+        marker = "SMALL_DOC_FALSELY_FLAGGED"
+        wid = self.begin("small-advisor")
+        result = self.reject("small-advisor", wid, 2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_three_rejections_with_two_material_stay_silent_on_the_advisor_caller(self) -> None:
+        # The warning counts MATERIAL rejections, not total rejections.
+        marker = "IMMATERIAL_REJECTIONS_MISCOUNTED"
+        wid = self.begin("filter-material")
+        result = self.reject("filter-material", wid, 3, material=2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_three_material_with_two_rejected_stay_silent_on_the_advisor_caller(self) -> None:
+        # The warning counts REJECTIONS, not every material disposition.
+        marker = "NONREJECTION_DISPOSITIONS_MISCOUNTED"
+        wid = self.begin("filter-status")
+        result = self.reject("filter-status", wid, 3, rejected=2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_an_unmeasured_rejection_still_refuses_on_the_advisor_caller(self) -> None:
+        marker = "REJECTION_SHAPE_ENFORCEMENT_LOST"
+        wid = self.begin("shape-advisor")
+        intake_id = self.material_intake("shape-advisor", wid, 1)
+        before = self.status()
+        result = self.cli("advisor-disposition", "--slug", "shape-advisor", "--workflow-id", wid,
+                          "--stage", "preflight", "--findings", "addressed",
+                          "--input", str(self.rejection_doc(wid, intake_id, 1, valid=False)))
+        self.assertNotEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertIn("false premise or zero occurrence", result.stdout + result.stderr, marker)
+        self.assertEqual(self.status(), before, marker + ": a refused document mutated finding state")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

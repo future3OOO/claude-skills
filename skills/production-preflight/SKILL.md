@@ -246,6 +246,12 @@ Record a non-empty JSON array. Every item has these eight required fields:
 - Only runtime behavior is mappable: delivery line accounting, budget measurement, and other non-runtime bookkeeping never become items.
 - A pending behavioral finding is owned by giving an attack item a finding entry in `sourceRefs`; the recorder refuses a map that leaves one unowned. No preservation-only item is needed when existing focused regression evidence already owns the obligation — reference that evidence in an `already-satisfied` disposition instead.
 - Split independently-failable outcomes.
+- When a behavioral finding is accepted for proof, its owning map items mirror
+  the finding's enumerated sub-surfaces — one item per independently-failable
+  sub-surface: each ordering, each named seam, each input form, each
+  failure-matrix row the claim covers. One blanket item per finding is a
+  coverage gap, not a judgement call; prose in a later disposition cannot
+  widen what the mapped attacks prove.
 - Proof gaps stay in `openQuestions`; they are not omissions.
 
 ## Execution Gate
