@@ -828,5 +828,358 @@ class BulkRejectionAdvisorTests(AttackHarness):
         self.assertEqual(self.status(), before, marker + ": a refused document mutated finding state")
 
 
+class MapCorrectionAttacks(AttackHarness):
+    """Issue #189: a lead's own mistaken map entry is correctable inside the pass.
+
+    ARM X6R8 restarted one candidate twice because a post-preflight contract item
+    it added by mistake could not be withdrawn, and a finding-owned preservation
+    item it omitted by mistake could not be reopened. Every attack drives the
+    real workflow CLI over a fixture ledger."""
+
+    EXTRA: dict[str, object] = {
+        "id": "BM_EXTRA", "kind": "contract", "basis": "added after preflight",
+        "behavior": "an obligation the lead added in error", "seam": "fixture app module",
+        "expected": "never attacked", "redFailure": "EXTRA_NEVER_ATTACKED", "status": "pending",
+    }
+    KEEP_OMITTED: dict[str, object] = {
+        "id": "BM_KEEP", "kind": "preservation", "basis": "governing evidence",
+        "behavior": "an existing guarantee", "seam": "fixture app module",
+        "expected": "kept", "redFailure": "KEEP_REGRESSED", "status": "omitted",
+        "evidence": "out of scope by governing evidence",
+    }
+
+    def contract(self, marker: str, refs: list[dict[str, str]] | None = None) -> dict[str, object]:
+        return {
+            "id": "BM_ATTACK", "kind": "contract", "basis": "requested behavior",
+            "behavior": "the reviewed value is corrected", "seam": "fixture app module",
+            "expected": "app.value is 2", "redFailure": marker, "status": "pending",
+            "sourceRefs": refs or [],
+        }
+
+    def open_pass(self, slug: str, behavior_map: list[dict[str, object]]) -> str:
+        wid = self.begin(slug)
+        self.ok("advisor-result", "--slug", slug, "--workflow-id", wid,
+                "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed")
+        self.ok("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                "--stage", "preflight", "--findings", "none")
+        recorded = self.record_preflight(slug, wid, behavior_map)
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        return wid
+
+    def map_update(self, slug: str, **document: object) -> subprocess.CompletedProcess[str]:
+        wid = str(self.status()["workflowId"])
+        update = self.json_file("map.json", {"reassessment": "map correction", **document})
+        return self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+
+    def withdraw(self, slug: str, identifier: str) -> subprocess.CompletedProcess[str]:
+        return self.map_update(slug, dispositions=[
+            {"id": identifier, "status": "withdrawn", "evidence": "added in error"}])
+
+    def reopen(self, slug: str, identifier: str) -> subprocess.CompletedProcess[str]:
+        return self.map_update(slug, dispositions=[
+            {"id": identifier, "status": "pending", "evidence": "omitted in error"}])
+
+    def map_items(self) -> dict[str, dict[str, object]]:
+        state = self.status()
+        evidence_id = state.get("tddEvidence") or state.get("preflightEvidence")
+        document = self.ok("evidence", "--evidence-id", str(evidence_id))
+        items = document.get("behaviorMap")
+        if items is None:
+            items = (document.get("document") or {}).get("behaviorMap")
+        return {str(entry["id"]): entry for entry in items}
+
+    def refused_unchanged(self, marker: str, action) -> subprocess.CompletedProcess[str]:
+        before = self.status()
+        events = len(json.loads(self.ok_text("history"))["events"])
+        result = action()
+        self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
+        self.assertEqual(self.status(), before, marker + ": a refusal mutated workflow state")
+        self.assertEqual(len(json.loads(self.ok_text("history"))["events"]), events,
+                         marker + ": a refusal appended history")
+        return result
+
+    def ok_text(self, *args: str) -> str:
+        result = self.cli(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def test_a_post_preflight_contract_item_withdraws(self) -> None:
+        marker = "WITHDRAW_ADDED_REFUSED"
+        slug = "withdraw-added"
+        self.open_pass(slug, [self.contract(marker)])
+        self.drive_attack_green(slug, marker)
+        added = self.map_update(slug, items=[self.EXTRA])
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.assertEqual(json.loads(added.stdout)["pending"], ["BM_EXTRA"])
+        withdrawn = self.withdraw(slug, "BM_EXTRA")
+        self.assertEqual(withdrawn.returncode, 0, marker + ": " + withdrawn.stdout + withdrawn.stderr)
+        summary = json.loads(withdrawn.stdout)
+        self.assertEqual(summary["pending"], [], marker)
+        self.assertEqual(summary["status"], "passed", marker)
+        self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "withdrawn", marker)
+        self.assertNotIn("BM_EXTRA", self.cli("complete").stderr, marker)
+
+    def test_a_preflight_declared_item_refuses_withdrawal(self) -> None:
+        marker = "PREFLIGHT_ITEM_WITHDRAWN"
+        slug = "withdraw-preflight"
+        self.open_pass(slug, [self.contract(marker)])
+        refused = self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_ATTACK"))
+        self.assertIn("preflight", refused.stderr, marker)
+
+    def test_an_attacked_item_refuses_withdrawal(self) -> None:
+        marker = "ATTACKED_ITEM_WITHDRAWN"
+        slug = "withdraw-attacked"
+        self.open_pass(slug, [self.contract(marker)])
+        added = self.map_update(slug, items=[self.EXTRA])
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.drive_attack_green(slug, "EXTRA_NEVER_ATTACKED", behavior_id="BM_EXTRA")
+        refused = self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_EXTRA"))
+        self.assertIn("never-attacked", refused.stderr, marker)
+
+    def test_an_owned_item_refuses_withdrawal(self) -> None:
+        marker = "OWNED_ITEM_WITHDRAWN"
+        slug = "withdraw-owned"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        owned = self.record_preflight(slug, wid, self.owned_map(intake_id, marker=marker))
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        for reference in (
+            {"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"},
+            {"type": "design", "evidenceId": str(self.status()["governedDesignEvidence"]), "id": "PRES-1"},
+        ):
+            extra = {**self.EXTRA, "id": "BM_" + reference["type"].upper(), "sourceRefs": [reference]}
+            added = self.map_update(slug, items=[extra])
+            self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+            refused = self.refused_unchanged(marker, lambda: self.withdraw(slug, str(extra["id"])))
+            self.assertIn("sourceRefs", refused.stderr, marker)
+
+    def test_a_preservation_item_refuses_withdrawal(self) -> None:
+        marker = "PRESERVATION_WITHDRAWN"
+        slug = "withdraw-preservation"
+        self.open_pass(slug, [self.contract(marker), self.KEEP_OMITTED])
+        refused = self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_KEEP"))
+        self.assertIn("preservation", refused.stderr, marker)
+
+    def test_a_withdrawn_item_cannot_replace_a_superseded_one(self) -> None:
+        marker = "WITHDRAWN_SUPERSESSION_TARGET_ACCEPTED"
+        slug = "withdrawn-target"
+        self.open_pass(slug, [self.contract(marker)])
+        self.drive_attack_green(slug, marker)
+        self.assertEqual(self.map_update(slug, items=[self.EXTRA]).returncode, 0)
+        self.assertEqual(self.withdraw(slug, "BM_EXTRA").returncode, 0, marker)
+        self.refused_unchanged(marker, lambda: self.map_update(slug, dispositions=[{
+            "id": "BM_ATTACK", "status": "superseded", "supersededBy": "BM_EXTRA",
+            "evidence": "a withdrawn item can never be GREEN"}]))
+
+    def test_withdrawal_does_not_make_tdd_not_required(self) -> None:
+        marker = "WITHDRAWN_ENABLED_NOT_REQUIRED"
+        slug = "withdrawn-not-required"
+        self.open_pass(slug, [self.KEEP_OMITTED])
+        self.assertEqual(self.map_update(slug, items=[self.EXTRA]).returncode, 0)
+        self.assertEqual(self.withdraw(slug, "BM_EXTRA").returncode, 0, marker)
+        refused = self.cli("tdd", "--slug", slug, "--not-required", "cleanup only")
+        self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("already-satisfied", refused.stderr, marker)
+
+    def test_an_omitted_preservation_item_reopens(self) -> None:
+        marker = "REOPEN_OMITTED_REFUSED"
+        slug = "reopen-omitted"
+        self.open_pass(slug, [self.contract(marker), self.KEEP_OMITTED])
+        self.drive_attack_green(slug, marker)
+        before = str(self.status()["tddEvidence"])
+        reopened = self.reopen(slug, "BM_KEEP")
+        self.assertEqual(reopened.returncode, 0, marker + ": " + reopened.stdout + reopened.stderr)
+        self.assertEqual(json.loads(reopened.stdout)["pending"], ["BM_KEEP"], marker)
+        item = self.map_items()["BM_KEEP"]
+        self.assertEqual(item["status"], "pending", marker)
+        self.assertNotIn("evidence", item, marker)
+        prior = self.ok("evidence", "--evidence-id", before)["document"]["behaviorMap"]
+        self.assertEqual({e["id"]: e["status"] for e in prior}["BM_KEEP"], "omitted", marker)
+
+    def test_a_reopened_owner_closes_its_finding(self) -> None:
+        marker = "REOPENED_OWNER_CANNOT_CLOSE_FINDING"
+        slug = "reopen-finding"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        reference = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        keep = {**self.KEEP_OMITTED, "status": "pending", "sourceRefs": reference}
+        keep.pop("evidence")
+        owned = self.record_preflight(slug, wid, [self.contract(marker, reference), keep])
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        # The X6R8 mistake: the finding-owned preservation item is omitted in error.
+        omitted = self.map_update(slug, dispositions=[
+            {"id": "BM_KEEP", "status": "omitted", "evidence": "mistaken reclassification"}])
+        self.assertEqual(omitted.returncode, 0, omitted.stdout + omitted.stderr)
+        self.drive_attack_green(slug, marker)
+        disposition = self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))
+        stuck = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                         "--stage", "preflight", "--findings", "addressed", "--input", str(disposition))
+        self.assertEqual(stuck.returncode, 2, stuck.stdout + stuck.stderr)
+        self.assertIn("BM_KEEP", stuck.stderr, stuck.stderr)
+        reopened = self.reopen(slug, "BM_KEEP")
+        self.assertEqual(reopened.returncode, 0, marker + ": " + reopened.stdout + reopened.stderr)
+        (self.repo / "test_keep_probe.py").write_text(
+            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n",
+            encoding="utf-8")
+        baseline = subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
+                                   "--slug", slug, "--phase", "red", "--behavior-id", "BM_KEEP",
+                                   "--", sys.executable, "-m", "unittest", "test_keep_probe"],
+                                  cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout + baseline.stderr,
+                      marker + ": " + baseline.stdout + baseline.stderr)
+        # The probe file changed the reviewable tree; the closing document binds the new one.
+        disposition = self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))
+        closed = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                          "--stage", "preflight", "--findings", "addressed", "--input", str(disposition))
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        self.assertEqual(json.loads(closed.stdout)["findingStates"][0]["status"], "fixed", marker)
+
+    def test_reopen_refusals(self) -> None:
+        marker = "REOPEN_REFUSAL_MISSING"
+        slug = "reopen-refusals"
+        also = {**self.KEEP_OMITTED, "id": "BM_ALSO", "status": "pending"}
+        also.pop("evidence")
+        self.open_pass(slug, [self.contract(marker), self.KEEP_OMITTED, also])
+        for identifier in ("BM_ATTACK", "BM_ALSO"):
+            refused = self.refused_unchanged(marker, lambda: self.reopen(slug, identifier))
+            self.assertIn("reopened", refused.stderr, marker)
+        self.assertEqual(self.map_update(slug, dispositions=[
+            {"id": "BM_ALSO", "status": "omitted", "evidence": "settled"}]).returncode, 0)
+        self.drive_attack_green(slug, marker)
+        refused = self.refused_unchanged(marker, lambda: self.reopen(slug, "BM_ATTACK"))
+        self.assertIn("reopened", refused.stderr, marker)
+
+    def keep_probe(self, value: int) -> None:
+        (self.repo / "test_keep_probe.py").write_text(
+            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, {value}, 'KEEP_REGRESSED')\n",
+            encoding="utf-8")
+
+    def tdd(self, slug: str, phase: str, behavior_id: str, module: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
+                               "--slug", slug, "--phase", phase, "--behavior-id", behavior_id,
+                               "--", sys.executable, "-m", "unittest", module],
+                              cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+
+    def test_an_already_satisfied_preservation_item_reopens(self) -> None:
+        marker = "REOPEN_SATISFIED_REFUSED"
+        slug = "reopen-satisfied"
+        keep = {**self.KEEP_OMITTED, "status": "pending"}
+        keep.pop("evidence")
+        self.open_pass(slug, [self.contract(marker), keep])
+        self.keep_probe(1)
+        baseline = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout, baseline.stdout)
+        before = str(self.status()["tddEvidence"])
+        reopened = self.reopen(slug, "BM_KEEP")
+        self.assertEqual(reopened.returncode, 0, marker + ": " + reopened.stdout + reopened.stderr)
+        item = self.map_items()["BM_KEEP"]
+        self.assertEqual(item["status"], "pending", marker)
+        self.assertNotIn("evidence", item, marker)
+        prior = self.ok("evidence", "--evidence-id", before)["document"]["behaviorMap"]
+        self.assertEqual({e["id"]: e["status"] for e in prior}["BM_KEEP"], "already-satisfied", marker)
+
+    def test_withdrawal_while_red_refuses(self) -> None:
+        marker = "RED_ITEM_WITHDRAWN"
+        slug = "withdraw-red"
+        self.open_pass(slug, [self.contract(marker)])
+        self.assertEqual(self.map_update(slug, items=[self.EXTRA]).returncode, 0)
+        (self.repo / "test_extra_probe.py").write_text(
+            "import app, unittest\nclass ExtraProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 2, 'EXTRA_NEVER_ATTACKED')\n",
+            encoding="utf-8")
+        opened = self.tdd(slug, "red", "BM_EXTRA", "test_extra_probe")
+        self.assertEqual(opened.returncode, 0, opened.stdout + opened.stderr)
+        self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "red")
+        self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_EXTRA"))
+        self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "red", marker)
+
+    def test_a_withdrawn_only_map_keeps_the_edit_gate_closed(self) -> None:
+        marker = "WITHDRAWN_OPENED_EDITING"
+        slug = "withdrawn-gate"
+        self.open_pass(slug, [self.KEEP_OMITTED])
+        self.assertEqual(self.map_update(slug, items=[self.EXTRA]).returncode, 0)
+        self.assertEqual(self.withdraw(slug, "BM_EXTRA").returncode, 0, marker)
+        gate = subprocess.run([sys.executable, str(ROOT / "hooks" / "rcf-intake-gate.py")],
+                              cwd=self.repo, env=self.env, text=True, capture_output=True, check=False,
+                              input=json.dumps({"tool_input": {"file_path": str(self.repo / "app.py")}}))
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        decision = json.loads(gate.stdout)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny", marker + ": " + gate.stdout)
+        self.assertIn("RED", decision["permissionDecisionReason"], marker + ": " + gate.stdout)
+
+    def rejected_owner(self, slug: str, marker: str, status: str = "rejected-with-evidence") -> None:
+        """A finding mapped on a false premise leaves an owned pending item behind;
+        once the finding is closed without a fix, that item owns nothing."""
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        owned = self.record_preflight(slug, wid, self.owned_map(intake_id, marker=marker))
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        extra = {**self.EXTRA, "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]}
+        self.assertEqual(self.map_update(slug, items=[extra]).returncode, 0)
+        refused = self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_EXTRA"))
+        self.assertIn("sourceRefs", refused.stderr, marker)
+        rejection = self.json_file("rejected.json", {
+            "context": {"workflowId": wid,
+                        "candidateTree": _active_candidate_tree(resolve_repo_identity(self.repo))},
+            "intakeEvidenceId": intake_id,
+            "dispositions": [{
+                "finding_id": "SPEC-1", "status": status, "kind": "behavioral",
+                "premise": {"claim": "the reviewed value is wrong", "command": "python -c 'import app; print(app.value)'",
+                            "result": "false" if status == "rejected-with-evidence" else "true: the value differs"},
+                "occurrence": {"domain": "every read of app.value", "count": 0, "complete": True,
+                               "command": "python -m unittest test_probe", "result": "count=0"},
+                "materialConsequence": {"claim": "callers observe the wrong value", "command": "import app",
+                                        "result": "false"},
+                "evidence": "python -c 'import app; print(app.value)' printed 1 as documented",
+            }]})
+        rejected = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                            "--stage", "preflight", "--findings", "addressed", "--input", str(rejection))
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+
+    def test_an_item_owned_only_by_a_rejected_finding_withdraws(self) -> None:
+        marker = "REJECTED_FINDING_OWNER_STUCK"
+        slug = "withdraw-rejected-owner"
+        self.rejected_owner(slug, marker)
+        withdrawn = self.withdraw(slug, "BM_EXTRA")
+        self.assertEqual(withdrawn.returncode, 0, marker + ": " + withdrawn.stdout + withdrawn.stderr)
+        self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "withdrawn", marker)
+
+    def test_an_item_owned_only_by_a_report_only_finding_withdraws(self) -> None:
+        marker = "REPORT_ONLY_OWNER_STUCK"
+        slug = "withdraw-report-only-owner"
+        self.rejected_owner(slug, marker, status="report-only")
+        withdrawn = self.withdraw(slug, "BM_EXTRA")
+        self.assertEqual(withdrawn.returncode, 0, marker + ": " + withdrawn.stdout + withdrawn.stderr)
+        self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "withdrawn", marker)
+
+    def test_a_withdrawn_owner_survives_into_the_checkpoint_ledger(self) -> None:
+        # The advisor wrapper forwards the checkpoint's findingLedger verbatim, so
+        # this is the channel through which the final advisor sees map entries.
+        marker = "WITHDRAWN_DROPPED_FROM_CHANNEL"
+        slug = "withdrawn-ledger"
+        self.rejected_owner(slug, marker)
+        self.assertEqual(self.withdraw(slug, "BM_EXTRA").returncode, 0, marker)
+        ledger = self.ok("checkpoint", "--phase", "preflight-advice")["findingLedger"]
+        entry = next(item for item in ledger if item["findingId"] == "SPEC-1")
+        owners = {owner["id"]: owner["status"] for owner in entry["owners"]}
+        self.assertEqual(owners.get("BM_EXTRA"), "withdrawn", marker + ": " + json.dumps(entry))
+
+    def test_a_withdrawn_item_cannot_be_superseded(self) -> None:
+        marker = "WITHDRAWN_SOURCE_SUPERSEDED"
+        slug = "withdrawn-source"
+        self.open_pass(slug, [self.contract(marker)])
+        self.drive_attack_green(slug, marker)
+        self.assertEqual(self.map_update(slug, items=[self.EXTRA]).returncode, 0)
+        self.assertEqual(self.withdraw(slug, "BM_EXTRA").returncode, 0, marker)
+        refused = self.refused_unchanged(marker, lambda: self.map_update(slug, dispositions=[{
+            "id": "BM_EXTRA", "status": "superseded", "supersededBy": "BM_ATTACK",
+            "evidence": "a withdrawn item owns nothing to hand over"}]))
+        self.assertIn("GREEN", refused.stderr, marker)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

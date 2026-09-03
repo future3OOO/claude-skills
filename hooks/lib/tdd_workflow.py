@@ -675,11 +675,22 @@ def _map_update(values: list[str]) -> int:
     state = bound_state(identity, safe_slug(args.slug))
     if instance_id(state) != args.workflow_id:
         raise WorkflowError("--workflow-id does not match the active workflow instance")
-    items, current = current_map(identity, state)
+    current, preflight_document = _evidence_pair(identity, state)
+    items = behavior_map.recorded_map(current, preflight_document)
     if items is None:
         raise WorkflowError("tdd-map requires a recorded preflight Behavior Map")
     if isinstance(current, dict) and current.get("activeBehaviorId"):
         raise WorkflowError("finish the active RED/GREEN cycle before reassessing the map")
+    declared = frozenset(
+        str(entry["id"])
+        for entry in behavior_map.recorded_map(None, preflight_document) or []
+    )
+    settled_findings = frozenset(
+        (str(entry.get("intakeEvidenceId")), str(entry.get("findingId")))
+        for entry in state.get("findingStates") or []
+        if isinstance(entry, dict)
+        and entry.get("status") in {"rejected-with-evidence", "report-only"}
+    )
 
     value = load_json(args.input, label="TDD map update")
     allowed = {"sourceBehaviorId", "reassessment", "items", "dispositions"}
@@ -718,7 +729,9 @@ def _map_update(values: list[str]) -> int:
 
     updated = behavior_map.clone(items)
     if dispositions:
-        behavior_map.apply_dispositions(updated, dispositions)
+        behavior_map.apply_dispositions(
+            updated, dispositions, declared=declared, settled_findings=settled_findings
+        )
     added_items: list[JsonObject] = []
     if additions:
         added_items = behavior_map.added_items(additions, updated)

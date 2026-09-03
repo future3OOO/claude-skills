@@ -198,7 +198,11 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 The JSON document accepts `sourceBehaviorId` (the GREEN under review),
 `reassessment`, `items`, and `dispositions` only. Add newly exposed touched-Seam preservation, interaction,
 semantic falsification, or review-discovered behavior; an empty addition records
-why the GREEN created no further obligation. Only after GREEN and reassessment
+why the GREEN created no further obligation. The same document corrects the
+lead's own map mistakes inside the pass: `withdrawn` retires a never-attacked,
+unowned contract item that `tdd-map` added after preflight, and a `pending`
+disposition reopens a preservation item from `omitted` or `already-satisfied`;
+neither is proof, and neither reaches a preflight-declared contract item. Only after GREEN and reassessment
 leave TDD `passed` or `not-required` may implementation be recorded passed:
 
 ```bash
@@ -297,7 +301,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   complete --repo "$PWD"
 ```
 
-`complete` refuses, from inside its transaction, unless every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, and the context-matched final `codex-advisor` intake has only effective terminal findings. The immutable raw verdict remains evidence but is not an indefinite veto after closure; `context-mismatch`, a pending one-response rejection appeal, or persistent disagreement still blocks. The reviewable working tree must match the manifest recorded by the lead review, and every evidence phase must carry its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
+`complete` refuses, from inside its transaction, unless every contract item is GREEN, baseline `already-satisfied`, or `withdrawn`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, and the context-matched final `codex-advisor` intake has only effective terminal findings. The immutable raw verdict remains evidence but is not an indefinite veto after closure; `context-mismatch`, a pending one-response rejection appeal, or persistent disagreement still blocks. The reviewable working tree must match the manifest recorded by the lead review, and every evidence phase must carry its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion
 

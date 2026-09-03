@@ -7,9 +7,10 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green", "superseded"}
+RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green", "superseded", "withdrawn"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
-EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded"}
+EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded", "withdrawn"}
+NEVER_GREEN = DISPOSITION_STATUSES | {"withdrawn"}
 KINDS = frozenset({"contract", "preservation"})
 REQUIRED_FIELDS = frozenset({
     "id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status",
@@ -20,6 +21,7 @@ _CONTRACT_DISPOSITION_REFUSED = (
     "behavior {} is a contract item: it is never omitted, and already-satisfied "
     "is recorded only by tdd --phase red passing its mapped surface"
 )
+_PRESERVATION_WITHDRAWN_REFUSED = "behavior {} is a preservation item: use omitted, not withdrawn"
 # Infra-failure phrases, matched on word boundaries: a phrase is refused when
 # its words appear as an adjacent run in the marker, or its collapsed form is
 # itself one of the marker's words (AttributeError). Substring matching over
@@ -170,6 +172,8 @@ def validate_items(
             status == "omitted" or (status == "already-satisfied" and not allow_runtime)
         ):
             raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
+        if status == "withdrawn" and kind != "contract":
+            raise ValueError(_PRESERVATION_WITHDRAWN_REFUSED.format(identifier))
         refs = _source_refs(raw.get("sourceRefs"), identifier)
         item: JsonObject = {
             "id": identifier,
@@ -256,18 +260,30 @@ def terminal_item(items: list[JsonObject], entry: JsonObject) -> JsonObject:
             )
         seen.add(target)
         entry = item(items, str(target))
-    if len(seen) > 1 and entry.get("status") in DISPOSITION_STATUSES:
+    if len(seen) > 1 and entry.get("status") in NEVER_GREEN:
         raise ValueError(
             f"behavior {entry['id']} is {entry['status']} and can never be GREEN; it cannot replace a superseded item"
         )
     return entry
 
 
-def apply_dispositions(items: list[JsonObject], value: object) -> None:
-    """Apply no-edit dispositions to pending items, and supersession to GREEN ones, in place.
+def apply_dispositions(
+    items: list[JsonObject],
+    value: object,
+    *,
+    declared: frozenset[str] = frozenset(),
+    settled_findings: frozenset[tuple[str, str]] = frozenset(),
+) -> None:
+    """Apply no-edit dispositions in place: settle pending items, supersede GREEN
+    ones, withdraw a never-attacked contract item the lead added after preflight,
+    or reopen a settled preservation item to pending.
 
-    The supersession graph is checked by the caller's validation of the merged
-    map, so a replacement added in the same update is legal.
+    `declared` holds the ids the recorded preflight map declared; only an item
+    outside it was added by `tdd-map` in this pass and may be withdrawn.
+    `settled_findings` holds the (intake evidence, finding id) pairs closed
+    without a fix; an item owned only by those owns nothing and may be
+    withdrawn. The supersession graph is checked by the caller's validation of
+    the merged map, so a replacement added in the same update is legal.
     """
     if not isinstance(value, list):
         raise ValueError("TDD map dispositions must be an array")
@@ -286,10 +302,10 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
         if identifier is None or identifier in seen:
             raise ValueError("TDD map dispositions require unique behavior ids")
         seen.add(identifier)
-        if status not in EVIDENCED_STATUSES:
+        if status not in EVIDENCED_STATUSES | {"pending"}:
             raise ValueError(
                 f"behavior {identifier} disposition must be one of: "
-                + ", ".join(sorted(EVIDENCED_STATUSES))
+                + ", ".join(sorted(EVIDENCED_STATUSES | {"pending"}))
             )
         if evidence is None:
             raise ValueError(f"behavior {identifier} disposition requires evidence")
@@ -302,6 +318,37 @@ def apply_dispositions(items: list[JsonObject], value: object) -> None:
             mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
         elif "supersededBy" in raw:
             raise ValueError(f"behavior {identifier} disposition {status} cannot carry supersededBy")
+        elif status == "withdrawn":
+            if mapped.get("kind") != "contract":
+                raise ValueError(_PRESERVATION_WITHDRAWN_REFUSED.format(identifier))
+            if identifier in declared:
+                raise ValueError(
+                    f"behavior {identifier} was declared at preflight; only an item added by "
+                    "tdd-map in this pass can be withdrawn"
+                )
+            if mapped.get("status") != "pending":
+                raise ValueError(
+                    f"behavior {identifier} is {mapped.get('status')}; only a never-attacked "
+                    "pending contract item can be withdrawn"
+                )
+            if any(
+                ref.get("type") != "finding"
+                or (str(ref.get("evidenceId")), str(ref.get("id"))) not in settled_findings
+                for ref in mapped.get("sourceRefs") or []
+            ):
+                raise ValueError(
+                    f"behavior {identifier} carries sourceRefs; an owned item cannot be "
+                    "withdrawn while any owning finding is open or fixed"
+                )
+        elif status == "pending":
+            if mapped.get("kind") == "contract" or mapped.get("status") not in DISPOSITION_STATUSES:
+                raise ValueError(
+                    f"behavior {identifier} is a {mapped.get('kind')} item at {mapped.get('status')}; "
+                    "only a preservation item at omitted or already-satisfied can be reopened"
+                )
+            mapped.pop("evidence", None)
+            mapped["status"] = "pending"
+            continue
         elif mapped.get("kind") == "contract":
             raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
         elif mapped.get("status") != "pending":
