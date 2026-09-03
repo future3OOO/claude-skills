@@ -196,10 +196,12 @@ correction documents name only changed findings and append supersession links.
 A rejection's evidence quotes the executed measurement command and its output —
 a rejection without its quoted measurement is indistinguishable from one
 ignored, and a document rejecting three or more material findings draws a
-recorded bulk-rejection warning. Every disposition's occurrence domain may
-claim only what the union of its linked items' attacks executed; anything wider
-is split into further pending items or the domain is narrowed. `fixed`
-additionally requires the owning attack GREEN.
+recorded bulk-rejection warning. A disposition that links Behavior Map items
+may claim no occurrence domain wider than the union of those items' executed
+attacks; anything wider is split into further pending items or the domain is
+narrowed. A disposition with no linked items proves its domain with its own
+quoted measurement. `fixed` on a behavioral finding additionally requires the
+owning attack GREEN.
 While classification, correction, mapped GREEN, reassessment, or disagreement
 remains open, generic verification, the typed gate, lead review, and completion
 refuse. An appeal always blocks completion; when its current candidate bindings

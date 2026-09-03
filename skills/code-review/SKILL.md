@@ -92,9 +92,11 @@ Both documents use the same command:
   --review-context-id "<review-context-id>" --input -
 ```
 
-A disposition's claimed domain may not exceed the union of its linked items'
-executed attacks — claim wide over narrow is the defect, not a style issue —
-and a rejection's evidence quotes the executed measurement command and output;
+A disposition that links Behavior Map items may claim no domain wider than the
+union of those items' executed attacks — claim wide over narrow is the defect,
+not a style issue — while a disposition with no linked items proves its domain
+with its own quoted measurement; a rejection's evidence quotes the executed
+measurement command and output;
 a document rejecting three or more material findings draws a recorded
 bulk-rejection warning.
 A false premise records the normalized premise `result` as exactly `false`;
