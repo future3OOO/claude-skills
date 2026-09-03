@@ -68,7 +68,7 @@ result; run further MCP checks when they widen the surface the packet fixed.
 
 ### 4. Advisor scope check
 
-Run `workflow.py checkpoint --repo "$PWD" --phase preflight-advice` first and
+Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" checkpoint --repo "$PWD" --phase preflight-advice` first and
 clear its `missing` list; launch the consult only when it reports ready.
 Invoke `codex-advisor` with phase `preflight-advice` through its sole wrapper,
 preferably in a dedicated chat pane. It attaches the recorded graph evidence
@@ -272,7 +272,7 @@ that would leave a fixed finding without its owning attack refuses.
 
 ### 11. Independent final Codex Advisor review
 
-Run `workflow.py checkpoint --repo "$PWD" --phase final-review` first and act
+Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" checkpoint --repo "$PWD" --phase final-review` first and act
 on its `missing` list; a consult launched against an unready checkpoint is
 refused after the turns were already spent.
 The final Codex Advisor review is the workflow's sole independent reviewer; do

@@ -111,8 +111,11 @@ one benchmark run):
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  checkpoint --repo "$PWD" --phase final-review
+  checkpoint --repo "$PWD" --phase <preflight-advice|final-review>
 ```
+
+Pass the phase of the consult being launched; a preflight consult queried
+against `final-review` reports the wrong readiness.
 
 Run the wrapper in a dedicated/background chat pane so the calling agent can
 keep transport output separate. Capture stdout and stderr independently and
@@ -193,9 +196,10 @@ correction documents name only changed findings and append supersession links.
 A rejection's evidence quotes the executed measurement command and its output —
 a rejection without its quoted measurement is indistinguishable from one
 ignored, and a document rejecting three or more material findings draws a
-recorded bulk-rejection warning. A `fixed` disposition's occurrence domain may
+recorded bulk-rejection warning. Every disposition's occurrence domain may
 claim only what the union of its linked items' attacks executed; anything wider
-is split into further pending items or the domain is narrowed.
+is split into further pending items or the domain is narrowed. `fixed`
+additionally requires the owning attack GREEN.
 While classification, correction, mapped GREEN, reassessment, or disagreement
 remains open, generic verification, the typed gate, lead review, and completion
 refuse. An appeal always blocks completion; when its current candidate bindings
