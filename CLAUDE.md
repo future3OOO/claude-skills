@@ -208,7 +208,7 @@ The source checkout is input: Repo Context Forge must not leave `.soulforge`, `.
 
 ## 9. GitNexus — Global Workflow
 
-Inside an indexed repository, use GitNexus for structure, blast radius, and execution flow before making changes — packet-scoped per the Repo Context Forge gate above. Its tools appear as `mcp__gitnexus__<tool>`; use the MCP tools directly and reserve the CLI for indexing, status, and admin operations. Use the absolute checkout path (`git rev-parse --show-toplevel`), never its basename, for every GitNexus CLI or MCP `repo` selector.
+Inside an indexed repository, use GitNexus for structure, blast radius, and execution flow before making changes — packet-scoped per the Repo Context Forge gate above. Its tools appear as `mcp__gitnexus__<tool>`; use the MCP tools directly and reserve the CLI for indexing, status, and admin operations. The MCP `repo` selector is the packet's `<gitnexus_status><repo>` name: the packet indexes a cache-owned analysis worktree, and the source checkout has no index until the post-edit `gitnexus analyze` step. After that step, and for every CLI call, the selector is the checkout's absolute path (`git rev-parse --show-toplevel`), never its basename. A `Repository ... not found` reply means the selector named an unindexed checkout; switch to the packet name rather than retrying.
 
 ### Search Flow
 
