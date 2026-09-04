@@ -544,10 +544,11 @@ def commit_tdd(
             # A fixed behavioral finding is re-judged against the updated map, so
             # a later tdd-map cannot silently un-own its proved attack.
             for entry in state.get("findingStates", []) if isinstance(state.get("findingStates"), list) else []:
-                if isinstance(entry, dict) and entry.get("status") == "fixed" and entry.get("kind") == "behavioral":
+                if isinstance(entry, dict) and entry.get("status") in {"fixed", "report-only"} and entry.get("kind") == "behavioral":
                     _behavioral_finding_closure(
                         transaction, state, str(entry.get("intakeEvidenceId")),
                         str(entry.get("findingId")), summary_doc, admit_pending=True,
+                        require_green=entry.get("status") == "fixed",
                     )
         writes: list[EvidenceWrite] = []
         evidence_id: str | None = None
@@ -1066,6 +1067,7 @@ def _behavioral_finding_closure(
     tdd_document: JsonObject | None = None,
     *,
     admit_pending: bool = False,
+    require_green: bool = True,
 ) -> None:
     """A behavioral finding closes fixed only through its owning GREEN attack items.
 
@@ -1073,6 +1075,11 @@ def _behavioral_finding_closure(
     new pending attack to an already-fixed finding's domain (ordinary map closure
     keeps it from completion until GREEN), but may never remove the finding's
     GREEN ownership or supersede it away to an unlinked item.
+
+    `require_green=False` is the report-only rule: the finding claims no fix,
+    but the attack it asked for must exist, so at least one owning item's
+    terminal must be producer-proved (GREEN, or a baseline the tdd producer
+    recorded). Prose already-satisfied and pending owners do not count.
     """
     if tdd_document is None:
         tdd_document = transaction.evidence(state.get("tddEvidence"))
@@ -1103,15 +1110,29 @@ def _behavioral_finding_closure(
                 "finding's domain owned or re-disposition it explicitly"
             )
     unresolved = set(behavior_map.unresolved(items))
+    if not require_green:
+        proved = [
+            identifier for identifier, entry in linked.items()
+            if behavior_map.producer_proved(behavior_map.terminal_item(items, entry))
+        ]
+        if not proved:
+            raise WorkflowError(
+                f"behavioral report-only for {finding_id} requires an owning attack the tdd "
+                "producer proved (GREEN, or a recorded baseline); unproved owners: "
+                + ", ".join(sorted(linked))
+            )
+        return
     not_green = sorted(
         identifier for identifier, entry in linked.items()
         if not (admit_pending and entry.get("status") in {"pending", "red"})
         and (identifier in unresolved or entry.get("status") not in {"green", "superseded"}
-             and not (entry.get("kind") == "preservation" and entry.get("status") == "already-satisfied"))
+             and not (entry.get("status") == "already-satisfied"
+                      and (entry.get("kind") == "preservation" or behavior_map.producer_proved(entry))))
     )
     if not_green:
         raise WorkflowError(
-            f"behavioral fixed for {finding_id} requires linked GREEN item(s): " + ", ".join(not_green)
+            f"behavioral fixed for {finding_id} requires linked GREEN or producer-baselined item(s): "
+            + ", ".join(not_green)
         )
     if not any(
         entry.get("status") in {"green", "superseded"} and identifier not in unresolved
@@ -1163,10 +1184,11 @@ def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject)
     # transaction, so its owning attacks cannot regress or vanish after closure.
     blockers: list[str] = []
     for entry in states:
-        if isinstance(entry, dict) and entry.get("status") == "fixed" and entry.get("kind") == "behavioral":
+        if isinstance(entry, dict) and entry.get("status") in {"fixed", "report-only"} and entry.get("kind") == "behavioral":
             try:
                 _behavioral_finding_closure(
                     transaction, state, str(entry.get("intakeEvidenceId")), str(entry.get("findingId")),
+                    require_green=entry.get("status") == "fixed",
                 )
             except WorkflowError as exc:
                 blockers.append(str(exc))
@@ -1250,8 +1272,10 @@ def _apply_finding_dispositions(
             raise WorkflowError(f"finding {identifier} disposition does not change effective state")
         if current in {"fixed", "rejected-with-evidence", "report-only"}:
             raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
-        if status == "fixed" and kind == "behavioral":
-            _behavioral_finding_closure(transaction, state, intake_id, identifier)
+        if status in {"fixed", "report-only"} and kind == "behavioral":
+            _behavioral_finding_closure(
+                transaction, state, intake_id, identifier, require_green=status == "fixed",
+            )
         if current != "pending":
             prior = _disposition_evidence(state, finding_state, stage, producer)
             if prior is None:

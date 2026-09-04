@@ -703,6 +703,44 @@ class GraphEvidenceContractTests(unittest.TestCase):
         packet["advisorProjection"]["sourceBaseOid"] = "b" * 40
         return packet
 
+    def test_recorded_projection_targets_keep_only_the_advisor_fields(self) -> None:
+        # Issue #191: a real projection carried 154,449 bytes of per-file ranking
+        # metadata in the wrapper's format against an 8,000-byte cap.
+        marker = "PROJECTION_TARGETS_UNTRIMMED"
+        packet = self.packet()
+        packet["advisorProjection"]["targets"] = [{
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4,
+            "changed_symbols": [{"name": "_map_update", "kind": "function", "line": 672, "end_line": 783}],
+            "symbols": [{"name": "_map_update"}], "why_selected": ["changed in base...HEAD diff"],
+            "analysis_repo": "/cache/analysis-worktrees/x", "changed_ranges": [[678, 679]],
+            "cochanges": [], "dependent_count": 0, "dirty_kinds": ["unstaged"], "graph_neighbors": [],
+            "in_soulforge_map": True, "intent_required_file": False, "intent_required_symbols": [],
+            "line_count": 791, "pagerank": 0.159, "priority_score": 2500.0,
+            "rank_signals": ["changed_file"], "scope_contaminated": True,
+            "soulforge_impact": {"dependents": []}, "source_dirty_overlap": True, "symbol_count": 20,
+        }]
+        document = self.document_for(packet)
+        target = document["advisorProjection"]["targets"][0]
+        self.assertEqual(target, {
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4,
+            "changed_symbols": ["_map_update"], "why_selected": ["changed in base...HEAD diff"],
+        }, marker + ": " + json.dumps(target)[:300])
+
+    def test_recorded_projection_targets_keep_why_selected(self) -> None:
+        marker = "PROJECTION_WHY_SELECTED_DROPPED"
+        packet = self.packet()
+        packet["advisorProjection"]["targets"] = [{
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4,
+            "changed_symbols": [], "symbols": [], "pagerank": 0.1,
+            "why_selected": ["changed in base...HEAD diff", "contains symbols overlapping changed hunks"],
+        }]
+        target = self.document_for(packet)["advisorProjection"]["targets"][0]
+        self.assertIn("why_selected", target, marker)
+        self.assertEqual(target, {
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4, "changed_symbols": [],
+            "why_selected": ["changed in base...HEAD diff", "contains symbols overlapping changed hunks"],
+        }, marker + ": " + json.dumps(target)[:300])
+
     def test_a_packet_for_another_checkout_is_refused(self) -> None:
         foreign = self.tmp / "elsewhere"
         packet = self.packet()

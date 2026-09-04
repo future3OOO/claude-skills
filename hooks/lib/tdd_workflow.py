@@ -580,6 +580,7 @@ def _run_tdd(values: list[str]) -> int:
                 updated_item["evidence"] = (
                     "baseline-passed before any production edit: " + command_text
                 )
+                updated_item["baselineProof"] = proof
                 next_active = None
                 reassessment_pending = None
                 action = "in-progress" if behavior_map.unresolved(updated) else "passed"

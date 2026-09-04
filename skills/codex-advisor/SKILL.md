@@ -236,7 +236,9 @@ Map attack items through finding `sourceRefs` (record-preflight refuses an
 unowned pending behavioral finding; tdd-map adds owners later), and `fixed`
 requires an owning attack GREEN through its recorded RED plus a zero-count
 complete-domain occurrence over the finding's recorded surface.
-`report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
+`report-only` requires a false material consequence, and a behavioral one an
+owning attack the tdd producer proved (GREEN or recorded baseline); a command or
+evidence citing a temporary-directory path refuses. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
 findings-plus-dispositions form remains compatible for measured nonbehavioral
 results. A refusal mutates no state.
 Print the canonical disposition and governed-design shape table, generated from

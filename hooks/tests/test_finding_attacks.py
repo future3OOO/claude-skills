@@ -203,6 +203,21 @@ class AttackHarness(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def refused_unchanged(self, marker: str, action) -> subprocess.CompletedProcess[str]:
+        before = self.status()
+        events = len(json.loads(self.ok_text("history"))["events"])
+        result = action()
+        self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
+        self.assertEqual(self.status(), before, marker + ": a refusal mutated workflow state")
+        self.assertEqual(len(json.loads(self.ok_text("history"))["events"]), events,
+                         marker + ": a refusal appended history")
+        return result
+
+    def ok_text(self, *args: str) -> str:
+        result = self.cli(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
     def plant_external_victim(self, marker: str) -> dict[str, str]:
         """Empty in-repo victim/ shadowing an external importable package."""
         (self.repo / "victim").mkdir()
@@ -888,21 +903,6 @@ class MapCorrectionAttacks(AttackHarness):
             items = (document.get("document") or {}).get("behaviorMap")
         return {str(entry["id"]): entry for entry in items}
 
-    def refused_unchanged(self, marker: str, action) -> subprocess.CompletedProcess[str]:
-        before = self.status()
-        events = len(json.loads(self.ok_text("history"))["events"])
-        result = action()
-        self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
-        self.assertEqual(self.status(), before, marker + ": a refusal mutated workflow state")
-        self.assertEqual(len(json.loads(self.ok_text("history"))["events"]), events,
-                         marker + ": a refusal appended history")
-        return result
-
-    def ok_text(self, *args: str) -> str:
-        result = self.cli(*args)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        return result.stdout
-
     def test_a_post_preflight_contract_item_withdraws(self) -> None:
         marker = "WITHDRAW_ADDED_REFUSED"
         slug = "withdraw-added"
@@ -1122,6 +1122,8 @@ class MapCorrectionAttacks(AttackHarness):
         self.assertEqual(self.map_update(slug, items=[extra]).returncode, 0)
         refused = self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_EXTRA"))
         self.assertIn("sourceRefs", refused.stderr, marker)
+        # A behavioral finding closes without a fix only through a proved owner.
+        self.drive_attack_green(slug, marker)
         rejection = self.json_file("rejected.json", {
             "context": {"workflowId": wid,
                         "candidateTree": _active_candidate_tree(resolve_repo_identity(self.repo))},
@@ -1179,6 +1181,190 @@ class MapCorrectionAttacks(AttackHarness):
             "id": "BM_EXTRA", "status": "superseded", "supersededBy": "BM_ATTACK",
             "evidence": "a withdrawn item owns nothing to hand over"}]))
         self.assertIn("GREEN", refused.stderr, marker)
+
+
+class ReportOnlyProofAttacks(AttackHarness):
+    """Issue #191: a behavioral finding closes report-only only through an owning
+    attack the producer proved, and no disposition may cite a temp-directory
+    script as its measurement. ARM X6R8 closed nineteen findings that way."""
+
+    def disposition(self, wid: str, intake_id: str, status: str, *, command: str = "python -m unittest test_attack_probe",
+                    premise_result: str = "true", evidence: str = "measured on the candidate") -> Path:
+        consequence = "false" if status == "report-only" else "closed"
+        return self.json_file("disposition.json", {
+            "context": {"workflowId": wid,
+                        "candidateTree": _active_candidate_tree(resolve_repo_identity(self.repo))},
+            "intakeEvidenceId": intake_id,
+            "dispositions": [{
+                "finding_id": "SPEC-1", "status": status, "kind": "behavioral",
+                "premise": {"claim": "the reviewed value is wrong", "command": command, "result": premise_result},
+                "occurrence": {"domain": "every read of app.value", "count": 0, "complete": True,
+                               "command": command, "result": "count=0"},
+                "materialConsequence": {"claim": "callers observe the wrong value", "command": command,
+                                        "result": consequence},
+                "evidence": evidence,
+            }]})
+
+    def dispose(self, slug: str, wid: str, document: Path) -> subprocess.CompletedProcess[str]:
+        return self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                        "--stage", "preflight", "--findings", "addressed", "--input", str(document))
+
+    def owned_pass(self, slug: str, marker: str, extra: list[dict[str, object]] | None = None,
+                   attack_owned: bool = True) -> tuple[str, str]:
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        items = self.owned_map(intake_id, marker=marker)
+        if not attack_owned:
+            items[0]["sourceRefs"] = []
+        recorded = self.record_preflight(slug, wid, items + (extra or []))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        return wid, intake_id
+
+    def keep(self, intake_id: str, **fields: object) -> dict[str, object]:
+        return {"id": "BM_KEEP", "kind": "preservation", "basis": "existing guarantee",
+                "behavior": "the value stays readable", "seam": "fixture app module",
+                "expected": "app.value stays 1", "redFailure": "KEEP_REGRESSED", "status": "pending",
+                "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}], **fields}
+
+    def test_report_only_refuses_without_an_owner(self) -> None:
+        marker = "REPORT_ONLY_UNOWNED_ACCEPTED"
+        slug = "report-only-unowned"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        document = self.disposition(wid, intake_id, "report-only")
+        refused = self.refused_unchanged(marker, lambda: self.dispose(slug, wid, document))
+        self.assertIn("owning", refused.stderr, marker)
+
+    def test_report_only_refuses_a_pending_owner(self) -> None:
+        marker = "UNPROVED_OWNER_REPORT_ONLY_ACCEPTED"
+        slug = "report-only-pending"
+        wid, intake_id = self.owned_pass(slug, marker)
+        document = self.disposition(wid, intake_id, "report-only")
+        refused = self.refused_unchanged(marker, lambda: self.dispose(slug, wid, document))
+        self.assertIn("BM_ATTACK", refused.stderr, marker)
+
+    def test_report_only_accepts_a_producer_baselined_preservation_owner(self) -> None:
+        marker = "OWNED_REPORT_ONLY_REFUSED"
+        slug = "report-only-preservation"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        items = self.owned_map(intake_id, marker=marker); items[0]["sourceRefs"] = []
+        recorded = self.record_preflight(slug, wid, items + [self.keep(intake_id)])
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        (self.repo / "test_keep_probe.py").write_text(
+            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 1, 'KEEP_REGRESSED')\n", encoding="utf-8")
+        baseline = subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+                                   "--phase", "red", "--behavior-id", "BM_KEEP", "--", sys.executable, "-m", "unittest", "test_keep_probe"],
+                                  cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout, baseline.stdout)
+        accepted = self.dispose(slug, wid, self.disposition(wid, intake_id, "report-only"))
+        self.assertEqual(accepted.returncode, 0, marker + ": " + accepted.stdout + accepted.stderr)
+        self.assertEqual(json.loads(accepted.stdout)["findingStates"][0]["status"], "report-only", marker)
+
+    def test_report_only_accepts_a_producer_baselined_contract_owner(self) -> None:
+        marker = "CONTRACT_BASELINE_OWNER_REFUSED"
+        slug = "report-only-contract-baseline"
+        wid, intake_id = self.owned_pass(slug, marker)
+        (self.repo / "test_attack_probe.py").write_text(
+            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 1, {marker!r})\n", encoding="utf-8")
+        baseline = self.mapped_tdd(slug, "red", [sys.executable, "-m", "unittest", "test_attack_probe"])
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout, baseline.stdout)
+        accepted = self.dispose(slug, wid, self.disposition(wid, intake_id, "report-only"))
+        self.assertEqual(accepted.returncode, 0, marker + ": " + accepted.stdout + accepted.stderr)
+
+    def test_report_only_refuses_a_prose_baselined_owner(self) -> None:
+        marker = "PROSE_BASELINE_OWNER_ACCEPTED"
+        slug = "report-only-prose"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        items = self.owned_map(intake_id, marker=marker); items[0]["sourceRefs"] = []
+        # Prose evidence proves nothing, even when it repeats the producer's
+        # own baseline wording (the shape a pre-#191 ledger can carry).
+        prose = self.keep(intake_id, status="already-satisfied",
+                          evidence="baseline-passed before any production edit: python -m unittest test_keep_probe")
+        recorded = self.record_preflight(slug, wid, items + [prose])
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        document = self.disposition(wid, intake_id, "report-only")
+        refused = self.refused_unchanged(marker, lambda: self.dispose(slug, wid, document))
+        self.assertIn("BM_KEEP", refused.stderr, marker)
+
+    def test_a_producer_baseline_carries_its_proof_field(self) -> None:
+        marker = "PRODUCER_BASELINE_UNRECORDED"
+        slug = "baseline-proof-field"
+        wid, intake_id = self.owned_pass(slug, marker)
+        (self.repo / "test_attack_probe.py").write_text(
+            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 1, {marker!r})\n", encoding="utf-8")
+        baseline = self.mapped_tdd(slug, "red", [sys.executable, "-m", "unittest", "test_attack_probe"])
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+        recorded = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]["behaviorMap"]
+        attack = next(item for item in recorded if item["id"] == "BM_ATTACK")
+        self.assertIsInstance(attack.get("baselineProof"), dict, marker)
+        # Joint proof: the field is the producer's alone.
+        forged = self.keep(intake_id, status="already-satisfied", evidence="passes by inspection",
+                           baselineProof=attack["baselineProof"])
+        refused = self.record_preflight("baseline-proof-forged", self.begin("baseline-proof-forged"),
+                                        self.owned_map(intake_id, marker=marker) + [forged])
+        self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("tdd --phase red", refused.stderr, marker)
+
+    def test_fixed_accepts_a_producer_baselined_contract_owner_beside_a_green_one(self) -> None:
+        marker = "PRODUCER_CONTRACT_BASELINE_BLOCKED_FIXED"
+        slug = "fixed-contract-baseline"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        recorded = self.record_preflight(
+            slug, wid, self.owned_map(intake_id, marker=marker) + [self.keep(intake_id, kind="contract")])
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        (self.repo / "test_keep_probe.py").write_text(
+            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 1, 'KEEP_REGRESSED')\n", encoding="utf-8")
+        baseline = subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+                                   "--phase", "red", "--behavior-id", "BM_KEEP", "--", sys.executable, "-m", "unittest", "test_keep_probe"],
+                                  cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout, baseline.stdout)
+        self.drive_attack_green(slug, marker)
+        closed = self.dispose(slug, wid, self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN)))
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        self.assertEqual(json.loads(closed.stdout)["findingStates"][0]["status"], "fixed", marker)
+
+    def test_a_temp_path_command_refuses(self) -> None:
+        marker = "TEMP_PATH_COMMAND_ACCEPTED"
+        slug = "temp-path-command"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        probe = str(Path(tempfile.gettempdir()) / "safe_import_delivery_matrix.py")
+        document = self.disposition(wid, intake_id, "rejected-with-evidence",
+                                    command=f"python3 {probe}", premise_result="false")
+        refused = self.refused_unchanged(marker, lambda: self.dispose(slug, wid, document))
+        self.assertIn(probe, refused.stderr, marker)
+
+    def test_a_temp_path_evidence_refuses(self) -> None:
+        marker = "TEMP_PATH_EVIDENCE_ACCEPTED"
+        slug = "temp-path-evidence"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        probe = str(Path(tempfile.gettempdir()) / "matrix.py")
+        document = self.disposition(wid, intake_id, "rejected-with-evidence",
+                                    premise_result="false", evidence=f"see the output of {probe}")
+        refused = self.refused_unchanged(marker, lambda: self.dispose(slug, wid, document))
+        self.assertIn(probe, refused.stderr, marker)
+
+    def test_an_estate_path_is_allowed(self) -> None:
+        marker = "ESTATE_PATH_REFUSED"
+        slug = "estate-path"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        estate = str(Path.home() / ".claude" / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh")
+        document = self.disposition(wid, intake_id, "rejected-with-evidence",
+                                    command=f"sed -n 1,5p {estate}", premise_result="false")
+        accepted = self.dispose(slug, wid, document)
+        self.assertEqual(accepted.returncode, 0, marker + ": " + accepted.stdout + accepted.stderr)
 
 
 if __name__ == "__main__":

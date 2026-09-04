@@ -101,7 +101,10 @@ a document rejecting three or more material findings draws a recorded
 bulk-rejection warning.
 A false premise records the normalized premise `result` as exactly `false`;
 otherwise rejection requires zero occurrence on a complete domain. `report-only`
-resolves completion without authorizing an edit and is terminal. A behavioral
+resolves completion without authorizing an edit and is terminal; for a behavioral
+finding it also needs an owning attack the tdd producer proved (GREEN, or a
+recorded pre-edit baseline). A command or evidence citing a path under the
+system temporary directory refuses. A behavioral
 finding directly owns Behavior Map attack items through finding `sourceRefs`
 (added by `tdd-map` in the same pass); `fixed` requires an owning attack GREEN
 through its recorded RED plus a zero-count complete-domain occurrence over the

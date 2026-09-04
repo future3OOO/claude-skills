@@ -487,6 +487,25 @@ class ReviewSummaryTests(ReviewSummaryHarness):
         self.assertEqual(self.event_count(), before_events, "a rejected recorder call appended an event")
 
 
+class ReportOnlyOwnershipReviewTests(ReviewSummaryHarness):
+    """Issue #191: the review caller applies the same report-only ownership rule."""
+
+    def test_report_only_refuses_a_behavioral_finding_without_an_owner_on_the_review_caller(self) -> None:
+        marker = "REVIEW_REPORT_ONLY_UNOWNED_ACCEPTED"
+        path = self.tmp / "unowned-report-only.json"
+        finding = {**self.review_finding(), "kind": "behavioral"}
+        path.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+        intake_id = json.loads(self.record_review(path, "unowned-intake").stdout)["summaryId"]
+        closure = self.disposition_document(intake_id, "SPEC-1", "report-only", kind="behavioral")
+        closure["dispositions"][0]["materialConsequence"]["result"] = "false"
+        path.write_text(json.dumps(closure), encoding="utf-8")
+        before = read_workflow(resolve_repo_identity(self.repo))
+        refused = self.record_review(path, "unowned-closure")
+        self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("owning", refused.stderr, marker)
+        self.assertEqual(read_workflow(resolve_repo_identity(self.repo)), before, marker)
+
+
 class BulkRejectionReviewTests(ReviewSummaryHarness):
     """Issue #186 part 3: bulk material rejections through the review caller."""
 

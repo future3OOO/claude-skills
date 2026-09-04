@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from .state_store import utc_timestamp
 
@@ -353,6 +354,22 @@ def graph_evidence_document(
     projection = validate_advisor_projection(
         packet.get("advisorProjection"), candidate_tree=snapshot_candidate,
     )
+    # The advisor reads which files changed, which symbols, and why each file
+    # was selected; ranking signals, symbol ranges, and analysis-worktree paths
+    # cost 154KB on one pass and never reached an envelope. The wrapper forwards
+    # this projection whole.
+    projection["targets"] = [
+        {
+            "path": target.get("path"), "surface_role": target.get("surface_role"),
+            "rank": target.get("rank"),
+            "changed_symbols": [
+                symbol.get("name") for symbol in target.get("changed_symbols") or []
+                if isinstance(symbol, dict)
+            ],
+            "why_selected": target.get("why_selected"),
+        }
+        for target in projection["targets"]
+    ]
     expected_source_repo: object = (
         canonical_source_repo
         if canonical_source_repo is not None
@@ -394,11 +411,28 @@ def graph_evidence_document(
     return document
 
 
+_ABSOLUTE_PATH = re.compile(r"(?<![\w./-])(/[^\s'\"`;|&<>()]+)")
+
+
+def _refuse_temp_paths(text: str, label: str) -> None:
+    """A measurement cited from the temp directory is a throwaway probe, not proof
+    the repository keeps; the tdd recorder refuses those targets at cycle open and
+    dispositions refuse them here."""
+    temp = os.path.realpath(tempfile.gettempdir())
+    for token in _ABSOLUTE_PATH.findall(text):
+        resolved = os.path.realpath(token)
+        if resolved == temp or resolved.startswith(temp + os.sep):
+            raise ValueError(
+                f"{label} cites {token}, a temporary-directory path; measurement scripts live in the repository"
+            )
+
+
 def _measurement(value: object, label: str) -> JsonObject:
     if not isinstance(value, dict) or set(value) != {"claim", "command", "result"}:
         raise ValueError(f"{label} requires only claim, command, and result")
     if not all(_text(value.get(field)) for field in ("claim", "command", "result")):
         raise ValueError(f"{label} requires claim, command, and result")
+    _refuse_temp_paths(str(value["command"]), f"{label} command")
     return dict(value)
 
 
@@ -410,12 +444,14 @@ def _occurrence(value: object) -> JsonObject:
             raise ValueError("counted occurrence requires domain, command, and result")
         if type(value.get("count")) is not int or value["count"] < 0 or not isinstance(value.get("complete"), bool):
             raise ValueError("counted occurrence requires a non-negative count and complete boolean")
+        _refuse_temp_paths(str(value["command"]), "occurrence command")
         return dict(value)
     if set(value) == {"seam", "reproduction"} and _text(value.get("seam")):
         reproduction = value.get("reproduction")
         if isinstance(reproduction, dict) and set(reproduction) == {"command", "result"} and all(
             _text(reproduction.get(field)) for field in ("command", "result")
         ):
+            _refuse_temp_paths(str(reproduction["command"]), "occurrence reproduction command")
             return {"seam": value["seam"], "reproduction": dict(reproduction)}
     raise ValueError("occurrence requires a counted domain or real-Seam reproduction")
 
@@ -459,6 +495,11 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
         extra = {field}
         if not _text(item.get(field)):
             raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
+        if field == "evidence":
+            try:
+                _refuse_temp_paths(str(item["evidence"]), f"finding {identifier} evidence")
+            except ValueError as exc:
+                raise ValueError(_disposition_error(status, str(exc))) from exc
         if set(item) != common | extra:
             raise ValueError(_disposition_error(status, f"finding {identifier} {status} has unknown or missing fields"))
         if status in {"fixed", "rejected-with-evidence"} and not (

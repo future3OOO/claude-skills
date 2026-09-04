@@ -15,13 +15,16 @@ KINDS = frozenset({"contract", "preservation"})
 REQUIRED_FIELDS = frozenset({
     "id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status",
 })
-OPTIONAL_FIELDS = frozenset({"evidence", "supersededBy", "sourceRefs", "proofCommand"})
+OPTIONAL_FIELDS = frozenset({"evidence", "supersededBy", "sourceRefs", "proofCommand", "baselineProof"})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
 _CONTRACT_DISPOSITION_REFUSED = (
     "behavior {} is a contract item: it is never omitted, and already-satisfied "
     "is recorded only by tdd --phase red passing its mapped surface"
 )
 _PRESERVATION_WITHDRAWN_REFUSED = "behavior {} is a preservation item: use omitted, not withdrawn"
+_BASELINE_PROOF_RESERVED = (
+    "behavior {} baselineProof is recorded only by tdd --phase red passing its mapped surface"
+)
 # Infra-failure phrases, matched on word boundaries: a phrase is refused when
 # its words appear as an adjacent run in the marker, or its collapsed form is
 # itself one of the marker's words (AttributeError). Substring matching over
@@ -192,6 +195,13 @@ def validate_items(
         # attack rides beside the declared one wherever the item travels.
         if "proofCommand" in raw:
             item["proofCommand"] = _required(raw, "proofCommand", identifier)
+        # The producer records its baseline proof here and prose never may, so
+        # an already-satisfied item carrying it is producer-backed in every
+        # lineage; evidence text proves nothing.
+        if "baselineProof" in raw:
+            if not allow_runtime or not isinstance(raw.get("baselineProof"), dict):
+                raise ValueError(_BASELINE_PROOF_RESERVED.format(identifier))
+            item["baselineProof"] = raw["baselineProof"]
         evidence = _text(raw.get("evidence"))
         if status in EVIDENCED_STATUSES:
             if evidence is None:
@@ -347,6 +357,7 @@ def apply_dispositions(
                     "only a preservation item at omitted or already-satisfied can be reopened"
                 )
             mapped.pop("evidence", None)
+            mapped.pop("baselineProof", None)
             mapped["status"] = "pending"
             continue
         elif mapped.get("kind") == "contract":
@@ -357,6 +368,13 @@ def apply_dispositions(
             )
         mapped["status"] = status
         mapped["evidence"] = evidence
+
+
+def producer_proved(entry: JsonObject) -> bool:
+    """GREEN comes only from the producer; already-satisfied counts only with its recorded proof."""
+    return entry.get("status") == "green" or (
+        entry.get("status") == "already-satisfied" and isinstance(entry.get("baselineProof"), dict)
+    )
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:
