@@ -1381,6 +1381,94 @@ class ReportOnlyProofAttacks(AttackHarness):
         self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
         self.assertEqual(json.loads(closed.stdout)["findingStates"][0]["status"], "fixed", marker)
 
+    def owned_item(self, identifier: str, intake_id: str, marker: str) -> dict[str, object]:
+        return {"id": identifier, "kind": "contract", "basis": "advisor finding attack",
+                "behavior": "the reviewed value is corrected", "seam": "fixture app module",
+                "expected": "app.value is 2", "redFailure": marker, "status": "pending",
+                "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]}
+
+    def supersede_owned(self, slug: str, wid: str, intake_id: str, marker2: str) -> None:
+        update = self.json_file("supersede.json", {
+            "reassessment": "a sharper attack owns the outcome",
+            "items": [self.owned_item("BM_ATTACK2", intake_id, marker2)],
+            "dispositions": [{"id": "BM_ATTACK", "status": "superseded", "supersededBy": "BM_ATTACK2",
+                              "evidence": "BM_ATTACK2 asserts the same outcome through its own surface"}]})
+        superseded = self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(superseded.returncode, 0, superseded.stdout + superseded.stderr)
+
+    def test_fixed_reads_green_provenance_not_a_post_edit_chain(self) -> None:
+        # PR #194 review: a post-edit item may be superseded, but the supersession
+        # must not launder it into a GREEN through RED.
+        marker = "POST_EDIT_CHAIN_CLOSED_FIXED"
+        unowned = {"id": "BM_A", "kind": "contract", "basis": "requested behavior", "behavior": "the value is corrected",
+                   "seam": "fixture app module", "expected": "app.value is 2", "redFailure": "VALUE_NOT_TWO_A", "status": "pending"}
+        slug = "fixed-post-edit-chain"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        recorded = self.record_preflight(slug, wid, [unowned, self.owned_item("BM_ATTACK", intake_id, marker)])
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.drive_attack_green(slug, "VALUE_NOT_TWO_A", "BM_A")
+        self.post_edit(slug, "BM_ATTACK", "test_owned_probe", marker)
+        self.supersede_owned(slug, wid, intake_id, "ATTACK2_NOT_TWO")
+        self.post_edit(slug, "BM_ATTACK2", "test_owned2_probe", "ATTACK2_NOT_TWO")
+        refused = self.refused_unchanged(marker, lambda: self.dispose(
+            slug, wid, self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertIn("GREEN", refused.stderr, marker)
+
+        # Provenance is kept: a GREEN-through-RED owner sharpened by a post-edit replacement still closes.
+        slug = "fixed-green-superseded"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        recorded = self.record_preflight(slug, wid, [self.owned_item("BM_ATTACK", intake_id, marker)])
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.drive_attack_green(slug, marker)
+        self.supersede_owned(slug, wid, intake_id, "ATTACK2_NOT_TWO")
+        self.post_edit(slug, "BM_ATTACK2", "test_owned2_probe", "ATTACK2_NOT_TWO")
+        closed = self.dispose(slug, wid, self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN)))
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        self.assertEqual(json.loads(closed.stdout)["findingStates"][0]["status"], "fixed", marker)
+
+    LEGACY_HEAD = "6fa1fb85a37d1bc05d63cbd1dc9040bf0519e9c8"
+
+    @unittest.skipUnless(
+        subprocess.run(["git", "cat-file", "-e", LEGACY_HEAD + "^{commit}"], cwd=ROOT, capture_output=True).returncode == 0,
+        "the pre-provenance head is not in this clone")
+    def test_a_legacy_supersession_cannot_close_fixed_through_the_current_cli(self) -> None:
+        # Appeal APPEAL-1: the 6fa1fb8 CLI recorded supersessions without
+        # supersededFrom; the current closure must read that record as unproved.
+        marker = "LEGACY_LEDGER_CHAIN_CLOSED_FIXED"
+        legacy = self.tmp / "legacy"
+        legacy.mkdir()
+        archive = subprocess.run(["git", "archive", self.LEGACY_HEAD, "hooks", "skills/repo-production-workflow/scripts"],
+                                 cwd=ROOT, capture_output=True, check=True)
+        subprocess.run(["tar", "-x", "-C", str(legacy)], input=archive.stdout, check=True)
+        legacy_cli = legacy / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
+        unowned = {"id": "BM_A", "kind": "contract", "basis": "requested behavior", "behavior": "the value is corrected",
+                   "seam": "fixture app module", "expected": "app.value is 2", "redFailure": "VALUE_NOT_TWO_A", "status": "pending"}
+        slug = "legacy-supersession"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        recorded = self.record_preflight(slug, wid, [unowned, self.owned_item("BM_ATTACK", intake_id, marker)])
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.drive_attack_green(slug, "VALUE_NOT_TWO_A", "BM_A")
+        self.post_edit(slug, "BM_ATTACK", "test_owned_probe", marker)
+        update = self.json_file("legacy-supersede.json", {
+            "reassessment": "a sharper attack owns the outcome",
+            "items": [self.owned_item("BM_ATTACK2", intake_id, "ATTACK2_NOT_TWO")],
+            "dispositions": [{"id": "BM_ATTACK", "status": "superseded", "supersededBy": "BM_ATTACK2",
+                              "evidence": "recorded by the pre-provenance CLI"}]})
+        superseded = subprocess.run([sys.executable, str(legacy_cli), "tdd-map", "--slug", slug, "--workflow-id", wid,
+                                     "--input", str(update), "--repo", str(self.repo)],
+                                    cwd=self.repo, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(superseded.returncode, 0, superseded.stdout + superseded.stderr)
+        recorded_map = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]["behaviorMap"]
+        [attack] = [item for item in recorded_map if item["id"] == "BM_ATTACK"]
+        self.assertNotIn("supersededFrom", attack, "the legacy CLI recorded provenance; fixture is not legacy")
+        self.post_edit(slug, "BM_ATTACK2", "test_owned2_probe", "ATTACK2_NOT_TWO")
+        refused = self.refused_unchanged(marker, lambda: self.dispose(
+            slug, wid, self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertIn("GREEN", refused.stderr, marker)
+
     def test_a_temp_path_command_refuses(self) -> None:
         marker = "TEMP_PATH_COMMAND_ACCEPTED"
         slug = "temp-path-command"

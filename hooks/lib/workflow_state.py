@@ -1136,7 +1136,7 @@ def _behavioral_finding_closure(
             + ", ".join(not_green)
         )
     if not any(
-        entry.get("status") in {"green", "superseded"} and identifier not in unresolved
+        behavior_map.green_through_red(entry) and identifier not in unresolved
         for identifier, entry in linked.items()
     ):
         raise WorkflowError(

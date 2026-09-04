@@ -18,7 +18,9 @@ KINDS = frozenset({"contract", "preservation"})
 REQUIRED_FIELDS = frozenset({
     "id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status",
 })
-OPTIONAL_FIELDS = frozenset({"evidence", "supersededBy", "sourceRefs", "proofCommand", "baselineProof"})
+OPTIONAL_FIELDS = frozenset({
+    "evidence", "supersededBy", "sourceRefs", "proofCommand", "baselineProof", "supersededFrom",
+})
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
 _CONTRACT_DISPOSITION_REFUSED = (
     "behavior {} is a contract item: it is never omitted, and already-satisfied "
@@ -205,6 +207,12 @@ def validate_items(
             if not allow_runtime or not isinstance(raw.get("baselineProof"), dict):
                 raise ValueError(_BASELINE_PROOF_RESERVED.format(identifier))
             item["baselineProof"] = raw["baselineProof"]
+        # Supersession keeps the proof kind it retired, so a post-edit pass
+        # cannot be laundered into a GREEN through RED by being superseded.
+        if "supersededFrom" in raw:
+            if not allow_runtime or raw.get("supersededFrom") not in PROOF_STATUSES:
+                raise ValueError(f"behavior {identifier} supersededFrom is recorded only by a tdd-map supersession")
+            item["supersededFrom"] = raw["supersededFrom"]
         evidence = _text(raw.get("evidence"))
         if status in EVIDENCED_STATUSES:
             if evidence is None:
@@ -329,6 +337,7 @@ def apply_dispositions(
                     f"behavior {identifier} is {mapped.get('status')}; only a GREEN or post-edit-passed item can be superseded"
                 )
             mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
+            mapped["supersededFrom"] = mapped["status"]
         elif "supersededBy" in raw:
             raise ValueError(f"behavior {identifier} disposition {status} cannot carry supersededBy")
         elif status == "withdrawn":
@@ -371,6 +380,14 @@ def apply_dispositions(
             )
         mapped["status"] = status
         mapped["evidence"] = evidence
+
+
+def green_through_red(entry: JsonObject) -> bool:
+    """GREEN through the item's own RED: green now, or recorded green when superseded.
+    A superseded item with no record is legacy in-flight state and reads as unproved."""
+    return entry.get("status") == "green" or (
+        entry.get("status") == "superseded" and entry.get("supersededFrom") == "green"
+    )
 
 
 def producer_proved(entry: JsonObject) -> bool:

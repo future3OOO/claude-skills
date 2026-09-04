@@ -633,6 +633,139 @@ class ContractProofAuthorityTests(unittest.TestCase):
             self.assertIn("test target", run.stderr, f"{marker} ({why})")
             self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, f"{marker} ({why})")
 
+    def pytest_green(self, slug: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+             "--phase", "green", "--behavior-id", "BM_B", "--",
+             sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *arguments],
+            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_post_edit_proof_ignores_a_path_that_follows_an_unknown_pytest_option(self) -> None:
+        # PR #194 review: a plugin option's value can be a real path; pytest consumes it
+        # and discovers implicitly, so it is not the item's own target.
+        marker = "OPTION_VALUE_PATH_TAKEN_AS_TARGET"
+        slug, _ = self.proved_first_item()
+        (self.repo / "conftest.py").write_text(
+            "def pytest_addoption(parser):\n    parser.addoption('--victim', action='store')\n", encoding="utf-8")
+        (self.repo / "test_b_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
+        before = read_workflow(self.identity)["tddEvidence"]
+        ambiguous = self.pytest_green(slug, "--victim", "test_b_probe.py")
+        self.assertEqual(ambiguous.returncode, 2, marker + ": " + ambiguous.stdout + ambiguous.stderr)
+        self.assertIn("test target", ambiguous.stderr, marker)
+        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
+        outside = self.pytest_green(slug, "--victim", "/etc/passwd")
+        self.assertEqual(outside.returncode, 2, marker + " (outside): " + outside.stdout + outside.stderr)
+        self.assertIn("repository root", outside.stderr, marker)
+        own = self.pytest_green(slug, "--victim=x", "test_b_probe.py")
+        self.assertEqual(own.returncode, 0, marker + " (inline value): " + own.stdout + own.stderr)
+        self.assertEqual(json.loads(own.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
+    def test_post_edit_proof_reads_the_terminal_pytest_summary(self) -> None:
+        # PR #194 review and preflight SPEC-2: printed pass-like text is not a pass.
+        marker = "PRINTED_PASS_COUNTED"
+        slug, _ = self.proved_first_item()
+        before = read_workflow(self.identity)["tddEvidence"]
+        (self.repo / "test_b_skip.py").write_text(
+            "import pytest\ndef test_b():\n    print('1 passed')\n    pytest.skip('later')\n", encoding="utf-8")
+        skipped = self.pytest_green(slug, "-s", "test_b_skip.py")
+        self.assertEqual(skipped.returncode, 2, marker + " (skipped): " + skipped.stdout + skipped.stderr)
+        self.assertIn("executed passing test", skipped.stderr, marker)
+        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
+        (self.repo / "test_b_exit.py").write_text(
+            "import os\ndef test_b():\n    print('1 passed')\n    os._exit(0)\n", encoding="utf-8")
+        exited = self.pytest_green(slug, "-s", "test_b_exit.py")
+        self.assertEqual(exited.returncode, 2, marker + " (exit before summary): " + exited.stdout + exited.stderr)
+        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
+        (self.repo / "test_b_real.py").write_text(
+            "import app\ndef test_b():\n    assert app.value == 2, 'VALUE_NOT_TWO_B'\n", encoding="utf-8")
+        real = self.pytest_green(slug, "test_b_real.py")
+        self.assertEqual(real.returncode, 0, marker + " (real pass): " + real.stdout + real.stderr)
+        self.assertEqual(json.loads(real.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
+    def test_superseded_provenance_is_fail_closed_without_its_record(self) -> None:
+        # Final FINAL-1: a superseded item recorded before supersededFrom existed is
+        # not read as GREEN through RED.
+        marker = "LEGACY_SUPERSEDED_READ_AS_GREEN"
+        self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y"}), marker)
+        self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "green"}), marker)
+        self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "post-edit-passed"}), marker)
+        self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "green"}), marker)
+
+    def test_post_edit_proof_treats_every_value_of_an_unknown_option_as_ambiguous(self) -> None:
+        # Final FINAL-2: a plugin option declared with two values.
+        marker = "MULTI_VALUE_OPTION_TARGET_TAKEN"
+        slug, _ = self.proved_first_item()
+        (self.repo / "conftest.py").write_text(
+            "def pytest_addoption(parser):\n    parser.addoption('--victim', nargs=2)\n", encoding="utf-8")
+        (self.repo / "test_b_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
+        before = read_workflow(self.identity)["tddEvidence"]
+        taken = self.pytest_green(slug, "--victim", "dummy", "test_b_probe.py")
+        self.assertEqual(taken.returncode, 2, marker + ": " + taken.stdout + taken.stderr)
+        self.assertIn("test target", taken.stderr, marker)
+        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
+        own = self.pytest_green(slug, "test_b_probe.py", "--victim", "dummy", "x")
+        self.assertEqual(own.returncode, 0, marker + " (target first): " + own.stdout + own.stderr)
+
+    def test_a_forged_summary_line_is_the_recorders_documented_limit(self) -> None:
+        # Final FINAL-3: byte-identical runner output is forgery the ledger does not
+        # attest against; recorded so the limit is a stated contract, not a promise.
+        marker = "SUMMARY_FORGERY_DEFENDED"
+        slug, _ = self.proved_first_item()
+        (self.repo / "test_b_forge.py").write_text(
+            "import os\ndef test_b():\n"
+            "    print('\\n============================== 1 passed in 0.01s ==============================', flush=True)\n"
+            "    os._exit(0)\n", encoding="utf-8")
+        forged = self.pytest_green(slug, "-s", "test_b_forge.py")
+        self.assertEqual(forged.returncode, 0, marker + ": " + forged.stdout + forged.stderr)
+
+    def test_red_phase_baseline_reads_the_terminal_pytest_summary(self) -> None:
+        # Final FINAL-4: the RED-phase baseline shares the parser.
+        marker = "RED_PHASE_PRINTED_PASS_COUNTED"
+        slug, _ = self.h.begin_to_preflight([contract("BM_A"), preservation("BM_P", red_failure="P_REGRESSED")])
+        (self.repo / "test_p_skip.py").write_text(
+            "import pytest\ndef test_p():\n    print('1 passed')\n    pytest.skip('later')\n", encoding="utf-8")
+        def red(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+                 "--phase", "red", "--behavior-id", "BM_P", "--", sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *arguments],
+                cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        printed = red("-s", "test_p_skip.py")
+        self.assertEqual(printed.returncode, 2, marker + ": " + printed.stdout + printed.stderr)
+        self.assertNotIn('"already-satisfied"', printed.stdout, marker)
+        (self.repo / "test_p_real.py").write_text("import app\ndef test_p():\n    assert app.value == 1, 'P_REGRESSED'\n", encoding="utf-8")
+        real = red("test_p_real.py")
+        self.assertEqual(real.returncode, 0, marker + " (real): " + real.stdout + real.stderr)
+        self.assertIn('"already-satisfied"', real.stdout, marker)
+
+    def test_completion_sentence_names_both_proof_kinds(self) -> None:
+        # Reviewer T7 and appeal APPEAL-3: the documented completion condition
+        # names the reassessment obligation for GREEN and post-edit-passed alike.
+        marker = "COMPLETION_SENTENCE_NAMES_ONLY_GREEN"
+        skill = (ROOT / "skills" / "repo-production-workflow" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("no post-GREEN or post-edit-passed reassessment or proof gap remains", skill, marker)
+
+    def test_post_edit_proof_keeps_ambiguity_through_option_like_values(self) -> None:
+        # Final FINAL-7: a REMAINDER option swallows option-like tokens too (the
+        # surface parser strips verbosity and fail-fast flags, so --no-header is used).
+        marker = "REMAINDER_OPTION_TARGET_TAKEN"
+        slug, _ = self.proved_first_item()
+        (self.repo / "conftest.py").write_text(
+            "import argparse\ndef pytest_addoption(parser):\n    parser.addoption('--victim', nargs=argparse.REMAINDER)\n", encoding="utf-8")
+        (self.repo / "test_b_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
+        before = read_workflow(self.identity)["tddEvidence"]
+        taken = self.pytest_green(slug, "--victim", "--no-header", "test_b_probe.py")
+        self.assertEqual(taken.returncode, 2, marker + ": " + taken.stdout + taken.stderr)
+        self.assertIn("test target", taken.stderr, marker)
+        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
+        own = self.pytest_green(slug, "test_b_probe.py", "--victim", "--no-header", "x")
+        self.assertEqual(own.returncode, 0, marker + " (target first): " + own.stdout + own.stderr)
+
     def test_complete_applies_map_closure_inside_its_transaction(self) -> None:
         # The CLI precheck is diagnostic; complete() must refuse from the
         # evidence snapshot inside its transaction once the real PostToolUse

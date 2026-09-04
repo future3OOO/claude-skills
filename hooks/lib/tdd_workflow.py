@@ -324,9 +324,9 @@ def _foreign_surface(
 ) -> str | None:
     """A post-edit pass proves an item only through a surface of its own: one that
     names a test target, and not the surface that already proved another item."""
-    targets, discover = tdd_surface.proof_targets(surface, root)
+    targets, discover, _ambiguous = tdd_surface.proof_targets(surface, root)
     if discover or not targets:
-        return f"behavior {identifier} post-edit pass needs a surface that names its own test target; a discover run or a bare suite names none"
+        return f"behavior {identifier} post-edit pass needs a surface that names its own test target before any plugin option; a discover run or a bare suite names none"
     for entry in items:
         if entry.get("id") != identifier and (
             entry.get("proofCommand") == command_text
@@ -361,9 +361,11 @@ def _baseline_proof(
             for count in re.findall(r"(?:skipped|expected failures)=(\d+)", result.group(1) or "")
         ) if result else 0
     else:
-        executed = sum(
-            int(value) for value in re.findall(r"(?<!\d)(\d+) passed\b", output.lower())
-        )
+        # Only the terminal summary line describes the run; text a test prints
+        # under -s, or a run that exits before the summary, counts nothing.
+        summaries = tdd_surface.PYTEST_SUMMARY.findall(output)
+        passed = re.search(r"(?<!\d)(\d+) passed\b", summaries[-1]) if summaries else None
+        executed = int(passed.group(1)) if passed else 0
     if executed < 1:
         return None, f"{runner} did not report an executed passing test"
     return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, ""
