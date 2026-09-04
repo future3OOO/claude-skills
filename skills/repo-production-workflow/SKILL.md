@@ -131,7 +131,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <targeted-command>
 ```
 
-A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose — the one correction is `withdrawn` (step 8) for a never-attacked, unowned item that `tdd-map` itself added after preflight — and a preservation item may additionally be dispositioned through `tdd-map`.
+A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose — the one correction is `withdrawn` (step 8) for a never-attacked, unowned item that `tdd-map` itself added after preflight — and a preservation item may additionally be dispositioned through `tdd-map`. After another genuine contract cycle has opened a dirty implementation candidate, `tdd --phase green` may record a separate pending contract item as `post-edit-passed` from its own directly invoked passing pytest or unittest surface (one naming its own test target and not another item's recorded proof or baseline command); it proves the current candidate, not an item-specific RED/GREEN history, and opens nothing.
 
 In this governed workflow the public TDD producers are required; `set-phase` does not accept the `tdd` phase. They keep bounded evidence and advance state but are not proof by themselves. For genuinely non-behavioral work, `--not-required` is available only after every map item is already satisfied or omitted by governing evidence:
 
@@ -186,7 +186,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <same test surface>
 ```
 
-After every GREEN, record a `workflow.py tdd-map` reassessment before another
+After every GREEN or `post-edit-passed`, record a `workflow.py tdd-map` reassessment before another
 production edit:
 
 ```bash
@@ -195,14 +195,14 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --input <map-update.json>
 ```
 
-The JSON document accepts `sourceBehaviorId` (the GREEN under review),
+The JSON document accepts `sourceBehaviorId` (the GREEN or `post-edit-passed` item under review),
 `reassessment`, `items`, and `dispositions` only. Add newly exposed touched-Seam preservation, interaction,
 semantic falsification, or review-discovered behavior; an empty addition records
 why the GREEN created no further obligation. The same document corrects the
 lead's own map mistakes inside the pass: `withdrawn` retires a never-attacked,
 unowned contract item that `tdd-map` added after preflight, and a `pending`
 disposition reopens a preservation item from `omitted` or `already-satisfied`;
-neither is proof, and neither reaches a preflight-declared contract item. Only after GREEN and reassessment
+neither is proof, and neither reaches a preflight-declared contract item. Only after terminal proof and reassessment
 leave TDD `passed` or `not-required` may implementation be recorded passed:
 
 ```bash
@@ -301,7 +301,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   complete --repo "$PWD"
 ```
 
-`complete` refuses, from inside its transaction, unless every contract item is GREEN, baseline `already-satisfied`, or `withdrawn`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, and the context-matched final `codex-advisor` intake has only effective terminal findings. The immutable raw verdict remains evidence but is not an indefinite veto after closure; `context-mismatch`, a pending one-response rejection appeal, or persistent disagreement still blocks. The reviewable working tree must match the manifest recorded by the lead review, and every evidence phase must carry its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
+`complete` refuses, from inside its transaction, unless every contract item is GREEN, `post-edit-passed`, baseline `already-satisfied`, or `withdrawn`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN or `post-edit-passed` terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, and the context-matched final `codex-advisor` intake has only effective terminal findings. The immutable raw verdict remains evidence but is not an indefinite veto after closure; `context-mismatch`, a pending one-response rejection appeal, or persistent disagreement still blocks. The reviewable working tree must match the manifest recorded by the lead review, and every evidence phase must carry its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion
 

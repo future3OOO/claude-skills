@@ -94,24 +94,18 @@ PYTEST_VALUE_OPTIONS = frozenset({
 })
 
 
-def repository_resolution(surface: Mapping[str, object], root: object) -> str | None:
-    """Why the mapped proof targets do not resolve inside ``root``, or None.
+def proof_targets(surface: Mapping[str, object], root: object) -> tuple[list[str], bool]:
+    """The test targets a unittest or pytest surface names, and whether it is a discover run.
 
-    The narrowed promise is target-name resolution: unittest selectors,
-    discover start directories, and pytest targets must resolve under the
-    repository root. Deliberately routing executed test source from outside
-    the repository through an in-repo re-export, load_tests, or conftest
-    delegation remains the audited fabrication class, not a mechanical
-    refusal - the ledger is continuity, not an attestation system.
+    Option values are skipped by each runner's value-taking option table; a
+    pytest bare word or number that names nothing under ``root`` is an unknown
+    option's value, not a target. A discover run with no start directory
+    targets ``.``.
     """
     runner = surface.get("runner")
-    if runner not in {"unittest", "pytest"}:
-        return None
     top = Path(str(root)).resolve()
     raw = surface.get("arguments")
     tokens = [token for token in raw if isinstance(token, str)] if isinstance(raw, list) else []
-    if runner == "pytest" and "--pyargs" in tokens:
-        return "--pyargs selects import targets whose location the repository root cannot establish; use repository path targets"
     discover = runner == "unittest" and bool(tokens) and tokens[0] == "discover"
     value_options = (
         UNITTEST_DISCOVER_VALUE_OPTIONS if discover
@@ -142,13 +136,32 @@ def repository_resolution(surface: Mapping[str, object], root: object) -> str | 
             "/" in token or "\\" in token or "::" in token
             or token.endswith(".py") or (top / token).exists()
         ):
-            # A bare word or number that names nothing under the root is an
-            # unknown option's value, not a pytest target; path-shaped tokens
-            # stay in target validation so the boundary remains fail-closed.
             continue
         targets.append(token)
     if discover and not targets:
         targets.append(".")
+    return targets, discover
+
+
+def repository_resolution(surface: Mapping[str, object], root: object) -> str | None:
+    """Why the mapped proof targets do not resolve inside ``root``, or None.
+
+    The narrowed promise is target-name resolution: unittest selectors,
+    discover start directories, and pytest targets must resolve under the
+    repository root. Deliberately routing executed test source from outside
+    the repository through an in-repo re-export, load_tests, or conftest
+    delegation remains the audited fabrication class, not a mechanical
+    refusal - the ledger is continuity, not an attestation system.
+    """
+    runner = surface.get("runner")
+    if runner not in {"unittest", "pytest"}:
+        return None
+    top = Path(str(root)).resolve()
+    raw = surface.get("arguments")
+    tokens = [token for token in raw if isinstance(token, str)] if isinstance(raw, list) else []
+    if runner == "pytest" and "--pyargs" in tokens:
+        return "--pyargs selects import targets whose location the repository root cannot establish; use repository path targets"
+    targets, discover = proof_targets(surface, root)
     unresolved: list[str] = []
     for target in targets:
         selector = target.split("::", 1)[0] if runner == "pytest" else target

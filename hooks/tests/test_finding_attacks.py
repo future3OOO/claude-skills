@@ -1333,6 +1333,54 @@ class ReportOnlyProofAttacks(AttackHarness):
         self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
         self.assertEqual(json.loads(closed.stdout)["findingStates"][0]["status"], "fixed", marker)
 
+    def post_edit(self, slug: str, behavior_id: str, module: str, marker: str) -> None:
+        """Prove one pending contract item through its own surface on the dirty candidate."""
+        (self.repo / f"{module}.py").write_text(
+            "import app, unittest\nclass Probe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
+        proved = subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+                                 "--phase", "green", "--behavior-id", behavior_id, "--", sys.executable, "-m", "unittest", module],
+                                cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(proved.returncode, 0, proved.stdout + proved.stderr)
+        self.assertIn('"post-edit-passed"', proved.stdout, proved.stdout)
+        reassessed = self.cli("tdd-map", "--slug", slug, "--workflow-id", str(self.status()["workflowId"]),
+                              "--input", str(self.json_file("reassess.json", {
+                                  "sourceBehaviorId": behavior_id, "reassessment": "no new obligation", "items": []})))
+        self.assertEqual(reassessed.returncode, 0, reassessed.stdout + reassessed.stderr)
+
+    def test_a_post_edit_passed_owner_is_producer_proved(self) -> None:
+        # Issue #193: a post-edit pass is the producer's terminal pass on the candidate.
+        marker = "POST_EDIT_OWNER_NOT_PROVED"
+        unowned = {"id": "BM_A", "kind": "contract", "basis": "requested behavior", "behavior": "the value is corrected",
+                   "seam": "fixture app module", "expected": "app.value is 2", "redFailure": "VALUE_NOT_TWO_A", "status": "pending"}
+        slug = "post-edit-owner-report-only"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        recorded = self.record_preflight(slug, wid, [unowned] + self.owned_map(intake_id, marker=marker))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.drive_attack_green(slug, "VALUE_NOT_TWO_A", "BM_A")
+        self.post_edit(slug, "BM_ATTACK", "test_owned_probe", marker)
+        # Alone it is not a GREEN through RED, so it cannot close the finding fixed.
+        refused = self.refused_unchanged(marker, lambda: self.dispose(
+            slug, wid, self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertIn("GREEN", refused.stderr, marker)
+        accepted = self.dispose(slug, wid, self.disposition(wid, intake_id, "report-only"))
+        self.assertEqual(accepted.returncode, 0, marker + ": " + accepted.stdout + accepted.stderr)
+        self.assertEqual(json.loads(accepted.stdout)["findingStates"][0]["status"], "report-only", marker)
+
+        # Beside a GREEN through RED it is a proved owner, so fixed closes.
+        slug = "post-edit-owner-fixed"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        second = self.keep(intake_id, kind="contract", redFailure="KEEP_NOT_TWO", expected="app.value is 2")
+        recorded = self.record_preflight(slug, wid, self.owned_map(intake_id, marker=marker) + [second])
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        self.drive_attack_green(slug, marker)
+        self.post_edit(slug, "BM_KEEP", "test_keep_probe", "KEEP_NOT_TWO")
+        closed = self.dispose(slug, wid, self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN)))
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        self.assertEqual(json.loads(closed.stdout)["findingStates"][0]["status"], "fixed", marker)
+
     def test_a_temp_path_command_refuses(self) -> None:
         marker = "TEMP_PATH_COMMAND_ACCEPTED"
         slug = "temp-path-command"

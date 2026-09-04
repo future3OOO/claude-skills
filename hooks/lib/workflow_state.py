@@ -1125,13 +1125,14 @@ def _behavioral_finding_closure(
     not_green = sorted(
         identifier for identifier, entry in linked.items()
         if not (admit_pending and entry.get("status") in {"pending", "red"})
-        and (identifier in unresolved or entry.get("status") not in {"green", "superseded"}
+        and (identifier in unresolved
+             or entry.get("status") not in behavior_map.PROOF_STATUSES | {"superseded"}
              and not (entry.get("status") == "already-satisfied"
                       and (entry.get("kind") == "preservation" or behavior_map.producer_proved(entry))))
     )
     if not_green:
         raise WorkflowError(
-            f"behavioral fixed for {finding_id} requires linked GREEN or producer-baselined item(s): "
+            f"behavioral fixed for {finding_id} requires linked GREEN or producer-proved item(s): "
             + ", ".join(not_green)
         )
     if not any(

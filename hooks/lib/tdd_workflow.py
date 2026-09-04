@@ -15,7 +15,7 @@ from .command_runner import (
     run_entry as _run_entry,
 )
 from .repo_identity import RepoIdentity, resolve_repo_identity
-from .state_store import production_changes, utc_timestamp
+from .state_store import _active_candidate_tree, production_changes, utc_timestamp
 from .workflow_documents import load_json
 from .workflow_state import (
     NO_INSTANCE_ID,
@@ -316,6 +316,26 @@ def _candidate_command(
     return command, shlex.join(command), tdd_surface.identify(command)
 
 
+_BASELINE_STAMP = "baseline-passed before any production edit: "
+
+
+def _foreign_surface(
+    items: list[JsonObject], identifier: str, command_text: str, surface: JsonObject, root: object
+) -> str | None:
+    """A post-edit pass proves an item only through a surface of its own: one that
+    names a test target, and not the surface that already proved another item."""
+    targets, discover = tdd_surface.proof_targets(surface, root)
+    if discover or not targets:
+        return f"behavior {identifier} post-edit pass needs a surface that names its own test target; a discover run or a bare suite names none"
+    for entry in items:
+        if entry.get("id") != identifier and (
+            entry.get("proofCommand") == command_text
+            or entry.get("evidence") == _BASELINE_STAMP + command_text
+        ):
+            return f"behavior {identifier} post-edit pass reuses the surface that proved {entry['id']}: {command_text}"
+    return None
+
+
 def _baseline_proof(
     surface: JsonObject, output: str
 ) -> tuple[dict[str, object] | None, str]:
@@ -397,6 +417,7 @@ def _run_tdd(values: list[str]) -> int:
         contract: dict[str, str] = {"slug": slug, "behavior": behavior, "seam": seam}
         candidate = current
         active = None
+        post_edit_candidate = False
     else:
         if not args.behavior_id:
             raise ValueError("--behavior-id is required for mapped RED/GREEN")
@@ -410,15 +431,34 @@ def _run_tdd(values: list[str]) -> int:
             raise WorkflowError(
                 f"behavior {args.behavior_id} is {status}; add a new map item for a new defect"
             )
-        if phase == "green" and status != "red":
-            raise WorkflowError(f"behavior {args.behavior_id} has no valid mapped RED")
         candidate = (
             current
             if isinstance(current, dict) and current.get("kind") == "cycle"
             else None
         )
         active = candidate.get("activeBehaviorId") if isinstance(candidate, dict) else None
-        if phase == "green" and active != args.behavior_id:
+        # A pending contract item an earlier cycle's candidate already satisfies
+        # has no RED of its own to reach; its own surface passing on that dirty
+        # candidate is the proof. It needs a genuine cycle behind it and no
+        # cycle in front of it, and it never opens editing.
+        dirty_before = (
+            production_changes(identity, "HEAD")
+            if phase == "green"
+            and status == "pending"
+            and mapped.get("kind") == "contract"
+            and active is None
+            and state.get("tddCycleCount", 0) > 0
+            else []
+        )
+        post_edit_candidate = bool(dirty_before)
+        # The tree the admission saw; a pass binds to it, not to whatever the
+        # caller-controlled test process leaves behind.
+        tree_before = _active_candidate_tree(identity) if post_edit_candidate else None
+        if phase == "green" and status != "red" and not post_edit_candidate:
+            raise WorkflowError(
+                f"behavior {args.behavior_id} has no valid mapped RED or dirty post-edit candidate"
+            )
+        if phase == "green" and not post_edit_candidate and active != args.behavior_id:
             raise WorkflowError(
                 f"behavior {args.behavior_id} has no active mapped RED candidate"
             )
@@ -435,6 +475,10 @@ def _run_tdd(values: list[str]) -> int:
         refusal = tdd_surface.repository_resolution(surface, identity.root)
         if refusal is not None:
             raise WorkflowError("mapped proof surfaces must resolve inside the repository: " + refusal)
+        if post_edit_candidate:
+            refusal = _foreign_surface(items, args.behavior_id, command_text, surface, identity.root)
+            if refusal is not None:
+                raise WorkflowError(refusal)
     same_instance = (
         isinstance(candidate, dict) and candidate.get("workflowId") == workflow_id
     )
@@ -492,6 +536,7 @@ def _run_tdd(values: list[str]) -> int:
     proof_error = ""
     red_ok = False
     baseline = False
+    post_edit_pass = False
     if phase == "red" and not timed_out and exit_code != 0:
         if legacy:
             red_ok = bool(expected) and expected in output
@@ -515,7 +560,16 @@ def _run_tdd(values: list[str]) -> int:
                 "changed: " + ", ".join(edited)
             )
         baseline = proof is not None
-    valid = red_ok if phase == "red" else not timed_out and exit_code == 0 and prior_red
+    elif phase == "green" and not legacy and post_edit_candidate and not timed_out and exit_code == 0:
+        proof, proof_error = _baseline_proof(surface, output)
+        if proof is not None and _active_candidate_tree(identity) != tree_before:
+            proof, proof_error = None, "production candidate changed during the run"
+        post_edit_pass = proof is not None
+    valid = (
+        red_ok
+        if phase == "red"
+        else not timed_out and exit_code == 0 and (prior_red or post_edit_pass)
+    )
 
     fields: dict[str, object] = {
         "phase": phase,
@@ -526,10 +580,14 @@ def _run_tdd(values: list[str]) -> int:
         fields["expectedFailure"] = expected or None
     else:
         fields["expectedFailure"] = expected if phase == "red" else None
+        if post_edit_pass:
+            # The proof names the exact candidate it proved; drift after this
+            # record is attributable where review and completion bind the tree.
+            fields["candidateTree"] = tree_before
         if proof is not None:
-            fields["redProof"] = proof
-        elif phase == "red" and proof_error:
-            fields["redProofFailure"] = proof_error
+            fields["passProof" if post_edit_pass else "redProof"] = proof
+        elif proof_error:
+            fields["passProofFailure" if phase == "green" else "redProofFailure"] = proof_error
     run = _run_entry(raw, exit_code, timed_out, **fields)
 
     document: JsonObject | None = None
@@ -577,9 +635,7 @@ def _run_tdd(values: list[str]) -> int:
             doc_kind = "cycle"
             if baseline:
                 updated_item["status"] = "already-satisfied"
-                updated_item["evidence"] = (
-                    "baseline-passed before any production edit: " + command_text
-                )
+                updated_item["evidence"] = _BASELINE_STAMP + command_text
                 updated_item["baselineProof"] = proof
                 next_active = None
                 reassessment_pending = None
@@ -599,7 +655,7 @@ def _run_tdd(values: list[str]) -> int:
                 action = "in-progress" if matches else "reopen"
                 opens_cycle = not matches
             elif phase == "green" and valid:
-                updated_item["status"] = "green"
+                updated_item["status"] = "post-edit-passed" if post_edit_pass else "green"
                 updated_item["proofCommand"] = command_text
                 next_active = None
                 reassessment_pending = args.behavior_id
@@ -645,6 +701,8 @@ def _run_tdd(values: list[str]) -> int:
         payload["behaviorId"] = args.behavior_id
     if baseline:
         payload["status"] = "already-satisfied"
+    elif post_edit_pass:
+        payload["status"] = "post-edit-passed"
     _emit_json(payload)
     if valid or baseline:
         return 0
@@ -664,7 +722,9 @@ def _run_tdd(values: list[str]) -> int:
         )
     else:
         print(
-            "GREEN must pass after a valid RED for the same mapped behavior and surface.",
+            "GREEN must pass after a valid RED for the same mapped behavior and surface, "
+            "or a post-edit pass must report an executed passing pytest or unittest test."
+            + (f" {proof_error}" if proof_error else ""),
             file=sys.stderr,
         )
     return 2

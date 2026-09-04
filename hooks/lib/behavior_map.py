@@ -7,7 +7,10 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-RUNTIME_STATUSES = INITIAL_STATUSES | {"red", "green", "superseded", "withdrawn"}
+# GREEN through the item's own RED, or a post-edit pass: the item's own surface
+# passing on a candidate an earlier genuine cycle left dirty.
+PROOF_STATUSES = frozenset({"green", "post-edit-passed"})
+RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | {"red", "superseded", "withdrawn"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded", "withdrawn"}
 NEVER_GREEN = DISPOSITION_STATUSES | {"withdrawn"}
@@ -321,9 +324,9 @@ def apply_dispositions(
             raise ValueError(f"behavior {identifier} disposition requires evidence")
         mapped = item(items, identifier)
         if status == "superseded":
-            if mapped.get("status") != "green":
+            if mapped.get("status") not in PROOF_STATUSES:
                 raise ValueError(
-                    f"behavior {identifier} is {mapped.get('status')}; only a GREEN item can be superseded"
+                    f"behavior {identifier} is {mapped.get('status')}; only a GREEN or post-edit-passed item can be superseded"
                 )
             mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
         elif "supersededBy" in raw:
@@ -371,21 +374,21 @@ def apply_dispositions(
 
 
 def producer_proved(entry: JsonObject) -> bool:
-    """GREEN comes only from the producer; already-satisfied counts only with its recorded proof."""
-    return entry.get("status") == "green" or (
+    """Proof statuses come only from the producer; already-satisfied counts only with its recorded proof."""
+    return entry.get("status") in PROOF_STATUSES or (
         entry.get("status") == "already-satisfied" and isinstance(entry.get("baselineProof"), dict)
     )
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:
-    """Closure: pending, red, and superseded whose terminal replacement is not GREEN."""
+    """Closure: pending, red, and superseded whose terminal replacement is not proved."""
     return [
         str(entry["id"])
         for entry in items
         if entry.get("status") in {"pending", "red"}
         or (
             entry.get("status") == "superseded"
-            and terminal_item(items, entry).get("status") != "green"
+            and terminal_item(items, entry).get("status") not in PROOF_STATUSES
         )
     ]
 
