@@ -634,11 +634,7 @@ class ContractProofAuthorityTests(unittest.TestCase):
             self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, f"{marker} ({why})")
 
     def pytest_green(self, slug: str, *arguments: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-             "--phase", "green", "--behavior-id", "BM_B", "--",
-             sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *arguments],
-            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        return self.tdd_pytest(slug, "green", "BM_B", *arguments)
 
     def test_post_edit_proof_ignores_a_path_that_follows_an_unknown_pytest_option(self) -> None:
         # PR #194 review: a plugin option's value can be a real path; pytest consumes it
