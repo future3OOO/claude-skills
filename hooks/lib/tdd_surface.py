@@ -36,8 +36,9 @@ EVIDENCE_ONLY = frozenset({"ignored"})
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
-# pytest's terminal summary line; the only place a pass count describes the run.
-PYTEST_SUMMARY = re.compile(r"(?m)^=+ (.+?) in \d+\.\d+s(?: \([^)]*\))? =+$")
+# pytest's terminal summary line, framed with = at normal verbosity and bare
+# under -q; the only place a pass count describes the run.
+PYTEST_SUMMARY = re.compile(r"(?m)^(?:=+ )?(.+?) in \d+\.\d+s(?: \([^)]*\))?(?: =+)?$")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
 PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
 PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
@@ -150,16 +151,35 @@ def proof_targets(
         if token == "--":
             continue
         if token.startswith("-"):
-            name, _, inline = token.partition("=")
+            name, separator, inline = token.partition("=")
+            # The separator, not the value's truthiness, says a value was given:
+            # -k= carries an empty value and does not take the next token.
+            has_value = bool(separator)
+            known_cluster = False
+            if runner == "pytest" and name[1:2] != "-" and len(name) > 2:
+                # A short cluster reads left to right: no-value flags, then at
+                # most one value option whose value is the rest of the token or
+                # the next token (-xktest_a is -x -k test_a; -qk test is -q -k test).
+                letters = name[1:]
+                head = 0
+                while head < len(letters) and f"-{letters[head]}" in PYTEST_FLAG_OPTIONS:
+                    head += 1
+                if head == len(letters) and not separator:
+                    known_cluster = True
+                elif head < len(letters) and f"-{letters[head]}" in value_options:
+                    rest = token[2 + head:]
+                    name, has_value = f"-{letters[head]}", bool(rest)
+                    inline = rest[1:] if rest.startswith("=") else rest
             # Once an unknown pytest option appears, nothing after it is a named
             # target: an option declared with REMAINDER swallows later flags and
             # the sentinel too, so ambiguity never clears. Targets go first.
             after_unknown_option = after_unknown_option or (
-                runner == "pytest" and not inline and name not in value_options
-                and name not in PYTEST_FLAG_OPTIONS and not REPEATED_VERBOSITY.match(name)
+                runner == "pytest" and not has_value and name not in value_options
+                and name not in PYTEST_FLAG_OPTIONS and not known_cluster
+                and not REPEATED_VERBOSITY.match(name)
             )
             if name in value_options:
-                if inline:
+                if has_value:
                     if discover and name in UNITTEST_START_OPTIONS:
                         targets.append(inline)
                 else:

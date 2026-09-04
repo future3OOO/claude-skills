@@ -766,6 +766,112 @@ class ContractProofAuthorityTests(unittest.TestCase):
         own = self.pytest_green(slug, "test_b_probe.py", "--victim", "--no-header", "x")
         self.assertEqual(own.returncode, 0, marker + " (target first): " + own.stdout + own.stderr)
 
+    def tdd_pytest(self, slug: str, phase: str, behavior_id: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+             "--phase", phase, "--behavior-id", behavior_id, "--",
+             sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *arguments],
+            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_quiet_pytest_surfaces_record(self) -> None:
+        # PR #194 review round 2: -q prints a bare summary; the parser reads pytest's
+        # bare quiet form as well as the framed one.
+        marker = "QUIET_PASS_REFUSED"
+        slug, workflow_id = self.h.begin_to_preflight([
+            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"), preservation("BM_P", red_failure="P_REGRESSED"),
+        ])
+        (self.repo / "test_p.py").write_text("import app\ndef test_p():\n    assert app.value == 1, 'P_REGRESSED'\n", encoding="utf-8")
+        baseline = self.tdd_pytest(slug, "red", "BM_P", "-q", "test_p.py")
+        self.assertEqual(baseline.returncode, 0, marker + " (-q baseline): " + baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout, marker)
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": []})
+        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
+        (self.repo / "test_b_pytest.py").write_text("import app\ndef test_b():\n    assert app.value == 2, 'VALUE_NOT_TWO_B'\n", encoding="utf-8")
+        quiet = self.tdd_pytest(slug, "green", "BM_B", "-q", "test_b_pytest.py")
+        self.assertEqual(quiet.returncode, 0, marker + " (-q post-edit): " + quiet.stdout + quiet.stderr)
+        self.assertEqual(json.loads(quiet.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
+    def test_attached_short_value_keeps_the_following_target(self) -> None:
+        marker = "ATTACHED_VALUE_REFUSED"
+        slug, _ = self.proved_first_item()
+        (self.repo / "test_b_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
+        attached = self.pytest_green(slug, "-ktest_behavior", "test_b_probe.py")
+        self.assertEqual(attached.returncode, 0, marker + ": " + attached.stdout + attached.stderr)
+        self.assertEqual(json.loads(attached.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
+    def test_clustered_short_flags_keep_the_following_target(self) -> None:
+        marker = "CLUSTERED_FLAGS_REFUSED"
+        slug, _ = self.proved_first_item()
+        (self.repo / "test_b_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
+        clustered = self.pytest_green(slug, "-xq", "test_b_probe.py")
+        self.assertEqual(clustered.returncode, 0, marker + ": " + clustered.stdout + clustered.stderr)
+        self.assertEqual(json.loads(clustered.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
+    def test_quiet_surface_with_a_trailing_remainder_option_records(self) -> None:
+        # Peer review: a verbosity option appended after the caller's arguments was
+        # swallowed by a trailing REMAINDER option (the withdrawn design), so the
+        # parser reads pytest's own quiet summary instead.
+        marker = "TRAILING_REMAINDER_QUIET_REFUSED"
+        slug, _ = self.proved_first_item()
+        (self.repo / "conftest.py").write_text(
+            "import argparse\ndef pytest_addoption(parser):\n    parser.addoption('--victim', nargs=argparse.REMAINDER)\n", encoding="utf-8")
+        (self.repo / "test_b_pytest.py").write_text("import app\ndef test_b():\n    assert app.value == 2, 'VALUE_NOT_TWO_B'\n", encoding="utf-8")
+        quiet = self.pytest_green(slug, "-q", "test_b_pytest.py", "--victim")
+        self.assertEqual(quiet.returncode, 0, marker + ": " + quiet.stdout + quiet.stderr)
+        self.assertEqual(json.loads(quiet.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
+    def test_mixed_short_cluster_keeps_the_following_target(self) -> None:
+        # Peer review: flags then a value option in one token, attached or spaced.
+        marker = "MIXED_CLUSTER_REFUSED"
+        slug, workflow_id = self.h.begin_to_preflight([
+            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"), contract("BM_C", red_failure="VALUE_NOT_TWO_C"),
+        ])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": []})
+        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
+        (self.repo / "test_b_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
+        attached = self.tdd_pytest(slug, "green", "BM_B", "-xktest_behavior", "test_b_probe.py")
+        self.assertEqual(attached.returncode, 0, marker + " (-xktest_behavior): " + attached.stdout + attached.stderr)
+        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_B", "reassessment": "no new obligation", "items": []})
+        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
+        (self.repo / "test_c_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_C')\n", encoding="utf-8")
+        spaced = self.tdd_pytest(slug, "green", "BM_C", "-qk", "test_behavior", "test_c_probe.py")
+        self.assertEqual(spaced.returncode, 0, marker + " (-qk test_behavior): " + spaced.stdout + spaced.stderr)
+        self.assertEqual(json.loads(spaced.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
+    def test_empty_inline_value_does_not_consume_the_target(self) -> None:
+        # Peer review: -k= carries an explicitly empty value; the separator, not the
+        # value's truthiness, says whether a value was given.
+        marker = "EMPTY_INLINE_VALUE_ATE_TARGET"
+        slug, workflow_id = self.h.begin_to_preflight([
+            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"), contract("BM_C", red_failure="VALUE_NOT_TWO_C"),
+        ])
+        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
+        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": []})
+        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
+        (self.repo / "test_b_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
+        empty = self.tdd_pytest(slug, "green", "BM_B", "-k=", "test_b_probe.py")
+        self.assertEqual(empty.returncode, 0, marker + " (-k=): " + empty.stdout + empty.stderr)
+        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_B", "reassessment": "no new obligation", "items": []})
+        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
+        (self.repo / "test_c_probe.py").write_text(
+            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_C')\n", encoding="utf-8")
+        clustered = self.tdd_pytest(slug, "green", "BM_C", "-xk=", "test_c_probe.py")
+        self.assertEqual(clustered.returncode, 0, marker + " (-xk=): " + clustered.stdout + clustered.stderr)
+        self.assertEqual(json.loads(clustered.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
+
     def test_complete_applies_map_closure_inside_its_transaction(self) -> None:
         # The CLI precheck is diagnostic; complete() must refuse from the
         # evidence snapshot inside its transaction once the real PostToolUse
