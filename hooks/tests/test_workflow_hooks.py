@@ -1631,6 +1631,189 @@ class RedFirstTests(HookHarness):
         recorded = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(path))
         self.assertNotEqual(recorded.returncode, 0, marker + ": " + recorded.stdout)
 
+    def map_update(self, slug: str, wid: str, name: str, document: dict) -> subprocess.CompletedProcess[str]:
+        path = self.tmp / f"{name}.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return self.workflow("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(path))
+
+    def test_a_contract_item_added_after_edits_baselines_when_its_surface_passes(self) -> None:
+        marker = "POST_EDIT_BASELINE_REFUSED"
+        slug = "post-edit-baseline"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        added = self.map_update(slug, wid, "add-b", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        baseline = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertEqual(self.map_status()["BM_B"], "already-satisfied", marker + ": " + json.dumps(self.map_status()))
+        gate = self.intake("app.py")
+        self.assertNotIn("BLOCKED", gate.stdout + gate.stderr, marker + ": the edit gate still refuses: " + gate.stdout + gate.stderr)
+
+    def test_a_pending_added_contract_item_still_blocks_edits(self) -> None:
+        marker = "PENDING_ADDED_ITEM_ADMITS_EDIT"
+        slug = "pending-added-blocks"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        added = self.map_update(slug, wid, "add-b-pending", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        gate = self.intake("app.py")
+        self.assertIn("BLOCKED", gate.stdout + gate.stderr, marker + ": " + gate.stdout + gate.stderr)
+
+    def test_a_failing_added_surface_runs_red_then_green(self) -> None:
+        marker = "ADDED_RED_GREEN_BROKEN"
+        slug = "added-red-green"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        added = self.map_update(slug, wid, "add-b-failing", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        red = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
+        self.assertEqual(self.map_status()["BM_B"], "red", marker + ": " + json.dumps(self.map_status()))
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_B", "b")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        self.assertEqual(self.map_status()["BM_B"], "green", marker)
+
+    def test_a_contract_item_added_by_an_older_recorder_baselines(self) -> None:
+        marker = "LEGACY_ADDED_BASELINE_REFUSED"
+        slug = "legacy-added"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        added = self.map_update(slug, wid, "add-b-legacy", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+
+        def strip_to_schema(document: dict) -> None:
+            # An item the previous recorder added carries only the eight schema fields.
+            keep = {"id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status"}
+            document["behaviorMap"] = [{k: v for k, v in item.items() if k in keep} if item.get("id") == "BM_B" else item
+                                       for item in document["behaviorMap"]]
+        self.rewrite_latest_evidence(strip_to_schema)
+        baseline = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertEqual(self.map_status()["BM_B"], "already-satisfied", marker + ": " + json.dumps(self.map_status()))
+
+    def test_an_arm_shaped_ledger_recovers_and_finishes_its_open_cycles(self) -> None:
+        marker = "ARM_SHAPE_NOT_RECOVERED"
+        slug = "arm-shape"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
+                                    pending_behavior("BM_C", behavior="c is two", seam="app module", expected="app.c == 2", red_failure="C_NOT_TWO")])
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "three attributes")
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        self.assertEqual(self.tdd(slug, "red", "BM_C", "c").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        # Dirty tree, BM_C still red, and a review-discovered item added on top: the arms' shape.
+        added = self.map_update(slug, wid, "add-b-arm", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
+        gate = self.intake("app.py")
+        self.assertIn("BLOCKED", gate.stdout + gate.stderr, marker + ": pending BM_B must block: " + gate.stdout + gate.stderr)
+        baseline = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertEqual(self.map_status()["BM_B"], "already-satisfied", marker + ": " + json.dumps(self.map_status()))
+        gate = self.intake("app.py")
+        self.assertNotIn("BLOCKED", gate.stdout + gate.stderr, marker + ": BM_C red must reopen edits: " + gate.stdout + gate.stderr)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_C", "c")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        self.assertEqual({k: v for k, v in self.map_status().items()}, {"BM_A": "green", "BM_C": "green", "BM_B": "already-satisfied"}, marker)
+
+    def test_an_arm_shaped_ledger_with_several_open_cycles_recovers(self) -> None:
+        marker = "ARM_SHAPE_SEVERAL_OPEN_NOT_RECOVERED"
+        slug = "arm-shape-several"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
+                                    pending_behavior("BM_C", behavior="c is two", seam="app module", expected="app.c == 2", red_failure="C_NOT_TWO"),
+                                    pending_behavior("BM_D", behavior="d is two", seam="app module", expected="app.d == 2", red_failure="D_NOT_TWO")])
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\nd = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "four attributes")
+        for item, attr in (("BM_A", "a"), ("BM_C", "c"), ("BM_D", "d")):
+            self.assertEqual(self.tdd(slug, "red", item, attr).returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 1\nd = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        # Two cycles still red when the review-discovered item lands on the dirty tree.
+        added = self.map_update(slug, wid, "add-b-several", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
+        baseline = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        gate = self.intake("app.py")
+        self.assertNotIn("BLOCKED", gate.stdout + gate.stderr, marker + ": " + gate.stdout + gate.stderr)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 2\nd = 2\n", encoding="utf-8")
+        for item, attr in (("BM_C", "c"), ("BM_D", "d")):
+            green = self.tdd(slug, "green", item, attr)
+            self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        self.assertEqual(self.map_status(), {"BM_A": "green", "BM_C": "green", "BM_D": "green", "BM_B": "already-satisfied"}, marker)
+
+    def test_a_baseline_owner_cannot_close_a_finding_as_fixed(self) -> None:
+        marker = "BASELINE_OWNER_CLOSED_FIXED"
+        slug = "baseline-owner"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        intake = self.tmp / "review-intake.json"
+        intake.write_text(json.dumps({"findings": [{"id": "SPEC-1", "axis": "Spec", "severity": "high", "material": True, "kind": "behavioral",
+            "location": "app.py:2", "claim": "b must be two", "evidence": "b was one", "consequence": "callers read one", "smallest_action": "set b"}]}), encoding="utf-8")
+        recorded = self.state("record-review", "--slug", slug, "--workflow-id", wid, "--resolved-model", "test-model",
+                              "--review-context-id", "ctx", "--input", str(intake))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        summary_id = json.loads(recorded.stdout)["summaryId"]
+        added = self.map_update(slug, wid, "add-b-owner", {"sourceBehaviorId": "BM_A", "reassessment": "SPEC-1 needs an owning attack",
+            "items": [{**pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO"),
+                       "sourceRefs": [{"type": "finding", "evidenceId": summary_id, "id": "SPEC-1"}]}]})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        self.assertEqual(self.map_status()["BM_B"], "already-satisfied")
+        tree = json.loads(self.state("status").stdout)["activeCandidateTree"]
+        closure = self.tmp / "review-fixed.json"
+        measurement = {"claim": "b is two", "command": "python -m unittest test_probe_b", "result": "OK"}
+        closure.write_text(json.dumps({"context": {"workflowId": wid, "candidateTree": tree}, "intakeEvidenceId": summary_id,
+            "dispositions": [{"finding_id": "SPEC-1", "status": "fixed", "kind": "behavioral", "premise": measurement,
+                              "occurrence": {"domain": "every reader of b", "count": 0, "complete": True,
+                                             "command": measurement["command"], "result": measurement["result"]},
+                              "materialConsequence": measurement, "evidence": "BM_B baselined"}]}), encoding="utf-8")
+        refused = self.state("record-review", "--slug", slug, "--workflow-id", wid, "--resolved-model", "test-model",
+                             "--review-context-id", "ctx", "--input", str(closure))
+        self.assertNotEqual(refused.returncode, 0, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("baseline alone", refused.stdout + refused.stderr, marker + ": " + refused.stdout + refused.stderr)
+
+    def test_a_declared_contract_item_is_still_refused_as_a_baseline_after_edits(self) -> None:
+        marker = "DECLARED_CONTRACT_BASELINED_AFTER_EDIT"
+        slug = "declared-dirty"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        refused = self.tdd(slug, "red", "BM_B", "b")
+        self.assertNotEqual(refused.returncode, 0, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("before any production edit", refused.stdout + refused.stderr, marker)
+        self.assertEqual(self.map_status()["BM_B"], "pending", marker)
+
+    def test_a_map_update_is_admitted_while_a_cycle_is_red(self) -> None:
+        marker = "MAP_UPDATE_REFUSED_DURING_RED"
+        slug = "map-during-red"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        added = self.map_update(slug, wid, "add-during-red", {"reassessment": "the RED exposed a sibling attribute that must change too",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
+        self.assertEqual(self.map_status()["BM_B"], "pending", marker)
+
 
 class ProducerMaskGuardTests(unittest.TestCase):
     def test_the_masked_producer_tests_skip_without_bwrap(self) -> None:
