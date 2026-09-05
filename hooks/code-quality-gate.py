@@ -23,8 +23,6 @@ if str(ROOT) not in sys.path:
 from hooks.lib.hook_input import edited_path, read_hook_payload, session_key  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import (  # noqa: E402
-    is_reviewable_path,
-    is_test_path,
     record_session_association,
 )
 from hooks.lib.workflow_state import invalidate_after_edit  # noqa: E402

@@ -24,7 +24,6 @@ from hooks.lib.workflow_state import (  # noqa: E402
     read_workflow,
     record_advisor_result,
     record_base_oid,
-    set_phase,
 )
 from hooks.tests.support import build_document, pending_behavior, record_context_forge  # noqa: E402
 # Module alias only: binding the TestCase name here would make unittest.main

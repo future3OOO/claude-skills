@@ -21,7 +21,6 @@ from .workflow_state import (
     NO_INSTANCE_ID,
     TDD_CLOSED,
     WorkflowError,
-    annotate_tdd_evidence,
     bound_state,
     commit_tdd,
     evidence_document,

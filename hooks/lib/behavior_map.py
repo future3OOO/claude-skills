@@ -467,7 +467,6 @@ def closure_blockers(
     items = recorded_map(tdd_document, preflight_document)
     if items is None:
         return []
-    document = tdd_document if isinstance(tdd_document, dict) else {}
     missing: list[str] = []
     pending = unresolved(items)
     if pending:
