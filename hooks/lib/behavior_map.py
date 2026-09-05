@@ -205,9 +205,9 @@ def validate_items(
             item["proofCommand"] = _required(raw, "proofCommand", identifier)
         # The RED surface and its proof stay on the item, so GREEN proves the
         # item against its own RED whichever cycle is open after a sweep.
-        if "redCommand" in raw:
+        if "redCommand" in raw or "redProof" in raw:
             if not allow_runtime or not isinstance(raw.get("redProof"), dict):
-                raise ValueError(f"behavior {identifier} redCommand is recorded only by tdd --phase red")
+                raise ValueError(f"behavior {identifier} redCommand and redProof are recorded only by tdd --phase red")
             item["redCommand"] = _required(raw, "redCommand", identifier)
             item["redProof"] = raw["redProof"]
         # The producer records its baseline proof here and prose never may, so

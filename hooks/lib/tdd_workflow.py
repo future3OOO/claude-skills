@@ -416,9 +416,10 @@ def _run_tdd(values: list[str]) -> int:
     )
     # GREEN proves the item against its own recorded RED surface, whichever cycle
     # is open: after a sweep every red item is its own candidate.
+    recorded_red = None if legacy else mapped.get("redCommand")
     own_red = (
-        not legacy and phase == "green" and status == "red"
-        and mapped.get("redCommand") == command_text
+        not legacy and phase == "green" and status == "red" and isinstance(recorded_red, str)
+        and not tdd_surface.differences(tdd_surface.identify(shlex.split(recorded_red)), surface)
     )
     # An item recorded RED by the previous producer carries no redCommand; its
     # GREEN still proves through the open cycle it belongs to.

@@ -32,7 +32,7 @@ JSON
 
 `sourceBehaviorId`, when given, names the GREEN item whose consequence the update records. New items use the preflight schema and reopen TDD. Prose `dispositions` (`already-satisfied` with real-Seam evidence, `omitted` with governing evidence) apply to pending preservation items only; a contract item is dispositioned only by the producer's baseline run. A GREEN item is dispositioned `superseded` with `supersededBy` naming its replacement in the same map; a missing target, self-reference, cycle, non-GREEN source, or a terminal replacement that is already-satisfied or omitted refuses the whole update; closure follows the chain to its terminal replacement.
 
-While an item's cycle is open, a changed surface for that item refuses before execution; other pending items record their own RED beside it (the sweep). GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
+While an item's cycle is open, a changed surface for that item refuses before execution; other pending contract items record their own RED beside it (the sweep). GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 
 ## No behavior change
 

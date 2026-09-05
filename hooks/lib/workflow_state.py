@@ -926,8 +926,16 @@ def record_advisor_result(
                             # A material re-raise carries a new measurement: the
                             # finding reopens for one more lead disposition, and
                             # that second measured disposition stands.
+                            prior = entry.get("dispositionEvidenceId")
+                            if prior:
+                                entry.setdefault("dispositionHistory", []).append({
+                                    "evidenceId": prior,
+                                    "status": entry.get("status"),
+                                    "supersededBy": appeal_write.evidence_id,
+                                })
                             entry["appealStatus"] = "disagreement"
                             entry["status"] = "pending"
+                            entry["material"] = True
                         else:
                             entry["appealStatus"] = "conceded"
                         entry["appealEvidenceId"] = appeal_write.evidence_id

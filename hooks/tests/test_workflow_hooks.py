@@ -1261,6 +1261,7 @@ class RedFirstTests(HookHarness):
         rejected = self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final",
                               "--findings", "addressed", "--input", str(self.rejection_document(wid, intake_id, "python -m unittest test_probe_a")))
         self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        self.first_rejection = self.finding_entry()["dispositionEvidenceId"]
         appeal = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
                             "--source", "codex-advisor", "--input", str(envelope))
         self.assertEqual(appeal.returncode, 0, appeal.stdout + appeal.stderr)
@@ -1550,6 +1551,85 @@ class RedFirstTests(HookHarness):
         self.post_edit("app.py")
         self.assertEqual(self.events(), reviewed + 1, marker + ": an edit after review did not invalidate it")
         self.assertEqual(json.loads(self.state("status").stdout)["codeReview"]["status"], "pending", marker)
+
+    def final_result(self, slug: str, wid: str, name: str, verdict: str, material: bool) -> subprocess.CompletedProcess[str]:
+        envelope = self.tmp / f"{name}.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "verdict": verdict, "findings": [
+            {"id": "F-1", "claim": "an operation is unattacked", "material": material, "kind": "behavioral"}]}), encoding="utf-8")
+        return self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                          "--source", "codex-advisor", "--input", str(envelope))
+
+    def finding_entry(self) -> dict:
+        return [e for e in json.loads(self.state("status").stdout)["findingStates"] if e["findingId"] == "F-1"][0]
+
+    def test_a_nonmaterial_finding_re_raised_as_material_blocks_completion(self) -> None:
+        marker = "RERAISED_MATERIAL_IGNORED"
+        slug = "reraise-material"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        note = self.final_result(slug, wid, "final-note", "commit-ready", False)
+        self.assertEqual(note.returncode, 0, note.stdout + note.stderr)
+        rejected = self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final", "--findings", "addressed",
+                              "--input", str(self.rejection_document(wid, self.finding_entry()["intakeEvidenceId"], "python -m unittest test_probe_a")))
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        appeal = self.final_result(slug, wid, "final-reraise", "fix-before-commit", True)
+        self.assertEqual(appeal.returncode, 0, appeal.stdout + appeal.stderr)
+        entry = self.finding_entry()
+        self.assertEqual((entry.get("status"), entry.get("material")), ("pending", True), marker + ": " + json.dumps(entry))
+        self.assertNotEqual(self.state("complete").returncode, 0, marker + ": completed with an undispositioned material re-raise")
+
+    def test_a_re_raise_archives_the_first_rejection(self) -> None:
+        marker = "FIRST_REJECTION_POINTER_LOST"
+        self.rejected_then_re_raised("reraise-history")
+        entry = self.finding_entry()
+        history = entry.get("dispositionHistory") or []
+        self.assertEqual([h.get("status") for h in history], ["rejected-with-evidence"], marker + ": " + json.dumps(entry))
+        self.assertTrue(history[0].get("evidenceId"), marker)
+
+    def test_the_first_rejection_survives_the_second_disposition(self) -> None:
+        marker = "FIRST_REJECTION_LOST_AFTER_SECOND"
+        wid, intake_id = self.rejected_then_re_raised("reraise-second")
+        entry = self.finding_entry()
+        self.assertEqual([(h.get("status"), h.get("evidenceId")) for h in entry.get("dispositionHistory") or []],
+                         [("rejected-with-evidence", self.first_rejection)], marker + ": " + json.dumps(entry))
+        second = self.state("advisor-disposition", "--slug", "reraise-second", "--workflow-id", wid, "--stage", "final",
+                            "--findings", "addressed", "--input", str(self.rejection_document(wid, intake_id, "python -m unittest -v test_probe_a")))
+        self.assertEqual(second.returncode, 0, marker + ": " + second.stdout + second.stderr)
+        entry = self.finding_entry()
+        self.assertEqual([h.get("evidenceId") for h in entry.get("dispositionHistory") or []], [self.first_rejection], marker + ": " + json.dumps(entry))
+        self.assertEqual(entry.get("status"), "rejected-with-evidence", marker)
+        self.assertNotEqual(entry.get("dispositionEvidenceId"), self.first_rejection, marker)
+
+    def test_green_accepts_a_verbosity_flag_on_the_recorded_red_surface(self) -> None:
+        marker = "GREEN_REFUSED_FOR_VERBOSITY_FLAG"
+        slug = "green-flags"
+        self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        green = self.workflow("tdd", "--slug", slug, "--phase", "green", "--behavior-id", "BM_A",
+                              "--", sys.executable, "-m", "unittest", "-v", "test_probe_a")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        self.assertEqual(self.map_status()["BM_A"], "green", marker)
+
+    def test_a_map_item_with_red_proof_but_no_red_command_is_refused(self) -> None:
+        marker = "ORPHAN_RED_PROOF_ACCEPTED"
+        slug = "orphan-redproof"
+        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "two attributes")
+        begun = self.state("begin", "--slug", slug)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        orphan = {**pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
+                  "redProof": {"runner": "unittest", "marker": "A_NOT_TWO"}}
+        path = self.tmp / "orphan.json"
+        path.write_text(json.dumps(build_document("orphan redProof", behavior_map=[orphan])), encoding="utf-8")
+        recorded = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(path))
+        self.assertNotEqual(recorded.returncode, 0, marker + ": " + recorded.stdout)
 
 
 class ProducerMaskGuardTests(unittest.TestCase):
