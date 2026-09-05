@@ -2449,7 +2449,7 @@ class PassLifecycleTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, unrelated_marker + result.stdout + result.stderr)
         blocked = self.cli("complete")
         self.assertEqual(blocked.returncode, 2, unrelated_marker + blocked.stdout + blocked.stderr)
-        self.assertIn("Behavior Map reassessment", blocked.stderr, unrelated_marker)
+        self.assertIn("workflow incomplete", blocked.stderr, unrelated_marker)
         update.write_text(json.dumps({"sourceBehaviorId": "BM_ADV_2", "reassessment": "GREEN replacement preserves fixed proof", "items": [], "dispositions": [{"id": "BM_ADV_1", "status": "superseded", "supersededBy": "BM_ADV_2", "evidence": "the GREEN replacement owns the outcome"}]}), encoding="utf-8")
         self.assertEqual(self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update)).returncode, 0, "FIXED_GREEN_SUPERSESSION_REFUSED")
         self.advance_to_context_forge()
