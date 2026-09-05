@@ -485,13 +485,18 @@ def _run_tdd(values: list[str]) -> int:
             red_ok = proof is not None
     elif phase == "red" and not legacy and not timed_out and status == "pending":
         # Producer-backed baseline: a pending surface passing pre-edit is already
-        # satisfied, opens nothing, counts no cycle. A contract surface passing
-        # after this pass's edits (HEAD..worktree; a pass commits only after
-        # complete) is the edits' work.
+        # satisfied, opens nothing, counts no cycle. A declared contract surface
+        # passing after this pass's edits (HEAD..worktree; a pass commits only
+        # after complete) is the edits' work and is refused; a contract item the
+        # map gained later, by tdd-map, names what those edits already produced
+        # and baselines like a preservation item. Membership in the recorded
+        # preflight decides, so items an earlier recorder added qualify too.
         proof, proof_error = _baseline_proof(surface, output)
+        declared = behavior_map.recorded_map(None, _evidence_pair(identity, state)[1]) or []
         edited = (
             production_changes(identity, "HEAD")
             if proof is not None and mapped.get("kind") == "contract"
+            and any(entry.get("id") == args.behavior_id for entry in declared)
             else []
         )
         if edited:
@@ -687,8 +692,6 @@ def _map_update(values: list[str]) -> int:
     items = behavior_map.recorded_map(current, preflight_document)
     if items is None:
         raise WorkflowError("tdd-map requires a recorded preflight Behavior Map")
-    if isinstance(current, dict) and current.get("activeBehaviorId"):
-        raise WorkflowError("finish the active RED/GREEN cycle before reassessing the map")
     settled_findings = frozenset(
         (str(entry.get("intakeEvidenceId")), str(entry.get("findingId")))
         for entry in state.get("findingStates") or []
