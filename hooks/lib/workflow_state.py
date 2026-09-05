@@ -1455,8 +1455,25 @@ def _finding_ledger(identity: RepoIdentity, state: JsonObject) -> list[JsonObjec
             "material": entry.get("material"), "status": entry.get("status"),
             "claim": claim,
             "owners": owners.get((intake_id, str(entry.get("findingId"))), []),
+            "measurement": _disposition_measurement(identity, entry),
         })
     return ledger
+
+
+def _disposition_measurement(identity: RepoIdentity, finding_state: JsonObject) -> JsonObject | None:
+    """The measured premise, occurrence, consequence, and evidence the lead recorded
+    for this finding's disposition, so an appeal reads the rejection's numbers from
+    the ledger instead of a hand-written summary."""
+    disposition_id = finding_state.get("dispositionEvidenceId")
+    if not isinstance(disposition_id, str):
+        return None
+    document = evidence_document(identity, disposition_id)
+    dispositions = document.get("dispositions") if isinstance(document, dict) else None
+    for disposition in dispositions if isinstance(dispositions, list) else []:
+        if isinstance(disposition, dict) and str(disposition.get("finding_id")) == str(finding_state.get("findingId")):
+            return {key: disposition.get(key) for key in ("premise", "occurrence", "materialConsequence", "evidence", "reference")
+                    if disposition.get(key) is not None}
+    return None
 
 
 def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:

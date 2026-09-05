@@ -104,19 +104,6 @@ Git.
 
 ## Invocation
 
-Before launching either phased consult, run the free read-only readiness query
-and clear its `missing` list first — discovering unreadiness through a refused
-launch wastes the turns to launch, read, redo, and re-launch (measured twice on
-one benchmark run):
-
-```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  checkpoint --repo "$PWD" --phase <preflight-advice|final-review>
-```
-
-Pass the phase of the consult being launched; a preflight consult queried
-against `final-review` reports the wrong readiness.
-
 Run the wrapper in a dedicated/background chat pane so the calling agent can
 keep transport output separate. Capture stdout and stderr independently and
 wait for the process rather than polling with repeated sleeps.

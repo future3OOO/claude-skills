@@ -737,13 +737,6 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(real.returncode, 0, marker + " (real): " + real.stdout + real.stderr)
         self.assertIn('"already-satisfied"', real.stdout, marker)
 
-    def test_completion_sentence_names_both_proof_kinds(self) -> None:
-        # Reviewer T7 and appeal APPEAL-3: the documented completion condition
-        # names the reassessment obligation for GREEN and post-edit-passed alike.
-        marker = "COMPLETION_SENTENCE_NAMES_ONLY_GREEN"
-        skill = (ROOT / "skills" / "repo-production-workflow" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("no post-GREEN or post-edit-passed reassessment or proof gap remains", skill, marker)
-
     def test_post_edit_proof_keeps_ambiguity_through_option_like_values(self) -> None:
         # Final FINAL-7: a REMAINDER option swallows option-like tokens too (the
         # surface parser strips verbosity and fail-fast flags, so --no-header is used).

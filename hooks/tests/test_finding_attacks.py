@@ -569,6 +569,27 @@ class FindingLedgerAtFinal(AttackHarness):
                          ("BM_ATTACK", "fixture app module", "green"), marker)
 
 
+    def test_ledger_carries_the_dispositions_measurements(self) -> None:
+        # The appeal reads the rejection's numbers from the ledger, not from a
+        # hand-written summary in the consult question.
+        marker = "LEDGER_DROPS_DISPOSITION_MEASUREMENTS"
+        wid = self.begin("ledger-measurement")
+        intake_id = self.behavioral_intake("ledger-measurement", wid, "a caller-reachable operation invalidates the checkpoint")
+        owned = self.record_preflight("ledger-measurement", wid, self.owned_map(intake_id, marker=marker))
+        self.assertEqual(owned.returncode, 0, marker + ": " + owned.stdout + owned.stderr)
+        self.drive_attack_green("ledger-measurement", marker)
+        document = self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))
+        closed = self.cli("advisor-disposition", "--slug", "ledger-measurement", "--workflow-id", wid,
+                          "--stage", "preflight", "--findings", "addressed", "--input", str(document))
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        recorded = json.loads(Path(document).read_text(encoding="utf-8"))["dispositions"][0]
+        [entry] = [item for item in self.ok("checkpoint", "--phase", "final-review")["findingLedger"] if item.get("findingId") == "SPEC-1"]
+        measurement = entry.get("measurement")
+        self.assertIsNotNone(measurement, marker)
+        for key in ("premise", "occurrence", "materialConsequence", "evidence"):
+            self.assertEqual(measurement.get(key), recorded.get(key), marker + f" ({key})")
+
+
 class LedgerCarriesAttackSemantics(AttackHarness):
     def test_ledger_owners_carry_the_attacks_behavior_and_expected_outcome(self) -> None:
         marker = "LEDGER_OWNERS_LOSE_ATTACK_SEMANTICS"
