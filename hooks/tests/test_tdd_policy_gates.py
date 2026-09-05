@@ -20,7 +20,6 @@ from hooks.tests.support import pending_behavior  # noqa: E402
 # rediscover and re-run the whole repair suite inside this file.
 from hooks.tests import test_tdd_repairs as tdd_repairs  # noqa: E402
 
-STOP_HOOK = ROOT / "hooks" / "post-edit-blast-radius.py"
 EDIT_HOOK = ROOT / "hooks" / "code-quality-gate.py"
 PYTEST_AVAILABLE = importlib.util.find_spec("pytest") is not None
 PYTEST_COMMAND = (sys.executable, "-m", "pytest")

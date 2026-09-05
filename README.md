@@ -25,7 +25,7 @@ context -> preflight advice -> production preflight -> TDD -> production-code
 The state is continuity for the agent, not Git authorization. No shipped hook
 parses Bash or intercepts commits. Edit hooks admit governed work and invalidate
 stale downstream review state; compaction/resume hooks preserve the next action;
-the Stop hook reports context and never blocks. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns the hook roles.
+there is no Stop hook. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns the hook roles.
 
 ## Install or update
 

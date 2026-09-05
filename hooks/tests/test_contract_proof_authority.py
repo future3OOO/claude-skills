@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -16,7 +15,7 @@ if str(ROOT) not in sys.path:
 from hooks.lib import behavior_map  # noqa: E402
 from hooks.lib.behavior_map import no_change_item  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.state_store import _active_candidate_tree  # noqa: E402
+
 from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowIncomplete,
     advisor_disposition,
@@ -349,165 +348,6 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
         self.assertEqual(json.loads(baseline.stdout.strip().splitlines()[-1]).get("status"), "already-satisfied", marker)
 
-    def post_edit_green(
-        self, slug: str, behavior_id: str, module: str, script: str, *extra: str,
-    ) -> subprocess.CompletedProcess[str]:
-        """A green run for one item through its own directly invoked unittest module."""
-        (self.repo / f"{module}.py").write_text(
-            "import unittest\n\nclass Probe(unittest.TestCase):\n    def test_behavior(self):\n"
-            + textwrap.indent(script, "        ") + "\n", encoding="utf-8")
-        return subprocess.run(
-            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-             "--phase", "green", "--behavior-id", behavior_id, *extra, "--",
-             sys.executable, "-m", "unittest", f"{module}.Probe.test_behavior"],
-            cwd=self.repo, env=self.h.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-    def test_shared_edit_records_a_separate_post_edit_contract_proof(self) -> None:
-        # Issue #193: ARM X6R9 paused with two contract items that passed only
-        # after an earlier cycle's edit and had no transition left.
-        marker = "POST_EDIT_CONTRACT_REMAINS_PENDING"
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"),
-        ])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_A", "reassessment": "the same dirty candidate also satisfies BM_B", "items": [],
-        })
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        proved = self.post_edit_green(slug, "BM_B", "test_b_probe", "import app; assert app.value == 2, 'VALUE_NOT_TWO_B'")
-        self.assertEqual(proved.returncode, 0, marker + ": " + proved.stdout + proved.stderr)
-        self.assertEqual(json.loads(proved.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-        state = read_workflow(self.identity)
-        self.assertEqual(state["tddCycleCount"], 1, marker)
-        recorded = json.loads(self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"])).stdout)["document"]
-        [bm_b] = [entry for entry in recorded["behaviorMap"] if entry["id"] == "BM_B"]
-        self.assertEqual(bm_b["status"], "post-edit-passed", marker)
-        self.assertIsNone(recorded.get("reassessmentPending"), marker)
-        self.assertEqual(recorded["runs"][-1]["passProof"]["quality"], "baseline-passed", marker)
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_B", "reassessment": "the shared candidate exposed no further obligation", "items": [],
-        })
-        self.assertEqual(assessed.returncode, 0, marker + ": " + assessed.stdout + assessed.stderr)
-        self.assertEqual(read_workflow(self.identity)["tdd"], "passed", marker)
-
-    def test_post_edit_proof_requires_every_admission_gate(self) -> None:
-        marker = "POST_EDIT_PROOF_ADMISSION_BROKEN"
-        ran = self.repo / "post-edit-proof-ran"
-        touch = f"from pathlib import Path; Path({str(ran)!r}).touch(); import app; assert app.value == 2"
-
-        def refused(result: subprocess.CompletedProcess[str], why: str) -> None:
-            self.assertEqual(result.returncode, 2, f"{marker} ({why}): " + result.stdout + result.stderr)
-            self.assertFalse(ran.exists(), f"{marker} ({why}): probe ran")
-
-        # No genuine cycle: a dirty candidate alone proves nothing.
-        slug, _ = self.h.begin_to_preflight([contract("BM_B")])
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        refused(self.post_edit_green(slug, "BM_B", "test_b_probe", touch), "no cycle")
-        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
-
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"),
-            contract("BM_C", expected="value is three", red_failure="VALUE_NOT_THREE"),
-        ])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_A", "reassessment": "exercise the admission gates",
-            "items": [preservation("BM_P", red_failure="PRESERVATION_PROOF_BYPASSED")],
-        })
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        refused(self.post_edit_green(slug, "BM_P", "test_p_probe", touch), "preservation item")
-        before = read_workflow(self.identity)["tddEvidence"]
-        opaque = subprocess.run(
-            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-             "--phase", "green", "--behavior-id", "BM_B", "--", sys.executable, "-c", "pass"],
-            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(opaque.returncode, 2, marker + " (opaque): " + opaque.stdout + opaque.stderr)
-        self.assertIn("directly invoked pytest or unittest", opaque.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        # SPEC-2: a run killed by the timeout persists nothing.
-        timed_out = self.post_edit_green(
-            slug, "BM_B", "test_b_probe", "import time; time.sleep(5); import app; assert app.value == 2",
-            "--timeout", "1")
-        self.assertEqual(timed_out.returncode, 2, marker + " (timeout): " + timed_out.stdout + timed_out.stderr)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        # SPEC-1: another item's RED cycle is active.
-        baseline = self.h.tdd(slug, "red", "BM_P", "import app; assert app.value == 2, 'PRESERVATION_PROOF_BYPASSED'")
-        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
-        red = self.h.tdd(slug, "red", "BM_C", "import app; assert app.value == 3, 'VALUE_NOT_THREE'")
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        refused(self.post_edit_green(slug, "BM_B", "test_b_probe", touch), "another cycle active")
-
-        # Clean candidate: nothing was edited, so nothing can be proved post-edit.
-        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_BASE", expected="value is one", red_failure="VALUE_NOT_ONE"),
-        ])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": [],
-        })
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
-        refused(self.post_edit_green(slug, "BM_BASE", "test_base_probe", "import app; assert app.value == 1, 'VALUE_NOT_ONE'"),
-                "clean candidate")
-
-    def test_post_edit_proof_requires_the_items_own_surface(self) -> None:
-        # SPEC-5: another item's green test, or a bare discover run, must not prove a pending item.
-        marker = "FOREIGN_SURFACE_PROVED_PENDING_ITEM"
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"),
-        ])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": [],
-        })
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        before = read_workflow(self.identity)["tddEvidence"]
-        foreign = self.h.tdd(slug, "green", "BM_B", "import app; assert app.value == 2, 'VALUE_NOT_TWO_B'")
-        self.assertEqual(foreign.returncode, 2, marker + " (BM_A's surface): " + foreign.stdout + foreign.stderr)
-        self.assertIn("BM_A", foreign.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        broad = subprocess.run(
-            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-             "--phase", "green", "--behavior-id", "BM_B", "--", sys.executable, "-m", "unittest"],
-            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(broad.returncode, 2, marker + " (no target): " + broad.stdout + broad.stderr)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        own = self.post_edit_green(slug, "BM_B", "test_b_probe", "import app; assert app.value == 2, 'VALUE_NOT_TWO_B'")
-        self.assertEqual(own.returncode, 0, marker + " (own surface): " + own.stdout + own.stderr)
-
-    def test_a_post_edit_pass_is_superseded_and_resolves_through_its_replacement(self) -> None:
-        marker = "POST_EDIT_SUPERSESSION_REFUSED"
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"),
-        ])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": [],
-        })
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        own = self.post_edit_green(slug, "BM_B", "test_b_probe", "import app; assert app.value == 2, 'VALUE_NOT_TWO_B'")
-        self.assertEqual(own.returncode, 0, own.stdout + own.stderr)
-        superseded = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_B", "reassessment": "a sharper item owns BM_B's outcome",
-            "items": [contract("BM_B2", red_failure="VALUE_NOT_TWO_B2")],
-            "dispositions": [{"id": "BM_B", "status": "superseded", "supersededBy": "BM_B2",
-                              "evidence": "BM_B2 asserts the same outcome through its own surface"}],
-        })
-        self.assertEqual(superseded.returncode, 0, marker + ": " + superseded.stdout + superseded.stderr)
-        self.assertNotEqual(read_workflow(self.identity)["tdd"], "passed", marker)
-        replacement = self.post_edit_green(slug, "BM_B2", "test_b2_probe", "import app; assert app.value == 2, 'VALUE_NOT_TWO_B2'")
-        self.assertEqual(replacement.returncode, 0, marker + ": " + replacement.stdout + replacement.stderr)
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_B2", "reassessment": "the chain terminates in a post-edit pass", "items": [],
-        })
-        self.assertEqual(assessed.returncode, 0, marker + ": " + assessed.stdout + assessed.stderr)
-        self.assertEqual(read_workflow(self.identity)["tdd"], "passed", marker)
-
     def proved_first_item(self) -> tuple[str, str]:
         """BM_A GREEN through RED and reassessed; BM_B pending on the dirty candidate."""
         slug, workflow_id = self.h.begin_to_preflight([
@@ -520,163 +360,8 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
         return slug, workflow_id
 
-    def test_post_edit_proof_executes_exactly_one_test(self) -> None:
-        # Final advisor SPEC-5: a discover run has positional arguments and passes
-        # broadly; a post-edit pass is one item's own test, so exactly one runs.
-        marker = "POST_EDIT_BROAD_SURFACE_ACCEPTED"
-        slug, _ = self.proved_first_item()
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        before = read_workflow(self.identity)["tddEvidence"]
-        broad = subprocess.run(
-            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-             "--phase", "green", "--behavior-id", "BM_B", "--", sys.executable, "-m", "unittest", "discover", "-s", "."],
-            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(broad.returncode, 2, marker + ": " + broad.stdout + broad.stderr)
-        self.assertIn("discover", broad.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-
-    def test_post_edit_proof_refuses_a_candidate_the_run_changed(self) -> None:
-        # Final advisor SPEC-4: the caller-controlled test process must not swap
-        # the production candidate between admission and the recorded pass.
-        marker = "POST_EDIT_CANDIDATE_DRIFTED"
-        slug, _ = self.proved_first_item()
-        before = read_workflow(self.identity)["tddEvidence"]
-        drifted = self.post_edit_green(
-            slug, "BM_B", "test_b_probe",
-            "from pathlib import Path; Path('app.py').write_text('value = 1\\n'); self.assertTrue(True)")
-        self.assertEqual(drifted.returncode, 2, marker + ": " + drifted.stdout + drifted.stderr)
-        self.assertIn("candidate changed", drifted.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        own = self.post_edit_green(slug, "BM_B", "test_b_probe", "import app; assert app.value == 2, 'VALUE_NOT_TWO_B'")
-        self.assertEqual(own.returncode, 0, marker + " (own surface): " + own.stdout + own.stderr)
-
-    def test_post_edit_proof_killed_mid_run_persists_nothing(self) -> None:
-        # Final advisor SPEC-2: a terminated child process is not a terminal pass.
-        marker = "POST_EDIT_KILLED_PERSISTED"
-        slug, _ = self.proved_first_item()
-        before = read_workflow(self.identity)["tddEvidence"]
-        killed = self.post_edit_green(
-            slug, "BM_B", "test_b_probe", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)")
-        self.assertEqual(killed.returncode, 2, marker + ": " + killed.stdout + killed.stderr)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-
-    def test_post_edit_proof_refuses_a_candidate_rewritten_in_place(self) -> None:
-        # Appeal SPEC-4: the same dirty path with different contents is a different candidate.
-        marker = "POST_EDIT_CANDIDATE_REWRITTEN"
-        slug, _ = self.proved_first_item()
-        before = read_workflow(self.identity)["tddEvidence"]
-        rewritten = self.post_edit_green(
-            slug, "BM_B", "test_b_probe",
-            "import app; self.assertEqual(app.value, 2); from pathlib import Path; Path('app.py').write_text('value = 3\\n')")
-        self.assertEqual(rewritten.returncode, 2, marker + ": " + rewritten.stdout + rewritten.stderr)
-        self.assertIn("candidate changed", rewritten.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-
-    def test_post_edit_proof_accepts_the_items_own_multi_case_surface(self) -> None:
-        # Appeal DESIGN-1: an item's own directly invoked class may carry several cases.
-        marker = "OWN_MULTI_CASE_SURFACE_REFUSED"
-        slug, _ = self.proved_first_item()
-        (self.repo / "test_b_cases.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_value(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n"
-            "    def test_type(self): self.assertIsInstance(app.value, int, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        proved = subprocess.run(
-            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-             "--phase", "green", "--behavior-id", "BM_B", "--", sys.executable, "-m", "unittest", "test_b_cases.Probe"],
-            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(proved.returncode, 0, marker + ": " + proved.stdout + proved.stderr)
-        self.assertEqual(json.loads(proved.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_post_edit_proof_reads_the_runner_report_not_selector_identity(self) -> None:
-        # Appeal SPEC-5, documented limit: a foreign test selected through an equivalent
-        # spelling is one passing test to the recorder, exactly as a trivial test written
-        # for the item would be; the ledger is a bounded reading of the runner's report.
-        marker = "SELECTOR_IDENTITY_CLAIMED"
-        slug, _ = self.proved_first_item()
-        respelled = subprocess.run(
-            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-             "--phase", "green", "--behavior-id", "BM_B", "--", sys.executable, "-m", "unittest", "test_behavior_probe.BehaviorProbe"],
-            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(respelled.returncode, 0, marker + ": " + respelled.stdout + respelled.stderr)
-
-    def test_post_edit_proof_records_the_candidate_it_proved(self) -> None:
-        # Fourth envelope SPEC-4: the proof names its candidate; drift after the
-        # record is caught where the review and completion bind the tree.
-        marker = "POST_EDIT_CANDIDATE_UNRECORDED"
-        slug, _ = self.proved_first_item()
-        own = self.post_edit_green(slug, "BM_B", "test_b_probe", "import app; assert app.value == 2, 'VALUE_NOT_TWO_B'")
-        self.assertEqual(own.returncode, 0, own.stdout + own.stderr)
-        state = read_workflow(self.identity)
-        recorded = json.loads(self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"])).stdout)["document"]
-        self.assertEqual(recorded["runs"][-1].get("candidateTree"), _active_candidate_tree(self.identity), marker)
-
-    def test_post_edit_proof_does_not_take_an_option_value_as_a_target(self) -> None:
-        # Fifth envelope SPEC-5: `--maxfail 1` and `-k name` name no test target.
-        marker = "OPTION_VALUE_TAKEN_AS_TARGET"
-        slug, _ = self.proved_first_item()
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        before = read_workflow(self.identity)["tddEvidence"]
-        for why, command in (("pytest option value", ["-m", "pytest", "--maxfail", "1"]),
-                             ("unittest -k value", ["-m", "unittest", "-k", "test_behavior"])):
-            run = subprocess.run(
-                [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
-                 "--phase", "green", "--behavior-id", "BM_B", "--", sys.executable, *command],
-                cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            self.assertEqual(run.returncode, 2, f"{marker} ({why}): " + run.stdout + run.stderr)
-            self.assertIn("test target", run.stderr, f"{marker} ({why})")
-            self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, f"{marker} ({why})")
-
     def pytest_green(self, slug: str, *arguments: str) -> subprocess.CompletedProcess[str]:
         return self.tdd_pytest(slug, "green", "BM_B", *arguments)
-
-    def test_post_edit_proof_ignores_a_path_that_follows_an_unknown_pytest_option(self) -> None:
-        # PR #194 review: a plugin option's value can be a real path; pytest consumes it
-        # and discovers implicitly, so it is not the item's own target.
-        marker = "OPTION_VALUE_PATH_TAKEN_AS_TARGET"
-        slug, _ = self.proved_first_item()
-        (self.repo / "conftest.py").write_text(
-            "def pytest_addoption(parser):\n    parser.addoption('--victim', action='store')\n", encoding="utf-8")
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        before = read_workflow(self.identity)["tddEvidence"]
-        ambiguous = self.pytest_green(slug, "--victim", "test_b_probe.py")
-        self.assertEqual(ambiguous.returncode, 2, marker + ": " + ambiguous.stdout + ambiguous.stderr)
-        self.assertIn("test target", ambiguous.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        outside = self.pytest_green(slug, "--victim", "/etc/passwd")
-        self.assertEqual(outside.returncode, 2, marker + " (outside): " + outside.stdout + outside.stderr)
-        self.assertIn("repository root", outside.stderr, marker)
-        own = self.pytest_green(slug, "--victim=x", "test_b_probe.py")
-        self.assertEqual(own.returncode, 0, marker + " (inline value): " + own.stdout + own.stderr)
-        self.assertEqual(json.loads(own.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_post_edit_proof_reads_the_terminal_pytest_summary(self) -> None:
-        # PR #194 review and preflight SPEC-2: printed pass-like text is not a pass.
-        marker = "PRINTED_PASS_COUNTED"
-        slug, _ = self.proved_first_item()
-        before = read_workflow(self.identity)["tddEvidence"]
-        (self.repo / "test_b_skip.py").write_text(
-            "import pytest\ndef test_b():\n    print('1 passed')\n    pytest.skip('later')\n", encoding="utf-8")
-        skipped = self.pytest_green(slug, "-s", "test_b_skip.py")
-        self.assertEqual(skipped.returncode, 2, marker + " (skipped): " + skipped.stdout + skipped.stderr)
-        self.assertIn("executed passing test", skipped.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        (self.repo / "test_b_exit.py").write_text(
-            "import os\ndef test_b():\n    print('1 passed')\n    os._exit(0)\n", encoding="utf-8")
-        exited = self.pytest_green(slug, "-s", "test_b_exit.py")
-        self.assertEqual(exited.returncode, 2, marker + " (exit before summary): " + exited.stdout + exited.stderr)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        (self.repo / "test_b_real.py").write_text(
-            "import app\ndef test_b():\n    assert app.value == 2, 'VALUE_NOT_TWO_B'\n", encoding="utf-8")
-        real = self.pytest_green(slug, "test_b_real.py")
-        self.assertEqual(real.returncode, 0, marker + " (real pass): " + real.stdout + real.stderr)
-        self.assertEqual(json.loads(real.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
 
     def test_superseded_provenance_is_fail_closed_without_its_record(self) -> None:
         # Final FINAL-1: a superseded item recorded before supersededFrom existed is
@@ -686,35 +371,6 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "green"}), marker)
         self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "post-edit-passed"}), marker)
         self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "green"}), marker)
-
-    def test_post_edit_proof_treats_every_value_of_an_unknown_option_as_ambiguous(self) -> None:
-        # Final FINAL-2: a plugin option declared with two values.
-        marker = "MULTI_VALUE_OPTION_TARGET_TAKEN"
-        slug, _ = self.proved_first_item()
-        (self.repo / "conftest.py").write_text(
-            "def pytest_addoption(parser):\n    parser.addoption('--victim', nargs=2)\n", encoding="utf-8")
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        before = read_workflow(self.identity)["tddEvidence"]
-        taken = self.pytest_green(slug, "--victim", "dummy", "test_b_probe.py")
-        self.assertEqual(taken.returncode, 2, marker + ": " + taken.stdout + taken.stderr)
-        self.assertIn("test target", taken.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        own = self.pytest_green(slug, "test_b_probe.py", "--victim", "dummy", "x")
-        self.assertEqual(own.returncode, 0, marker + " (target first): " + own.stdout + own.stderr)
-
-    def test_a_forged_summary_line_is_the_recorders_documented_limit(self) -> None:
-        # Final FINAL-3: byte-identical runner output is forgery the ledger does not
-        # attest against; recorded so the limit is a stated contract, not a promise.
-        marker = "SUMMARY_FORGERY_DEFENDED"
-        slug, _ = self.proved_first_item()
-        (self.repo / "test_b_forge.py").write_text(
-            "import os\ndef test_b():\n"
-            "    print('\\n============================== 1 passed in 0.01s ==============================', flush=True)\n"
-            "    os._exit(0)\n", encoding="utf-8")
-        forged = self.pytest_green(slug, "-s", "test_b_forge.py")
-        self.assertEqual(forged.returncode, 0, marker + ": " + forged.stdout + forged.stderr)
 
     def test_red_phase_baseline_reads_the_terminal_pytest_summary(self) -> None:
         # Final FINAL-4: the RED-phase baseline shares the parser.
@@ -735,129 +391,12 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(real.returncode, 0, marker + " (real): " + real.stdout + real.stderr)
         self.assertIn('"already-satisfied"', real.stdout, marker)
 
-    def test_post_edit_proof_keeps_ambiguity_through_option_like_values(self) -> None:
-        # Final FINAL-7: a REMAINDER option swallows option-like tokens too (the
-        # surface parser strips verbosity and fail-fast flags, so --no-header is used).
-        marker = "REMAINDER_OPTION_TARGET_TAKEN"
-        slug, _ = self.proved_first_item()
-        (self.repo / "conftest.py").write_text(
-            "import argparse\ndef pytest_addoption(parser):\n    parser.addoption('--victim', nargs=argparse.REMAINDER)\n", encoding="utf-8")
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        before = read_workflow(self.identity)["tddEvidence"]
-        taken = self.pytest_green(slug, "--victim", "--no-header", "test_b_probe.py")
-        self.assertEqual(taken.returncode, 2, marker + ": " + taken.stdout + taken.stderr)
-        self.assertIn("test target", taken.stderr, marker)
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        own = self.pytest_green(slug, "test_b_probe.py", "--victim", "--no-header", "x")
-        self.assertEqual(own.returncode, 0, marker + " (target first): " + own.stdout + own.stderr)
-
     def tdd_pytest(self, slug: str, phase: str, behavior_id: str, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
              "--phase", phase, "--behavior-id", behavior_id, "--",
              sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *arguments],
             cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-    def test_quiet_pytest_surfaces_record(self) -> None:
-        # PR #194 review round 2: -q prints a bare summary; the parser reads pytest's
-        # bare quiet form as well as the framed one.
-        marker = "QUIET_PASS_REFUSED"
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"), preservation("BM_P", red_failure="P_REGRESSED"),
-        ])
-        (self.repo / "test_p.py").write_text("import app\ndef test_p():\n    assert app.value == 1, 'P_REGRESSED'\n", encoding="utf-8")
-        baseline = self.tdd_pytest(slug, "red", "BM_P", "-q", "test_p.py")
-        self.assertEqual(baseline.returncode, 0, marker + " (-q baseline): " + baseline.stdout + baseline.stderr)
-        self.assertIn('"already-satisfied"', baseline.stdout, marker)
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": []})
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        (self.repo / "test_b_pytest.py").write_text("import app\ndef test_b():\n    assert app.value == 2, 'VALUE_NOT_TWO_B'\n", encoding="utf-8")
-        quiet = self.tdd_pytest(slug, "green", "BM_B", "-q", "test_b_pytest.py")
-        self.assertEqual(quiet.returncode, 0, marker + " (-q post-edit): " + quiet.stdout + quiet.stderr)
-        self.assertEqual(json.loads(quiet.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_attached_short_value_keeps_the_following_target(self) -> None:
-        marker = "ATTACHED_VALUE_REFUSED"
-        slug, _ = self.proved_first_item()
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        attached = self.pytest_green(slug, "-ktest_behavior", "test_b_probe.py")
-        self.assertEqual(attached.returncode, 0, marker + ": " + attached.stdout + attached.stderr)
-        self.assertEqual(json.loads(attached.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_clustered_short_flags_keep_the_following_target(self) -> None:
-        marker = "CLUSTERED_FLAGS_REFUSED"
-        slug, _ = self.proved_first_item()
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        clustered = self.pytest_green(slug, "-xq", "test_b_probe.py")
-        self.assertEqual(clustered.returncode, 0, marker + ": " + clustered.stdout + clustered.stderr)
-        self.assertEqual(json.loads(clustered.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_quiet_surface_with_a_trailing_remainder_option_records(self) -> None:
-        # Peer review: a verbosity option appended after the caller's arguments was
-        # swallowed by a trailing REMAINDER option (the withdrawn design), so the
-        # parser reads pytest's own quiet summary instead.
-        marker = "TRAILING_REMAINDER_QUIET_REFUSED"
-        slug, _ = self.proved_first_item()
-        (self.repo / "conftest.py").write_text(
-            "import argparse\ndef pytest_addoption(parser):\n    parser.addoption('--victim', nargs=argparse.REMAINDER)\n", encoding="utf-8")
-        (self.repo / "test_b_pytest.py").write_text("import app\ndef test_b():\n    assert app.value == 2, 'VALUE_NOT_TWO_B'\n", encoding="utf-8")
-        quiet = self.pytest_green(slug, "-q", "test_b_pytest.py", "--victim")
-        self.assertEqual(quiet.returncode, 0, marker + ": " + quiet.stdout + quiet.stderr)
-        self.assertEqual(json.loads(quiet.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_mixed_short_cluster_keeps_the_following_target(self) -> None:
-        # Peer review: flags then a value option in one token, attached or spaced.
-        marker = "MIXED_CLUSTER_REFUSED"
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"), contract("BM_C", red_failure="VALUE_NOT_TWO_C"),
-        ])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": []})
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        attached = self.tdd_pytest(slug, "green", "BM_B", "-xktest_behavior", "test_b_probe.py")
-        self.assertEqual(attached.returncode, 0, marker + " (-xktest_behavior): " + attached.stdout + attached.stderr)
-        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_B", "reassessment": "no new obligation", "items": []})
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        (self.repo / "test_c_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_C')\n", encoding="utf-8")
-        spaced = self.tdd_pytest(slug, "green", "BM_C", "-qk", "test_behavior", "test_c_probe.py")
-        self.assertEqual(spaced.returncode, 0, marker + " (-qk test_behavior): " + spaced.stdout + spaced.stderr)
-        self.assertEqual(json.loads(spaced.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_empty_inline_value_does_not_consume_the_target(self) -> None:
-        # Peer review: -k= carries an explicitly empty value; the separator, not the
-        # value's truthiness, says whether a value was given.
-        marker = "EMPTY_INLINE_VALUE_ATE_TARGET"
-        slug, workflow_id = self.h.begin_to_preflight([
-            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"), contract("BM_C", red_failure="VALUE_NOT_TWO_C"),
-        ])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": []})
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        (self.repo / "test_b_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_B')\n", encoding="utf-8")
-        empty = self.tdd_pytest(slug, "green", "BM_B", "-k=", "test_b_probe.py")
-        self.assertEqual(empty.returncode, 0, marker + " (-k=): " + empty.stdout + empty.stderr)
-        assessed = self.h.update_map(slug, workflow_id, {"sourceBehaviorId": "BM_B", "reassessment": "no new obligation", "items": []})
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        (self.repo / "test_c_probe.py").write_text(
-            "import app, unittest\n\nclass Probe(unittest.TestCase):\n"
-            "    def test_behavior(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO_C')\n", encoding="utf-8")
-        clustered = self.tdd_pytest(slug, "green", "BM_C", "-xk=", "test_c_probe.py")
-        self.assertEqual(clustered.returncode, 0, marker + " (-xk=): " + clustered.stdout + clustered.stderr)
-        self.assertEqual(json.loads(clustered.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
 
     def test_final_review_prompt_requires_only_supplied_evidence(self) -> None:
         # The prompt literal is the production artifact; its delivery to the
@@ -881,7 +420,7 @@ class ContractProofAuthorityTests(unittest.TestCase):
         except ValueError as exc:
             self.fail(f"{marker}: recorded kind-less map refused to load: {exc}")
         self.assertEqual([entry["id"] for entry in items], ["BM_OLD"], marker)
-        self.assertIsNotNone(behavior_map.edit_blocker(items, "BM_OLD"), marker)
+        self.assertIsNotNone(behavior_map.edit_blocker(items), marker)
 
     def test_new_seam_first_red_asserts_the_seams_existence(self) -> None:
         # Issue #141 D: the first RED for a Seam that does not exist yet is a

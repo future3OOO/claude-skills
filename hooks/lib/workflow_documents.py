@@ -72,15 +72,18 @@ def advisor_envelope(
     typed: list[JsonObject] = []
     identifiers: set[str] = set()
     for position, item in enumerate(findings, 1):
-        if not isinstance(item, dict) or set(item) != {"id", "claim", "material", "kind"}:
-            raise ValueError(f"advisor finding {position} requires only id, claim, material, and kind")
+        # A completed consult is never discarded over its shape: extra fields are
+        # dropped and an unrecognised kind is read as behavioral, the conservative
+        # default that makes the finding ride the pass as an attack obligation.
+        if not isinstance(item, dict) or not {"id", "claim", "material"} <= set(item):
+            raise ValueError(f"advisor finding {position} requires id, claim, and material")
         identifier, kind = item.get("id"), item.get("kind")
         if not _text(identifier) or identifier in identifiers:
             raise ValueError("advisor finding ids must be non-empty and unique")
         if not _text(item.get("claim")) or not isinstance(item.get("material"), bool):
             raise ValueError(f"advisor finding {identifier} requires claim and material boolean")
-        if kind not in {"behavioral", "nonbehavioral"}:
-            raise ValueError(f"advisor finding {identifier} kind must be behavioral or nonbehavioral")
+        if not isinstance(kind, str) or kind not in {"behavioral", "nonbehavioral"}:
+            kind = "behavioral"
         identifiers.add(str(identifier))
         typed.append({"id": identifier, "claim": item["claim"], "material": item["material"], "kind": kind})
     if stage == "final" and verdict in {"commit-ready", "fix-before-commit"} and ((verdict == "commit-ready") == any(item["material"] for item in typed)):

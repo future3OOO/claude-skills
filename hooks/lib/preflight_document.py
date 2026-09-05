@@ -29,22 +29,31 @@ def validate_document(
 ) -> dict[str, object]:
     """The validated preflight document, or a refusal naming what is wrong.
 
-    The Behavior Map is the document's contract: new producer recordings require
-    it, and the optional legacy path exists only for importing evidence recorded
-    before that field. The prose sections are kept as the lead wrote them and
-    are not validated.
+    The thirteen prose sections are the surface walk: each must be present and
+    non-empty, and `openQuestions` exactly `none`, or the recording refuses.
+    New producer recordings additionally require the structured Behavior Map;
+    the optional legacy path exists only for importing evidence recorded before
+    that field.
     """
     if not isinstance(value, dict):
         raise ValueError("preflight document must be a JSON object")
-    if require_behavior_map and BEHAVIOR_MAP_SECTION not in value:
-        raise ValueError(f"preflight document is missing sections: {BEHAVIOR_MAP_SECTION}")
+    required = set(SECTIONS) | ({BEHAVIOR_MAP_SECTION} if require_behavior_map else set())
+    missing = [name for name in (*SECTIONS, BEHAVIOR_MAP_SECTION) if name in required and name not in value]
+    if missing:
+        raise ValueError(f"preflight document is missing sections: {', '.join(missing)}")
     allowed = set(SECTIONS) | {BEHAVIOR_MAP_SECTION}
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ValueError(f"preflight document has unknown sections: {', '.join(unknown)}")
-    document: dict[str, object] = {
-        name: str(value[name]).strip() for name in SECTIONS if isinstance(value.get(name), str)
-    }
+    empty = [
+        name for name in SECTIONS
+        if not isinstance(value.get(name), str) or not str(value[name]).strip()
+    ]
+    if empty:
+        raise ValueError(f"preflight sections must be non-empty text: {', '.join(empty)}")
+    document: dict[str, object] = {name: str(value[name]).strip() for name in SECTIONS}
+    if document["openQuestions"] != "none":
+        raise ValueError("openQuestions must be exactly 'none'; an unresolved question blocks the recording")
     if BEHAVIOR_MAP_SECTION in value:
         document[BEHAVIOR_MAP_SECTION] = initial_items(value[BEHAVIOR_MAP_SECTION])
     return document

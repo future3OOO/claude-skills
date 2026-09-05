@@ -7,10 +7,12 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-# GREEN through the item's own RED, or a post-edit pass: the item's own surface
-# passing on a candidate an earlier genuine cycle left dirty.
-PROOF_STATUSES = frozenset({"green", "post-edit-passed"})
-RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | {"red", "superseded", "withdrawn"}
+# Proof is GREEN through the item's own RED. `post-edit-passed` is a retired
+# status: evidence recorded under it still loads, but it is unresolved until
+# the item earns GREEN through RED.
+PROOF_STATUSES = frozenset({"green"})
+LEGACY_STATUSES = frozenset({"post-edit-passed"})
+RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | LEGACY_STATUSES | {"red", "superseded", "withdrawn"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded", "withdrawn"}
 NEVER_GREEN = DISPOSITION_STATUSES | {"withdrawn"}
@@ -20,6 +22,7 @@ REQUIRED_FIELDS = frozenset({
 })
 OPTIONAL_FIELDS = frozenset({
     "evidence", "supersededBy", "sourceRefs", "proofCommand", "baselineProof", "supersededFrom",
+    "redCommand", "redProof",
 })
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
 _CONTRACT_DISPOSITION_REFUSED = (
@@ -200,6 +203,13 @@ def validate_items(
         # attack rides beside the declared one wherever the item travels.
         if "proofCommand" in raw:
             item["proofCommand"] = _required(raw, "proofCommand", identifier)
+        # The RED surface and its proof stay on the item, so GREEN proves the
+        # item against its own RED whichever cycle is open after a sweep.
+        if "redCommand" in raw:
+            if not allow_runtime or not isinstance(raw.get("redProof"), dict):
+                raise ValueError(f"behavior {identifier} redCommand is recorded only by tdd --phase red")
+            item["redCommand"] = _required(raw, "redCommand", identifier)
+            item["redProof"] = raw["redProof"]
         # The producer records its baseline proof here and prose never may, so
         # an already-satisfied item carrying it is producer-backed in every
         # lineage; evidence text proves nothing.
@@ -331,7 +341,7 @@ def apply_dispositions(
         if status == "superseded":
             if mapped.get("status") not in PROOF_STATUSES:
                 raise ValueError(
-                    f"behavior {identifier} is {mapped.get('status')}; only a GREEN or post-edit-passed item can be superseded"
+                    f"behavior {identifier} is {mapped.get('status')}; only a GREEN item can be superseded"
                 )
             mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
             mapped["supersededFrom"] = mapped["status"]
@@ -394,7 +404,7 @@ def unresolved(items: list[JsonObject]) -> list[str]:
     return [
         str(entry["id"])
         for entry in items
-        if entry.get("status") in {"pending", "red"}
+        if entry.get("status") in {"pending", "red"} | LEGACY_STATUSES
         or (
             entry.get("status") == "superseded"
             and terminal_item(items, entry).get("status") not in PROOF_STATUSES
@@ -416,28 +426,32 @@ def may_refactor(items: list[JsonObject]) -> bool:
     )
 
 
-def edit_blocker(items: list[JsonObject], active: str | None) -> str | None:
-    """Why the map forbids the next production edit, or None when it opens."""
-    pending = _actionable(items)
+def edit_blocker(items: list[JsonObject]) -> str | None:
+    """Why the map forbids the next production edit, or None when it opens.
+
+    The RED sweep: every contract item earns its RED on the clean tree before the
+    first implementation edit, so a pending contract item refuses the edit."""
     preservation = [
         str(entry["id"]) for entry in items
-        if entry.get("kind") != "contract"
-        and entry["id"] in pending
-        and entry["id"] != active
+        if entry.get("kind") != "contract" and entry.get("status") == "pending"
     ]
     if preservation:
         return "baseline or disposition preservation item(s) before the edit: " + ", ".join(preservation)
-    if active is not None:
-        candidate = item(items, active)
-        if candidate.get("status") == "red" and candidate.get("kind") == "contract":
-            return None
+    unswept = [
+        str(entry["id"]) for entry in items
+        if entry.get("kind") == "contract" and entry.get("status") == "pending"
+    ]
+    if unswept:
+        return "RED sweep: every contract item needs its own RED before a production edit: " + ", ".join(unswept)
+    if any(entry.get("kind") == "contract" and entry.get("status") == "red" for entry in items):
+        return None
     if may_refactor(items):
         return None
     contract = [str(entry["id"]) for entry in items if entry.get("kind") == "contract"]
     return (
-        "valid behavior-specific RED for a contract Behavior Map item (contract before "
-        "preservation; the refactor window needs every contract item resolved and one "
-        "GREEN through RED): " + (", ".join(contract) or "none mapped")
+        "valid behavior-specific RED for a contract Behavior Map item (the refactor "
+        "window needs every contract item resolved and one GREEN through RED): "
+        + (", ".join(contract) or "none mapped")
     )
 
 

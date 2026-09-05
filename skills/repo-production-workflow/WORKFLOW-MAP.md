@@ -17,7 +17,7 @@ flowchart LR
     TR --> PC[production-code]
     NR --> PC
     PC --> I[implementation]
-    I -->|active RED| TG[mapped GREEN]
+    I -->|every contract RED| TG[mapped GREEN]
     I -->|not-required map| V
     TG --> TM[map update when a proof exposes a new obligation]
     TM -->|new obligation| TR
@@ -31,7 +31,6 @@ flowchart LR
     C -->|non-behavioral correction| I
     C -->|evidence-backed rejection| AP[one appeal on the same session]
     AP --> C
-    C -->|persistent disagreement| H[needs-human-owner-adjudication]
     C -->|yes| WC[workflow complete]
     WC --> DL[delivery]
     DL --> PR[reviewer completion]
@@ -47,7 +46,7 @@ workflow status|summary        # active canonical state
 workflow history               # ordered accepted events and logical references
 workflow evidence              # read one logical evidence record
 workflow set-phase             # lead-owned implementation and trivial review
-workflow record-preflight      # records the Behavior Map
+workflow record-preflight      # validates 13 text sections + Behavior Map
 workflow record-production-code # validates the bundled gate verdict (optional; nothing waits on it)
 workflow tdd                   # mapped RED/GREEN or records not-required
 workflow tdd-map               # dispositions and post-GREEN map updates
@@ -99,11 +98,10 @@ the transcript audit.
 The database and its containing directory are private and agent-writable. Committed transactions provide continuity across process restart and compaction; it is not tamper-proof and does not authorize Git. A normal
 commit or HEAD change does not invalidate it. After production preflight,
 test-like edits are admitted while TDD is pending. Production edits are admitted
-for an active valid mapped RED, a fully
-dispositioned `not-required` map, or a resolved GREEN map. A GREEN
-blocks the next production edit until `tdd-map` records the required architecture,
-preservation, and interaction reassessment. A later edit against a resolved map
-stays admitted but flags completion for another reassessment. A normally
+once every contract item holds its RED (the sweep) or the map is fully
+resolved with at least one GREEN through RED; a `not-required` decision opens
+nothing. A `tdd-map` update is needed only when a GREEN exposes a new
+obligation. A normally
 completed workflow is terminal: every mutation except `begin` is rejected.
 
 A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
@@ -158,10 +156,9 @@ Behavioral findings from the lead's code review or final Codex Advisor against t
 
 A finding envelope is one correction batch. A pending behavioral finding rides
 the pass as a map-owned attack obligation; dispositions may cover any subset,
-and later documents preserve append-only history. Until finding, GREEN, or
-reassessment closure is complete,
-`verify`, the typed gate, a new lead-review intake, the final checkpoint, and
-`complete` refuse before broad work runs. Targeted TDD and direct changed-Seam
+and later documents preserve append-only history. Until every finding is dispositioned and the map is closed, the final
+checkpoint and `complete` refuse; verification, the typed gate, and lead
+review run regardless. Targeted TDD and direct changed-Seam
 probes remain available. Final rejections use one context-matched appeal response:
 omission or same-ID `material:false` concedes, a material re-raise records
 persistent disagreement, and new IDs form their own immutable intake.
@@ -211,13 +208,11 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed GREEN map; after GREEN block the next production edit until map reassessment |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits once every contract item holds its RED (the sweep) or the map is fully resolved with one GREEN through RED; a `not-required` decision opens nothing |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
-| `Stop` | Non-blocking context: changed-code status and the workflow summary for each repository this session edited in, deduplicated per session and slot; never a block decision |
 
-`Stop` consults the workflows the session actually edited in, not the directory
-it was launched from. `PostToolUse` records one immutable marker per repository
+The session association marker: `PostToolUse` records one immutable marker per repository
 per session under `sessions/<session>/<repo-key>.json` in the state root,
 written only where a workflow already exists, and identity comes from the edited
 path through the same resolver the edit gate uses — no hook gains Git awareness,
@@ -265,7 +260,7 @@ parser, candidate-tree gate, approval marker, nonce, or evidence graph.
 
 ## Ordinary summaries
 
-Repo Context Forge output, mapped TDD runs/reassessments, and code-review
+Repo Context Forge output, mapped TDD runs and map updates, and code-review
 findings may be retained as bounded summaries for the next agent. They carry no
 HEAD/tree/hash identity and are never substitutes for the real packet, recorded
 Behavior Map, test command, or live review. The review-time manifest above is

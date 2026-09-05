@@ -99,8 +99,7 @@ derives from the context-matched intake's effective terminal dispositions, not
 from the raw verdict alone. A `context-mismatch` advances nothing and must be
 re-consulted. A final `rejected-with-evidence` remains pending for one response
 on the same workflow-bound session; omission or a same-ID nonmaterial response
-concedes it, while a material re-raise blocks with
-`needs-human-owner-adjudication`. This is workflow state, not permission to run
+concedes it, while a material re-raise reopens the finding as pending: the lead dispositions it once more against the new measurement, and that second measured disposition stands. This is workflow state, not permission to run
 Git.
 
 ## Invocation

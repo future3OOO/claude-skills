@@ -2197,7 +2197,7 @@ class PassLifecycleTests(unittest.TestCase):
             "--stage", "final", "--source", "codex-advisor", "--input", str(appeal))
         self.assertEqual((closed["nextAction"], next(x for x in closed["findingStates"] if x["findingId"] == "SPEC-NEW")["appealStatus"],
                           self.checkpoint("final-review")["ready"], second.returncode, len(self.history_events()) - events),
-                         ("needs-human-owner-adjudication", "disagreement", False, 2, 0), "APPEAL_DEADLOCK_ADVERTISED")
+                         ("complete-workflow", "disagreement", False, 2, 0), "REJECTION_AFTER_APPEAL_DID_NOT_STAND")
 
     def test_terminal_context_mismatch_allows_reconsult(self) -> None:
         marker, slug = "TERMINAL_MISMATCH_RECONSULT_REJECTED", "terminal-mismatch-reconsult"

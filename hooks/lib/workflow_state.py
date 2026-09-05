@@ -198,11 +198,9 @@ def _derive_next_action(state: JsonObject, tdd_document: JsonObject | None = Non
         entry for entry in finding_states
         if isinstance(entry, dict) and entry.get("stage") in {"code-review", "final"}
     ] if isinstance(finding_states, list) else []
-    if any(entry.get("appealStatus") == "disagreement" for entry in correction):
-        return "needs-human-owner-adjudication"
     if state.get("finalReviewContextMismatchEvidence"):
         return "re-consult-final-review"
-    if any(entry.get("status") == "pending" for entry in correction):
+    if any(entry.get("status") == "pending" and _finding_unresolved(entry) for entry in correction):
         return "classify-current-findings"
     accepted = any(
         entry.get("status") == "accepted-follow-up" and entry.get("material") is True
@@ -566,7 +564,9 @@ def _finding_unresolved(entry: JsonObject) -> bool:
     return (
         (entry.get("status") in {"pending", "accepted-for-proof"} and entry.get("material") is not False)
         or (entry.get("status") == "accepted-follow-up" and entry.get("material") is True)
-        or entry.get("appealStatus") in {"pending", "disagreement"}
+        # A pending appeal waits for the advisor's one response; a recorded
+        # disagreement is history: the lead's measured rejection stands.
+        or entry.get("appealStatus") == "pending"
     )
 
 
@@ -922,7 +922,14 @@ def record_advisor_result(
                     rejected_ids = {str(entry["findingId"]) for entry in rejected}
                     for entry in rejected:
                         response = responses.get(str(entry["findingId"]))
-                        entry["appealStatus"] = "disagreement" if response is not None and response.get("material") is True else "conceded"
+                        if response is not None and response.get("material") is True:
+                            # A material re-raise carries a new measurement: the
+                            # finding reopens for one more lead disposition, and
+                            # that second measured disposition stands.
+                            entry["appealStatus"] = "disagreement"
+                            entry["status"] = "pending"
+                        else:
+                            entry["appealStatus"] = "conceded"
                         entry["appealEvidenceId"] = appeal_write.evidence_id
                     new_findings = [item for item in intake["findings"] if str(item["id"]) not in rejected_ids]
                     if new_findings:
@@ -1094,13 +1101,12 @@ def _behavioral_finding_closure(
             + ", ".join(not_green)
         )
     if not any(
-        (behavior_map.green_through_red(entry) or entry.get("status") == "post-edit-passed")
-        and identifier not in unresolved
+        behavior_map.green_through_red(entry) and identifier not in unresolved
         for identifier, entry in linked.items()
     ):
         raise WorkflowError(
             f"behavioral fixed for {finding_id} requires at least one owning attack proved on "
-            "the current candidate (GREEN through its recorded RED, or post-edit-passed); "
+            "the current candidate (GREEN through its recorded RED); "
             "a baseline alone demonstrates no occurrence"
         )
 
@@ -1111,9 +1117,7 @@ def _finding_state_blockers(state: JsonObject) -> list[str]:
         return ["finding lifecycle evidence is corrupt"]
     unresolved = [f"{entry.get('stage')}:{entry.get('findingId')}" for entry in states
                   if isinstance(entry, dict) and _finding_unresolved(entry)]
-    result = (["needs-human-owner-adjudication"] if any(
-        isinstance(entry, dict) and entry.get("appealStatus") == "disagreement" for entry in states
-    ) else [])
+    result: list[str] = []
     if state.get("finalReviewContextMismatchEvidence"):
         result.append("final-review context mismatch requires re-consultation")
     if unresolved:
@@ -1655,6 +1659,23 @@ def public_status(state: JsonObject, identity: RepoIdentity | None = None) -> Js
     }
 
 
+def _earned_split(identity: RepoIdentity, state: JsonObject) -> str:
+    """Contract items GREEN through RED over contract items declared: the proof
+    the map has earned, not the count of items it names."""
+    try:
+        items = behavior_map.recorded_map(
+            evidence_document(identity, state.get("tddEvidence")),
+            evidence_document(identity, state.get("preflightEvidence")),
+        )
+    except (WorkflowError, LedgerError, ValueError):
+        return " Contract green=unknown (map evidence unreadable)."
+    contract = [entry for entry in items or [] if entry.get("kind") == "contract"]
+    if not contract:
+        return ""
+    earned = sum(1 for entry in contract if behavior_map.green_through_red(entry))
+    return f" Contract green={earned}/{len(contract)}."
+
+
 def summary(identity: RepoIdentity, limit: int = 1200) -> str:
     state = read_workflow(identity)
     if state is None:
@@ -1674,6 +1695,7 @@ def summary(identity: RepoIdentity, limit: int = 1200) -> str:
         f"quality-gate={'passed' if state.get('qualityGateEvidence') else 'pending'}, "
         f"code-review={code_review.get('status')}/{code_review.get('findings')}, "
         f"final-review={final_review.get('source')}/{final_review.get('status')}/{final_review.get('findings')}. "
+        + _earned_split(identity, state)
         + (f" Advisor outage: {advisor.get('reason')}." if advisor.get("status") == "unavailable" else "")
         + (
             f" Paused: {str(paused.get('reason'))[:160]}."

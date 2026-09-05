@@ -248,10 +248,10 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 
 Hook configuration lives in `~/.claude/settings.json`. Five facts govern how hooks change what you do:
 
-- Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded Behavior Map and a valid contract RED, and docs, scratch, and non-repository paths are exempt.
+- Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded preflight (thirteen sections plus the Behavior Map) and a RED for every contract item, and docs, scratch, and non-repository paths are exempt.
 - Every admitted production edit, and every governance edit, invalidates downstream review readiness before quality feedback returns, so review and final review must be earned again. A production edit against a completed workflow remains blocked and terminal.
 - `SessionStart(compact|resume)` restores the chain from committed SQLite state; compaction never advances or waives a step.
-- `Stop` never blocks; it reports changed code and the workflow summary for the repositories the session edited in.
+- There is no Stop hook; `workflow.py summary` reports the earned proof (`Contract green=n/m`) and the next action on demand.
 - No hook parses Bash or authorizes Git.
 
-The `repo-production-workflow` skill's `WORKFLOW-MAP.md` is the canonical operational documentation for per-hook roles and the Stop feedback.
+The `repo-production-workflow` skill's `WORKFLOW-MAP.md` is the canonical operational documentation for per-hook roles.

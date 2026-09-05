@@ -27,11 +27,9 @@ from hooks.lib.workflow_state import record_base_oid, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
-FIXTURE = ROOT / "hooks" / "tests" / "fixtures" / "stop-payload-2.1.220.json"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
 RCF_BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
-STOP = ROOT / "hooks" / "post-edit-blast-radius.py"
 SESSION = "real-hook-session"
 
 
@@ -117,24 +115,6 @@ class HookHarness(unittest.TestCase):
             payload["session_id"] = session
         return subprocess.run(
             [str(POST_EDIT)], cwd=target, env={**self.env, **(env_extra or {})}, text=True,
-            input=json.dumps(payload),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-
-    def stop(self, *, shape: str = "natural", env_extra: dict[str, str] | None = None,
-             session_crons: list | None = None, cwd: Path | None = None,
-             session: str | None = SESSION) -> subprocess.CompletedProcess[str]:
-        env = {**self.env, **(env_extra or {})}
-        payload = dict(json.loads(FIXTURE.read_text(encoding="utf-8"))["shapes"][shape])
-        payload.update({"cwd": str(cwd or self.repo)})
-        # An anonymous payload never carried the key, so drop it rather than blank it.
-        payload.pop("session_id", None)
-        if session is not None:
-            payload["session_id"] = session
-        if session_crons is not None:
-            payload["session_crons"] = session_crons
-        return subprocess.run(
-            [str(STOP)], cwd=self.repo, env=env, text=True,
             input=json.dumps(payload),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
@@ -564,36 +544,6 @@ class WorkflowHookTests(HookHarness):
         settings = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
         self.assertNotIn("PreCompact", settings["hooks"])
 
-    def test_stop_returns_structured_change_context_and_avoids_recursion(self) -> None:
-        begun = self.state("begin", "--slug", "stop-context")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        (self.repo / "extra.py").write_text("extra = True\n", encoding="utf-8")
-        self.post_edit("app.py")
-
-        first = self.stop()
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        self.assertTrue(first.stdout, "Stop hook did not return structured additionalContext")
-        self.assertNotIn("decision", json.loads(first.stdout), "Stop blocked instead of reporting")
-        payload = json.loads(first.stdout)["hookSpecificOutput"]
-        self.assertEqual(payload["hookEventName"], "Stop")
-        context = payload["additionalContext"]
-        self.assertIn("app.py (tracked/modified)", context)
-        self.assertIn("extra.py (untracked)", context)
-        self.assertIn("blast radius after this edit: unknown", context)
-        self.assertIn("Active workflow: slug=stop-context", context)
-        self.assertIn("next=repo-context-forge", context)
-
-        duplicate = self.stop()
-        self.assertEqual(duplicate.returncode, 0, duplicate.stdout + duplicate.stderr)
-        self.assertEqual(duplicate.stdout, "")
-
-        recursive = self.stop(shape="active")
-        self.assertEqual(recursive.returncode, 0, recursive.stdout + recursive.stderr)
-        recursive_payload = json.loads(recursive.stdout) if recursive.stdout else {}
-        self.assertNotIn("decision", recursive_payload, "hook-triggered re-stop must not block")
-
-
 class PerEditOverheadTests(HookHarness):
     """Issue 182: per-edit path carries only the cheap transition and local
     signals; full gate authority lives at the existing boundaries."""
@@ -1000,11 +950,6 @@ class TollDeletionTests(HookHarness):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return wid
 
-    def map_only_preflight(self, slug: str, wid: str) -> subprocess.CompletedProcess[str]:
-        doc = self.tmp / f"{slug}-map.json"
-        doc.write_text(json.dumps({"behaviorMap": self.MAP}), encoding="utf-8")
-        return self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(doc))
-
     def tdd(self, slug: str, phase: str) -> subprocess.CompletedProcess[str]:
         (self.repo / "test_probe.py").write_text(
             "import app, unittest\n"
@@ -1047,8 +992,7 @@ class TollDeletionTests(HookHarness):
         marker = "TOLL_STILL_REQUIRED"
         slug = "no-tolls"
         wid = self.open_pass(slug, consult=False)
-        recorded = self.map_only_preflight(slug, wid)
-        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        self.record_preflight_evidence(slug, wid, behavior_map=self.MAP)
         red = self.tdd(slug, "red")
         self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
         admitted = self.intake("app.py")
@@ -1067,13 +1011,6 @@ class TollDeletionTests(HookHarness):
         self.assertEqual(final.returncode, 0, marker + ": " + final.stdout + final.stderr)
         completed = self.state("complete")
         self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
-
-    def test_record_preflight_accepts_the_map_alone(self) -> None:
-        marker = "PROSE_SECTIONS_STILL_REQUIRED"
-        slug = "map-only"
-        recorded = self.map_only_preflight(slug, self.open_pass(slug, consult=False))
-        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
-        self.assertEqual(json.loads(self.state("status").stdout)["preflight"], "passed", marker)
 
     def test_verification_runs_while_a_material_finding_is_pending(self) -> None:
         marker = "VERIFY_REFUSED_ON_PENDING_FINDING"
@@ -1196,16 +1133,423 @@ class TollDeletionTests(HookHarness):
         self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout)
         self.assertIn("changed after the lead review", refused.stderr, marker + ": " + refused.stderr)
 
-    def test_stop_never_blocks_an_incomplete_workflow(self) -> None:
-        marker = "STOP_BLOCKED"
-        self.open_pass("stop-feedback")
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+class RedFirstTests(HookHarness):
+    """Contract items are proved test-first: every contract RED lands on the clean
+    tree before the first production edit, and only GREEN through that RED is proof."""
+
+    def two_items(self) -> list:
+        return [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
+                pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]
+
+    def open_pass(self, slug: str, behavior_map: list | None = None) -> str:
+        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "two attributes")
+        begun = self.state("begin", "--slug", slug)
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        consulted = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                               "--source", "codex-advisor", "--verdict", "completed")
+        self.assertEqual(consulted.returncode, 0, consulted.stdout + consulted.stderr)
+        self.record_preflight_evidence(slug, wid, behavior_map=behavior_map or self.two_items())
+        return wid
+
+    def workflow(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(WORKFLOW), args[0], "--repo", str(self.repo), *args[1:]],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    def tdd(self, slug: str, phase: str, item: str, attr: str) -> subprocess.CompletedProcess[str]:
+        (self.repo / f"test_probe_{attr}.py").write_text(
+            "import app, unittest\n"
+            f"class Probe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.{attr}, 2, '{attr.upper()}_NOT_TWO')\n",
+            encoding="utf-8",
+        )
+        return self.workflow("tdd", "--slug", slug, "--phase", phase, "--behavior-id", item,
+                             "--", sys.executable, "-m", "unittest", f"test_probe_{attr}")
+
+    def map_status(self) -> dict[str, str]:
+        state = json.loads(self.state("status").stdout)
+        document = json.loads(self.state("evidence", "--evidence-id", str(state["tddEvidence"])).stdout)
+        items = document.get("behaviorMap") or (document.get("document") or {}).get("behaviorMap")
+        return {str(entry["id"]): str(entry["status"]) for entry in items}
+
+    def events(self) -> int:
+        return len(json.loads(self.state("history").stdout)["events"])
+
+    def rewrite_latest_evidence(self, update) -> None:
+        """Rewrite the persisted TDD evidence document the way an older producer left it."""
+        identity = resolve_repo_identity(self.repo)
+        evidence_id = json.loads(self.state("status").stdout)["tddEvidence"]
+        database = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / identity.key / "workflow.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            document = json.loads(connection.execute(
+                "SELECT document_json FROM evidence WHERE evidence_id = ?", (evidence_id,)).fetchone()[0])
+            update(document)
+            connection.execute("UPDATE evidence SET document_json = ? WHERE evidence_id = ?",
+                               (json.dumps(document, sort_keys=True, separators=(",", ":")), evidence_id))
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_a_finding_with_an_extra_field_or_unknown_kind_still_records(self) -> None:
+        marker = "TOLERABLE_ENVELOPE_REFUSED"
+        slug = "tolerant-envelope"
+        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "two attributes")
+        begun = self.state("begin", "--slug", slug)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        envelope = self.tmp / "tolerant.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "verdict": "completed", "findings": [
+            {"id": "SPEC-1", "claim": "an unattacked promise", "material": True, "kind": "other", "severity": "high"}]}), encoding="utf-8")
+        recorded = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                              "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        [entry] = json.loads(self.state("status").stdout)["findingStates"]
+        self.assertEqual((entry["findingId"], entry["kind"], entry["status"]), ("SPEC-1", "behavioral", "pending"), marker)
+
+    def test_a_nonmaterial_final_finding_does_not_steer_the_next_action(self) -> None:
+        marker = "NONMATERIAL_FINDING_STEERS_NEXT_ACTION"
+        slug = "nonmaterial-next"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        envelope = self.tmp / "nonmaterial.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "verdict": "commit-ready", "findings": [
+            {"id": "SCOPE-1", "claim": "promises restated", "material": False, "kind": "nonbehavioral"}]}), encoding="utf-8")
+        final = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                           "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
+        self.assertEqual(json.loads(self.state("status").stdout)["nextAction"], "complete-workflow", marker)
+        self.assertEqual(self.state("complete").returncode, 0, marker)
+
+    def rejection_document(self, wid: str, intake_id: str, measurement: str) -> Path:
+        status = json.loads(self.state("status").stdout)
+        path = self.tmp / f"reject-{len(measurement)}.json"
+        path.write_text(json.dumps({"context": {"workflowId": wid, "candidateTree": status["activeCandidateTree"]},
+            "intakeEvidenceId": intake_id, "dispositions": [{"finding_id": "F-1", "status": "rejected-with-evidence", "kind": "behavioral",
+            "premise": {"claim": "the operation is attacked by test_probe_a", "command": measurement, "result": "false"},
+            "occurrence": {"domain": "every caller of the operation", "count": 0, "complete": True, "command": measurement, "result": "count=0"},
+            "materialConsequence": {"claim": "the promise could break unseen", "command": measurement, "result": "attacked"},
+            "evidence": "test_probe_a executes the operation"}]}), encoding="utf-8")
+        return path
+
+    def rejected_then_re_raised(self, slug: str) -> tuple[str, str]:
+        """A rejected final finding the advisor re-raises as material in its one response."""
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        finding = {"id": "F-1", "claim": "an operation is unattacked", "material": True, "kind": "behavioral"}
+        envelope = self.tmp / "final-f1.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "verdict": "fix-before-commit", "findings": [finding]}), encoding="utf-8")
+        first = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                           "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        intake_id = [e["intakeEvidenceId"] for e in json.loads(self.state("status").stdout)["findingStates"] if e["findingId"] == "F-1"][0]
+        rejected = self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                              "--findings", "addressed", "--input", str(self.rejection_document(wid, intake_id, "python -m unittest test_probe_a")))
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        appeal = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                            "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(appeal.returncode, 0, appeal.stdout + appeal.stderr)
+        return wid, intake_id
+
+    def test_a_material_re_raise_is_judged_once_more_then_stands(self) -> None:
+        marker = "REAPPEAL_NOT_REJUDGED"
+        slug = "re-raise-judged"
+        wid, intake_id = self.rejected_then_re_raised(slug)
+        [entry] = [e for e in json.loads(self.state("status").stdout)["findingStates"] if e["findingId"] == "F-1"]
+        self.assertEqual((entry["status"], entry.get("appealStatus")), ("pending", "disagreement"), marker + ": " + json.dumps(entry))
+        premature = self.state("complete")
+        self.assertEqual(premature.returncode, 2, marker + ": complete ignored the re-raised measurement")
+        self.assertIn("F-1", premature.stderr, marker)
+        judged = self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                            "--findings", "addressed", "--input", str(self.rejection_document(wid, intake_id, "python -m unittest test_probe_a -v")))
+        self.assertEqual(judged.returncode, 0, marker + ": " + judged.stdout + judged.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
+
+    def test_a_measured_rejection_after_the_appeal_stands(self) -> None:
+        marker = "ADJUDICATION_DEAD_END"
+        slug = "rejection-stands"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        finding = {"id": "F-1", "claim": "an operation is unattacked", "material": True, "kind": "behavioral"}
+        envelope = self.tmp / "final-f1.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "verdict": "fix-before-commit", "findings": [finding]}), encoding="utf-8")
+        first = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                           "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        status = json.loads(self.state("status").stdout)
+        intake_id = [e["intakeEvidenceId"] for e in status["findingStates"] if e["findingId"] == "F-1"][0]
+        measurement = {"claim": "the operation is attacked by test_probe_a", "command": "python -m unittest test_probe_a", "result": "false"}
+        rejection = self.tmp / "reject-f1.json"
+        rejection.write_text(json.dumps({"context": {"workflowId": wid, "candidateTree": status["activeCandidateTree"]},
+            "intakeEvidenceId": intake_id, "dispositions": [{"finding_id": "F-1", "status": "rejected-with-evidence", "kind": "behavioral",
+            "premise": measurement, "occurrence": {"domain": "every caller of the operation", "count": 0, "complete": True,
+            "command": "python -m unittest test_probe_a", "result": "count=0"},
+            "materialConsequence": {"claim": "the promise could break unseen", "command": "python -m unittest test_probe_a", "result": "attacked"},
+            "evidence": "test_probe_a executes the operation"}]}), encoding="utf-8")
+        rejected = self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                              "--findings", "addressed", "--input", str(rejection))
+        self.assertEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        # The advisor's one response re-raises the same finding as material.
+        appeal = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                            "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(appeal.returncode, 0, appeal.stdout + appeal.stderr)
+        after = json.loads(self.state("status").stdout)
+        self.assertNotEqual(after["nextAction"], "needs-human-owner-adjudication", marker + ": " + after["nextAction"])
+        judged = self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                            "--findings", "addressed", "--input", str(self.rejection_document(wid, intake_id, "python -m unittest test_probe_a -v")))
+        self.assertEqual(judged.returncode, 0, marker + ": " + judged.stdout + judged.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
+
+    def test_no_stop_hook_is_registered(self) -> None:
+        marker = "STOP_HOOK_STILL_REGISTERED"
+        hooks = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))["hooks"]
+        self.assertNotIn("Stop", hooks, marker)
+        self.assertFalse((ROOT / "hooks" / "post-edit-blast-radius.py").exists(), marker)
+
+    def test_a_second_red_lands_on_the_clean_tree(self) -> None:
+        marker = "SECOND_RED_REFUSED_ON_CLEAN_TREE"
+        slug = "red-sweep"
+        self.open_pass(slug)
+        first = self.tdd(slug, "red", "BM_A", "a")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        second = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(second.returncode, 0, marker + ": " + second.stdout + second.stderr)
+        self.assertEqual(self.map_status(), {"BM_A": "red", "BM_B": "red"}, marker)
+
+    def test_the_edit_gate_waits_for_every_contract_red(self) -> None:
+        marker = "EDIT_ADMITTED_WITH_PENDING_CONTRACT"
+        slug = "sweep-gate"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        blocked = self.intake("app.py")
+        self.assertIn("deny", blocked.stdout, marker + ": an edit was admitted with BM_B pending")
+        self.assertIn("BM_B", json.loads(blocked.stdout)["hookSpecificOutput"]["permissionDecisionReason"], marker)
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        admitted = self.intake("app.py")
+        self.assertEqual(admitted.stdout, "", marker + ": " + admitted.stdout)
+
+    def test_each_red_item_reaches_green_through_its_own_red(self) -> None:
+        marker = "NON_ACTIVE_RED_GREEN_REFUSED"
+        slug = "both-green"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        green_a = self.tdd(slug, "green", "BM_A", "a")
+        self.assertEqual(green_a.returncode, 0, marker + ": " + green_a.stdout + green_a.stderr)
+        green_b = self.tdd(slug, "green", "BM_B", "b")
+        self.assertEqual(green_b.returncode, 0, marker + ": " + green_b.stdout + green_b.stderr)
+        self.assertEqual(self.map_status(), {"BM_A": "green", "BM_B": "green"}, marker)
+        self.assertEqual(json.loads(self.state("status").stdout)["tdd"], "passed", marker)
+
+    def test_green_without_a_red_is_refused(self) -> None:
+        marker = "POST_EDIT_PASS_ACCEPTED"
+        slug = "no-post-edit"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        unearned = self.tdd(slug, "green", "BM_B", "b")
+        self.assertEqual(unearned.returncode, 2, marker + ": " + unearned.stdout)
+        self.assertEqual(self.map_status()["BM_B"], "pending", marker)
+
+    def test_record_preflight_validates_the_text_sections(self) -> None:
+        marker = "PROSE_SECTIONS_NOT_VALIDATED"
+        slug = "prose-required"
+        begun = self.state("begin", "--slug", slug)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                   "--source", "codex-advisor", "--verdict", "completed")
+        doc = self.tmp / "prose.json"
+        doc.write_text(json.dumps({"behaviorMap": self.two_items()}), encoding="utf-8")
+        bare = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(doc))
+        self.assertEqual(bare.returncode, 2, marker + ": a map-only document was recorded")
+        self.assertIn("affectedSurface", bare.stderr, marker + ": " + bare.stderr)
+        full = build_document("prose", behavior_map=self.two_items())
+        full["openQuestions"] = "how should the seam be placed?"
+        doc.write_text(json.dumps(full), encoding="utf-8")
+        asking = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(doc))
+        self.assertEqual(asking.returncode, 2, marker + ": an open question was recorded")
+        full["openQuestions"] = "none"
+        doc.write_text(json.dumps(full), encoding="utf-8")
+        accepted = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(doc))
+        self.assertEqual(accepted.returncode, 0, marker + ": " + accepted.stdout + accepted.stderr)
+
+    def test_status_reports_the_earned_split(self) -> None:
+        marker = "EARNED_SPLIT_MISSING"
+        slug = "earned-split"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
         self.post_edit("app.py")
-        stopped = self.stop()
-        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
-        payload = json.loads(stopped.stdout) if stopped.stdout else {}
-        self.assertNotIn("decision", payload, marker + ": " + stopped.stdout)
-        self.assertIn("Active workflow: slug=stop-feedback", payload["hookSpecificOutput"]["additionalContext"], marker)
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        self.assertIn("Contract green=1/2", self.state("summary").stdout, marker + ": " + self.state("summary").stdout)
+
+    def test_items_added_after_implementation_each_take_their_red(self) -> None:
+        marker = "LATER_ITEM_RED_DEADLOCKED"
+        slug = "later-items"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\nc = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        added = self.tmp / "later.json"
+        added.write_text(json.dumps({"sourceBehaviorId": "BM_A", "reassessment": "GREEN exposed two more promises", "items": [
+            pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO"),
+            pending_behavior("BM_C", behavior="c is two", seam="app module", expected="app.c == 2", red_failure="C_NOT_TWO")]}), encoding="utf-8")
+        grown = self.state("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(added))
+        self.assertEqual(grown.returncode, 0, grown.stdout + grown.stderr)
+        red_b = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(red_b.returncode, 0, marker + ": " + red_b.stdout + red_b.stderr)
+        red_c = self.tdd(slug, "red", "BM_C", "c")
+        self.assertEqual(red_c.returncode, 0, marker + ": " + red_c.stdout + red_c.stderr)
+        admitted = self.intake("app.py")
+        self.assertEqual(admitted.stdout, "", marker + ": " + admitted.stdout)
+
+    def test_a_skipped_green_is_not_proof(self) -> None:
+        marker = "SKIPPED_RUN_ACCEPTED_AS_GREEN"
+        slug = "skipped-green"
+        self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        (self.repo / "test_probe_a.py").write_text(
+            "import app, unittest\n"
+            "class Probe(unittest.TestCase):\n"
+            "    @unittest.skip('conditionally skipped after implementation')\n"
+            "    def test_value(self): self.assertEqual(app.a, 2, 'A_NOT_TWO')\n",
+            encoding="utf-8",
+        )
+        skipped = self.workflow("tdd", "--slug", slug, "--phase", "green", "--behavior-id", "BM_A",
+                                "--", sys.executable, "-m", "unittest", "test_probe_a")
+        self.assertEqual(skipped.returncode, 2, marker + ": " + skipped.stdout)
+        self.assertEqual(self.map_status()["BM_A"], "red", marker)
+
+    def test_an_early_exit_green_is_not_proof(self) -> None:
+        marker = "EARLY_EXIT_ACCEPTED_AS_GREEN"
+        slug = "early-exit"
+        self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        (self.repo / "test_probe_a.py").write_text(
+            "import app, os, unittest\n"
+            "class Probe(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            "        os._exit(0)\n"
+            "        self.assertEqual(app.a, 2, 'A_NOT_TWO')\n",
+            encoding="utf-8",
+        )
+        cut_short = self.workflow("tdd", "--slug", slug, "--phase", "green", "--behavior-id", "BM_A",
+                                  "--", sys.executable, "-m", "unittest", "test_probe_a")
+        self.assertEqual(cut_short.returncode, 2, marker + ": " + cut_short.stdout)
+        self.assertEqual(self.map_status()["BM_A"], "red", marker)
+
+    def test_an_unhashable_kind_still_records(self) -> None:
+        marker = "UNHASHABLE_KIND_DISCARDS_THE_CONSULT"
+        slug = "list-kind"
+        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "two attributes")
+        begun = self.state("begin", "--slug", slug)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        envelope = self.tmp / "list-kind.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "verdict": "completed", "findings": [
+            {"id": "SPEC-1", "claim": "an unattacked promise", "material": True, "kind": []},
+            {"id": "SPEC-2", "claim": "another", "material": False, "kind": {"type": "note"}}]}), encoding="utf-8")
+        recorded = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                              "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        kinds = {e["findingId"]: e["kind"] for e in json.loads(self.state("status").stdout)["findingStates"]}
+        self.assertEqual(kinds, {"SPEC-1": "behavioral", "SPEC-2": "behavioral"}, marker)
+
+    def test_a_pre_upgrade_red_still_reaches_green(self) -> None:
+        marker = "PRE_UPGRADE_RED_CANNOT_GREEN"
+        slug = "pre-upgrade"
+        self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+
+        def strip_red_command(document: dict) -> dict:
+            for entry in document.get("behaviorMap", []):
+                entry.pop("redCommand", None)
+                entry.pop("redProof", None)
+            return document
+        self.rewrite_latest_evidence(strip_red_command)
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_A", "a")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        self.assertEqual(self.map_status()["BM_A"], "green", marker)
+
+    def test_a_refused_preflight_or_green_leaves_state_unchanged(self) -> None:
+        marker = "PREFLIGHT_REFUSAL_MUTATED_STATE"
+        slug = "refusal-state"
+        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "two attributes")
+        begun = self.state("begin", "--slug", slug)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                   "--source", "codex-advisor", "--verdict", "completed")
+        before, events = self.state("status").stdout, self.events()
+        doc = self.tmp / "refused.json"
+        blank = build_document("prose", behavior_map=self.two_items()); blank["invariants"] = "   "
+        doc.write_text(json.dumps(blank), encoding="utf-8")
+        hollow = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(doc))
+        self.assertEqual(hollow.returncode, 2, marker + ": a blank section was recorded")
+        self.assertIn("invariants", hollow.stderr, marker)
+        broken = build_document("prose", behavior_map=[{"id": "BROKEN"}])
+        doc.write_text(json.dumps(broken), encoding="utf-8")
+        invalid = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(doc))
+        self.assertEqual(invalid.returncode, 2, marker + ": an invalid map was recorded")
+        self.assertEqual((self.state("status").stdout, self.events()), (before, events), marker + ": a refusal mutated state")
+        self.record_preflight_evidence(slug, wid, behavior_map=self.two_items())
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        borrowed = self.workflow("tdd", "--slug", slug, "--phase", "green", "--behavior-id", "BM_B",
+                                 "--", sys.executable, "-m", "unittest", "test_probe_a")
+        self.assertEqual(borrowed.returncode, 2, marker + ": GREEN accepted another item's RED surface")
+        self.assertEqual(self.map_status()["BM_B"], "red", marker)
+
+    def test_an_edit_before_any_review_records_no_invalidation(self) -> None:
+        marker = "NOOP_INVALIDATION_RECORDED"
+        slug = "no-noop"
+        self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        before = self.events()
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.post_edit("app.py")
+        self.assertEqual(self.events(), before, marker + ": an edit before any review appended an event")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        reviewed = self.events()
+        (self.repo / "app.py").write_text("a = 2\nb = 3\n", encoding="utf-8")
+        self.post_edit("app.py")
+        self.assertEqual(self.events(), reviewed + 1, marker + ": an edit after review did not invalidate it")
+        self.assertEqual(json.loads(self.state("status").stdout)["codeReview"]["status"], "pending", marker)
 
 
 class ProducerMaskGuardTests(unittest.TestCase):
