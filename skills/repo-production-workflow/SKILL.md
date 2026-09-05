@@ -133,8 +133,6 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <targeted-command>
 ```
 
-A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose — the one correction is `withdrawn` (step 8) for a never-attacked, unowned item — and a preservation item may additionally be dispositioned through `tdd-map`. Every contract item earns its RED on the clean tree before the first production edit (the RED sweep); one edit may satisfy several red items, and each reaches GREEN through its own RED. A GREEN for an item with no RED is refused. A contract item that `tdd-map` added, not one the preflight declared, is different: it may name what the edits already produced, so its succeeding RED run records it `already-satisfied` as a producer baseline (never proof, never an owner for `fixed`), while a declared item's succeeding post-edit run is still refused.
-
 In this governed workflow the public TDD producers are required; `set-phase` does not accept the `tdd` phase. They keep bounded evidence and advance state but are not proof by themselves. For genuinely non-behavioral work, `--not-required` is available only after every map item is already satisfied or omitted by governing evidence:
 
 ```bash
@@ -198,11 +196,7 @@ JSON
 ```
 
 The JSON document accepts `sourceBehaviorId` (the GREEN item whose consequence it records),
-`reassessment`, `items`, and `dispositions` only. The same document corrects the
-lead's own map mistakes inside the pass: `withdrawn` retires a never-attacked,
-unowned contract item whoever declared it, and a `pending`
-disposition reopens a preservation item from `omitted` or `already-satisfied`;
-neither is proof, and neither touches an attacked or owned item. Terminal proof
+`reassessment`, `items`, and `dispositions` only. Terminal proof
 (TDD `passed` or `not-required`) opens verification directly; no implementation
 acknowledgement is recorded.
 
