@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from hooks.lib.behavior_map import no_change_item
@@ -21,6 +22,14 @@ from hooks.lib.workflow_state import (
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
+
+
+def wait_for_trace_writes(path: Path, count: int = 2) -> int:
+    deadline, found = time.monotonic() + 10, 0
+    while found < count and time.monotonic() < deadline:
+        found = path.read_text(encoding="utf-8").count('"name":"write-tree"') if path.exists() else 0
+        if found < count: time.sleep(0.01)
+    return found
 
 
 def pending_behavior(

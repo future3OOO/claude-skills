@@ -392,8 +392,8 @@ def _occurrence(value: object) -> JsonObject:
 def _disposition_context(value: object) -> JsonObject:
     if not isinstance(value, dict) or set(value) not in ({"workflowId", "candidateTree"}, {"workflowId", "candidateTree", "prHead"}):
         raise ValueError("disposition context requires workflowId, candidateTree, and optional prHead")
-    if not _text(value.get("workflowId")) or not isinstance(value.get("candidateTree"), str) or not re.fullmatch(r"[0-9a-f]{64}", value["candidateTree"]):
-        raise ValueError("disposition context requires workflowId and a 64-hex candidateTree")
+    if not _text(value.get("workflowId")) or not isinstance(value.get("candidateTree"), str) or not re.fullmatch(r"[0-9a-f]{40}", value["candidateTree"]):
+        raise ValueError("disposition context requires workflowId and a 40-hex candidateTree")
     if "prHead" in value and (not isinstance(value["prHead"], str) or not re.fullmatch(r"[0-9a-f]{40}", value["prHead"])):
         raise ValueError("disposition context prHead must be a 40-hex commit")
     return dict(value)

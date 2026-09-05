@@ -250,7 +250,11 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 A no-finding intake binds the reviewed tree and passes immediately. A finding
 intake stays pending until its appended dispositions resolve every material
-finding. A false premise records normalized `result` exactly `false`; otherwise
+finding. Its first disposition classifies the whole intake; later correction
+documents name only changed findings. Broad verification, the typed gate, and a
+new lead review refuse while current classification, reservation, mapped GREEN,
+or reassessment work remains open. A false premise records normalized `result`
+exactly `false`; otherwise
 rejection requires zero occurrence on a complete domain. `report-only` resolves
 completion without authorizing an edit and cannot later become `fixed`. Before
 fixing a behavioral finding, reserve its exact
@@ -275,7 +279,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   complete --repo "$PWD"
 ```
 
-`complete` refuses, from inside its transaction, unless every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, the final source is `codex-advisor` with `commit-ready`, the reviewable working tree still matches the manifest recorded by the lead review, and every evidence phase carries its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
+`complete` refuses, from inside its transaction, unless every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, and the context-matched final `codex-advisor` intake has only effective terminal findings. The immutable raw verdict remains evidence but is not an indefinite veto after closure; `context-mismatch`, a pending one-response rejection appeal, or persistent disagreement still blocks. The reviewable working tree must match the manifest recorded by the lead review, and every evidence phase must carry its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion
 

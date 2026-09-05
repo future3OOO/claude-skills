@@ -24,10 +24,14 @@ flowchart LR
     TM -->|map resolved| V[verification]
     V --> CR[lead structured code review when non-trivial]
     CR --> A2[independent final Codex Advisor review]
-    A2 --> C{commit-ready and findings addressed?}
-    C -->|behavioral finding| TM2[tdd-map adds the item]
+    A2 --> C{context matched and effective findings terminal?}
+    C -->|context mismatch| A2
+    C -->|behavioral correction| TM2[tdd-map adds the item]
     TM2 --> TR
-    C -->|non-behavioral finding| I
+    C -->|non-behavioral correction| I
+    C -->|evidence-backed rejection| AP[one appeal on the same session]
+    AP --> C
+    C -->|persistent disagreement| H[needs-human-owner-adjudication]
     C -->|yes| WC[workflow complete]
     WC --> DL[delivery]
     DL --> PR[reviewer completion]
@@ -123,8 +127,10 @@ readiness for the advisor phases without mutating anything.
 - preflight, production-code, and verification each carrying their producer's
   evidence reference;
 - lead code review passed/not required with material findings addressed;
-- final review from `codex-advisor` with `commit-ready` and no pending material
-  findings;
+- a context-matched final review from `codex-advisor` whose effective findings
+  are terminal: the immutable raw verdict remains evidence, but
+  `fix-before-commit` is not a veto after closure;
+- no pending final rejection appeal or persistent disagreement;
 - the reviewable working tree unchanged since the recorded lead review.
 
 The historical `pass-state.py`, recorder, TDD, and verification scripts are temporary compatibility adapters. They call the same unified CLI Module and contain no persistence or path logic; new callers use `workflow.py` directly.
@@ -137,7 +143,8 @@ production Edit/Write/NotebookEdit
   -> verification = pending
   -> codeReview = pending
   -> finalReview = pending
-  -> nextAction = implementation
+  -> nextAction = reassess-behavior-map when a resolved map was touched,
+                  otherwise implementation/correction
 ```
 
 Invalidation occurs before quality feedback, so a failing quality check cannot
@@ -148,6 +155,15 @@ governance-first pass therefore returns to TDD, while a completed
 implementation returns to verification.
 
 Behavioral findings from the lead's code review or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. The behavioral/non-behavioral classification is a lead-owned obligation, not a machine-validated edge: the recorder validates the reassessment's structure and blocks completion until one is recorded, but it cannot judge the classification itself - a behavioral defect routed through a why-only reassessment is a doctrine violation the reviews are expected to catch, not a state the hooks can refuse. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
+
+A finding envelope is one correction batch. Its first disposition classifies every
+finding; later documents name only changed findings and preserve append-only
+history. Until finding, reservation, GREEN, or reassessment closure is complete,
+`verify`, the typed gate, a new lead-review intake, the final checkpoint, and
+`complete` refuse before broad work runs. Targeted TDD and direct changed-Seam
+probes remain available. Final rejections use one context-matched appeal response:
+omission or same-ID `material:false` concedes, a material re-raise records
+persistent disagreement, and new IDs form their own immutable intake.
 
 ## Approval freshness
 

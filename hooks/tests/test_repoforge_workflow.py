@@ -181,11 +181,11 @@ class RepoForgeWorkflowTests(unittest.TestCase):
 
     def test_an_unresolved_producer_result_refuses_and_mutates_nothing(self) -> None:
         """A planned graph the producer could not resolve is not evidence."""
-        before = self.status()
-        ledger = self.ledger_bytes(before)
         (self.repo / "caller.py").write_text(
             "from app import compute\n\n\ndef run():\n    return compute(2)\n", encoding="utf-8"
         )
+        before = self.status()
+        ledger = self.ledger_bytes(before)
 
         # A real two-check plan with the graph engine disabled: the producer reports
         # the analysis blocked rather than resolved, and still exits zero.

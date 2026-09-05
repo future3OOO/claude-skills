@@ -93,9 +93,14 @@ Findings carry exactly `id`, `claim`, `material`, and `kind` (`behavioral` or
 
 The wrapper records the exact UTF-8 response and its digest as immutable finding
 intake; it never dispositions. After reading the output, the lead validates
-every finding and appends a separate intake-referenced disposition. Only
-`commit-ready` with all material findings resolved allows workflow `complete`.
-This is workflow state, not permission to run Git.
+every finding and appends a separate intake-referenced disposition. Completion
+derives from the context-matched intake's effective terminal dispositions, not
+from the raw verdict alone. A `context-mismatch` advances nothing and must be
+re-consulted. A final `rejected-with-evidence` remains pending for one response
+on the same workflow-bound session; omission or a same-ID nonmaterial response
+concedes it, while a material re-raise blocks with
+`needs-human-owner-adjudication`. This is workflow state, not permission to run
+Git.
 
 ## Invocation
 
@@ -192,9 +197,17 @@ review. No nonce, skip file, stamp, attestation, or audited exception authorizes
 completion.
 
 The lead validates every advisor finding against current code and proof, then
-records it as fixed, rejected-with-evidence, or accepted follow-up. Any
-production edit after final review resets code review and final review to
-pending.
+records it as fixed, rejected-with-evidence, or accepted follow-up. The first
+disposition classifies the complete intake; later correction documents name
+only changed findings and append supersession links. While classification,
+correction, mapped GREEN, reassessment, reservation closure, or disagreement
+remains open, generic verification, the typed gate, lead review, and completion
+refuse. An appeal always blocks completion; when its current candidate bindings
+remain valid it also blocks those broad reruns, while candidate invalidation
+permits only missing generic, typed-gate, and lead-review bindings to refresh
+before the one response. Targeted TDD and changed-Seam probes remain available.
+Any production edit after final review resets code review and final review to
+pending, but the immutable intake remains closable under the same workflow ID.
 
 The wrapper itself records the raw result. After a completed preflight
 consult, record its lead-owned disposition before production preflight:
@@ -212,7 +225,7 @@ findings. The strict path carries only the immutable intake evidence identity an
 dispositions; it never restates a finding:
 
 ```json
-{"context":{"workflowId":"<active-workflowId>","candidateTree":"<64-hex tree digest>","prHead":"<optional HEAD>"},"intakeEvidenceId":"<advisor intake evidence>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","kind":"nonbehavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"domain":"...","count":0,"complete":true,"command":"...","result":"..."},"materialConsequence":{"claim":"...","command":"...","result":"..."},"evidence":"verified correction"}]}
+{"context":{"workflowId":"<active-workflowId>","candidateTree":"<40-hex Git tree>","prHead":"<optional HEAD>"},"intakeEvidenceId":"<advisor intake evidence>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","kind":"nonbehavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"domain":"...","count":0,"complete":true,"command":"...","result":"..."},"materialConsequence":{"claim":"...","command":"...","result":"..."},"evidence":"verified correction"}]}
 ```
 
 Every disposition carries `kind`, `premise`, `occurrence`, and `materialConsequence` at both stages.

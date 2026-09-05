@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.tests.support import build_no_change_document, record_context_forge
+from hooks.tests.support import build_no_change_document, record_context_forge, wait_for_trace_writes
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 
@@ -86,6 +86,15 @@ class WorkflowLedgerTests(unittest.TestCase):
     @property
     def database(self) -> Path:
         return self.slot / "workflow.sqlite3"
+
+    def ledger_counts(self) -> dict[str, int]:
+        tables = ("metadata", "workflows", "evidence", "review_manifests", "workflow_events",
+                  "event_evidence", "event_manifests", "active_projection", "migration_records")
+        if not self.database.exists(): return {table: 0 for table in tables}
+        with sqlite3.connect(self.database) as connection:
+            existing = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            return {table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    if table in existing else 0 for table in tables}
 
     def begin(self, slug: str = "ledger") -> dict[str, object]:
         result = self.cli("begin", "--repo", str(self.repo), "--slug", slug)
@@ -419,6 +428,8 @@ class WorkflowLedgerTests(unittest.TestCase):
         # Context Forge claim itself publishes as pending until the bootstrap reruns.
         self.assertEqual((legacy["gitnexus"], legacy["repoContextForge"]), ("passed", "passed"))
         expected["gitnexus"] = expected["repoContextForge"] = "pending"
+        expected["activeCandidateTree"] = state["activeCandidateTree"]
+        self.assertRegex(str(state["activeCandidateTree"]), r"^[0-9a-f]{40}$")
         self.assertEqual(state, expected)
         self.assertEqual((self.slot / "workflow.json").read_bytes(), legacy_bytes)
         self.assertEqual(evidence_path.read_bytes(), evidence_bytes)
@@ -459,6 +470,31 @@ class WorkflowLedgerTests(unittest.TestCase):
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         self.assertTrue(json.loads(green.stdout.splitlines()[-1])["valid"])
         self.assertEqual(json.loads(self.cli("status", "--repo", str(self.repo)).stdout)["tdd"], "passed")
+
+    def test_candidate_refused_legacy_begin_rolls_back_authority_import(self) -> None:
+        marker = "GUARDED_MUTATION_PRECOMMITTED_AUTHORITY_ROWS"
+        self.legacy_state(); before = self.ledger_counts(); self.slot.mkdir(parents=True, exist_ok=True)
+        lock = sqlite3.connect(self.database); lock.execute("BEGIN IMMEDIATE")
+        trace = self.tmp / "legacy-begin-git-trace.json"
+        process = subprocess.Popen([sys.executable, str(WORKFLOW), "begin", "--repo", str(self.repo), "--slug", "replacement"],
+            cwd=self.repo, env={**self.env, "GIT_TRACE2_EVENT": str(trace)}, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertGreaterEqual(wait_for_trace_writes(trace), 2, marker)
+            (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8"); lock.commit()
+            stdout, stderr = process.communicate(timeout=10)
+        finally:
+            lock.close()
+            if process.poll() is None: process.kill(); process.wait()
+        self.assertEqual((process.returncode, "active candidate changed" in stderr.lower(), self.ledger_counts(),
+                          (self.slot / "workflow.json").exists()), (2, True, before, True), marker + stdout + stderr)
+
+    def test_incomplete_legacy_complete_commits_no_authority_rows(self) -> None:
+        marker = "COMPLETE_REFUSAL_PRECOMMITTED_LEGACY_ROWS"
+        self.legacy_state(); before = self.ledger_counts(); result = self.cli("complete", "--repo", str(self.repo))
+        self.assertEqual((result.returncode, "workflow incomplete" in result.stderr,
+                          self.ledger_counts(), (self.slot / "workflow.json").exists()),
+                         (2, True, before, True), marker + result.stdout + result.stderr)
 
     def test_legacy_migration_uses_evidence_time_for_the_latest_tdd_candidate(self) -> None:
         legacy, _ = self.legacy_state()

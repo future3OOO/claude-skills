@@ -368,12 +368,9 @@ class ContractProofAuthorityTests(unittest.TestCase):
         )
         self.assertEqual(flagged.returncode, 0, flagged.stdout + flagged.stderr)
         set_phase(self.identity, "implementation", "passed")
-        for extra in (("--", sys.executable, "-c", "pass"), ("--kind", "quality-gate", "--base-ref", "HEAD")):
-            verified = self.h.cli("verify", "--slug", slug, *extra)
-            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
-        set_phase(self.identity, "code-review", "passed", findings="none")
-        record_advisor_result(self.identity, slug, workflow_id, "final", "codex-advisor", "commit-ready")
-        advisor_disposition(self.identity, slug, workflow_id, "final", "none")
+        verified = self.h.cli("verify", "--slug", slug, "--", sys.executable, "-c", "pass")
+        self.assertEqual(verified.returncode, 2, marker + verified.stdout + verified.stderr)
+        self.assertIn("reassessment", verified.stderr, marker)
         with self.assertRaises(WorkflowIncomplete, msg=marker) as refused:
             complete(self.identity, slug=slug, workflow_id=workflow_id)
         self.assertIn("reassessment", str(refused.exception), marker)
