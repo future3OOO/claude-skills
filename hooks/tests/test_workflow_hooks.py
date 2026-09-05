@@ -1532,5 +1532,23 @@ class WrapperPromptTests(HookHarness):
         self.assertIn("inside the asserted contract", args, marker)
 
 
+class ProducerMaskGuardTests(unittest.TestCase):
+    def test_the_masked_producer_tests_skip_without_bwrap(self) -> None:
+        """CI has no bwrap: the masking class must skip there, not error on spawn."""
+        marker = "BWRAP_ABSENT_TESTS_ERROR"
+        tools = Path(tempfile.mkdtemp(prefix="no-bwrap-")) / "bin"
+        tools.mkdir()
+        for tool in ("git", "python3"):
+            (tools / tool).symlink_to(shutil.which(tool) or self.fail(f"suite requires {tool}"))
+        run = subprocess.run(
+            [sys.executable, "-m", "unittest", "hooks.tests.test_workflow_hooks.RevalidateWithoutProducerTests"],
+            cwd=ROOT, env={**os.environ, "PATH": str(tools)}, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertNotIn("FileNotFoundError", run.stderr, marker + ": " + run.stderr[-600:])
+        self.assertIn("skipped", run.stderr, marker + ": " + run.stderr[-600:])
+        self.assertEqual(run.returncode, 0, marker)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

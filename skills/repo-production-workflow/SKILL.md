@@ -129,7 +129,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <targeted-command>
 ```
 
-A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose — the one correction is `withdrawn` (step 8) for a never-attacked, unowned item that `tdd-map` itself added after preflight — and a preservation item may additionally be dispositioned through `tdd-map`. After another genuine contract cycle has opened a dirty implementation candidate, `tdd --phase green` may record a separate pending contract item as `post-edit-passed` from its own directly invoked passing pytest or unittest surface (one naming its own test target and not another item's recorded proof or baseline command); it proves the current candidate, not an item-specific RED/GREEN history, and opens nothing.
+A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose — the one correction is `withdrawn` (step 8) for a never-attacked, unowned item — and a preservation item may additionally be dispositioned through `tdd-map`. After another genuine contract cycle has opened a dirty implementation candidate, `tdd --phase green` may record a separate pending contract item as `post-edit-passed` from its own directly invoked passing pytest or unittest surface (one naming its own test target and not another item's recorded proof or baseline command); it proves the current candidate, not an item-specific RED/GREEN history, and opens nothing.
 
 In this governed workflow the public TDD producers are required; `set-phase` does not accept the `tdd` phase. They keep bounded evidence and advance state but are not proof by themselves. For genuinely non-behavioral work, `--not-required` is available only after every map item is already satisfied or omitted by governing evidence:
 
@@ -199,9 +199,9 @@ JSON
 The JSON document accepts `sourceBehaviorId` (the GREEN or `post-edit-passed` item whose consequence it records),
 `reassessment`, `items`, and `dispositions` only. The same document corrects the
 lead's own map mistakes inside the pass: `withdrawn` retires a never-attacked,
-unowned contract item that `tdd-map` added after preflight, and a `pending`
+unowned contract item whoever declared it, and a `pending`
 disposition reopens a preservation item from `omitted` or `already-satisfied`;
-neither is proof, and neither reaches a preflight-declared contract item. Only after terminal proof
+neither is proof, and neither touches an attacked or owned item. Only after terminal proof
 leaves TDD `passed` or `not-required` may implementation be recorded passed:
 
 ```bash

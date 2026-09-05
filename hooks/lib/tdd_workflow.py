@@ -620,7 +620,7 @@ def _run_tdd(values: list[str]) -> int:
                 updated_item["proofCommand"] = command_text
                 next_active = None
                 reassessment_pending = None
-                action = "in-progress"
+                action = "in-progress" if behavior_map.unresolved(updated) else "passed"
             else:
                 next_active = args.behavior_id
                 reassessment_pending = None
@@ -703,10 +703,6 @@ def _map_update(values: list[str]) -> int:
         raise WorkflowError("tdd-map requires a recorded preflight Behavior Map")
     if isinstance(current, dict) and current.get("activeBehaviorId"):
         raise WorkflowError("finish the active RED/GREEN cycle before reassessing the map")
-    declared = frozenset(
-        str(entry["id"])
-        for entry in behavior_map.recorded_map(None, preflight_document) or []
-    )
     settled_findings = frozenset(
         (str(entry.get("intakeEvidenceId")), str(entry.get("findingId")))
         for entry in state.get("findingStates") or []
@@ -734,9 +730,7 @@ def _map_update(values: list[str]) -> int:
 
     updated = behavior_map.clone(items)
     if dispositions:
-        behavior_map.apply_dispositions(
-            updated, dispositions, declared=declared, settled_findings=settled_findings
-        )
+        behavior_map.apply_dispositions(updated, dispositions, settled_findings=settled_findings)
     added_items: list[JsonObject] = []
     if additions:
         added_items = behavior_map.added_items(additions, updated)
