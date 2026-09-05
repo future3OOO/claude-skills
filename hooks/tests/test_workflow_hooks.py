@@ -1346,6 +1346,7 @@ class PerEditOverheadTests(HookHarness):
         self.assertEqual(cleared.returncode, 0, marker + ": " + cleared.stdout + cleared.stderr)
         self.assertNotIn("paused", json.loads(self.state("status").stdout), marker)
 
+@unittest.skipUnless(shutil.which("bwrap"), "bwrap unavailable: producer absence is exercised natively on hosts without the producer install")
 class RevalidateWithoutProducerTests(HookHarness):
     """Issue #182 CI fix: wrapper-owned --revalidate refusals precede the
     producer-existence blocker. The bwrap tmpfs masks the real producer install
