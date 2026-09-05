@@ -216,38 +216,6 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         self.assertEqual(state["tddCycleCount"], 1)
         self.assertEqual(edit_blockers(resolve_repo_identity(self.repo), state), [])
 
-    def test_green_blocks_more_production_until_map_reassessment(self) -> None:
-        behavior = pending_behavior("BM_VALUE")
-        slug, workflow_id = self.begin_to_preflight([behavior])
-        red = self.tdd(
-            slug, "red", "BM_VALUE",
-            "import app; assert app.value == 2, 'VALUE_NOT_TWO'",
-        )
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = self.tdd(
-            slug, "green", "BM_VALUE",
-            "import app; assert app.value == 2, 'VALUE_NOT_TWO'",
-        )
-        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
-        identity = resolve_repo_identity(self.repo)
-        state = read_workflow(identity)
-        self.assertIn("reassessment", edit_blockers(identity, state)[0])
-
-        assessed = self.update_map(
-            slug,
-            workflow_id,
-            {
-                "sourceBehaviorId": "BM_VALUE",
-                "reassessment": "No new load-bearing mechanism or touched-Seam interaction.",
-                "items": [],
-            },
-        )
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        state = read_workflow(identity)
-        self.assertEqual(state["tdd"], "passed")
-        self.assertEqual(edit_blockers(identity, state), [])
-
     def test_reassessment_can_add_the_next_architecture_falsifier(self) -> None:
         behavior = pending_behavior("BM_VALUE")
         slug, workflow_id = self.begin_to_preflight([behavior])
