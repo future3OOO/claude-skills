@@ -126,7 +126,7 @@ Use the `repo-production-workflow` skill as the default first skill for producti
 
 The full chain, in order — every named skill is INVOKED with the Skill tool by exact name (reading its `SKILL.md` does not satisfy the step):
 
-`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`, which executes the packet-scoped GitNexus checks and records that graph result as workflow evidence — there is no separate transition to record) → `diagnose` (bugs/regressions/perf only) → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `workflow.py record-production-code` and the gate's JSON verdict) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
+`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`, which executes the packet-scoped GitNexus checks and records that graph result as workflow evidence — there is no separate transition to record) → `diagnose` (bugs/regressions/perf only) → `codex-advisor` scope check when the request raises a design or scope question (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked; its gate run is the baseline) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
 
 Invocation policy:
 
@@ -248,10 +248,10 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 
 Hook configuration lives in `~/.claude/settings.json`. Five facts govern how hooks change what you do:
 
-- Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded before-edit sequence through production preflight, and docs, scratch, and non-repository paths are exempt.
+- Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded Behavior Map and a valid contract RED, and docs, scratch, and non-repository paths are exempt.
 - Every admitted production edit, and every governance edit, invalidates downstream review readiness before quality feedback returns, so review and final review must be earned again. A production edit against a completed workflow remains blocked and terminal.
 - `SessionStart(compact|resume)` restores the chain from committed SQLite state; compaction never advances or waives a step.
-- Incomplete work latches `Stop` with the exact `nextAction`; record an instance-bound `pause --slug <slug> --workflow-id <id> --reason` for a blocker the payload cannot show.
+- `Stop` never blocks; it reports changed code and the workflow summary for the repositories the session edited in.
 - No hook parses Bash or authorizes Git.
 
-The `repo-production-workflow` skill's `WORKFLOW-MAP.md` is the canonical operational documentation for per-hook roles, Stop permit conditions, and re-stop semantics.
+The `repo-production-workflow` skill's `WORKFLOW-MAP.md` is the canonical operational documentation for per-hook roles and the Stop feedback.

@@ -314,9 +314,7 @@ class WorkflowHookTests(HookHarness):
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
         after_red = self.intake("app.py")
         self.assertEqual(after_red.returncode, 0, after_red.stdout + after_red.stderr)
-        cleared = json.loads(after_red.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertNotIn("TDD", cleared, "the TDD gate still blocked after a recorded RED")
-        self.assertIn("production-code", cleared, "the next missing step after RED is production-code")
+        self.assertEqual(after_red.stdout, "", "the production edit stayed blocked after a recorded RED")
 
     def app_value_command(self) -> tuple[str, ...]:
         (self.repo / "test_app_behavior.py").write_text(
@@ -343,80 +341,6 @@ class WorkflowHookTests(HookHarness):
              "--", *self.app_value_command()],
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
-
-    def test_production_edit_requires_the_recorded_production_code_step(self) -> None:
-        begun = self.state("begin", "--slug", "production-code-gate")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-        record_context_forge(self.repo, self.tmp)
-        for transition in (
-            ("advisor-result", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", "production-code-gate", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-        ):
-            result = self.state(*transition)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.record_preflight_evidence("production-code-gate", wid, behavior_map=[pending_behavior("BM_HOOK", behavior="app value must be 2", seam="app module import", expected="value equals 2", red_failure="VALUE_NOT_TWO")])
-
-        early_test = self.intake("tests/test_app.py")
-        self.assertEqual(early_test.returncode, 0, early_test.stdout + early_test.stderr)
-        self.assertEqual(early_test.stdout, "", "a test edit before RED and production-code was denied")
-        gate_json = self.tmp / "gate.json"
-        gate_json.write_text(json.dumps({"ok": True, "gateVersion": "hook-test", "checks": []}), encoding="utf-8")
-        early_step = subprocess.run(
-            [sys.executable, str(WORKFLOW), "record-production-code", "--repo", str(self.repo),
-             "--slug", "production-code-gate", "--workflow-id", wid, "--input", str(gate_json)],
-            cwd=ROOT, env=self.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(early_step.returncode, 2, "production-code was recorded before the TDD decision")
-        self.assertIn("tdd", early_step.stderr)
-
-        red = self.red("production-code-gate")
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-
-        blocked = self.intake("app.py")
-        self.assertTrue(blocked.stdout, "a production edit was admitted before production-code")
-        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("production-code", decision["permissionDecisionReason"])
-        for status in ("in-progress", "passed"):
-            premature = self.state("set-phase", "--phase", "implementation", "--status", status)
-            self.assertEqual(premature.returncode, 2, f"implementation {status} bypassed production-code")
-            self.assertIn("production-code", premature.stderr)
-        # Resolve the map so completion reaches the production-code refusal
-        # rather than stopping at the unresolved-item gate.
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = subprocess.run(
-            [sys.executable, str(WORKFLOW), "tdd", "--cwd", str(self.repo), "--slug", "production-code-gate",
-             "--phase", "green", "--behavior-id", "BM_HOOK",
-             "--", *self.app_value_command()],
-            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
-        reassess_json = self.tmp / "reassess.json"
-        reassess_json.write_text(json.dumps({
-            "sourceBehaviorId": "BM_HOOK",
-            "reassessment": "Hook-ordering fixture: no new load-bearing mechanism.",
-        }), encoding="utf-8")
-        assessed = subprocess.run(
-            [sys.executable, str(WORKFLOW), "tdd-map", "--repo", str(self.repo),
-             "--slug", "production-code-gate", "--workflow-id", wid, "--input", str(reassess_json)],
-            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        self.assertIn("productionCode", self.state("complete").stderr)
-        latched = json.loads(self.stop().stdout)
-        self.assertEqual(latched.get("decision"), "block")
-        self.assertIn("production-code=pending", latched["reason"])
-
-        self.record_gate_evidence("production-code-gate", wid)
-        self.assertEqual(json.loads(self.state("status").stdout)["productionCode"], "passed")
-
-        admitted = self.intake("app.py")
-        self.assertEqual(admitted.returncode, 0, admitted.stdout + admitted.stderr)
-        self.assertEqual(admitted.stdout, "", "a production edit was denied after production-code was recorded")
-        started = self.state("set-phase", "--phase", "implementation", "--status", "in-progress")
-        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
 
     def test_completed_workflow_does_not_authorize_the_next_production_edit(self) -> None:
         self.complete_workflow()
@@ -640,580 +564,34 @@ class WorkflowHookTests(HookHarness):
         settings = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
         self.assertNotIn("PreCompact", settings["hooks"])
 
-    def test_stop_contract_follows_the_real_captured_payload(self) -> None:
-        begun = self.state("begin", "--slug", "stop-real")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        record_context_forge(self.repo, self.tmp)
-
-        for label, kwargs in (
-            ("background task", {"shape": "natural-with-background-task"}),
-            ("scheduled wakeup", {"session_crons": [{"id": "cron-1"}]}),
-        ):
-            released = self.stop(**kwargs)
-            self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
-            payload = json.loads(released.stdout) if released.stdout else {}
-            self.assertNotIn("decision", payload, f"{label} did not permit Stop")
-
-        delegate = self.stop(env_extra={"CODEX_ADVISOR_ACTIVE": "1"})
-        self.assertEqual(delegate.returncode, 0, delegate.stdout + delegate.stderr)
-        self.assertEqual(delegate.stdout, "", "CODEX_ADVISOR_ACTIVE delegate was latched")
-        shared_only = self.stop(env_extra={"ADVISOR_ACTIVE": "1"})
-        self.assertEqual(
-            json.loads(shared_only.stdout).get("decision"), "block",
-            "ADVISOR_ACTIVE alone must not release the latch",
-        )
-
-        blocked = self.stop()
-        self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
-
-        stalled = self.stop(shape="active")
-        self.assertEqual(stalled.returncode, 0, stalled.stdout + stalled.stderr)
-        self.assertEqual(stalled.stdout, "", "no-progress re-stop must be silent, not re-prompt")
-
-        wid = json.loads(self.state("status").stdout)["workflowId"]
-        progressed = self.state(
-            "advisor-result", "--slug", "stop-real", "--workflow-id", wid,
-            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
-        )
-        self.assertEqual(progressed.returncode, 0, progressed.stdout + progressed.stderr)
-        relatched = self.stop(shape="active")
-        self.assertEqual(
-            json.loads(relatched.stdout).get("decision"), "block",
-            "progress since the last block must re-latch even on stop_hook_active",
-        )
-
-        self.complete_workflow("stop-real", resume=True)
-        finished = self.stop(shape="active")
-        self.assertEqual(finished.returncode, 0, finished.stdout + finished.stderr)
-        done = json.loads(finished.stdout) if finished.stdout else {}
-        self.assertNotIn("decision", done)
-
-    def test_stop_latch_blocks_incomplete_and_permits_terminal_states(self) -> None:
-        begun = self.state("begin", "--slug", "stop-latch")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-
-        blocked = self.stop()
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        self.assertTrue(blocked.stdout, "incomplete workflow did not block Stop")
-        decision = json.loads(blocked.stdout)
-        self.assertEqual(decision.get("decision"), "block")
-        self.assertIn("repo-context-forge", decision["reason"])
-        self.assertIn("slug=stop-latch", decision["reason"])
-        self.assertIn(
-            "pause --slug 'stop-latch' --workflow-id", decision["reason"],
-            "the latch recovery instruction does not match the instance-bound pause Interface",
-        )
-
-        repeat = self.stop()
-        self.assertEqual(json.loads(repeat.stdout).get("decision"), "block")
-
-        looped = self.stop(shape="active")
-        self.assertEqual(looped.returncode, 0, looped.stdout + looped.stderr)
-        looped_payload = json.loads(looped.stdout) if looped.stdout else {}
-        self.assertNotIn("decision", looped_payload, "stop_hook_active without progress did not release")
-
-        delegate = self.stop(env_extra={"CODEX_ADVISOR_ACTIVE": "1"})
-        self.assertEqual(delegate.returncode, 0, delegate.stdout + delegate.stderr)
-        self.assertEqual(delegate.stdout, "", "advisor delegate session was latched")
-
-        empty_pause = self.state("pause", "--slug", "stop-latch", "--workflow-id", wid, "--reason", " ")
-        self.assertEqual(empty_pause.returncode, 2, empty_pause.stdout + empty_pause.stderr)
-
-        paused = self.state("pause", "--slug", "stop-latch", "--workflow-id", wid, "--reason", "waiting on scheduled background CI wakeup")
-        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
-        released = self.stop()
-        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
-        payload = json.loads(released.stdout)
-        self.assertNotIn("decision", payload)
-        self.assertIn("slug=stop-latch", payload["hookSpecificOutput"]["additionalContext"])
-
-        record_context_forge(self.repo, self.tmp)
-        relatched = self.stop()
-        self.assertEqual(json.loads(relatched.stdout).get("decision"), "block", "advancing update did not clear the pause")
-
-        repaused = self.state("pause", "--slug", "stop-latch", "--workflow-id", wid, "--reason", "waiting again")
-        self.assertEqual(repaused.returncode, 0, repaused.stdout + repaused.stderr)
-        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
-        edited = self.post_edit("app.py")
-        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
-        resumed = self.stop()
-        self.assertEqual(json.loads(resumed.stdout).get("decision"), "block", "edit-triggered invalidation did not clear the pause")
-
-        self.complete_workflow("stop-latch", resume=True)
-        completed = self.stop()
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        done = json.loads(completed.stdout)
-        self.assertNotIn("decision", done)
-        self.assertIn("slug=stop-latch phase=complete", done["hookSpecificOutput"]["additionalContext"])
-
-    def test_stop_follows_the_sessions_edited_repository_not_the_cwd_slot(self) -> None:
-        # Issue #44: Stop resolved its slot from the session cwd, so a pass in a
-        # worktree the session was not launched from was never consulted and its
-        # incomplete work could not latch.
-        elsewhere = self.second_repo("elsewhere")
-        begun = self.state("begin", "--slug", "worktree-pass")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-
-        edited = self.post_edit("app.py")
-        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
-
-        blocked = self.stop(cwd=elsewhere)
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        self.assertTrue(blocked.stdout, "the edited repository's incomplete pass was never consulted")
-        decision = json.loads(blocked.stdout)
-        self.assertEqual(decision.get("decision"), "block")
-        self.assertIn("slug=worktree-pass", decision["reason"])
-
-        key = resolve_repo_identity(self.repo).key
-        log = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / key / "stop-latch-log.jsonl"
-        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(
-            [event["repo"] for event in events], [key],
-            "the latch telemetry does not name the slot it fired against",
-        )
-
-    def test_an_unrelated_cwd_pass_is_not_reported_to_a_session_working_elsewhere(self) -> None:
-        # The other half of #44: a session launched in a checkout that happens to
-        # hold a pass was given that pass's completion feedback instead of its own.
-        elsewhere = self.second_repo("elsewhere")
-        unrelated = self.state("begin", "--slug", "unrelated-cwd-pass", repo=elsewhere)
-        self.assertEqual(unrelated.returncode, 0, unrelated.stdout + unrelated.stderr)
-        self.complete_workflow("associated-pass")
-        edited = self.post_edit("app.py")
-        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
-
-        stopped = self.stop(cwd=elsewhere)
-        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
-        self.assertNotIn(
-            "unrelated-cwd-pass", stopped.stdout,
-            "the unrelated cwd slot leaked into a session that works elsewhere",
-        )
-        payload = json.loads(stopped.stdout) if stopped.stdout else {}
-        self.assertNotIn("decision", payload, "an unrelated cwd pass latched a session working elsewhere")
-        self.assertIn("slug=associated-pass", payload["hookSpecificOutput"]["additionalContext"])
-
-    def test_a_latch_the_association_rule_suppresses_is_counted(self) -> None:
-        # The cost of consulting associations exclusively is a latch that would
-        # have fired on the cwd slot. Counting it is the only way that cost is
-        # ever observable: the payload's cwd is written to no state file, so an
-        # audit after the fact cannot reconstruct which slot was passed over.
-        elsewhere = self.second_repo("elsewhere")
-        unrelated = self.state("begin", "--slug", "unrelated-cwd-pass", repo=elsewhere)
-        self.assertEqual(unrelated.returncode, 0, unrelated.stdout + unrelated.stderr)
-        self.complete_workflow("associated-pass")
-        edited = self.post_edit("app.py")
-        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
-
-        stopped = self.stop(cwd=elsewhere)
-        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
-        self.assertNotIn(
-            "decision", json.loads(stopped.stdout) if stopped.stdout else {},
-            "counting the suppressed latch must not start latching it",
-        )
-
-        key = resolve_repo_identity(elsewhere).key
-        log = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / key / "stop-latch-log.jsonl"
-        events = [
-            json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
-        ] if log.exists() else []
-        suppressed = [event for event in events if event["event"] == "cwd-suppressed"]
-        self.assertEqual(
-            [(event["repo"], event["slug"]) for event in suppressed], [(key, "unrelated-cwd-pass")],
-            "the latch the association rule cost was not counted against the slot it was cost in",
-        )
-
-    def test_running_work_releases_stop_without_reading_completion(self) -> None:
-        # The permit for running work is checked before readiness, so a workflow
-        # whose recorded state cannot be evaluated still releases. Ordering, not
-        # exception handling: swallowing the error here would hide exactly the
-        # readiness failures the latch exists to enforce.
-        begun = self.state("begin", "--slug", "running-work-release")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        # JSON-valid but unhashable, which the canonical state parser accepts
-        # and readiness cannot test for membership. A privileged writer can
-        # still replace ledger bytes; the ledger does not claim otherwise.
-        self.rewrite_latest_state(
-            lambda state: state.__setitem__("codeReview", {"status": "passed", "findings": []})
-        )
-
-        released = self.stop(shape="natural-with-background-task")
-        self.assertEqual(
-            released.returncode, 0,
-            "a stop permitted by running work evaluated readiness and died: " + released.stderr,
-        )
-        # Exit zero alone would also describe a block, which is the outcome this
-        # permit exists to prevent, so the decision itself is what is asserted.
-        self.assertNotIn(
-            "decision", json.loads(released.stdout) if released.stdout else {},
-            "running work did not release the stop",
-        )
-
-    def test_a_payload_without_a_session_id_associates_nothing(self) -> None:
-        # A session key is per-session by definition. Defaulting a missing id to a
-        # shared literal made every anonymous invocation share one association
-        # bucket, so one anonymous session's repository blocked another's Stop —
-        # issue #44's cross-talk, reintroduced one level up.
-        elsewhere = self.second_repo("elsewhere")
-        mine = self.state("begin", "--slug", "anon-edited")
-        self.assertEqual(mine.returncode, 0, mine.stdout + mine.stderr)
-        theirs = self.state("begin", "--slug", "anon-cwd-pass", repo=elsewhere)
-        self.assertEqual(theirs.returncode, 0, theirs.stdout + theirs.stderr)
-
-        edited = self.post_edit("app.py", session=None)
-        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
-
-        stopped = self.stop(cwd=elsewhere, session=None)
-        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
-        self.assertNotIn(
-            "anon-edited", stopped.stdout,
-            "an anonymous payload reached another anonymous session's repository",
-        )
-        # Blocking specifically: non-blocking context would also carry the slug,
-        # so naming it is not evidence the cwd pass was actually latched.
-        decision = json.loads(stopped.stdout)
-        self.assertEqual(decision.get("decision"), "block", "the anonymous Stop lost its own cwd fallback")
-        self.assertIn("slug=anon-cwd-pass", decision["reason"])
-
-        sessions = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions"
-        self.assertEqual(
-            sorted(path.name for path in sessions.iterdir()) if sessions.exists() else [], [],
-            "a payload with no session id recorded an association anyway",
-        )
-        # The association is the only thing withheld. Invalidation is visible in
-        # the phase; the surviving per-edit feedback channel is proven by a
-        # payload lint must flag, since a clean edit emits nothing either way.
-        self.assertEqual(json.loads(self.state("status").stdout)["phase"], "implementation")
-        (self.repo / "app.py").write_text("value = undefined_name\n", encoding="utf-8")
-        linted = self.post_edit("app.py", session=None)
-        self.assertEqual(linted.returncode, 0, linted.stdout + linted.stderr)
-        self.assertIn("F821", json.loads(linted.stdout)["hookSpecificOutput"]["additionalContext"])
-
-    def test_only_a_repository_with_a_pass_is_recorded_as_an_association(self) -> None:
-        elsewhere = self.second_repo("elsewhere")
-        begun = self.state("begin", "--slug", "associated-pass")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        unpassed = self.post_edit("other.py", repo=elsewhere)
-        self.assertEqual(unpassed.returncode, 0, unpassed.stdout + unpassed.stderr)
-        edited = self.post_edit("app.py")
-        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
-
-        # Globbed rather than named: the directory is the normalised session key,
-        # and spelling it as the raw constant would assert against a path that
-        # simply would not exist the moment that constant stopped being its own
-        # slug, which passes for the wrong reason.
-        sessions = Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions"
-        self.assertEqual(
-            sorted(path.name for path in sessions.glob("*/*.json")),
-            [f"{resolve_repo_identity(self.repo).key}.json"],
-            "a repository with no pass was recorded as an association",
-        )
-        # The shared parent too: securing only the leaf leaves every session id
-        # in the estate world-listable, which an install proved is what a bare
-        # parents=True mkdir does.
-        self.assertEqual(
-            [oct(path.stat().st_mode & 0o777) for path in (sessions, *sorted(sessions.iterdir()))],
-            ["0o700", "0o700"],
-            "an association directory is not private to its owner",
-        )
-
-    def test_an_unusable_association_store_changes_no_hook_outcome(self) -> None:
-        # Fault injected at the real filesystem seam rather than substituted: the
-        # association directory's parent is a file, so the storage call fails for
-        # its own reason while every other outcome must stay exactly as it was.
-        self.complete_workflow(finish=False)
-        (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / "sessions").write_text("not a directory\n", encoding="utf-8")
-        (self.repo / "app.py").write_text("value = undefined_name\n", encoding="utf-8")
-
-        result = self.post_edit("app.py")
-        self.assertIn("session association unavailable", result.stderr)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("F821", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
-        state = json.loads(self.state("status").stdout)
-        self.assertEqual(state["phase"], "implementation")
-        self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
-
-        # Stop reads the same store, and reaching the markers secures their
-        # parent before globbing, so the read fails for its own reason well
-        # before the empty-glob behaviour a reader might assume protects it.
-        stopped = self.stop()
-        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
-        self.assertIn("session associations unavailable", stopped.stderr)
-        self.assertEqual(
-            json.loads(stopped.stdout).get("decision"), "block",
-            "an unusable association store cost the session its cwd fallback",
-        )
-
-    def test_corrupt_authoritative_state_is_latched_with_a_repair_instruction(self) -> None:
-        begun = self.state("begin", "--slug", "stop-legacy")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        self.rewrite_latest_state(lambda state: state.pop("workflowId"))
-
-        blocked = self.stop()
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        reason = json.loads(blocked.stdout)["reason"]
-        self.assertIn("repair or explicitly retire", reason)
-        self.assertIn("nextAction: repair-workflow-state", reason)
-        self.assertNotIn("workflow.py pause", reason)
-
-        repeated = self.stop(shape="active")
-        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
-        self.assertEqual(repeated.stdout, "", "a no-progress corrupt-state repeat re-prompted")
-        self.assertNotIn("Traceback", repeated.stderr)
-
-    def test_paused_corrupt_mapped_evidence_remains_repair_only(self) -> None:
-        slug = "stop-corrupt-map"
-        begun = self.state("begin", "--slug", slug)
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-        record_context_forge(self.repo, self.tmp)
-        for transition in (
-            ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-        ):
-            result = self.state(*transition)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.record_preflight_evidence(
-            slug,
-            wid,
-            behavior_map=[
-                pending_behavior(
-                    "BM_HOOK",
-                    behavior="app value must be 2",
-                    seam="app module import",
-                    expected="value equals 2",
-                    red_failure="VALUE_NOT_TWO",
-                )
-            ],
-        )
-        red = self.red(slug)
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        paused = self.state(
-            "pause",
-            "--slug",
-            slug,
-            "--workflow-id",
-            wid,
-            "--reason",
-            "waiting on external review",
-        )
-        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
-
-        identity = resolve_repo_identity(self.repo)
-        database = (
-            Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
-            / identity.key
-            / "workflow.sqlite3"
-        )
-        connection = sqlite3.connect(database)
-        try:
-            evidence_id = json.loads(self.state("status").stdout)["tddEvidence"]
-            envelope = json.loads(
-                connection.execute(
-                    "SELECT document_json FROM evidence WHERE evidence_id = ?",
-                    (evidence_id,),
-                ).fetchone()[0]
-            )
-            envelope["behaviorMap"] = [{"id": "BROKEN"}]
-            connection.execute(
-                "UPDATE evidence SET document_json = ? WHERE evidence_id = ?",
-                (json.dumps(envelope), evidence_id),
-            )
-            connection.commit()
-        finally:
-            connection.close()
-
-        blocked = self.stop()
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        decision = json.loads(blocked.stdout)
-        self.assertEqual(decision.get("decision"), "block")
-        reason = decision.get("reason", "")
-        self.assertIn("repair or explicitly retire", reason)
-        self.assertNotIn("workflow.py pause", reason)
-        self.assertNotIn("Traceback", blocked.stderr)
-
-    def test_unreadable_authoritative_database_is_latched_instead_of_crashing(self) -> None:
-        if not hasattr(os, "geteuid") or os.geteuid() == 0:
-            self.skipTest("permission-denied behavior requires an unprivileged user")
-        begun = self.state("begin", "--slug", "stop-unreadable")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        identity = resolve_repo_identity(self.repo)
-        database = (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
-                    / identity.key / "workflow.sqlite3")
-        database.chmod(0o400)
-
-        blocked = self.stop()
-
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        decision = json.loads(blocked.stdout)
-        self.assertEqual(decision.get("decision"), "block")
-        self.assertIn("repair or explicitly retire", decision.get("reason", ""))
-        self.assertIn("nextAction: repair-workflow-state", decision.get("reason", ""))
-        self.assertNotIn("Traceback", blocked.stderr)
-
-    def test_a_replacement_instance_does_not_inherit_the_previous_latch_release(self) -> None:
-        first = self.state("begin", "--slug", "stop-instance")
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        blocked = self.stop()
-        self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
-
-        second = self.state("begin", "--slug", "stop-instance")
-        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
-        self.assertNotEqual(
-            json.loads(second.stdout)["workflowId"], json.loads(first.stdout)["workflowId"],
-            "the replacement workflow reused the previous instance id",
-        )
-
-        relatched = self.stop(shape="active")
-        self.assertEqual(relatched.returncode, 0, relatched.stdout + relatched.stderr)
-        self.assertEqual(
-            json.loads(relatched.stdout).get("decision"), "block",
-            "a new workflow instance inherited the previous instance's latch block",
-        )
-
-    def test_latch_firings_and_outcomes_are_logged(self) -> None:
-        # The latch's successes are otherwise invisible; the ablation question
-        # resolves on this log: latched -> spun -> resolved, with the outcome.
-        begun = self.state("begin", "--slug", "latch-log")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-        self.assertEqual(json.loads(self.stop().stdout).get("decision"), "block")
-        repeat = self.stop(shape="active")
-        self.assertEqual(repeat.stdout, "", repeat.stdout + repeat.stderr)
-        paused = self.state("pause", "--slug", "latch-log", "--workflow-id", wid,
-                            "--reason", "waiting on an external review window")
-        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
-        released = self.stop()
-        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
-
-        log = next((self.tmp / "state").glob("*/stop-latch-log.jsonl"), None)
-        self.assertIsNotNone(log, "the latch left no telemetry")
-        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual([e["event"] for e in events], ["latched", "spun", "resolved"])
-        self.assertEqual(events[-1]["how"], "paused")
-        self.assertTrue(all(e["slug"] == "latch-log" and e["at"] for e in events), events)
-
-        record_context_forge(self.repo, self.tmp)
-        relatched = self.stop()
-        self.assertEqual(json.loads(relatched.stdout).get("decision"), "block",
-                         "a resolved fingerprint must not suppress the next fresh latch")
-        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual([e["event"] for e in events], ["latched", "spun", "resolved", "latched"])
-
-    def test_a_revalidation_release_logs_other_not_completed(self) -> None:
-        # An open revalidation window retains phase=complete while remaining
-        # non-terminal; a running-work release must not record it as completed.
-        self.complete_workflow("reval-outcome")
-        (self.repo / "CLAUDE.md").write_text("# governance\n", encoding="utf-8")
-        reopened = self.post_edit("CLAUDE.md")
-        self.assertEqual(reopened.returncode, 0, reopened.stdout + reopened.stderr)
-        self.assertEqual(json.loads(self.stop().stdout).get("decision"), "block",
-                         "an open revalidation window must still latch")
-        released = self.stop(shape="natural-with-background-task")
-        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
-        log = next((self.tmp / "state").glob("*/stop-latch-log.jsonl"))
-        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(events[-1]["event"], "resolved")
-        self.assertEqual(events[-1]["how"], "other",
-                         "an open revalidation window was logged as completed")
-
-    def test_a_no_progress_repeat_stop_is_silent(self) -> None:
-        # Any Stop stdout re-prompts the model; the no-progress repeat must be
-        # a bare success so the latch cannot spin to the harness block cap.
-        begun = self.state("begin", "--slug", "silent-release")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        blocked = self.stop()
-        self.assertEqual(json.loads(blocked.stdout).get("decision"), "block")
-
-        repeat = self.stop(shape="active")
-        self.assertEqual(repeat.returncode, 0, repeat.stdout + repeat.stderr)
-        self.assertEqual(repeat.stdout, "", "the no-progress release wrote to stdout, which re-prompts")
-
-    def test_a_legacy_terminal_pass_never_latches_stop(self) -> None:
-        # A pass completed before the evidence upgrade carries passed statuses
-        # without producer references. PRD #30 scopes the pending-reading to
-        # legacy IN-FLIGHT passes; a completed pass is terminal everywhere.
-        self.complete_workflow("legacy-terminal")
-        def strip_evidence(state: dict[str, object]) -> None:
-            for field in ("preflightEvidence", "productionCodeEvidence", "verificationEvidence"):
-                state.pop(field, None)
-
-        self.rewrite_latest_state(strip_evidence)
-
-        stopped = self.stop()
-        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
-        payload = json.loads(stopped.stdout) if stopped.stdout else {}
-        self.assertNotIn(
-            "decision", payload,
-            "a completed pass recorded before the evidence upgrade latched Stop",
-        )
-
-    def test_stop_latch_holds_across_natural_stops_and_keys_to_completion_readiness(self) -> None:
-        begun = self.state("begin", "--slug", "stop-nine")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-
-        for attempt in range(9):
-            blocked = self.stop()
-            self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-            self.assertEqual(
-                json.loads(blocked.stdout).get("decision"), "block",
-                f"natural stop {attempt + 1} was not blocked",
-            )
-        self.assertEqual(json.loads(self.state("status").stdout)["phase"], "intake")
-
-        paused = self.state("pause", "--slug", "stop-nine", "--workflow-id", wid, "--reason", "external dependency wait")
-        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
-        released = self.stop()
-        context = json.loads(released.stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("paused", context.lower())
-        self.assertIn("external dependency wait", context)
-
-        self.complete_workflow("stop-nine", resume=True)
-        governance = self.repo / "skills" / "diagnose" / "SKILL.md"
-        governance.parent.mkdir(parents=True)
-        governance.write_text("updated agent behavior\n", encoding="utf-8")
-        changed = self.post_edit("skills/diagnose/SKILL.md")
-        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
-        relatched = self.stop()
-        self.assertEqual(
-            json.loads(relatched.stdout).get("decision"), "block",
-            "a governance-invalidated completed workflow was not latched",
-        )
-
     def test_stop_returns_structured_change_context_and_avoids_recursion(self) -> None:
+        begun = self.state("begin", "--slug", "stop-context")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
         (self.repo / "extra.py").write_text("extra = True\n", encoding="utf-8")
+        self.post_edit("app.py")
 
         first = self.stop()
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         self.assertTrue(first.stdout, "Stop hook did not return structured additionalContext")
+        self.assertNotIn("decision", json.loads(first.stdout), "Stop blocked instead of reporting")
         payload = json.loads(first.stdout)["hookSpecificOutput"]
         self.assertEqual(payload["hookEventName"], "Stop")
         context = payload["additionalContext"]
         self.assertIn("app.py (tracked/modified)", context)
         self.assertIn("extra.py (untracked)", context)
         self.assertIn("blast radius after this edit: unknown", context)
-        self.assertIn("reanalysed and change-detected", context)
+        self.assertIn("Active workflow: slug=stop-context", context)
+        self.assertIn("next=repo-context-forge", context)
 
         duplicate = self.stop()
         self.assertEqual(duplicate.returncode, 0, duplicate.stdout + duplicate.stderr)
         self.assertEqual(duplicate.stdout, "")
 
-        begun = self.state("begin", "--slug", "stop-context")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        workflow_changed = self.stop()
-        self.assertEqual(workflow_changed.returncode, 0, workflow_changed.stdout + workflow_changed.stderr)
-        self.assertTrue(workflow_changed.stdout, "active workflow did not latch Stop")
-        latched = json.loads(workflow_changed.stdout)
-        self.assertEqual(latched.get("decision"), "block")
-        self.assertIn("Active workflow: slug=stop-context", latched["reason"])
-        self.assertIn("next=repo-context-forge", latched["reason"])
-
         recursive = self.stop(shape="active")
         self.assertEqual(recursive.returncode, 0, recursive.stdout + recursive.stderr)
         recursive_payload = json.loads(recursive.stdout) if recursive.stdout else {}
-        self.assertNotIn("decision", recursive_payload, "hook-triggered re-stop must not block without progress")
+        self.assertNotIn("decision", recursive_payload, "hook-triggered re-stop must not block")
 
 
 class PerEditOverheadTests(HookHarness):
@@ -1407,7 +785,9 @@ count=0; [[ -f "$count_file" ]] && count=$(cat "$count_file")
 count=$((count + 1)); printf '%s\\n' "$count" >"$count_file"
 cat >"$CAPTURE_DIR/payload-$count"
 printf '%s\\n' "$@" >"$CAPTURE_DIR/args-$count"
-if [[ " $* " == *" --resume "* ]]; then
+if [[ -n "${ADVISOR_SHIM_REPLY:-}" ]]; then
+  printf '%s\\n' "$ADVISOR_SHIM_REPLY"
+elif [[ " $* " == *" --resume "* ]]; then
   printf '%s\\n' '{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}'
 else
   printf '%s\\n' '{"schemaVersion":1,"findings":[],"verdict":"completed"}'
@@ -1530,6 +910,281 @@ class WrapperPromptTests(HookHarness):
         self.assertIn("never RED/GREEN or production proof", args, marker)
         self.assertIn(BOUNDARY_SEAM, args, marker)
         self.assertIn("inside the asserted contract", args, marker)
+
+    def ready_for_final_review(self, slug: str) -> str:
+        """A pass at a ready final-review checkpoint that never consulted the advisor."""
+        begun = self.state("begin", "--slug", slug)
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        self.record_preflight_evidence(slug, wid)
+        self.owner_phase("tdd", "not-required")
+        self.record_gate_evidence(slug, wid)
+        passed = self.state("set-phase", "--phase", "implementation", "--status", "passed")
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        return wid
+
+    def test_a_refused_answer_is_still_emitted(self) -> None:
+        marker = "REFUSED_ADVISOR_OUTPUT_DISCARDED"
+        env = self.wrapper_rig()
+        reply = '{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"c","material":true,"kind":"other"}],"verdict":"completed"}'
+        env["ADVISOR_SHIM_REPLY"] = reply
+        begun = self.state("begin", "--slug", "keep-output")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        record_context_forge(self.repo, self.tmp)
+        rig = Path(env["CAPTURE_DIR"]).parent
+        result = self.run_advisor(env, "--slug", "keep-output", "--phase", "preflight-advice",
+                                  "--design-file", str(rig / "design.md"), "--", "scope question")
+        self.assertNotEqual(result.returncode, 0, marker + ": a malformed envelope was recorded")
+        self.assertIn(reply, result.stdout, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("codex_advisor_complete", result.stderr, marker)
+
+    def test_final_review_creates_its_session_without_a_preflight_consult(self) -> None:
+        marker = "FINAL_REVIEW_NEEDS_PREFLIGHT_SESSION"
+        env = self.wrapper_rig()
+        env["ADVISOR_SHIM_REPLY"] = '{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}'
+        self.ready_for_final_review("review-first")
+        rig = Path(env["CAPTURE_DIR"]).parent
+        result = self.run_advisor(env, "--slug", "review-first", "--phase", "final-review",
+                                  "--design-file", str(rig / "design.md"), "--", "completion question")
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        args = (Path(env["CAPTURE_DIR"]) / "args-1").read_text(encoding="utf-8")
+        self.assertIn("--session-id", args, marker)
+        self.assertNotIn("--resume", args, marker)
+        self.assertEqual(json.loads(self.state("status").stdout)["finalReview"]["status"], "commit-ready", marker)
+
+
+class TollDeletionTests(HookHarness):
+    """The governed pass with its bookkeeping tolls deleted: every step is a real
+    action through the real gate, recorders, and Stop hook."""
+
+    MAP = [pending_behavior("BM_HOOK", behavior="app value must be 2", seam="app module",
+                            expected="app.value == 2", red_failure="VALUE_NOT_TWO")]
+
+    def open_pass(self, slug: str, *, consult: bool = True) -> str:
+        begun = self.state("begin", "--slug", slug)
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        wid = json.loads(begun.stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        if consult:
+            for transition in (
+                ("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                 "--source", "codex-advisor", "--verdict", "completed"),
+                ("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                 "--findings", "none"),
+            ):
+                result = self.state(*transition)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return wid
+
+    def map_only_preflight(self, slug: str, wid: str) -> subprocess.CompletedProcess[str]:
+        doc = self.tmp / f"{slug}-map.json"
+        doc.write_text(json.dumps({"behaviorMap": self.MAP}), encoding="utf-8")
+        return self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(doc))
+
+    def tdd(self, slug: str, phase: str) -> subprocess.CompletedProcess[str]:
+        (self.repo / "test_probe.py").write_text(
+            "import app, unittest\n"
+            "class Probe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 2, 'VALUE_NOT_TWO')\n",
+            encoding="utf-8",
+        )
+        return self.workflow("tdd", "--slug", slug, "--phase", phase, "--behavior-id", "BM_HOOK",
+                             "--", sys.executable, "-m", "unittest", "test_probe")
+
+    def workflow(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """workflow.py with --repo ahead of any `--` command separator."""
+        return subprocess.run(
+            [sys.executable, str(WORKFLOW), args[0], "--repo", str(self.repo), *args[1:]],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    def verify(self, slug: str, *extra: str) -> subprocess.CompletedProcess[str]:
+        return self.workflow("verify", "--slug", slug, *extra)
+
+    def final_intake(self, slug: str, wid: str, findings: list, verdict: str = "commit-ready") -> subprocess.CompletedProcess[str]:
+        envelope = self.tmp / f"{slug}-final.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "findings": findings, "verdict": verdict}), encoding="utf-8")
+        return self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                          "--source", "codex-advisor", "--input", str(envelope))
+
+    def advance_to_review(self, slug: str) -> str:
+        wid = self.open_pass(slug)
+        self.record_preflight_evidence(slug, wid)
+        self.owner_phase("tdd", "not-required")
+        self.record_gate_evidence(slug, wid)
+        passed = self.state("set-phase", "--phase", "implementation", "--status", "passed")
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        return wid
+
+    def test_a_pass_completes_through_real_actions_only(self) -> None:
+        marker = "TOLL_STILL_REQUIRED"
+        slug = "no-tolls"
+        wid = self.open_pass(slug, consult=False)
+        recorded = self.map_only_preflight(slug, wid)
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        red = self.tdd(slug, "red")
+        self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
+        admitted = self.intake("app.py")
+        self.assertNotIn("deny", admitted.stdout, marker + ": " + admitted.stdout)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.post_edit("app.py")
+        green = self.tdd(slug, "green")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        record_context_forge(self.repo, self.tmp)  # the post-edit graph revalidation
+        verified = self.verify(slug, "--", sys.executable, "-m", "unittest", "test_probe")
+        self.assertEqual(verified.returncode, 0, marker + ": " + verified.stdout + verified.stderr)
+        gate = self.verify(slug, "--kind", "quality-gate", "--base-ref", "HEAD")
+        self.assertEqual(gate.returncode, 0, marker + ": " + gate.stdout + gate.stderr)
+        self.owner_phase("code-review", "not-required", findings="none")
+        final = self.final_intake(slug, wid, [])
+        self.assertEqual(final.returncode, 0, marker + ": " + final.stdout + final.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
+
+    def test_record_preflight_accepts_the_map_alone(self) -> None:
+        marker = "PROSE_SECTIONS_STILL_REQUIRED"
+        slug = "map-only"
+        recorded = self.map_only_preflight(slug, self.open_pass(slug, consult=False))
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        self.assertEqual(json.loads(self.state("status").stdout)["preflight"], "passed", marker)
+
+    def test_verification_runs_while_a_material_finding_is_pending(self) -> None:
+        marker = "VERIFY_REFUSED_ON_PENDING_FINDING"
+        slug = "verify-pending"
+        wid = self.open_pass(slug, consult=False)
+        intake = self.tmp / "material-intake.json"
+        intake.write_text(json.dumps({"schemaVersion": 1, "verdict": "completed", "findings": [
+            {"id": "SPEC-1", "claim": "unattacked promise", "material": True, "kind": "behavioral"}]}), encoding="utf-8")
+        consulted = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                               "--source", "codex-advisor", "--input", str(intake))
+        self.assertEqual(consulted.returncode, 0, consulted.stdout + consulted.stderr)
+        intake_id = json.loads(self.state("status").stdout)["advisorPreflight"]["intakeEvidence"]
+        owned = [{**self.MAP[0], "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]}]
+        self.record_preflight_evidence(slug, wid, behavior_map=owned)
+        red = self.tdd(slug, "red")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green")
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        verified = self.verify(slug, "--", sys.executable, "-m", "unittest", "test_probe")
+        self.assertEqual(verified.returncode, 0, marker + ": " + verified.stdout + verified.stderr)
+        gate = self.verify(slug, "--kind", "quality-gate", "--base-ref", "HEAD")
+        self.assertEqual(gate.returncode, 0, marker + ": " + gate.stdout + gate.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 2, marker + ": " + completed.stdout)
+        self.assertIn("SPEC-1", completed.stderr, marker + ": " + completed.stderr)
+
+    def test_a_lead_review_records_while_a_material_finding_is_pending(self) -> None:
+        marker = "REVIEW_REFUSED_ON_PENDING_FINDING"
+        slug = "review-pending"
+        wid = self.open_pass(slug, consult=False)
+        intake = self.tmp / "review-material-intake.json"
+        intake.write_text(json.dumps({"schemaVersion": 1, "verdict": "completed", "findings": [
+            {"id": "SPEC-1", "claim": "unattacked promise", "material": True, "kind": "behavioral"}]}), encoding="utf-8")
+        consulted = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                               "--source", "codex-advisor", "--input", str(intake))
+        self.assertEqual(consulted.returncode, 0, consulted.stdout + consulted.stderr)
+        intake_id = json.loads(self.state("status").stdout)["advisorPreflight"]["intakeEvidence"]
+        owned = [{**self.MAP[0], "sourceRefs": [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]}]
+        self.record_preflight_evidence(slug, wid, behavior_map=owned)
+        red = self.tdd(slug, "red")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green")
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        self.assertEqual(self.verify(slug, "--", sys.executable, "-m", "unittest", "test_probe").returncode, 0)
+        self.assertEqual(self.verify(slug, "--kind", "quality-gate", "--base-ref", "HEAD").returncode, 0)
+        review_input = self.tmp / "pending-review.json"
+        review_input.write_text('{"findings": []}', encoding="utf-8")
+        review = self.workflow("record-review", "--slug", slug, "--workflow-id", wid, "--resolved-model", "test-model",
+                               "--review-context-id", "pending-finding", "--input", str(review_input))
+        self.assertEqual(review.returncode, 0, marker + ": " + review.stdout + review.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 2, marker + ": " + completed.stdout)
+        self.assertIn("SPEC-1", completed.stderr, marker + ": " + completed.stderr)
+
+    def test_an_empty_intake_closes_at_recording(self) -> None:
+        marker = "EMPTY_INTAKE_NEEDS_ACKNOWLEDGEMENT"
+        slug = "empty-intake"
+        wid = self.open_pass(slug, consult=False)
+        intake = self.tmp / "empty-intake.json"
+        intake.write_text('{"schemaVersion":1,"findings":[],"verdict":"completed"}', encoding="utf-8")
+        consulted = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                               "--source", "codex-advisor", "--input", str(intake))
+        self.assertEqual(consulted.returncode, 0, consulted.stdout + consulted.stderr)
+        self.assertEqual(json.loads(self.state("status").stdout)["advisorPreflight"]["findings"], "none", marker)
+        self.record_preflight_evidence(slug, wid)
+        self.owner_phase("tdd", "not-required")
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        final = self.final_intake(slug, wid, [{"id": "REVIEW-1", "claim": "advice", "material": False, "kind": "nonbehavioral"}])
+        self.assertEqual(final.returncode, 0, marker + ": " + final.stdout + final.stderr)
+        self.assertEqual(json.loads(self.state("status").stdout)["finalReview"]["findings"], "none", marker)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
+
+    def test_a_material_finding_survives_a_later_review_and_empty_intake(self) -> None:
+        marker = "MATERIAL_FINDING_CLOSED_BY_EMPTY_INTAKE"
+        slug = "material-survives"
+        wid = self.advance_to_review(slug)
+        first = self.final_intake(slug, wid, [{"id": "FINAL-1", "claim": "real gap", "material": True, "kind": "behavioral"}], "fix-before-commit")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+        self.post_edit("app.py")
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "passed", findings="none")
+        second = self.final_intake(slug, wid, [{"id": "REVIEW-1", "claim": "advice", "material": False, "kind": "nonbehavioral"}])
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 2, marker + ": " + completed.stdout)
+        self.assertIn("FINAL-1", completed.stderr, marker + ": " + completed.stderr)
+
+    def test_an_unproved_map_cannot_complete(self) -> None:
+        marker = "UNPROVED_MAP_COMPLETED"
+        slug = "unproved"
+        wid = self.open_pass(slug)
+        self.record_preflight_evidence(slug, wid, behavior_map=self.MAP)
+        red = self.tdd(slug, "red")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 2, marker + ": " + completed.stdout)
+        self.assertIn("BM_HOOK", completed.stderr, marker + ": " + completed.stderr)
+
+    def test_a_context_mismatch_still_blocks_completion(self) -> None:
+        marker = "CONTEXT_MISMATCH_IGNORED"
+        slug = "mismatch-blocks"
+        wid = self.advance_to_review(slug)
+        mismatch = self.final_intake(slug, wid, [], "context-mismatch")
+        self.assertEqual(mismatch.returncode, 0, mismatch.stdout + mismatch.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 2, marker + ": " + completed.stdout)
+
+    def test_a_final_result_against_a_changed_tree_is_refused(self) -> None:
+        marker = "STALE_REVIEW_ACCEPTED"
+        slug = "stale-review"
+        wid = self.advance_to_review(slug)
+        (self.repo / "app.py").write_text("value = 4\n", encoding="utf-8")
+        refused = self.final_intake(slug, wid, [])
+        self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout)
+        self.assertIn("changed after the lead review", refused.stderr, marker + ": " + refused.stderr)
+
+    def test_stop_never_blocks_an_incomplete_workflow(self) -> None:
+        marker = "STOP_BLOCKED"
+        self.open_pass("stop-feedback")
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.post_edit("app.py")
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        payload = json.loads(stopped.stdout) if stopped.stdout else {}
+        self.assertNotIn("decision", payload, marker + ": " + stopped.stdout)
+        self.assertIn("Active workflow: slug=stop-feedback", payload["hookSpecificOutput"]["additionalContext"], marker)
 
 
 class ProducerMaskGuardTests(unittest.TestCase):

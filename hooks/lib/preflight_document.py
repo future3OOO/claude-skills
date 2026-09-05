@@ -29,29 +29,22 @@ def validate_document(
 ) -> dict[str, object]:
     """The validated preflight document, or a refusal naming what is wrong.
 
-    The thirteen prose sections retain their original contract. New producer
-    recordings additionally require the structured Behavior Map; the optional
-    legacy path exists only for importing evidence recorded before that field.
+    The Behavior Map is the document's contract: new producer recordings require
+    it, and the optional legacy path exists only for importing evidence recorded
+    before that field. The prose sections are kept as the lead wrote them and
+    are not validated.
     """
     if not isinstance(value, dict):
         raise ValueError("preflight document must be a JSON object")
-    required = set(SECTIONS) | ({BEHAVIOR_MAP_SECTION} if require_behavior_map else set())
-    missing = [name for name in (*SECTIONS, BEHAVIOR_MAP_SECTION) if name in required and name not in value]
-    if missing:
-        raise ValueError(f"preflight document is missing sections: {', '.join(missing)}")
+    if require_behavior_map and BEHAVIOR_MAP_SECTION not in value:
+        raise ValueError(f"preflight document is missing sections: {BEHAVIOR_MAP_SECTION}")
     allowed = set(SECTIONS) | {BEHAVIOR_MAP_SECTION}
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ValueError(f"preflight document has unknown sections: {', '.join(unknown)}")
-    empty = [
-        name for name in SECTIONS
-        if not isinstance(value.get(name), str) or not str(value[name]).strip()
-    ]
-    if empty:
-        raise ValueError(f"preflight sections must be non-empty text: {', '.join(empty)}")
-    document: dict[str, object] = {name: str(value[name]).strip() for name in SECTIONS}
-    if document["openQuestions"] != "none":
-        raise ValueError("openQuestions must be exactly 'none'; an unresolved question blocks the recording")
+    document: dict[str, object] = {
+        name: str(value[name]).strip() for name in SECTIONS if isinstance(value.get(name), str)
+    }
     if BEHAVIOR_MAP_SECTION in value:
         document[BEHAVIOR_MAP_SECTION] = initial_items(value[BEHAVIOR_MAP_SECTION])
     return document

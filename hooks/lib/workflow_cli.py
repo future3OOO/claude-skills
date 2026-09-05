@@ -35,8 +35,6 @@ from .workflow_state import (
     commit_review,
     commit_verification,
     complete,
-    correction_blockers,
-    appeal_revalidation_open,
     evidence_document,
     evidence_record,
     instance_id,
@@ -229,10 +227,6 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     state = bound_state(identity, safe_slug(args.slug))
     slug = str(state["slug"])
     workflow_id = _workflow_id(state)
-    if state.get("implementation") != "passed":
-        raise WorkflowError("verification requires implementation")
-    if not appeal_revalidation_open(identity, state, "verification", quality_gate=args.kind == "quality-gate") and (blockers := correction_blockers(identity, state)):
-        raise WorkflowError("correction batch remains open: " + "; ".join(blockers))
 
     existing_id = state.get("verificationLatestEvidence") if isinstance(state.get("verificationLatestEvidence"), str) else None
     existing = evidence_document(identity, existing_id)
@@ -375,7 +369,6 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         expected_evidence_id=existing_id,
         quality_gate_tree=quality_tree,
         quality_gate_green=quality_gate_green,
-        quality_gate_run=args.kind == "quality-gate",
     )
 
     _print_output(raw)

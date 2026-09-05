@@ -47,8 +47,8 @@ workflow status|summary        # active canonical state
 workflow history               # ordered accepted events and logical references
 workflow evidence              # read one logical evidence record
 workflow set-phase             # lead-owned implementation and trivial review
-workflow record-preflight      # validates 13 text sections + Behavior Map
-workflow record-production-code # validates the bundled gate verdict
+workflow record-preflight      # records the Behavior Map
+workflow record-production-code # validates the bundled gate verdict (optional; nothing waits on it)
 workflow tdd                   # mapped RED/GREEN or records not-required
 workflow tdd-map               # dispositions and post-GREEN map updates
 workflow verify                # generic commands or typed final-tree quality gate
@@ -99,7 +99,7 @@ the transcript audit.
 The database and its containing directory are private and agent-writable. Committed transactions provide continuity across process restart and compaction; it is not tamper-proof and does not authorize Git. A normal
 commit or HEAD change does not invalidate it. After production preflight,
 test-like edits are admitted while TDD is pending. Production edits are admitted
-after the production-code baseline for an active valid mapped RED, a fully
+for an active valid mapped RED, a fully
 dispositioned `not-required` map, or a resolved GREEN map. A GREEN
 blocks the next production edit until `tdd-map` records the required architecture,
 preservation, and interaction reassessment. A later edit against a resolved map
@@ -211,10 +211,10 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; after the production-code baseline admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed GREEN map; after GREEN block the next production edit until map reassessment |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed GREEN map; after GREEN block the next production edit until map reassessment |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
-| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while canonical completion readiness reports missing work and no pause is recorded; authoritative workflow or mapped-evidence corruption remains repair-only and cannot be released by `pause`. It permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound waits for ordinary external blockers, advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success because any Stop output re-prompts the model. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there and counts one selection event, not a firing or outcome |
+| `Stop` | Non-blocking context: changed-code status and the workflow summary for each repository this session edited in, deduplicated per session and slot; never a block decision |
 
 `Stop` consults the workflows the session actually edited in, not the directory
 it was launched from. `PostToolUse` records one immutable marker per repository
@@ -249,35 +249,10 @@ guarantee of the key: they are lowercase hexadecimal UUIDs and so are fixed
 points of the whole transform — measured across 644 recorded sessions, none
 altered by it and none sharing a key. Any future id source must be injective
 under the transform exactly as written above, or introduce a collision-resistant
-encoding here before it is trusted. The repository-scoped per-session feedback file and the
-latch telemetry keep their own `unknown` display name, which cannot cross
+encoding here before it is trusted. The repository-scoped per-session feedback file keeps its own `unknown` display name, which cannot cross
 repositories.
 
-That rule has a price, and it is the reason a `cwd-suppressed` event exists. Once
-a session records any marker, its `cwd` slot is never consulted again, so a pass
-**begun or inherited at `cwd` and never edited by this session goes unwatched
-until its first file write** — it cannot latch, and it is not reported. The
-baseline behaviour was to latch it. Both cases are indistinguishable at the hook:
-this session's own unedited `cwd` pass and another session's incomplete `cwd`
-pass present the same terminal-marker-plus-incomplete-`cwd` state, and no
-predicate over markers and workflow contents separates them, so the suppression
-is deliberate rather than an oversight. It is counted rather than only accepted,
-because the payload's `cwd` reaches no state file and an audit after the fact
-could never recover which slot was passed over. No hook retires markers. The
-deliberate `prune` verb (issue #50) retires one only when its recorded
-repository root is confirmed absent: a session stripped of every marker does
-return to the `cwd` slot, but only when each of its repositories is gone,
-where that slot resolves no pass either.
-
-**Release note — the latch telemetry population changed.** Events now carry the
-`repo` key of the slot they fired against, and the population they describe has
-moved: it gains worktree sessions the hook previously never visited and loses
-firings against unrelated session-`cwd` slots. Counts recorded before and after
-this change are not comparable, and any earlier conclusion about the latch's
-value was drawn from firings against session-directory slots rather than the
-passes actually being run.
-
-After latch handling, the ordinary feedback path emits bounded context
+A pass this session never edited in is not reported; the feedback path emits bounded context
 containing changed-code status and the workflow summary per consulted slot, and
 deduplicates identical rendered context per session and slot. When Git reports
 no changed code and no workflow state exists, that path emits nothing. The

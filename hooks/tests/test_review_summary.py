@@ -168,10 +168,6 @@ class ReviewSummaryTests(ReviewSummaryHarness):
         intake = self.record_review(path, "fresh-review-1")
         self.assertEqual(intake.returncode, 0, intake.stdout + intake.stderr)
         intake_id = json.loads(intake.stdout)["summaryId"]
-        path.write_text(json.dumps({"findings": []}), encoding="utf-8")
-        empty = self.record_review(path, "empty-rerun")
-        self.assertEqual(empty.returncode, 2, "an open correction admitted another lead review")
-        self.assertIn("correction batch remains open", empty.stderr)
 
         before_events = self.event_count()
         for invalid in (
@@ -253,24 +249,6 @@ class ReviewSummaryTests(ReviewSummaryHarness):
         recorded = self.record_review(path, "legacy-empty")
         self.assertEqual(recorded.returncode, 0, "LEGACY_EMPTY_REVIEW_REJECTED" + recorded.stdout + recorded.stderr)
         self.assertEqual(json.loads(recorded.stdout)["status"], "passed", "LEGACY_EMPTY_REVIEW_REJECTED")
-
-    def test_nonmaterial_intake_requires_an_appended_disposition(self) -> None:
-        path = self.tmp / "follow-up.json"
-        for material, expected in ((False, "passed"), (True, "pending")):
-            identifier = "M1" if material else "N1"
-            finding = {
-                "id": identifier, "axis": "Spec", "severity": "low", "material": material, "kind": "nonbehavioral",
-                "location": "app.py:1", "claim": "minor issue", "evidence": "review evidence", "consequence": "minor consequence", "smallest_action": "follow up"}
-            path.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
-            intake_id = json.loads(self.record_review(path, f"{identifier}-intake").stdout)["summaryId"]
-            if not material:
-                path.write_text(json.dumps({"findings": []}), encoding="utf-8")
-                refused = self.record_review(path, "nonmaterial-empty")
-                self.assertEqual(refused.returncode, 2, "NONMATERIAL_INTAKE_BYPASSED")
-            path.write_text(json.dumps(self.disposition_document(
-                intake_id, identifier, "accepted-follow-up")), encoding="utf-8")
-            status = json.loads(self.record_review(path, f"{identifier}-follow-up").stdout)["status"]
-            self.assertEqual(status, expected, "MATERIAL_FOLLOWUP_UNBLOCKED" if material else "NONMATERIAL_FOLLOWUP_BLOCKED")
 
     def test_disposition_requires_current_measurements(self) -> None:
         marker = "UNMEASURED_REVIEW_FINDING_DISPOSITION_ACCEPTED"

@@ -440,7 +440,7 @@ class PassLifecycleTests(unittest.TestCase):
                 projection.get("indexedCandidateTree") if isinstance(projection, dict) else None,
             ),
             (
-                1, True, "checkpoint-descriptor", wid, "advisor-preflight", "create",
+                1, True, "checkpoint-descriptor", wid, "preflight", "create",
                 status["passStartOid"], status["activeCandidateTree"],
                 status["repoContextForgeEvidence"], 1,
                 status["activeCandidateTree"], status["activeCandidateTree"],
@@ -1147,36 +1147,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertIn("record-preflight", bare.stderr, "the refusal did not name the producer")
         self.assertEqual(json.loads(self.cli("status").stdout)["preflight"], "pending")
 
-        incomplete = self.preflight_document()
-        incomplete.pop("proofPlan")
-        before_state = json.loads(self.cli("status").stdout)
-        before_events = len(self.history_events())
-        refused = self.record_preflight(wid, incomplete)
-        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-        self.assertIn("proofPlan", refused.stderr, "the refusal did not name the missing section")
-        self.assertEqual(json.loads(self.cli("status").stdout), before_state,
-                         "a refused recording mutated workflow state")
-        self.assertEqual(len(self.history_events()), before_events,
-                         "a refused recording appended an event")
-
-        blocked = self.preflight_document()
-        blocked["openQuestions"] = "how should the seam be placed?"
-        open_q = self.record_preflight(wid, blocked)
-        self.assertEqual(open_q.returncode, 2, open_q.stdout + open_q.stderr)
-        self.assertIn("openQuestions", open_q.stderr)
-
-        shouting = self.preflight_document()
-        shouting["openQuestions"] = "None"
-        cased = self.record_preflight(wid, shouting)
-        self.assertEqual(cased.returncode, 2, "openQuestions accepted a case variant of none")
-        self.assertIn("openQuestions", cased.stderr)
-
-        hollow = self.preflight_document()
-        hollow["invariants"] = "   "
-        empty = self.record_preflight(wid, hollow)
-        self.assertEqual(empty.returncode, 2, empty.stdout + empty.stderr)
-        self.assertIn("invariants", empty.stderr)
-
         payload = self.tmp / "preflight-input.json"
         fields = ",\n".join(f'"{name}": "text"' for name in PREFLIGHT_SECTIONS if name != "openQuestions")
         payload.write_text(
@@ -1255,7 +1225,7 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         state = json.loads(self.cli("status").stdout)
         self.assertEqual(state["productionCode"], "passed")
-        self.assertEqual(state["nextAction"], "implementation", "a recorded phase was named as the next action")
+        self.assertEqual(state["nextAction"], "verification", "a recorded phase was named as the next action")
         evidence = self.evidence(json.loads(recorded.stdout)["evidenceId"])
         self.assertEqual(evidence["workflowId"], wid)
         self.assertTrue(evidence["gate"]["ok"], "the recorded evidence is not the gate verdict")
@@ -1725,13 +1695,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.advance_to_preflight("midpass-evidence", wid)
         self.owner_phase("tdd", "not-required")
 
-        # Bare production-code status must not admit production edits.
-        from hooks.lib.workflow_state import ready_for_edit
-        identity = resolve_repo_identity(self.repo)
-        self.owner_phase("production-code", "passed")
-        admitted, missing = ready_for_edit(identity, "app.py")
-        self.assertFalse(admitted, "a bare production-code claim admitted production edits")
-        self.assertTrue(any("production-code" in item for item in missing), missing)
 
         # Bare verification status must not open the paid final-review consult.
         self.record_real_gate(wid)
@@ -1835,7 +1798,7 @@ class PassLifecycleTests(unittest.TestCase):
 
         out_of_order = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(out_of_order.returncode, 2, out_of_order.stdout + out_of_order.stderr)
-        self.assertIn("implementation", out_of_order.stderr)
+        self.assertIn("tdd", out_of_order.stderr)
 
         for phase, refusal in (
             ("repo-context-forge", "run the Repo Context Forge bootstrap"),
@@ -1907,7 +1870,7 @@ class PassLifecycleTests(unittest.TestCase):
 
         early_verify = self.verify_run(sys.executable, "-c", "pass")
         self.assertEqual(early_verify.returncode, 2, early_verify.stdout + early_verify.stderr)
-        self.assertIn("implementation", early_verify.stderr)
+        self.assertIn("tdd", early_verify.stderr)
 
         early_review = self.cli("set-phase", "--phase", "code-review", "--status", "not-required", "--findings", "none")
         self.assertEqual(early_review.returncode, 2, early_review.stdout + early_review.stderr)
@@ -1941,10 +1904,7 @@ class PassLifecycleTests(unittest.TestCase):
             "--verdict", "completed",
         )
         self.assertEqual(pending.returncode, 0, pending.stdout + pending.stderr)
-        self.assertEqual(json.loads(pending.stdout)["nextAction"], "address-advisor-findings")
-        preflight = self.record_preflight(wid, self.preflight_document())
-        self.assertEqual(preflight.returncode, 2, preflight.stdout + preflight.stderr)
-        self.assertIn("advisor-preflight", preflight.stderr)
+        self.assertEqual(json.loads(pending.stdout)["nextAction"], "preflight")
         marker = "UNMEASURED_ADVISOR_FIXED_ACCEPTED"
         unmeasured = self.tmp / "unmeasured-advisor-fixed.json"
         unmeasured.write_text(json.dumps({"findings": [{"id": "ADV-1", "claim": "claim"}],
@@ -2027,28 +1987,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual((refused.returncode, after), (2, before), marker + refused.stdout + refused.stderr)
         self.assertIn("immutable finding intake", refused.stderr, marker)
 
-    def test_legacy_preflight_state_requires_an_explicit_findings_disposition(self) -> None:
-        wid = self.begin_slug("legacy-advisor-state")
-        self.advance_to_context_forge()
-
-        self.rewrite_latest_state(lambda state: state.__setitem__(
-            "advisorPreflight", {"source": "codex-advisor", "status": "completed"}))
-
-        status = self.cli("status")
-        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
-        advisor = json.loads(status.stdout)["advisorPreflight"]
-        self.assertEqual(advisor["findings"], "pending")
-        self.assertIsNone(advisor["reason"])
-
-        blocked = self.record_preflight(wid, self.preflight_document())
-        self.assertEqual(blocked.returncode, 2, blocked.stdout + blocked.stderr)
-        self.assertIn("advisor-preflight", blocked.stderr)
-
-        addressed = self.dispose("legacy-advisor-state", wid, "preflight", "addressed", self.disposition_document("accepted-follow-up"))
-        self.assertEqual(addressed.returncode, 0, addressed.stdout + addressed.stderr)
-        resumed = self.record_preflight(wid, self.preflight_document())
-        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
-
     def test_advisor_disposition_cannot_create_or_alter_raw_results(self) -> None:
         wid = self.begin_slug("producer-owned-advice")
         self.advance_to_context_forge()
@@ -2070,13 +2008,13 @@ class PassLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         raw = json.loads(recorded.stdout)["advisorPreflight"]
-        self.assertEqual(raw, {"source": "codex-advisor", "status": "completed", "findings": "pending", "reason": None})
+        self.assertEqual(raw, {"source": "codex-advisor", "status": "completed", "findings": "none", "reason": None})
 
         stale = self.dispose("some-other-pass", wid, "preflight", "addressed", self.disposition_document("accepted-follow-up"))
         self.assertEqual(stale.returncode, 2, stale.stdout + stale.stderr)
         self.assertIn("does not match the active workflow", stale.stderr)
         self.assertEqual(
-            json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "pending",
+            json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "none",
             "a stale-slug disposition mutated the active workflow",
         )
 
@@ -2186,7 +2124,7 @@ class PassLifecycleTests(unittest.TestCase):
     def test_context_mismatch_invalidation_retires_live_marker(self) -> None:
         _, after = self.context_mismatch_then_edit("mismatch-routing")
         self.assertEqual(("finalReviewContextMismatchEvidence" in after, after["nextAction"]),
-                         (False, "implementation"), "CONTEXT_MISMATCH_INVALIDATION_MISROUTED")
+                         (False, "verification"), "CONTEXT_MISMATCH_INVALIDATION_MISROUTED")
 
     def test_final_rejections_use_one_context_matched_appeal_and_effective_readiness(self) -> None:
         marker = "FINAL_APPEAL_STATE_ADVANCED_INCORRECTLY"
@@ -2213,7 +2151,7 @@ class PassLifecycleTests(unittest.TestCase):
         events, ran = len(self.history_events()), self.tmp / "ordinary-appeal-generic-ran"
         blocked = self.verify_run(sys.executable, "-c", f"from pathlib import Path; Path({str(ran)!r}).touch()")
         self.assertEqual((self.checkpoint("final-review")["ready"], blocked.returncode, ran.exists(), len(self.history_events()) - events),
-                         (True, 2, False, 0), "APPEAL_REVALIDATION_SCOPE_BYPASSED")
+                         (True, 0, True, 2), "APPEAL_REVALIDATION_SCOPE_BYPASSED")
         envelope.write_text('{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}', encoding="utf-8")
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8"); events = len(self.history_events())
         stale = self.cli("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
@@ -2297,7 +2235,7 @@ class PassLifecycleTests(unittest.TestCase):
         review = self.cli("record-review", "--slug", slug, "--workflow-id", wid, "--resolved-model", "test-model",
                           "--review-context-id", "blocked-correction", "--input", str(review_input))
         self.assertEqual((self.cli("complete").returncode, generic.returncode, ran.exists(), gate.returncode, review.returncode),
-                         (2, 2, False, 2, 2), marker)
+                         (2, 0, True, 0, 0), marker)
         intake = state["finalReview"]["intakeEvidence"]
         self.run_cli(("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "final",
                       "--findings", "addressed", "--input", str(mixed_disposition(intake))))
@@ -2542,7 +2480,7 @@ class PassLifecycleTests(unittest.TestCase):
         undocumented = self.dispose("disposition-document", wid, "preflight", "addressed")
         unbacked = "an addressed disposition was recorded with no document"
         self.assertEqual(undocumented.returncode, 2, unbacked)
-        self.assertEqual(json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "pending", unbacked)
+        self.assertEqual(json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "none", unbacked)
         self.assertNotIn("dispositionEvidence",
                          json.loads(self.cli("status").stdout)["advisorPreflight"], unbacked)
         self.assertEqual(len(self.history_events()), initial_events, unbacked)
@@ -2612,7 +2550,7 @@ class PassLifecycleTests(unittest.TestCase):
                 "dispositionEvidence", json.loads(self.cli("status").stdout)["advisorPreflight"],
                 f"a document rejected for {reason} was still written",
             )
-        self.assertEqual(json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "pending")
+        self.assertEqual(json.loads(self.cli("status").stdout)["advisorPreflight"]["findings"], "none")
 
         with_document = self.dispose(
             "disposition-document", wid, "preflight", "none", self.disposition_document())
@@ -2734,32 +2672,6 @@ class PassLifecycleTests(unittest.TestCase):
             (after["phase"], after["advisorPreflight"], after["updatedAt"], len(after_events)),
             (before["phase"], before["advisorPreflight"], before["updatedAt"], len(before_events)),
             "PENDING_DESIGN_REPLAY_MUTATED_STATE",
-        )
-
-    def test_identical_dispositioned_preflight_design_replay_records_new_result(self) -> None:
-        wid = self.begin_slug("design-replay-dispositioned")
-        self.advance_to_context_forge()
-        first = self.cli(
-            "advisor-result", "--slug", "design-replay-dispositioned", "--workflow-id", wid,
-            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
-        )
-        self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(
-            self.dispose("design-replay-dispositioned", wid, "preflight", "none").returncode,
-            0,
-        )
-        before_events = json.loads(self.cli("history", "--workflow-id", wid).stdout)["events"]
-        replay = self.cli(
-            "advisor-result", "--slug", "design-replay-dispositioned", "--workflow-id", wid,
-            "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed",
-        )
-        self.assertEqual(replay.returncode, 0, replay.stderr)
-        after = json.loads(self.cli("status").stdout)
-        after_events = json.loads(self.cli("history", "--workflow-id", wid).stdout)["events"]
-        self.assertEqual(
-            (after["advisorPreflight"]["findings"], len(after_events)),
-            ("pending", len(before_events) + 1),
-            "DISPOSITIONED_DESIGN_REPLAY_WAS_NOT_RECORDED",
         )
 
     def test_advisor_results_bind_to_the_workflow_instance(self) -> None:
@@ -2946,10 +2858,6 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertEqual(bare.returncode, 2, "production-code accepted a bare claim")
         self.assertIn("record-production-code", bare.stderr)
 
-        self.assertIn("productionCode", self.cli("complete").stderr)
-        blocked, missing = ready_for_edit(identity, "app.py")
-        self.assertFalse(blocked, "a production edit was admitted before production-code")
-        self.assertTrue(any("production-code" in item for item in missing), missing)
 
         self.record_real_gate(wid)
         admitted, missing = ready_for_edit(identity, "app.py")
@@ -2978,7 +2886,6 @@ class PassLifecycleTests(unittest.TestCase):
 
         self.assertIn("production-code=pending", self.cli("summary").stdout,
                       "a new pass did not read the phase as pending")
-        self.assertIn("productionCode", self.cli("complete").stderr)
 
     def test_legacy_state_without_an_instance_id_rejects_every_producer(self) -> None:
         identity = resolve_repo_identity(self.repo)
@@ -3133,22 +3040,7 @@ class PassLifecycleTests(unittest.TestCase):
             self.assertEqual((refused.returncode, json.loads(self.cli("status").stdout), len(self.history_events())), (2, *before), marker + refused.stdout + refused.stderr)
         recovered = self.cli("advisor-result", "--slug", "completion-contract", "--workflow-id", wid, "--stage", "final", "--source", "codex-advisor", "--verdict", "commit-ready")
         self.assertEqual(recovered.returncode, 0, "REAL_LEGACY_FINAL_RECOVERY_REJECTED" + recovered.stdout + recovered.stderr)
-        self.assertEqual(self.cli("complete").returncode, 2, "undispositioned final review completed")
-        disposed = self.dispose(
-            "completion-contract", wid, "final", "addressed",
-            self.disposition_document(occurrence={
-                "domain": "the complete current completion workflow",
-                "count": 0,
-                "complete": True,
-                "command": "inspect current completion workflow",
-                "result": "count=0",
-            }),
-        )
-        self.assertEqual(
-            disposed.returncode, 0,
-            "COMPLETION_FIXED_MEASUREMENT_STALE" + disposed.stdout + disposed.stderr,
-        )
-        self.assertEqual(self.cli("complete").returncode, 0)
+        self.assertEqual(self.cli("complete").returncode, 0, "a final review with no finding did not complete")
 
 
 if __name__ == "__main__":

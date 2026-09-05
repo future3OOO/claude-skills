@@ -15,7 +15,8 @@ phase belongs in `--phase`, not in the slug.
 
 ### `preflight-advice`
 
-Run after Repo Context Forge, before production preflight and before edits.
+Run after Repo Context Forge, before production preflight and before edits,
+when the request raises a design or scope question; otherwise skip it.
 Supply the focused scope question; the workflow checkpoint supplies the
 pass-owned advisor projection, the recorded original request, workflow binding,
 and current-pass diff anchors. The advisor derives the load-bearing promises of
@@ -198,12 +199,15 @@ before the one response. Targeted TDD and changed-Seam probes remain available.
 Any production edit after final review resets code review and final review to
 pending, but the immutable intake remains closable under the same workflow ID.
 
-The wrapper itself records the raw result. After a completed preflight
-consult, record its lead-owned disposition before production preflight:
+The wrapper itself records the raw result. An intake with no material
+finding closes at recording. A material behavioral finding rides the pass as a
+map-owned attack and is dispositioned once that attack is GREEN; a
+nonbehavioral or measured-false finding is dispositioned whenever its
+measurement exists; findings block completion only:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings none
+  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings addressed --input <document>
 ```
 
 Dispositions and `pause` are bound to the active workflow instance: a slug or
@@ -230,7 +234,6 @@ findings-plus-dispositions form remains compatible for measured nonbehavioral
 results. A refusal mutates no state.
 Print the canonical disposition and governed-design shape table, generated from
 its installed validator declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
-`--findings none` takes no document.
 
 For an unavailable consult, record the full
 slug- and instance-bound command; no disposition is needed and final review

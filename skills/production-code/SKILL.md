@@ -10,9 +10,8 @@ Use the production-preflight skill first on before-edit turns that require expli
 
 In a governed production workflow, invoke this skill after the RED or
 not-required TDD decision and before production, configuration, or runtime
-implementation edits; the test edit that establishes RED may precede it. Record
-the step with `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" record-production-code` and the bundled gate's JSON verdict
-(a clean-baseline run over the pre-implementation tree), then keep
+implementation edits; the test edit that establishes RED may precede it. Run
+the bundled gate over the pre-implementation tree as the clean baseline, then keep
 this doctrine active through implementation and final verification.
 
 Before editing, use the standards below to choose the smallest production-safe implementation path. Run the bundled non-mutating gate from the target repository before finalizing:
