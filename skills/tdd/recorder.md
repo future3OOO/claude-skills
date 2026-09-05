@@ -19,28 +19,18 @@ A valid contract RED unlocks production edits for that active item; a preservati
 
 The recorder counts valid cycle-opening REDs only as a coarse granularity smell. Cycle count is never a coverage target.
 
-## Map updates and post-GREEN reassessment
+## Map updates
 
-GREEN blocks the next production edit until the architecture it introduced is reassessed:
-
-```json
-{
-  "sourceBehaviorId": "BM_...",
-  "reassessment": "What the GREEN introduced and which preservation, interaction, or falsification obligations follow.",
-  "items": [],
-  "dispositions": []
-}
-```
+`tdd-map` records a change to the map: new items a GREEN or `post-edit-passed` exposed, dispositions of pending preservation items, supersessions, withdrawals, or a review-discovered defect added before its fix. A proof that changes nothing records nothing. Pass the document on stdin:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-map \
-  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
-  --input "/path/to/tdd-map-update.json"
+  --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input - <<'JSON'
+{"sourceBehaviorId": "BM_...", "reassessment": "what the proof exposed", "items": [...], "dispositions": [...]}
+JSON
 ```
 
-Use an empty `items` array only when reassessment found no new obligation. New items use the preflight schema and reopen TDD. Prose `dispositions` (`already-satisfied` with real-Seam evidence, `omitted` with governing evidence) apply to pending preservation items only; a contract item is dispositioned only by the producer's baseline run. A GREEN item is dispositioned `superseded` with `supersededBy` naming its replacement in the same map; a missing target, self-reference, cycle, non-GREEN source, or a terminal replacement that is already-satisfied or omitted refuses the whole update; closure follows the chain to its terminal replacement.
-
-A review-discovered behavioral defect is added with `tdd-map` before its fix. Outside post-GREEN reassessment, omit `sourceBehaviorId` and add or disposition at least one item — except after a post-resolution production edit has flagged the map (`postEditReassessment`): there a reassessment-only update is accepted, recording why the edit was non-behavioral, and completion demands that record.
+`sourceBehaviorId`, when given, names the GREEN or `post-edit-passed` item whose consequence the update records. New items use the preflight schema and reopen TDD. Prose `dispositions` (`already-satisfied` with real-Seam evidence, `omitted` with governing evidence) apply to pending preservation items only; a contract item is dispositioned only by the producer's baseline run. A GREEN item is dispositioned `superseded` with `supersededBy` naming its replacement in the same map; a missing target, self-reference, cycle, non-GREEN source, or a terminal replacement that is already-satisfied or omitted refuses the whole update; closure follows the chain to its terminal replacement.
 
 While a cycle is pending, a changed candidate refuses before execution. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 

@@ -590,6 +590,52 @@ class FindingLedgerAtFinal(AttackHarness):
             self.assertEqual(measurement.get(key), recorded.get(key), marker + f" ({key})")
 
 
+    def test_fixed_accepts_a_post_edit_passed_owner(self) -> None:
+        # A shared candidate proved the owning attack as a post-edit pass; the
+        # finding closes as fixed instead of being relabeled report-only.
+        marker = "FIXED_REFUSES_POST_EDIT_OWNER"
+        wid = self.begin("fixed-post-edit-owner")
+        intake_id = self.behavioral_intake("fixed-post-edit-owner", wid, "a caller-reachable read observes the wrong value")
+        [owner] = self.owned_map(intake_id, marker=marker)
+        owner = {**owner, "id": "BM_ATTACK2"}
+        unowned = {**owner, "id": "BM_ATTACK", "sourceRefs": []}
+        recorded = self.record_preflight("fixed-post-edit-owner", wid, [unowned, owner])
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        self.drive_attack_green("fixed-post-edit-owner", marker)
+        (self.repo / "test_attack2_probe.py").write_text(
+            "import app, unittest\nclass AttackProbe2(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
+        passed = subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", "fixed-post-edit-owner",
+                                 "--phase", "green", "--behavior-id", "BM_ATTACK2", "--", sys.executable, "-m", "unittest", "test_attack2_probe"],
+                                cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(passed.returncode, 0, marker + ": " + passed.stdout + passed.stderr)
+        self.assertIn('"post-edit-passed"', passed.stdout, marker)
+        closed = self.cli("advisor-disposition", "--slug", "fixed-post-edit-owner", "--workflow-id", wid,
+                          "--stage", "preflight", "--findings", "addressed", "--input",
+                          str(self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        [entry] = [item for item in self.ok("checkpoint", "--phase", "final-review")["findingLedger"] if item.get("findingId") == "SPEC-1"]
+        self.assertEqual(entry.get("status"), "fixed", marker)
+
+    def test_next_action_names_pending_findings_before_verification(self) -> None:
+        # verify refuses while preflight findings are pending; nextAction says so
+        # instead of pointing at verification.
+        marker = "NEXT_ACTION_HIDES_PENDING_FINDINGS"
+        wid = self.begin("next-action-findings")
+        intake_id = self.behavioral_intake("next-action-findings", wid, "a caller-reachable read observes the wrong value")
+        recorded = self.record_preflight("next-action-findings", wid, self.owned_map(intake_id, marker=marker))
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        self.drive_attack_green("next-action-findings", marker)
+        gate = subprocess.run([sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
+                              cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(gate.returncode, 0, marker + ": " + gate.stdout + gate.stderr)
+        self.ok("record-production-code", "--slug", "next-action-findings", "--workflow-id", wid,
+                "--input", str(self.json_file("gate.json", json.loads(gate.stdout))))
+        passed = self.cli("set-phase", "--phase", "implementation", "--status", "passed")
+        self.assertEqual(passed.returncode, 0, marker + ": " + passed.stdout + passed.stderr)
+        self.assertEqual(self.status()["nextAction"], "close-current-findings", marker)
+
+
 class LedgerCarriesAttackSemantics(AttackHarness):
     def test_ledger_owners_carry_the_attacks_behavior_and_expected_outcome(self) -> None:
         marker = "LEDGER_OWNERS_LOSE_ATTACK_SEMANTICS"

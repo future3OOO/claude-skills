@@ -205,6 +205,14 @@ def _snapshot_binding(
 
 
 def main(argv: list[str]) -> int:
+    if "-h" in argv or "--help" in argv:
+        print(
+            "Repo Context Forge bootstrap wrapper. Wrapper options (consumed here, not by the producer):\n"
+            "  --workflow-slug <slug>   record the packet on this active governed workflow\n"
+            "  --revalidate             fast post-edit refresh: local mode, no SoulForge map rebuild;\n"
+            "                           requires --workflow-slug\n"
+            "Every other option is passed to the producer; its help follows.\n"
+        )
     revalidate = "--revalidate" in argv
     if revalidate:
         # Fast post-intake revalidation (issue #182): the typed gate needs a

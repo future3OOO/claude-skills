@@ -384,7 +384,7 @@ class ContractProofAuthorityTests(unittest.TestCase):
         recorded = json.loads(self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"])).stdout)["document"]
         [bm_b] = [entry for entry in recorded["behaviorMap"] if entry["id"] == "BM_B"]
         self.assertEqual(bm_b["status"], "post-edit-passed", marker)
-        self.assertEqual(recorded["reassessmentPending"], "BM_B", marker)
+        self.assertIsNone(recorded.get("reassessmentPending"), marker)
         self.assertEqual(recorded["runs"][-1]["passProof"]["quality"], "baseline-passed", marker)
         assessed = self.h.update_map(slug, workflow_id, {
             "sourceBehaviorId": "BM_B", "reassessment": "the shared candidate exposed no further obligation", "items": [],
@@ -412,7 +412,6 @@ class ContractProofAuthorityTests(unittest.TestCase):
             contract("BM_C", expected="value is three", red_failure="VALUE_NOT_THREE"),
         ])
         self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        refused(self.post_edit_green(slug, "BM_B", "test_b_probe", touch), "reassessment pending")
         assessed = self.h.update_map(slug, workflow_id, {
             "sourceBehaviorId": "BM_A", "reassessment": "exercise the admission gates",
             "items": [preservation("BM_P", red_failure="PRESERVATION_PROOF_BYPASSED")],
@@ -860,34 +859,6 @@ class ContractProofAuthorityTests(unittest.TestCase):
         clustered = self.tdd_pytest(slug, "green", "BM_C", "-xk=", "test_c_probe.py")
         self.assertEqual(clustered.returncode, 0, marker + " (-xk=): " + clustered.stdout + clustered.stderr)
         self.assertEqual(json.loads(clustered.stdout.strip().splitlines()[-1]).get("status"), "post-edit-passed", marker)
-
-    def test_complete_applies_map_closure_inside_its_transaction(self) -> None:
-        # The CLI precheck is diagnostic; complete() must refuse from the
-        # evidence snapshot inside its transaction once the real PostToolUse
-        # hook has flagged the map and every other completion step is ready.
-        marker = "COMPLETE_IGNORED_MAP"
-        slug, workflow_id = self.h.begin_to_preflight([contract("BM_A")])
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": [],
-        })
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        self.record_production_code(slug, workflow_id)
-        flagged = subprocess.run(
-            [sys.executable, str(POST_EDIT)], cwd=self.repo, env=self.h.env, text=True,
-            input=json.dumps({"session_id": "contract-proof",
-                              "tool_input": {"file_path": str(self.repo / "app.py")}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(flagged.returncode, 0, flagged.stdout + flagged.stderr)
-        set_phase(self.identity, "implementation", "passed")
-        verified = self.h.cli("verify", "--slug", slug, "--", sys.executable, "-c", "pass")
-        self.assertEqual(verified.returncode, 2, marker + verified.stdout + verified.stderr)
-        self.assertIn("reassessment", verified.stderr, marker)
-        with self.assertRaises(WorkflowIncomplete, msg=marker) as refused:
-            complete(self.identity, slug=slug, workflow_id=workflow_id)
-        self.assertIn("reassessment", str(refused.exception), marker)
-        self.assertNotEqual(read_workflow(self.identity)["phase"], "complete", marker)
 
     def test_final_review_prompt_requires_only_supplied_evidence(self) -> None:
         # The prompt literal is the production artifact; its delivery to the

@@ -19,7 +19,7 @@ flowchart LR
     PC --> I[implementation]
     I -->|active RED| TG[mapped GREEN]
     I -->|not-required map| V
-    TG --> TM[post-GREEN map reassessment]
+    TG --> TM[map update when a proof exposes a new obligation]
     TM -->|new obligation| TR
     TM -->|map resolved| V[verification]
     V --> CR[lead structured code review when non-trivial]
@@ -74,7 +74,7 @@ as logical evidence, inserted in the same SQLite transaction as the accepted eve
 findings-none advisor disposition intentionally carries no document, and a
 refusal names the missing evidence and mutates nothing. The preflight document
 owns the initial Behavior Map; mapped TDD evidence carries its stable IDs,
-RED/GREEN runs, current dispositions, and pending reassessment. A plan may show
+RED/GREEN runs and current dispositions. A plan may show
 the map but is not an evidence owner.
 
 Exit 2 alone does not prove a refusal: the verification, TDD, and review
@@ -100,7 +100,7 @@ The database and its containing directory are private and agent-writable. Commit
 commit or HEAD change does not invalidate it. After production preflight,
 test-like edits are admitted while TDD is pending. Production edits are admitted
 after the production-code baseline for an active valid mapped RED, a fully
-dispositioned `not-required` map, or a resolved and reassessed GREEN map. A GREEN
+dispositioned `not-required` map, or a resolved GREEN map. A GREEN
 blocks the next production edit until `tdd-map` records the required architecture,
 preservation, and interaction reassessment. A later edit against a resolved map
 stays admitted but flags completion for another reassessment. A normally
@@ -120,7 +120,7 @@ readiness for the advisor phases without mutating anything.
 - production preflight completed with a non-empty Behavior Map;
 - every contract map item GREEN, or `already-satisfied` by the recorder's own baseline run (its exact mapped surface passed before any edit);
 - every preservation map item GREEN, already satisfied, or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a GREEN terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
-- no pending proof gap or post-GREEN map reassessment;
+- no pending proof gap;
 - TDD passed or not required;
 - production-code recorded;
 - implementation and verification passed;
@@ -143,7 +143,7 @@ production Edit/Write/NotebookEdit
   -> verification = pending
   -> codeReview = pending
   -> finalReview = pending
-  -> nextAction = reassess-behavior-map when a resolved map was touched,
+  -> nextAction = implementation when a resolved map was touched,
                   otherwise implementation/correction
 ```
 

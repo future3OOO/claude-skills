@@ -884,3 +884,13 @@ class GraphEvidenceContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class BootstrapHelpTests(unittest.TestCase):
+    def test_help_lists_the_wrapper_options(self) -> None:
+        # X6R11 queried --help twice and then read the wrapper source to find these.
+        marker = "WRAPPER_HELP_HIDES_ITS_OPTIONS"
+        run = subprocess.run([sys.executable, str(BOOTSTRAP), "--help"], text=True, capture_output=True, check=False)
+        self.assertIn("--workflow-slug", run.stdout, marker + ": " + run.stdout[-300:] + run.stderr[-300:])
+        self.assertIn("--revalidate", run.stdout, marker)
+

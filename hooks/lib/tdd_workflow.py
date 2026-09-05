@@ -148,41 +148,9 @@ def edit_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
     items, document = current_map(identity, state)
     if items is None:
         return []
-    if isinstance(document, dict) and document.get("reassessmentPending"):
-        return ["post-GREEN Behavior Map reassessment via workflow tdd-map"]
     active = document.get("activeBehaviorId") if isinstance(document, dict) else None
     reason = behavior_map.edit_blocker(items, active if isinstance(active, str) else None)
     return [reason] if reason else []
-
-
-def flag_post_edit_reassessment(identity: RepoIdentity, state: JsonObject) -> None:
-    """Flag a resolved map after production edits until one reassessment."""
-    if state.get("tdd") not in {"passed", "not-required"}:
-        return
-    items, document = current_map(identity, state)
-    if items is None or behavior_map.unresolved(items):
-        return
-    if isinstance(document, dict) and (
-        document.get("reassessmentPending") or document.get("postEditReassessment")
-    ):
-        return
-    slug, workflow_id = str(state["slug"]), str(instance_id(state))
-    flagged = _map_doc(
-        slug=slug,
-        workflow_id=workflow_id,
-        items=items,
-        status=str(state.get("tdd")),
-        kind="map",
-        postEditReassessment=True,
-    )
-    evidence_id = state.get("tddEvidence")
-    annotate_tdd_evidence(
-        identity,
-        slug,
-        workflow_id,
-        flagged,
-        expected_evidence_id=evidence_id if isinstance(evidence_id, str) else None,
-    )
 
 
 def completion_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
@@ -207,13 +175,6 @@ def _not_required(
         else None
     )
     existing = evidence_document(identity, existing_id)
-    if isinstance(existing, dict) and (
-        existing.get("postEditReassessment") or existing.get("reassessmentPending")
-    ):
-        raise WorkflowError(
-            "--not-required cannot replace a pending reassessment; record the "
-            "workflow tdd-map reassessment first"
-        )
     if items is not None and not behavior_map.all_disposition_only(items):
         raise WorkflowError(
             "--not-required requires every mapped item to be already-satisfied "
@@ -423,19 +384,18 @@ def _run_tdd(values: list[str]) -> int:
     else:
         if not args.behavior_id:
             raise ValueError("--behavior-id is required for mapped RED/GREEN")
-        if isinstance(current, dict) and current.get("reassessmentPending"):
-            raise WorkflowError(
-                "record the pending post-GREEN Behavior Map reassessment before another cycle"
-            )
         mapped = behavior_map.item(items, args.behavior_id)
         status = str(mapped["status"])
         if phase == "red" and status not in {"pending", "red"}:
             raise WorkflowError(
                 f"behavior {args.behavior_id} is {status}; add a new map item for a new defect"
             )
+        # A finished cycle for another item is history, not a candidate: the next
+        # item's RED opens its own cycle without an intervening map update.
         candidate = (
             current
             if isinstance(current, dict) and current.get("kind") == "cycle"
+            and (current.get("activeBehaviorId") is not None or current.get("behaviorId") == args.behavior_id)
             else None
         )
         active = candidate.get("activeBehaviorId") if isinstance(candidate, dict) else None
@@ -660,7 +620,7 @@ def _run_tdd(values: list[str]) -> int:
                 updated_item["status"] = "post-edit-passed" if post_edit_pass else "green"
                 updated_item["proofCommand"] = command_text
                 next_active = None
-                reassessment_pending = args.behavior_id
+                reassessment_pending = None
                 action = "in-progress"
             else:
                 next_active = args.behavior_id
@@ -769,26 +729,9 @@ def _map_update(values: list[str]) -> int:
     dispositions = value.get("dispositions", [])
     if not isinstance(dispositions, list):
         raise ValueError("TDD map update dispositions must be an array")
-    pending_source = (
-        current.get("reassessmentPending") if isinstance(current, dict) else None
-    )
     source = value.get("sourceBehaviorId")
-    if pending_source:
-        if source != pending_source:
-            raise WorkflowError(
-                "reassessment must name the GREEN behavior awaiting it: "
-                f"{pending_source}"
-            )
-    elif source is not None:
-        raise ValueError(
-            "sourceBehaviorId is valid only for a pending post-GREEN reassessment"
-        )
-    elif not additions and not dispositions and not (
-        isinstance(current, dict) and current.get("postEditReassessment")
-    ):
-        raise ValueError(
-            "a map update outside post-GREEN reassessment must add or disposition an item"
-        )
+    if source is not None and behavior_map.item(items, str(source)).get("status") not in behavior_map.PROOF_STATUSES:
+        raise ValueError("sourceBehaviorId must name a GREEN or post-edit-passed item")
 
     updated = behavior_map.clone(items)
     if dispositions:

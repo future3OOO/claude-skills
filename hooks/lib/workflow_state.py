@@ -227,20 +227,15 @@ def _derive_next_action(state: JsonObject, tdd_document: JsonObject | None = Non
         for entry in correction
     )
     if accepted:
-        if isinstance(tdd_document, dict) and (
-            tdd_document.get("reassessmentPending") or tdd_document.get("postEditReassessment")
-        ):
-            return "reassess-behavior-map"
         if state.get("tdd") == "in-progress":
             return "run-mapped-tdd"
         return "close-current-findings"
-    if isinstance(tdd_document, dict) and (
-        tdd_document.get("reassessmentPending") or tdd_document.get("postEditReassessment")
-    ):
-        return "reassess-behavior-map"
     if any(entry.get("appealStatus") == "pending" for entry in correction):
         return "appeal-final-review"
     phase = _next_incomplete_phase(state)
+    if phase == "verification" and _finding_state_blockers(state):
+        # verify refuses while findings are pending; say so instead of "verification".
+        return "close-current-findings"
     if phase == "advisor-preflight":
         advisor = state.get("advisorPreflight")
         if isinstance(advisor, dict) and advisor.get("status") == "completed":
@@ -1136,16 +1131,15 @@ def _behavioral_finding_closure(
             + ", ".join(not_green)
         )
     if not any(
-        behavior_map.green_through_red(entry) and identifier not in unresolved
+        (behavior_map.green_through_red(entry) or entry.get("status") == "post-edit-passed")
+        and identifier not in unresolved
         for identifier, entry in linked.items()
     ):
         raise WorkflowError(
-            f"behavioral fixed for {finding_id} requires at least one owning attack "
-            "GREEN through its recorded RED; a baseline alone demonstrates no occurrence"
+            f"behavioral fixed for {finding_id} requires at least one owning attack proved on "
+            "the current candidate (GREEN through its recorded RED, or post-edit-passed); "
+            "a baseline alone demonstrates no occurrence"
         )
-    pending = tdd_document.get("reassessmentPending") if isinstance(tdd_document, dict) else None
-    if not admit_pending and pending in linked:
-        raise WorkflowError(f"behavioral fixed for {finding_id} requires post-GREEN reassessment")
 
 
 def _finding_state_blockers(state: JsonObject) -> list[str]:

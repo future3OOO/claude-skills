@@ -28,7 +28,6 @@ from hooks.lib.state_store import (  # noqa: E402
     record_session_association,
 )
 from hooks.lib._workflow_db import LedgerError  # noqa: E402
-from hooks.lib.tdd_workflow import flag_post_edit_reassessment  # noqa: E402
 from hooks.lib.workflow_state import WorkflowError, invalidate_after_edit  # noqa: E402
 
 
@@ -73,14 +72,6 @@ def main() -> int:
     # above and the lint feedback below still run for it.
     session = session_key(payload)
     state = invalidate_after_edit(identity, relative)
-    if state is not None and is_reviewable_path(relative) and not is_test_path(relative):
-        try:
-            # A production edit after a resolved Behavior Map flags it for one
-            # recorded reassessment before completion; storage failure prints
-            # and never changes this hook's outcome, matching hook doctrine.
-            flag_post_edit_reassessment(identity, state)
-        except (WorkflowError, LedgerError, ValueError) as exc:
-            print(f"post-edit reassessment flag failed: {exc}", file=sys.stderr)
     if state is not None and session is not None:
         record_session_association(session, identity)
     lint = _ruff_lines(path)

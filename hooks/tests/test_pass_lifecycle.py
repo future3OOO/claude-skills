@@ -2186,7 +2186,7 @@ class PassLifecycleTests(unittest.TestCase):
     def test_context_mismatch_invalidation_retires_live_marker(self) -> None:
         _, after = self.context_mismatch_then_edit("mismatch-routing")
         self.assertEqual(("finalReviewContextMismatchEvidence" in after, after["nextAction"]),
-                         (False, "reassess-behavior-map"), "CONTEXT_MISMATCH_INVALIDATION_MISROUTED")
+                         (False, "implementation"), "CONTEXT_MISMATCH_INVALIDATION_MISROUTED")
 
     def test_final_rejections_use_one_context_matched_appeal_and_effective_readiness(self) -> None:
         marker = "FINAL_APPEAL_STATE_ADVANCED_INCORRECTLY"

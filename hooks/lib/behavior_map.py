@@ -469,13 +469,6 @@ def closure_blockers(
         return []
     document = tdd_document if isinstance(tdd_document, dict) else {}
     missing: list[str] = []
-    if document.get("reassessmentPending"):
-        missing.append("Behavior Map reassessment")
-    if document.get("postEditReassessment"):
-        missing.append(
-            "post-production-edit Behavior Map reassessment via workflow tdd-map: "
-            "add the behavioral item, or record why the edits were non-behavioral"
-        )
     pending = unresolved(items)
     if pending:
         missing.append("unresolved Behavior Map items: " + ", ".join(pending))
