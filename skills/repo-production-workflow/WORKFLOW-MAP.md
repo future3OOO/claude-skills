@@ -128,7 +128,7 @@ readiness for the advisor phases without mutating anything.
 - a context-matched final review from `codex-advisor` whose effective findings
   are terminal: the immutable raw verdict remains evidence, but
   `fix-before-commit` is not a veto after closure;
-- no pending final rejection appeal or persistent disagreement;
+- no pending final rejection appeal and no re-raised finding awaiting its second disposition;
 - the reviewable working tree unchanged since the recorded lead review.
 
 The historical `pass-state.py`, recorder, TDD, and verification scripts are temporary compatibility adapters. They call the same unified CLI Module and contain no persistence or path logic; new callers use `workflow.py` directly.
@@ -156,12 +156,13 @@ Behavioral findings from the lead's code review or final Codex Advisor against t
 
 A finding envelope is one correction batch. A pending behavioral finding rides
 the pass as a map-owned attack obligation; dispositions may cover any subset,
-and later documents preserve append-only history. Until every finding is dispositioned and the map is closed, the final
+and later documents preserve append-only history. Until every material finding is dispositioned and the map is closed, the final
 checkpoint and `complete` refuse; verification, the typed gate, and lead
 review run regardless. Targeted TDD and direct changed-Seam
 probes remain available. Final rejections use one context-matched appeal response:
-omission or same-ID `material:false` concedes, a material re-raise records
-persistent disagreement, and new IDs form their own immutable intake.
+omission or same-ID `material:false` concedes, a material re-raise reopens
+the finding for one more lead disposition, which then stands, and new IDs form
+their own immutable intake.
 
 ## Approval freshness
 

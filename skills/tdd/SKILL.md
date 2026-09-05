@@ -61,7 +61,7 @@ Write every contract item's RED first, on the clean tree (the RED sweep), then i
 
 **RED SWEEP**
 
-Every contract item earns its RED on the clean tree before the first production edit: the recorder admits a second RED beside an open one while the tree carries no production change, and the edit gate refuses a production edit while any contract item is still pending. One edit may then satisfy several red items; each reaches GREEN through its own RED. A GREEN for an item with no RED is refused; there is no post-edit proof.
+Every contract item earns its RED on the clean tree before the first production edit: the recorder admits a second RED beside an open one, and the edit gate refuses a production edit while any contract item is still pending. One edit may then satisfy several red items; each reaches GREEN through its own RED. A GREEN for an item with no RED is refused; there is no post-edit proof.
 
 Several assertions may jointly prove one behavior; every assertion participating in that joint proof carries the same behavior-specific `redFailure` marker, so whichever guarantee breaks first still names the mapped failure. State after success or failure must match the complete observable contract.
 

@@ -879,7 +879,7 @@ class WrapperPromptTests(HookHarness):
     def test_a_refused_answer_is_still_emitted(self) -> None:
         marker = "REFUSED_ADVISOR_OUTPUT_DISCARDED"
         env = self.wrapper_rig()
-        reply = '{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"c","material":true,"kind":"other"}],"verdict":"completed"}'
+        reply = '{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"c"}],"verdict":"completed"}'
         env["ADVISOR_SHIM_REPLY"] = reply
         begun = self.state("begin", "--slug", "keep-output")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)

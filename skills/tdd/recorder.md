@@ -32,7 +32,7 @@ JSON
 
 `sourceBehaviorId`, when given, names the GREEN item whose consequence the update records. New items use the preflight schema and reopen TDD. Prose `dispositions` (`already-satisfied` with real-Seam evidence, `omitted` with governing evidence) apply to pending preservation items only; a contract item is dispositioned only by the producer's baseline run. A GREEN item is dispositioned `superseded` with `supersededBy` naming its replacement in the same map; a missing target, self-reference, cycle, non-GREEN source, or a terminal replacement that is already-satisfied or omitted refuses the whole update; closure follows the chain to its terminal replacement.
 
-While a cycle is pending, a changed candidate refuses before execution. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
+While an item's cycle is open, a changed surface for that item refuses before execution; other pending items record their own RED beside it (the sweep). GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 
 ## No behavior change
 
@@ -46,4 +46,4 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
 
 Proof gaps and pending items forbid this path. The CLI separately refuses to replace existing valid RED/GREEN evidence.
 
-Before completion, report the applicable map IDs and evidence: RED, GREEN, already satisfied, omitted, proof gaps, reassessments, broader regression proof, and refactoring performed while GREEN.
+Before completion, report the applicable map IDs and evidence: RED, GREEN, already satisfied, omitted, proof gaps, map updates, broader regression proof, and refactoring performed while GREEN.

@@ -94,7 +94,8 @@ Findings carry exactly `id`, `claim`, `material`, and `kind` (`behavioral` or
 
 The wrapper records the exact UTF-8 response and its digest as immutable finding
 intake; it never dispositions. After reading the output, the lead validates
-every finding and appends a separate intake-referenced disposition. Completion
+every finding and appends a separate intake-referenced disposition for each
+material one; `material:false` notes need none. Completion
 derives from the context-matched intake's effective terminal dispositions, not
 from the raw verdict alone. A `context-mismatch` advances nothing and must be
 re-consulted. A final `rejected-with-evidence` remains pending for one response
@@ -189,12 +190,12 @@ attacks; anything wider is split into further pending items or the domain is
 narrowed. A disposition with no linked items proves its domain with its own
 quoted measurement. `fixed` on a behavioral finding additionally requires the
 owning attack GREEN.
-While classification, correction, mapped GREEN, reassessment, or disagreement
-remains open, generic verification, the typed gate, lead review, and completion
-refuse. An appeal always blocks completion; when its current candidate bindings
-remain valid it also blocks those broad reruns, while candidate invalidation
-permits only missing generic, typed-gate, and lead-review bindings to refresh
-before the one response. Targeted TDD and changed-Seam probes remain available.
+While a material finding, a mapped GREEN, or a re-raised finding awaiting its
+second disposition remains open, completion refuses; verification, the typed
+gate, and lead review run regardless. An appeal blocks completion until the
+advisor's one response; a material re-raise reopens the finding for one more
+lead disposition, which then stands. Targeted TDD and changed-Seam probes
+remain available.
 Any production edit after final review resets code review and final review to
 pending, but the immutable intake remains closable under the same workflow ID.
 
