@@ -292,15 +292,12 @@ def apply_dispositions(
     items: list[JsonObject],
     value: object,
     *,
-    declared: frozenset[str] = frozenset(),
     settled_findings: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
     """Apply no-edit dispositions in place: settle pending items, supersede GREEN
-    ones, withdraw a never-attacked contract item the lead added after preflight,
+    ones, withdraw a never-attacked, unowned contract item whoever declared it,
     or reopen a settled preservation item to pending.
 
-    `declared` holds the ids the recorded preflight map declared; only an item
-    outside it was added by `tdd-map` in this pass and may be withdrawn.
     `settled_findings` holds the (intake evidence, finding id) pairs closed
     without a fix; an item owned only by those owns nothing and may be
     withdrawn. The supersession graph is checked by the caller's validation of
@@ -343,11 +340,6 @@ def apply_dispositions(
         elif status == "withdrawn":
             if mapped.get("kind") != "contract":
                 raise ValueError(_PRESERVATION_WITHDRAWN_REFUSED.format(identifier))
-            if identifier in declared:
-                raise ValueError(
-                    f"behavior {identifier} was declared at preflight; only an item added by "
-                    "tdd-map in this pass can be withdrawn"
-                )
             if mapped.get("status") != "pending":
                 raise ValueError(
                     f"behavior {identifier} is {mapped.get('status')}; only a never-attacked "

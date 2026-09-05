@@ -271,6 +271,18 @@ def main(argv: list[str]) -> int:
         args += ["--mode", "local"]
         args, _ = _remove_option(args, "--map-build")
         args += ["--map-build", "never"]
+    elif workflow_slug:
+        # The advisor checkpoint binds its projection to the candidate tree. On a
+        # dirty checkout the producer's own choice (pr, once the branch is past
+        # its base) binds HEAD instead and every consult refuses; measured on a
+        # real pass as one 48s rerun per consult. Local mode analyzes the
+        # candidate, and the trailing occurrence wins over any caller-passed mode.
+        root = Path(_extract_option(args, "--repo") or os.getcwd())
+        head_tree, failure = _git(root, "rev-parse", "HEAD^{tree}")
+        candidate, snapshot_failure = _worktree_snapshot(root)
+        if not failure and not snapshot_failure and candidate != head_tree.strip():
+            sys.stderr.write("note: dirty governed checkout; analyzing the candidate in local mode\n")
+            args += ["--mode", "local"]
     if "--enforce-intake" not in args:
         args.append("--enforce-intake")
     if not workflow_slug:

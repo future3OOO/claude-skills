@@ -986,12 +986,33 @@ class MapCorrectionAttacks(AttackHarness):
         self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "withdrawn", marker)
         self.assertNotIn("BM_EXTRA", self.cli("complete").stderr, marker)
 
-    def test_a_preflight_declared_item_refuses_withdrawal(self) -> None:
-        marker = "PREFLIGHT_ITEM_WITHDRAWN"
+    def test_a_preflight_declared_pending_item_withdraws(self) -> None:
+        marker = "PREFLIGHT_DECLARED_WITHDRAWAL_REFUSED"
         slug = "withdraw-preflight"
+        self.open_pass(slug, [self.contract(marker), self.EXTRA])
+        withdrawn = self.withdraw(slug, "BM_EXTRA")
+        self.assertEqual(withdrawn.returncode, 0, marker + ": " + withdrawn.stdout + withdrawn.stderr)
+        self.assertEqual(json.loads(withdrawn.stdout)["pending"], ["BM_ATTACK"], marker)
+        self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "withdrawn", marker)
+
+    def test_the_last_green_closes_tdd_without_a_map_update(self) -> None:
+        marker = "LAST_GREEN_LEAVES_TDD_IN_PROGRESS"
+        slug = "last-green"
         self.open_pass(slug, [self.contract(marker)])
-        refused = self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_ATTACK"))
-        self.assertIn("preflight", refused.stderr, marker)
+        (self.repo / "test_attack_probe.py").write_text(
+            "import app, unittest\n"
+            "class AttackProbe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n",
+            encoding="utf-8",
+        )
+        for phase, value in (("red", 1), ("green", 2)):
+            (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
+            run = subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
+                                  "--slug", slug, "--phase", phase, "--behavior-id", "BM_ATTACK",
+                                  "--", sys.executable, "-m", "unittest", "test_attack_probe"],
+                                 cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+        self.assertEqual(self.status()["tdd"], "passed", marker)
 
     def test_an_attacked_item_refuses_withdrawal(self) -> None:
         marker = "ATTACKED_ITEM_WITHDRAWN"

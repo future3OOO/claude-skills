@@ -260,6 +260,60 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(checkpoint.returncode, 0, marker + "\n" + checkpoint.stdout + checkpoint.stderr)
         self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker)
 
+    def governed_bootstrap(self, *, dirty: bool, mode: str | None = None) -> subprocess.CompletedProcess[str]:
+        """The public wrapper on a branch one commit past main, with or without an
+        uncommitted candidate on top: the producer's own mode choice, or the caller's."""
+        # A tracked .gitignore: without one the producer's pr-mode receipt never
+        # publishes (its SoulForge ignore-line cleanup cannot check out an untracked file).
+        (self.repo / ".gitignore").write_text(".gitnexus/\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore the graph index")
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "feature")
+        (self.repo / "app.py").write_text("def compute(value):\n    return value + 2\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "feature")
+        if dirty:
+            (self.repo / "probe.py").write_text(
+                "from app import compute\n\n\ndef probe():\n    return compute(3)\n", encoding="utf-8"
+            )
+        return subprocess.run(
+            [sys.executable, str(BOOTSTRAP), "--repo", str(self.repo), "--workflow-slug", self.slug,
+             "--map-build", "auto", "--gitnexus-mode", "auto", "--top", "5", "--base", "main",
+             "--intent", self.intent, *(["--mode", mode] if mode else [])],
+            cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
+        )
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_clean_governed_branch_keeps_the_producers_mode(self) -> None:
+        marker = "CLEAN_GOVERNED_MODE_CHANGED"
+        forged = self.governed_bootstrap(dirty=False)
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        self.assertIn("mode: pr", forged.stdout, marker)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker + ": " + checkpoint.stdout)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_dirty_governed_branch_reaches_the_advisor_checkpoint(self) -> None:
+        marker = "DIRTY_GOVERNED_CHECKOUT_BLOCKS_ADVISOR_CHECKPOINT"
+        forged = self.governed_bootstrap(dirty=True)
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertEqual(checkpoint.returncode, 0, marker + "\n" + checkpoint.stdout + checkpoint.stderr)
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker + ": " + checkpoint.stdout)
+        self.assertIn("mode: local", forged.stdout, marker)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_dirty_governed_branch_overrides_an_explicit_pr_mode(self) -> None:
+        """The producer honors its last --mode: a caller's pr on a dirty governed
+        checkout would bind the projection to HEAD, so the wrapper's local wins."""
+        marker = "EXPLICIT_PR_MODE_BINDS_A_DIRTY_GOVERNED_CHECKOUT_TO_HEAD"
+        forged = self.governed_bootstrap(dirty=True, mode="pr")
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        self.assertIn("mode: local", forged.stdout, marker)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker + ": " + checkpoint.stdout)
+
     def ledger_bytes(self, state: dict[str, object]) -> bytes:
         return (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
                 / str(state["repo"]["key"]) / "workflow.sqlite3").read_bytes()

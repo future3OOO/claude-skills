@@ -105,8 +105,8 @@ resolves completion without authorizing an edit and is terminal; for a behaviora
 finding it also needs an owning attack the tdd producer proved (GREEN, or a
 recorded pre-edit baseline). A command or evidence citing a path under the
 system temporary directory refuses. A behavioral
-finding directly owns Behavior Map attack items through finding `sourceRefs`
-(added by `tdd-map` in the same pass); `fixed` requires an owning attack GREEN
+finding directly owns Behavior Map attack items through finding `sourceRefs`;
+`fixed` requires an owning attack GREEN
 through its recorded RED plus a zero-count complete-domain occurrence over the
 finding's recorded surface, and a later map update that would un-own a fixed
 finding refuses. Dispositions may cover any subset of an intake; later closure
