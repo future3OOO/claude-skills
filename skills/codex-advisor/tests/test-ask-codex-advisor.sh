@@ -177,7 +177,7 @@ printf 'CLAUDE_CODE_MAX_CONTEXT_TOKENS=%s\nCLAUDE_CODE_AUTO_COMPACT_WINDOW=%s\nC
   "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-unset}" "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}" \
   "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-unset}" >"$CAPTURE_DIR/env-$count"
 cat >"$CAPTURE_DIR/payload-$count"
-if [[ "${FAIL_RESUME:-0}" == 1 && " $* " == *" --resume "* ]]; then exit 7; fi
+if [[ "${FAIL_PROVIDER:-0}" == 1 ]]; then exit 7; fi
 if [[ " $* " == *" --resume "* ]]; then
   printf '%s\n' '{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}'
 else
@@ -205,7 +205,8 @@ preflight_out=$(run_wrapper --slug scoped-rig --phase preflight-advice --design-
 check_status "controlled preflight composition exits 0" 0 "$status"
 check "provider runs in selected repository" "$rigtmp/repo" "$(cat "$rigtmp/capture/pwd-1")"
 preflight_args=$(cat "$rigtmp/capture/args-1")
-preflight_sid=$(printf '%s\n' "$preflight_args" | python3 -c 'import shlex,sys; a=shlex.split(sys.stdin.read()); print(a[a.index("--session-id")+1])')
+preflight_sid=$(printf '%s\n' "$preflight_args" | sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p')
+check_status "preflight session id parsed" 36 "${#preflight_sid}"
 check "preflight creates provider session" "--session-id $preflight_sid" "$preflight_args"
 check_absent "preflight does not resume" "--resume" "$preflight_args"
 check "preflight disables customizations" "--safe-mode --strict-mcp-config" "$preflight_args"
@@ -250,30 +251,33 @@ CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" verify --repo "$rigtm
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" verify --repo "$rigtmp/repo" --slug scoped-rig --kind quality-gate --base-ref HEAD >/dev/null
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" set-phase --repo "$rigtmp/repo" --phase code-review --status not-required --findings none >/dev/null
 
-sid_file=$(ls "$rigstate/_advisor-sessions"/*-scoped-rig-"$wid".sid)
-mv "$sid_file" "$sid_file.missing"
-before=$(cat "$rigtmp/capture/count")
-out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' 2>&1); status=$?
-check_status "missing final SID refused" 2 "$status"; check "missing SID named" "workflow-bound preflight advisor session" "$out"
-check_status "missing SID invokes no provider" "$before" "$(cat "$rigtmp/capture/count")"
-mv "$sid_file.missing" "$sid_file"
-
-FAIL_RESUME=1 run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' >/dev/null 2>"$rigtmp/resume-fail.err"; status=$?
+FAIL_PROVIDER=1 run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' >/dev/null 2>"$rigtmp/resume-fail.err"; status=$?
 check_status "resume provider failure propagates" 7 "$status"
 resume_args=$(cat "$rigtmp/capture/args-2")
 check "final resumes same SID" "--resume $preflight_sid" "$resume_args"
 check_absent "resume failure has no cold-start fallback" "--session-id" "$resume_args"
 
+sid_file=$(ls "$rigstate/_advisor-sessions"/*-scoped-rig-"$wid".sid)
+rm "$sid_file"
+FAIL_PROVIDER=1 run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' >/dev/null 2>&1; status=$?
+check_status "missing SID starts a session and the provider failure propagates" 7 "$status"
+created_sid=$(cat "$sid_file" 2>/dev/null)
+check_status "missing SID persists a new workflow-bound session id" 36 "${#created_sid}"
+check_absent "missing SID does not reuse the preflight session" "$preflight_sid" "$created_sid"
+missing_args=$(cat "$rigtmp/capture/args-3")
+check "missing SID creates the persisted session" "--session-id $created_sid" "$missing_args"
+check_absent "missing SID does not resume" "--resume" "$missing_args"
+
 final_out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' 2>"$rigtmp/final.err"); status=$?
 check_status "controlled final composition exits 0" 0 "$status"
-final_args=$(cat "$rigtmp/capture/args-3")
-check "successful final resumes same SID" "--resume $preflight_sid" "$final_args"
+final_args=$(cat "$rigtmp/capture/args-4")
+check "successful final resumes the created session" "--resume $created_sid" "$final_args"
 check "final disables customizations" "--safe-mode --strict-mcp-config" "$final_args"
 check "final denies GitNexus tools" "mcp__gitnexus__*" "$final_args"
-check_status "final has one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- governed-design narrative evidence')"
-check "final carries framed design body" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-3")"
-check_status "final has one projection section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- advisor projection (schemaVersion 1) ---')"
-check_status "final has one current-pass diff section" 1 "$(count_exact "$rigtmp/capture/payload-3" '--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---')"
+check_status "final has one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-4" '--- governed-design narrative evidence')"
+check "final carries framed design body" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-4")"
+check_status "final has one projection section" 1 "$(count_exact "$rigtmp/capture/payload-4" '--- advisor projection (schemaVersion 1) ---')"
+check_status "final has one current-pass diff section" 1 "$(count_exact "$rigtmp/capture/payload-4" '--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---')"
 check "final design telemetry emitted" "codex_advisor_evidence name=governing-design" "$(cat "$rigtmp/final.err")"
 check "projection telemetry emitted" "codex_advisor_evidence name=advisor-projection" "$(cat "$rigtmp/final.err")"
 check "diff telemetry emitted" "codex_advisor_evidence name=current-pass-diff" "$(cat "$rigtmp/final.err")"
@@ -286,13 +290,13 @@ BASHRC
 unphased_out=$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=999111 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
   run_wrapper --slug scoped-unphased --fresh -- 'unphased question' 2>"$rigtmp/unphased.err"); status=$?
 check_status "controlled unphased consult exits 0" 0 "$status"
-unphased_args=$(cat "$rigtmp/capture/args-4")
+unphased_args=$(cat "$rigtmp/capture/args-5")
 check "unphased consult retains direct-measurement tools" "--tools Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch" "$unphased_args"
 check_absent "unphased consult keeps customizations" "--safe-mode" "$unphased_args"
 check_absent "unphased consult keeps configured MCP tools" "mcp__gitnexus__*" "$unphased_args"
-check "the alias-configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$rigtmp/capture/env-4")"
-check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$rigtmp/capture/env-4")"
-check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-4")"
+check "the alias-configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$rigtmp/capture/env-5")"
+check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$rigtmp/capture/env-5")"
+check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-5")"
 
 cat >"$rigtmp/home/.bashrc" <<'BASHRC'
 alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
@@ -301,9 +305,9 @@ BASHRC
 omitted_max_out=$(CLAUDE_CODE_MAX_CONTEXT_TOKENS=888222 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
   run_wrapper --slug scoped-unphased-max-isolation --fresh -- 'unphased question' 2>"$rigtmp/unphased-max.err"); status=$?
 check_status "controlled max-context isolation consult exits 0" 0 "$status"
-check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$rigtmp/capture/env-5")"
-check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$rigtmp/capture/env-5")"
-check "a parent-exported unconfigured percent remains cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-5")"
+check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$rigtmp/capture/env-6")"
+check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$rigtmp/capture/env-6")"
+check "a parent-exported unconfigured percent remains cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-6")"
 rm -rf "$rigtmp"
 
 if [[ "${LIVE:-0}" == 1 ]]; then

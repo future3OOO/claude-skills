@@ -956,6 +956,27 @@ class WrapperPromptTests(HookHarness):
         self.assertEqual(json.loads(self.state("status").stdout)["finalReview"]["status"], "commit-ready", marker)
 
 
+    def test_a_created_final_review_session_is_persisted_and_resumed(self) -> None:
+        marker = "CREATED_SESSION_NOT_REUSED"
+        env = self.wrapper_rig()
+        wid = self.ready_for_final_review("reuse-created")
+        rig = Path(env["CAPTURE_DIR"]).parent
+        consult = ("--slug", "reuse-created", "--phase", "final-review",
+                   "--design-file", str(rig / "design.md"), "--", "completion question")
+        first = self.run_advisor(env, *consult)
+        self.assertNotEqual(first.returncode, 0, marker + ": the shim's create reply is not a final verdict")
+        args = (Path(env["CAPTURE_DIR"]) / "args-1").read_text(encoding="utf-8").split()
+        created = args[args.index("--session-id") + 1]
+        state_root = env.get("CLAUDE_WORKFLOW_STATE_ROOT") or f"{env['CLAUDE_HOME']}/state"
+        persisted = list((Path(state_root) / "_advisor-sessions").glob(f"*-reuse-created-{wid}.sid"))
+        self.assertEqual([path.read_text(encoding="utf-8").strip() for path in persisted], [created], marker)
+        second = self.run_advisor(env, *consult)
+        self.assertEqual(second.returncode, 0, marker + ": " + second.stdout + second.stderr)
+        resumed = (Path(env["CAPTURE_DIR"]) / "args-2").read_text(encoding="utf-8").split()
+        self.assertEqual(resumed[resumed.index("--resume") + 1], created, marker)
+        self.assertEqual(json.loads(self.state("status").stdout)["finalReview"]["status"], "commit-ready", marker)
+
+
 class TollDeletionTests(HookHarness):
     """The governed pass with its bookkeeping tolls deleted: every step is a real
     action through the real gate, recorders, and Stop hook."""
