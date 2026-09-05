@@ -6,24 +6,23 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
-from .behavior_map import IDENTIFIER
 from .state_store import utc_timestamp
 
 JsonObject = dict[str, object]
 REVIEWER_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
-REVIEWER_DISPOSITIONS = REVIEWER_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
+REVIEWER_DISPOSITIONS = REVIEWER_RESOLVED | {"accepted-follow-up"}
 ADVISOR_RESOLVED = {"fixed", "rejected-with-evidence", "report-only"}
-ADVISOR_DISPOSITIONS = ADVISOR_RESOLVED | {"accepted-follow-up", "accepted-for-proof"}
+ADVISOR_DISPOSITIONS = ADVISOR_RESOLVED | {"accepted-follow-up"}
 MEASUREMENT_SHAPE = '{"claim":non-empty text,"command":non-empty text,"result":non-empty text}'
 COUNTED_OCCURRENCE_SHAPE = '{"domain":non-empty text,"count":int>=0,"complete":bool,"command":non-empty text,"result":non-empty text}'
 SEAM_OCCURRENCE_SHAPE = '{"seam":non-empty text,"reproduction":{"command":non-empty text,"result":non-empty text}}'
 DISPOSITION_REQUIREMENTS = {
-    "fixed": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
+    "fixed": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true; behavioral fixed always requires the counted occurrence with count=0 and complete=true over the finding's recorded domain",
     "rejected-with-evidence": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; premise.result strips and lowercases to false or counted occurrence has count=0 and complete=true",
     "report-only": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; evidence=non-empty text; materialConsequence.result strips and lowercases to false",
     "accepted-follow-up": f"premise={MEASUREMENT_SHAPE}; occurrence={COUNTED_OCCURRENCE_SHAPE} or {SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE}; reference=non-empty text",
-    "accepted-for-proof": f"premise={MEASUREMENT_SHAPE}; occurrence={SEAM_OCCURRENCE_SHAPE}; materialConsequence={MEASUREMENT_SHAPE} with result not stripping/lowercasing to false; reservedBehaviorIds=[unique BM ids]; seam=non-empty text equal to occurrence.seam after trimming; preservationObligations=[unique non-empty text values]",
 }
 DISPOSITION_SHAPES = {status: f'{{"finding_id":non-empty text,"status":"{status}","kind":"behavioral" or "nonbehavioral"}} plus {requirements}' for status, requirements in DISPOSITION_REQUIREMENTS.items()}
 
@@ -73,15 +72,18 @@ def advisor_envelope(
     typed: list[JsonObject] = []
     identifiers: set[str] = set()
     for position, item in enumerate(findings, 1):
-        if not isinstance(item, dict) or set(item) != {"id", "claim", "material", "kind"}:
-            raise ValueError(f"advisor finding {position} requires only id, claim, material, and kind")
+        # A completed consult is never discarded over its shape: extra fields are
+        # dropped and an unrecognised kind is read as behavioral, the conservative
+        # default that makes the finding ride the pass as an attack obligation.
+        if not isinstance(item, dict) or not {"id", "claim", "material"} <= set(item):
+            raise ValueError(f"advisor finding {position} requires id, claim, and material")
         identifier, kind = item.get("id"), item.get("kind")
         if not _text(identifier) or identifier in identifiers:
             raise ValueError("advisor finding ids must be non-empty and unique")
         if not _text(item.get("claim")) or not isinstance(item.get("material"), bool):
             raise ValueError(f"advisor finding {identifier} requires claim and material boolean")
-        if kind not in {"behavioral", "nonbehavioral"}:
-            raise ValueError(f"advisor finding {identifier} kind must be behavioral or nonbehavioral")
+        if not isinstance(kind, str) or kind not in {"behavioral", "nonbehavioral"}:
+            kind = "behavioral"
         identifiers.add(str(identifier))
         typed.append({"id": identifier, "claim": item["claim"], "material": item["material"], "kind": kind})
     if stage == "final" and verdict in {"commit-ready", "fix-before-commit"} and ((verdict == "commit-ready") == any(item["material"] for item in typed)):
@@ -103,79 +105,32 @@ def advisor_envelope(
 FINAL_ENVELOPE_VERDICTS = {"commit-ready", "fix-before-commit", "context-mismatch"}
 
 
-DESIGN_MARKER = "<!-- governed-design-labels:v1 -->"
-DESIGN_ID = re.compile(r"^(?:PRES|ASSUMP)-[1-9][0-9]*$")
-RESERVED_DESIGN_TOKEN = re.compile(r"(?<![A-Z0-9-])(?:PRES|ASSUMP)-[0-9]+(?![A-Z0-9-])")
-DESIGN_FILE_SHAPE = (f'{DESIGN_MARKER} followed by ```json and '
-    '{"schemaVersion":1,"labels":[{"id":"PRES-n","kind":"preservation"},{"id":"ASSUMP-n","kind":"assumption","behavioral":bool}]}; '
-    "reserved tokens in prose must equal catalogue ids")
+DESIGN_FILE_SHAPE = (
+    'a readable non-empty UTF-8 design narrative; the declaration is '
+    '{"schemaVersion":1,"status":"present","sha256":"<64 hex>"} or '
+    '{"schemaVersion":1,"status":"absent","reason":"..."}'
+)
 DOCUMENT_SHAPES = {**DISPOSITION_SHAPES, "governed-design": DESIGN_FILE_SHAPE}
 DOCUMENT_SHAPE_TABLE = "\n".join(["| Surface | Expected shape |", "|---|---|", *(f"| `{name}` | {shape} |" for name, shape in DOCUMENT_SHAPES.items())])
 
 
-def _design_file_error(message: str) -> str:
-    return f"{message}; governed-design expected shape: {DESIGN_FILE_SHAPE}"
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> JsonObject:
-    result: JsonObject = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"governed design catalogue repeats a key: {key}")
-        result[key] = value
-    return result
-
-
-def _catalogue(value: object) -> JsonObject:
-    if not isinstance(value, dict) or set(value) != {"schemaVersion", "labels"}:
-        raise ValueError("governed design catalogue requires only schemaVersion and labels")
-    labels = value.get("labels")
-    if value.get("schemaVersion") != 1 or not isinstance(labels, list):
-        raise ValueError("governed design catalogue requires schemaVersion 1 and a labels array")
-    result: list[JsonObject] = []
-    seen: set[str] = set()
-    for position, raw in enumerate(labels, 1):
-        if not isinstance(raw, dict):
-            raise ValueError(f"governed design label {position} must be an object")
-        identifier, kind = raw.get("id"), raw.get("kind")
-        if not isinstance(identifier, str) or not DESIGN_ID.fullmatch(identifier):
-            raise ValueError(f"governed design label {position} has an invalid id")
-        if identifier in seen:
-            raise ValueError(f"governed design label id is duplicated: {identifier}")
-        seen.add(identifier)
-        if identifier.startswith("PRES-"):
-            if set(raw) != {"id", "kind"} or kind != "preservation":
-                raise ValueError(f"governed design label {identifier} must be a preservation")
-            result.append({"id": identifier, "kind": kind})
-        else:
-            if (
-                set(raw) != {"id", "kind", "behavioral"}
-                or kind != "assumption"
-                or not isinstance(raw.get("behavioral"), bool)
-            ):
-                raise ValueError(
-                    f"governed design label {identifier} must be an assumption with behavioral boolean"
-                )
-            result.append({"id": identifier, "kind": kind, "behavioral": raw["behavioral"]})
-    return {"schemaVersion": 1, "labels": result}
-
-
 def validate_design_declaration(value: object) -> JsonObject:
+    """The design is a falsifiable hypothesis under attack, not a label registry.
+
+    A declaration recorded before the catalogue was retired still loads: its
+    extra ``catalogue`` field is dropped rather than refused, because prior
+    evidence is append-only history, never a schema hostage.
+    """
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("governed design declaration requires schemaVersion 1")
     status = value.get("status")
     if status == "present":
-        if set(value) != {"schemaVersion", "status", "sha256", "catalogue"}:
+        if not set(value) <= {"schemaVersion", "status", "sha256", "catalogue"}:
             raise ValueError("present governed design declaration has unknown or missing fields")
         digest = value.get("sha256")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("present governed design declaration requires a SHA-256 digest")
-        return {
-            "schemaVersion": 1,
-            "status": "present",
-            "sha256": digest,
-            "catalogue": _catalogue(value.get("catalogue")),
-        }
+        return {"schemaVersion": 1, "status": "present", "sha256": digest}
     if status == "absent":
         if set(value) != {"schemaVersion", "status", "reason"} or not _text(value.get("reason")):
             raise ValueError("absent governed design declaration requires only a non-empty reason")
@@ -190,39 +145,15 @@ def design_declaration(path: str) -> JsonObject:
 def design_file_declaration(path: str) -> JsonObject:
     try:
         raw = Path(path).read_bytes()
-        text = raw.decode("utf-8")
+        raw.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"cannot read governed design: {exc}") from exc
-    if text.count(DESIGN_MARKER) != 1:
-        raise ValueError(_design_file_error("governed design requires exactly one labels marker"))
-    tail = text.split(DESIGN_MARKER, 1)[1]
-    match = re.match(r"\s*```json[ \t]*\r?\n(.*?)\r?\n```", tail, re.DOTALL)
-    if match is None:
-        raise ValueError(_design_file_error("governed design marker must be followed by one fenced json block"))
-    try:
-        catalogue = _catalogue(json.loads(match.group(1), object_pairs_hook=_unique_object))
-    except json.JSONDecodeError as exc:
-        raise ValueError(_design_file_error(f"cannot parse governed design catalogue JSON: {exc}")) from exc
-    except ValueError as exc:
-        raise ValueError(_design_file_error(str(exc))) from exc
-    declared = {str(label["id"]) for label in catalogue["labels"]}
-    reserved = set(RESERVED_DESIGN_TOKEN.findall(text[: text.index(DESIGN_MARKER)]))
-    reserved.update(RESERVED_DESIGN_TOKEN.findall(tail[match.end():]))
-    if declared != reserved:
-        missing = sorted(reserved - declared)
-        unused = sorted(declared - reserved)
-        details = "; ".join(filter(None, (
-            "uncatalogued: " + ", ".join(missing) if missing else "",
-            "catalogue-only: " + ", ".join(unused) if unused else "",
-        )))
-        raise ValueError(_design_file_error(
-            "governed design reserved tokens must equal catalogue ids" + (f": {details}" if details else ""),
-        ))
+    if not raw.strip():
+        raise ValueError(f"governed design is empty; expected shape: {DESIGN_FILE_SHAPE}")
     return {
         "schemaVersion": 1,
         "status": "present",
         "sha256": hashlib.sha256(raw).hexdigest(),
-        "catalogue": catalogue,
     }
 
 
@@ -258,6 +189,10 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _git_oid(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is not None
+
+
 def _resolved_graph(value: object) -> JsonObject:
     """The producer's graph result, accepted only when it resolved every check.
 
@@ -291,6 +226,67 @@ def _resolved_graph(value: object) -> JsonObject:
     return value
 
 
+def validate_advisor_projection(
+    value: object, *, candidate_tree: str | None = None,
+) -> JsonObject:
+    fields = {
+        "schemaVersion", "producerRevision", "sourceRepo", "sourceBaseOid",
+        "committedHeadOid", "expectedCandidateTree", "indexedCandidateTree",
+        "targets", "graph", "coverageGaps",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != fields
+        or type(value.get("schemaVersion")) is not int
+        or value.get("schemaVersion") != 1
+    ):
+        raise ValueError("advisor projection requires the installed schemaVersion 1 shape")
+    revision = value.get("producerRevision")
+    if (
+        not isinstance(revision, dict)
+        or set(revision) != {"commit", "dirty"}
+        or not isinstance(revision.get("dirty"), bool)
+        or not _git_oid(revision.get("commit"))
+    ):
+        raise ValueError("advisor projection requires canonical producer provenance")
+    source_repo = value.get("sourceRepo")
+    if not (_text(source_repo) or source_repo == {"gap": "source_repo_unavailable"}):
+        raise ValueError("advisor projection requires canonical source repository provenance")
+    for field in (
+        "sourceBaseOid", "committedHeadOid", "expectedCandidateTree",
+        "indexedCandidateTree",
+    ):
+        if not _git_oid(value.get(field)):
+            raise ValueError(f"advisor projection requires a canonical Git OID for {field}")
+    if value["expectedCandidateTree"] != value["indexedCandidateTree"]:
+        raise ValueError("advisor projection candidate trees do not match")
+    if candidate_tree is not None and value["expectedCandidateTree"] != candidate_tree:
+        raise ValueError("advisor projection does not describe the active candidate tree")
+    if not isinstance(value.get("targets"), list) or not all(
+        isinstance(target, dict) for target in value["targets"]
+    ):
+        raise ValueError("advisor projection targets must be an array of objects")
+    graph = value.get("graph")
+    if not isinstance(graph, dict) or set(graph) != {
+        "status", "references", "requiredOmissions", "optionalOmissionCount",
+    }:
+        raise ValueError("advisor projection graph has an invalid shape")
+    if graph.get("status") != "resolved":
+        raise ValueError("advisor projection graph is not resolved")
+    references = graph.get("references")
+    if not isinstance(references, list) or not all(_text(item) for item in references):
+        raise ValueError("advisor projection graph references must be text")
+    if graph.get("requiredOmissions") != []:
+        raise ValueError("advisor projection has required graph omissions")
+    omissions = graph.get("optionalOmissionCount")
+    if type(omissions) is not int or omissions < 0:
+        raise ValueError("advisor projection optional omission count is invalid")
+    gaps = value.get("coverageGaps")
+    if not isinstance(gaps, list) or not all(isinstance(gap, dict) for gap in gaps):
+        raise ValueError("advisor projection coverage gaps must be an array of objects")
+    return dict(value)
+
+
 def _gate_symbols(graph: JsonObject) -> list[JsonObject]:
     """Gate-shaped symbol results carrying only genuine incoming-relationship
     data: context-check callers and file-context references, merged per
@@ -320,6 +316,7 @@ def graph_evidence_document(
     slug: str,
     workflow_id: str,
     source_root: str,
+    canonical_source_repo: str | None,
     snapshot: JsonObject | None = None,
     snapshot_gap: str | None = None,
 ) -> JsonObject:
@@ -339,18 +336,72 @@ def graph_evidence_document(
     reported = target.get("source_repo") if isinstance(target, dict) else None
     if not _text(reported) or os.path.realpath(str(reported)) != os.path.realpath(source_root):
         raise ValueError(f"the packet was produced for {reported!r}, not {source_root}")
+    committed_head = target.get("head_sha") if isinstance(target, dict) else None
+    if not _git_oid(committed_head):
+        raise ValueError("the packet names no canonical Git committed head")
+    git_facts = packet.get("git")
+    source_base = git_facts.get("merge_base") if isinstance(git_facts, dict) else None
+    if not _git_oid(source_base):
+        raise ValueError("the packet names no canonical Git merge base")
     gitnexus = packet.get("gitnexus")
     graph = _resolved_graph(gitnexus.get("analysis") if isinstance(gitnexus, dict) else None)
+    authority = graph.get("authority")
+    graph_source = authority.get("source_repository") if isinstance(authority, dict) else None
+    if not _text(graph_source) or os.path.realpath(str(graph_source)) != os.path.realpath(source_root):
+        raise ValueError(f"the graph was produced for {graph_source!r}, not {source_root}")
+    snapshot_candidate = None
+    if snapshot is not None:
+        if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):
+            raise ValueError("a snapshot binding requires its base commit and candidate tree")
+        snapshot_candidate = str(snapshot["candidate"]).strip()
+    projection = validate_advisor_projection(
+        packet.get("advisorProjection"), candidate_tree=snapshot_candidate,
+    )
+    # The advisor reads which files changed, which symbols, and why each file
+    # was selected; ranking signals, symbol ranges, and analysis-worktree paths
+    # cost 154KB on one pass and never reached an envelope. The wrapper forwards
+    # this projection whole.
+    projection["targets"] = [
+        {
+            "path": target.get("path"), "surface_role": target.get("surface_role"),
+            "rank": target.get("rank"),
+            "changed_symbols": [
+                symbol.get("name") for symbol in target.get("changed_symbols") or []
+                if isinstance(symbol, dict)
+            ],
+            "why_selected": target.get("why_selected"),
+        }
+        for target in projection["targets"]
+    ]
+    expected_source_repo: object = (
+        canonical_source_repo
+        if canonical_source_repo is not None
+        else {"gap": "source_repo_unavailable"}
+    )
+    if projection["sourceRepo"] != expected_source_repo:
+        raise ValueError(
+            f"the advisor projection was produced for {projection['sourceRepo']!r}, "
+            f"not {expected_source_repo!r}"
+        )
+    if projection["sourceBaseOid"] != source_base:
+        raise ValueError(
+            f"the advisor projection was produced for source base "
+            f"{projection['sourceBaseOid']!r}, not {source_base!r}"
+        )
+    if projection["committedHeadOid"] != committed_head:
+        raise ValueError(
+            f"the advisor projection was produced for committed head "
+            f"{projection['committedHeadOid']!r}, not {committed_head!r}"
+        )
     document: JsonObject = {
         "schemaVersion": 1,
         "slug": slug,
         "workflowId": workflow_id,
         "graph": graph,
+        "advisorProjection": projection,
         "recordedAt": utc_timestamp(),
     }
     if snapshot is not None:
-        if not (_text(snapshot.get("base")) and _text(snapshot.get("candidate"))):
-            raise ValueError("a snapshot binding requires its base commit and candidate tree")
         document["gateContext"] = {
             "base": str(snapshot["base"]).strip(),
             "candidate": str(snapshot["candidate"]).strip(),
@@ -363,11 +414,28 @@ def graph_evidence_document(
     return document
 
 
+_ABSOLUTE_PATH = re.compile(r"(?<![\w./-])(/[^\s'\"`;|&<>()]+)")
+
+
+def _refuse_temp_paths(text: str, label: str) -> None:
+    """A measurement cited from the temp directory is a throwaway probe, not proof
+    the repository keeps; the tdd recorder refuses those targets at cycle open and
+    dispositions refuse them here."""
+    temp = os.path.realpath(tempfile.gettempdir())
+    for token in _ABSOLUTE_PATH.findall(text):
+        resolved = os.path.realpath(token)
+        if resolved == temp or resolved.startswith(temp + os.sep):
+            raise ValueError(
+                f"{label} cites {token}, a temporary-directory path; measurement scripts live in the repository"
+            )
+
+
 def _measurement(value: object, label: str) -> JsonObject:
     if not isinstance(value, dict) or set(value) != {"claim", "command", "result"}:
         raise ValueError(f"{label} requires only claim, command, and result")
     if not all(_text(value.get(field)) for field in ("claim", "command", "result")):
         raise ValueError(f"{label} requires claim, command, and result")
+    _refuse_temp_paths(str(value["command"]), f"{label} command")
     return dict(value)
 
 
@@ -379,12 +447,14 @@ def _occurrence(value: object) -> JsonObject:
             raise ValueError("counted occurrence requires domain, command, and result")
         if type(value.get("count")) is not int or value["count"] < 0 or not isinstance(value.get("complete"), bool):
             raise ValueError("counted occurrence requires a non-negative count and complete boolean")
+        _refuse_temp_paths(str(value["command"]), "occurrence command")
         return dict(value)
     if set(value) == {"seam", "reproduction"} and _text(value.get("seam")):
         reproduction = value.get("reproduction")
         if isinstance(reproduction, dict) and set(reproduction) == {"command", "result"} and all(
             _text(reproduction.get(field)) for field in ("command", "result")
         ):
+            _refuse_temp_paths(str(reproduction["command"]), "occurrence reproduction command")
             return {"seam": value["seam"], "reproduction": dict(reproduction)}
     raise ValueError("occurrence requires a counted domain or real-Seam reproduction")
 
@@ -392,10 +462,10 @@ def _occurrence(value: object) -> JsonObject:
 def _disposition_context(value: object) -> JsonObject:
     if not isinstance(value, dict) or set(value) not in ({"workflowId", "candidateTree"}, {"workflowId", "candidateTree", "prHead"}):
         raise ValueError("disposition context requires workflowId, candidateTree, and optional prHead")
-    if not _text(value.get("workflowId")) or not isinstance(value.get("candidateTree"), str) or not re.fullmatch(r"[0-9a-f]{40}", value["candidateTree"]):
-        raise ValueError("disposition context requires workflowId and a 40-hex candidateTree")
-    if "prHead" in value and (not isinstance(value["prHead"], str) or not re.fullmatch(r"[0-9a-f]{40}", value["prHead"])):
-        raise ValueError("disposition context prHead must be a 40-hex commit")
+    if not _text(value.get("workflowId")) or not _git_oid(value.get("candidateTree")):
+        raise ValueError("disposition context requires workflowId and a canonical candidateTree Git OID")
+    if "prHead" in value and not _git_oid(value["prHead"]):
+        raise ValueError("disposition context prHead must be a canonical Git OID")
     return dict(value)
 
 
@@ -424,29 +494,15 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
             consequence = _measurement(item.get("materialConsequence"), f"finding {identifier} materialConsequence")
         except ValueError as exc:
             raise ValueError(_disposition_error(status, str(exc))) from exc
-        if status == "accepted-for-proof":
-            extra = {"reservedBehaviorIds", "seam", "preservationObligations"}
-            reserved, preserved = item.get("reservedBehaviorIds"), item.get("preservationObligations")
-            canonical_reserved = [str(entry).strip() for entry in reserved] if isinstance(reserved, list) else []
-            canonical_preserved = [str(entry).strip() for entry in preserved] if isinstance(preserved, list) else []
-            if not (
-                isinstance(reserved, list) and reserved and all(_text(entry) for entry in reserved)
-                and len(set(canonical_reserved)) == len(reserved) and all(IDENTIFIER.fullmatch(entry) for entry in canonical_reserved) and _text(item.get("seam"))
-                and isinstance(preserved, list) and preserved and all(_text(entry) for entry in preserved)
-                and len(set(canonical_preserved)) == len(preserved)
-            ):
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires ids, Seam, and preservation obligations"))
-            demonstrated = ("reproduction" in occurrence
-                and occurrence.get("seam", "").strip() == str(item["seam"]).strip())
-            if not demonstrated:
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires demonstrated occurrence at its Seam"))
-            if consequence["result"].strip().lower() == "false":
-                raise ValueError(_disposition_error(status, f"finding {identifier} accepted-for-proof requires material consequence"))
-        else:
-            field = "reference" if status == "accepted-follow-up" else "evidence"
-            extra = {field}
-            if not _text(item.get(field)):
-                raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
+        field = "reference" if status == "accepted-follow-up" else "evidence"
+        extra = {field}
+        if not _text(item.get(field)):
+            raise ValueError(_disposition_error(status, f"finding {identifier} {status} requires {field}"))
+        if field == "evidence":
+            try:
+                _refuse_temp_paths(str(item["evidence"]), f"finding {identifier} evidence")
+            except ValueError as exc:
+                raise ValueError(_disposition_error(status, str(exc))) from exc
         if set(item) != common | extra:
             raise ValueError(_disposition_error(status, f"finding {identifier} {status} has unknown or missing fields"))
         if status in {"fixed", "rejected-with-evidence"} and not (
@@ -455,6 +511,17 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
         ):
             raise ValueError(_disposition_error(
                 status, f"finding {identifier} {status} requires a false premise or zero occurrence on a complete domain",
+            ))
+        # A behavioral fix keeps its finding's whole recorded domain: only a
+        # measured zero over a complete domain closes it, so a narrow attack
+        # cannot silently stand in for the full caller-reachable surface.
+        if status == "fixed" and kind == "behavioral" and not (
+            occurrence.get("count") == 0 and occurrence.get("complete") is True
+        ):
+            raise ValueError(_disposition_error(
+                status,
+                f"finding {identifier} behavioral fixed requires zero occurrence on a complete domain "
+                "covering the finding's recorded caller-reachable surface",
             ))
         if status == "report-only" and consequence["result"].strip().lower() != "false":
             raise ValueError(_disposition_error(status, f"finding {identifier} report-only requires no material consequence"))
@@ -560,7 +627,7 @@ def advisor_disposition_document(
         if set(item) != {"id", "claim"} or not _text(item.get("claim")):
             raise ValueError(f"finding {identifier} requires a claim")
         claims.add(identifier)
-    typed = _finding_dispositions(dispositions, allowed - {"accepted-for-proof"})
+    typed = _finding_dispositions(dispositions, allowed)
     if stage == "preflight" and any(item["status"] == "fixed" for item in typed):
         raise ValueError("legacy preflight fixed requires immutable finding intake")
     if any(str(item["finding_id"]) not in claims for item in typed):
@@ -568,5 +635,5 @@ def advisor_disposition_document(
     if {str(item["finding_id"]) for item in typed} != claims:
         raise ValueError("every finding requires one lead disposition")
     if any(item["kind"] == "behavioral" for item in typed):
-        raise ValueError("behavioral advisor findings require immutable intake and accepted-for-proof")
+        raise ValueError("behavioral advisor findings require immutable finding intake and a map-owned attack")
     return {**common, "findings": findings, "dispositions": typed}

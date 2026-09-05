@@ -17,9 +17,9 @@ flowchart LR
     TR --> PC[production-code]
     NR --> PC
     PC --> I[implementation]
-    I -->|active RED| TG[mapped GREEN]
+    I -->|every contract RED| TG[mapped GREEN]
     I -->|not-required map| V
-    TG --> TM[post-GREEN map reassessment]
+    TG --> TM[map update when a proof exposes a new obligation]
     TM -->|new obligation| TR
     TM -->|map resolved| V[verification]
     V --> CR[lead structured code review when non-trivial]
@@ -31,7 +31,6 @@ flowchart LR
     C -->|non-behavioral correction| I
     C -->|evidence-backed rejection| AP[one appeal on the same session]
     AP --> C
-    C -->|persistent disagreement| H[needs-human-owner-adjudication]
     C -->|yes| WC[workflow complete]
     WC --> DL[delivery]
     DL --> PR[reviewer completion]
@@ -48,7 +47,7 @@ workflow history               # ordered accepted events and logical references
 workflow evidence              # read one logical evidence record
 workflow set-phase             # lead-owned implementation and trivial review
 workflow record-preflight      # validates 13 text sections + Behavior Map
-workflow record-production-code # validates the bundled gate verdict
+workflow record-production-code # validates the bundled gate verdict (optional; nothing waits on it)
 workflow tdd                   # mapped RED/GREEN or records not-required
 workflow tdd-map               # dispositions and post-GREEN map updates
 workflow verify                # generic commands or typed final-tree quality gate
@@ -74,7 +73,7 @@ as logical evidence, inserted in the same SQLite transaction as the accepted eve
 findings-none advisor disposition intentionally carries no document, and a
 refusal names the missing evidence and mutates nothing. The preflight document
 owns the initial Behavior Map; mapped TDD evidence carries its stable IDs,
-RED/GREEN runs, current dispositions, and pending reassessment. A plan may show
+RED/GREEN runs and current dispositions. A plan may show
 the map but is not an evidence owner.
 
 Exit 2 alone does not prove a refusal: the verification, TDD, and review
@@ -99,11 +98,10 @@ the transcript audit.
 The database and its containing directory are private and agent-writable. Committed transactions provide continuity across process restart and compaction; it is not tamper-proof and does not authorize Git. A normal
 commit or HEAD change does not invalidate it. After production preflight,
 test-like edits are admitted while TDD is pending. Production edits are admitted
-after the production-code baseline for an active valid mapped RED, a fully
-dispositioned `not-required` map, or a resolved and reassessed GREEN map. A GREEN
-blocks the next production edit until `tdd-map` records the required architecture,
-preservation, and interaction reassessment. A later edit against a resolved map
-stays admitted but flags completion for another reassessment. A normally
+once every contract item holds its RED (the sweep) or the map is fully
+resolved with at least one GREEN through RED; a `not-required` decision opens
+nothing. A `tdd-map` update is needed only when a GREEN exposes a new
+obligation. A normally
 completed workflow is terminal: every mutation except `begin` is rejected.
 
 A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
@@ -120,7 +118,7 @@ readiness for the advisor phases without mutating anything.
 - production preflight completed with a non-empty Behavior Map;
 - every contract map item GREEN, or `already-satisfied` by the recorder's own baseline run (its exact mapped surface passed before any edit);
 - every preservation map item GREEN, already satisfied, or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a GREEN terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
-- no pending proof gap or post-GREEN map reassessment;
+- no pending proof gap;
 - TDD passed or not required;
 - production-code recorded;
 - implementation and verification passed;
@@ -130,7 +128,7 @@ readiness for the advisor phases without mutating anything.
 - a context-matched final review from `codex-advisor` whose effective findings
   are terminal: the immutable raw verdict remains evidence, but
   `fix-before-commit` is not a veto after closure;
-- no pending final rejection appeal or persistent disagreement;
+- no pending final rejection appeal and no re-raised finding awaiting its second disposition;
 - the reviewable working tree unchanged since the recorded lead review.
 
 The historical `pass-state.py`, recorder, TDD, and verification scripts are temporary compatibility adapters. They call the same unified CLI Module and contain no persistence or path logic; new callers use `workflow.py` directly.
@@ -143,7 +141,7 @@ production Edit/Write/NotebookEdit
   -> verification = pending
   -> codeReview = pending
   -> finalReview = pending
-  -> nextAction = reassess-behavior-map when a resolved map was touched,
+  -> nextAction = implementation when a resolved map was touched,
                   otherwise implementation/correction
 ```
 
@@ -156,14 +154,15 @@ implementation returns to verification.
 
 Behavioral findings from the lead's code review or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. The behavioral/non-behavioral classification is a lead-owned obligation, not a machine-validated edge: the recorder validates the reassessment's structure and blocks completion until one is recorded, but it cannot judge the classification itself - a behavioral defect routed through a why-only reassessment is a doctrine violation the reviews are expected to catch, not a state the hooks can refuse. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
 
-A finding envelope is one correction batch. Its first disposition classifies every
-finding; later documents name only changed findings and preserve append-only
-history. Until finding, reservation, GREEN, or reassessment closure is complete,
-`verify`, the typed gate, a new lead-review intake, the final checkpoint, and
-`complete` refuse before broad work runs. Targeted TDD and direct changed-Seam
+A finding envelope is one correction batch. A pending behavioral finding rides
+the pass as a map-owned attack obligation; dispositions may cover any subset,
+and later documents preserve append-only history. Until every material finding is dispositioned and the map is closed, the final
+checkpoint and `complete` refuse; verification, the typed gate, and lead
+review run regardless. Targeted TDD and direct changed-Seam
 probes remain available. Final rejections use one context-matched appeal response:
-omission or same-ID `material:false` concedes, a material re-raise records
-persistent disagreement, and new IDs form their own immutable intake.
+omission or same-ID `material:false` concedes, a material re-raise reopens
+the finding for one more lead disposition, which then stands, and new IDs form
+their own immutable intake.
 
 ## Approval freshness
 
@@ -210,13 +209,11 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; after the production-code baseline admit production edits for an active valid mapped RED, a fully dispositioned `not-required` map, or a resolved/reassessed GREEN map; after GREEN block the next production edit until map reassessment |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits once every contract item holds its RED (the sweep) or the map is fully resolved with one GREEN through RED; a `not-required` decision opens nothing |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
-| `Stop` | Completion latch plus context: blocks with the exact `nextAction` while canonical completion readiness reports missing work and no pause is recorded; authoritative workflow or mapped-evidence corruption remains repair-only and cannot be released by `pause`. It permits stopping for ready workflows, terminal-complete passes without an open revalidation window (PRD #30's pending-reading covers legacy in-flight passes only), non-empty `background_tasks`/`session_crons` in the real Stop payload, recorded instance-bound waits for ordinary external blockers, advisor delegates, and a hook-triggered re-stop with no workflow progress since the previous block — that repeat is a bare silent success because any Stop output re-prompts the model. Every latch firing and outcome is appended to `stop-latch-log.jsonl` in the repository state directory (`latched`/`spun`/`resolved` with how), so the latch's cost/benefit question resolves on data. `cwd-suppressed` is also appended there and counts one selection event, not a firing or outcome |
 
-`Stop` consults the workflows the session actually edited in, not the directory
-it was launched from. `PostToolUse` records one immutable marker per repository
+The session association marker: `PostToolUse` records one immutable marker per repository
 per session under `sessions/<session>/<repo-key>.json` in the state root,
 written only where a workflow already exists, and identity comes from the edited
 path through the same resolver the edit gate uses — no hook gains Git awareness,
@@ -248,35 +245,10 @@ guarantee of the key: they are lowercase hexadecimal UUIDs and so are fixed
 points of the whole transform — measured across 644 recorded sessions, none
 altered by it and none sharing a key. Any future id source must be injective
 under the transform exactly as written above, or introduce a collision-resistant
-encoding here before it is trusted. The repository-scoped per-session feedback file and the
-latch telemetry keep their own `unknown` display name, which cannot cross
+encoding here before it is trusted. The repository-scoped per-session feedback file keeps its own `unknown` display name, which cannot cross
 repositories.
 
-That rule has a price, and it is the reason a `cwd-suppressed` event exists. Once
-a session records any marker, its `cwd` slot is never consulted again, so a pass
-**begun or inherited at `cwd` and never edited by this session goes unwatched
-until its first file write** — it cannot latch, and it is not reported. The
-baseline behaviour was to latch it. Both cases are indistinguishable at the hook:
-this session's own unedited `cwd` pass and another session's incomplete `cwd`
-pass present the same terminal-marker-plus-incomplete-`cwd` state, and no
-predicate over markers and workflow contents separates them, so the suppression
-is deliberate rather than an oversight. It is counted rather than only accepted,
-because the payload's `cwd` reaches no state file and an audit after the fact
-could never recover which slot was passed over. No hook retires markers. The
-deliberate `prune` verb (issue #50) retires one only when its recorded
-repository root is confirmed absent: a session stripped of every marker does
-return to the `cwd` slot, but only when each of its repositories is gone,
-where that slot resolves no pass either.
-
-**Release note — the latch telemetry population changed.** Events now carry the
-`repo` key of the slot they fired against, and the population they describe has
-moved: it gains worktree sessions the hook previously never visited and loses
-firings against unrelated session-`cwd` slots. Counts recorded before and after
-this change are not comparable, and any earlier conclusion about the latch's
-value was drawn from firings against session-directory slots rather than the
-passes actually being run.
-
-After latch handling, the ordinary feedback path emits bounded context
+A pass this session never edited in is not reported; the feedback path emits bounded context
 containing changed-code status and the workflow summary per consulted slot, and
 deduplicates identical rendered context per session and slot. When Git reports
 no changed code and no workflow state exists, that path emits nothing. The
@@ -289,7 +261,7 @@ parser, candidate-tree gate, approval marker, nonce, or evidence graph.
 
 ## Ordinary summaries
 
-Repo Context Forge output, mapped TDD runs/reassessments, and code-review
+Repo Context Forge output, mapped TDD runs and map updates, and code-review
 findings may be retained as bounded summaries for the next agent. They carry no
 HEAD/tree/hash identity and are never substitutes for the real packet, recorded
 Behavior Map, test command, or live review. The review-time manifest above is

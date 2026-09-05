@@ -29,9 +29,11 @@ def validate_document(
 ) -> dict[str, object]:
     """The validated preflight document, or a refusal naming what is wrong.
 
-    The thirteen prose sections retain their original contract. New producer
-    recordings additionally require the structured Behavior Map; the optional
-    legacy path exists only for importing evidence recorded before that field.
+    The thirteen prose sections are the surface walk: each must be present and
+    non-empty, and `openQuestions` exactly `none`, or the recording refuses.
+    New producer recordings additionally require the structured Behavior Map;
+    the optional legacy path exists only for importing evidence recorded before
+    that field.
     """
     if not isinstance(value, dict):
         raise ValueError("preflight document must be a JSON object")
@@ -53,9 +55,7 @@ def validate_document(
     if document["openQuestions"] != "none":
         raise ValueError("openQuestions must be exactly 'none'; an unresolved question blocks the recording")
     if BEHAVIOR_MAP_SECTION in value:
-        document[BEHAVIOR_MAP_SECTION] = initial_items(
-            value[BEHAVIOR_MAP_SECTION], require_source_refs=require_behavior_map,
-        )
+        document[BEHAVIOR_MAP_SECTION] = initial_items(value[BEHAVIOR_MAP_SECTION])
     return document
 
 

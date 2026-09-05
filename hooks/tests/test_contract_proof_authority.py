@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from hooks.lib import behavior_map  # noqa: E402
 from hooks.lib.behavior_map import no_change_item  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
+
 from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowIncomplete,
     advisor_disposition,
@@ -22,7 +23,6 @@ from hooks.lib.workflow_state import (  # noqa: E402
     read_workflow,
     record_advisor_result,
     record_base_oid,
-    set_phase,
 )
 from hooks.tests.support import build_document, pending_behavior, record_context_forge  # noqa: E402
 # Module alias only: binding the TestCase name here would make unittest.main
@@ -348,41 +348,63 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
         self.assertEqual(json.loads(baseline.stdout.strip().splitlines()[-1]).get("status"), "already-satisfied", marker)
 
-    def test_complete_applies_map_closure_inside_its_transaction(self) -> None:
-        # The CLI precheck is diagnostic; complete() must refuse from the
-        # evidence snapshot inside its transaction once the real PostToolUse
-        # hook has flagged the map and every other completion step is ready.
-        marker = "COMPLETE_IGNORED_MAP"
-        slug, workflow_id = self.h.begin_to_preflight([contract("BM_A")])
+    def proved_first_item(self) -> tuple[str, str]:
+        """BM_A GREEN through RED and reassessed; BM_B pending on the dirty candidate."""
+        slug, workflow_id = self.h.begin_to_preflight([
+            contract("BM_A"), contract("BM_B", red_failure="VALUE_NOT_TWO_B"),
+        ])
         self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
         assessed = self.h.update_map(slug, workflow_id, {
             "sourceBehaviorId": "BM_A", "reassessment": "no new obligation", "items": [],
         })
         self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        self.record_production_code(slug, workflow_id)
-        flagged = subprocess.run(
-            [sys.executable, str(POST_EDIT)], cwd=self.repo, env=self.h.env, text=True,
-            input=json.dumps({"session_id": "contract-proof",
-                              "tool_input": {"file_path": str(self.repo / "app.py")}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(flagged.returncode, 0, flagged.stdout + flagged.stderr)
-        set_phase(self.identity, "implementation", "passed")
-        verified = self.h.cli("verify", "--slug", slug, "--", sys.executable, "-c", "pass")
-        self.assertEqual(verified.returncode, 2, marker + verified.stdout + verified.stderr)
-        self.assertIn("reassessment", verified.stderr, marker)
-        with self.assertRaises(WorkflowIncomplete, msg=marker) as refused:
-            complete(self.identity, slug=slug, workflow_id=workflow_id)
-        self.assertIn("reassessment", str(refused.exception), marker)
-        self.assertNotEqual(read_workflow(self.identity)["phase"], "complete", marker)
+        return slug, workflow_id
 
-    def test_final_review_prompt_states_the_contract_item_clause(self) -> None:
+    def pytest_green(self, slug: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return self.tdd_pytest(slug, "green", "BM_B", *arguments)
+
+    def test_superseded_provenance_is_fail_closed_without_its_record(self) -> None:
+        # Final FINAL-1: a superseded item recorded before supersededFrom existed is
+        # not read as GREEN through RED.
+        marker = "LEGACY_SUPERSEDED_READ_AS_GREEN"
+        self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y"}), marker)
+        self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "green"}), marker)
+        self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "post-edit-passed"}), marker)
+        self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "green"}), marker)
+
+    def test_red_phase_baseline_reads_the_terminal_pytest_summary(self) -> None:
+        # Final FINAL-4: the RED-phase baseline shares the parser.
+        marker = "RED_PHASE_PRINTED_PASS_COUNTED"
+        slug, _ = self.h.begin_to_preflight([contract("BM_A"), preservation("BM_P", red_failure="P_REGRESSED")])
+        (self.repo / "test_p_skip.py").write_text(
+            "import pytest\ndef test_p():\n    print('1 passed')\n    pytest.skip('later')\n", encoding="utf-8")
+        def red(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+                 "--phase", "red", "--behavior-id", "BM_P", "--", sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *arguments],
+                cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        printed = red("-s", "test_p_skip.py")
+        self.assertEqual(printed.returncode, 2, marker + ": " + printed.stdout + printed.stderr)
+        self.assertNotIn('"already-satisfied"', printed.stdout, marker)
+        (self.repo / "test_p_real.py").write_text("import app\ndef test_p():\n    assert app.value == 1, 'P_REGRESSED'\n", encoding="utf-8")
+        real = red("test_p_real.py")
+        self.assertEqual(real.returncode, 0, marker + " (real): " + real.stdout + real.stderr)
+        self.assertIn('"already-satisfied"', real.stdout, marker)
+
+    def tdd_pytest(self, slug: str, phase: str, behavior_id: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,
+             "--phase", phase, "--behavior-id", behavior_id, "--",
+             sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *arguments],
+            cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_final_review_prompt_requires_only_supplied_evidence(self) -> None:
         # The prompt literal is the production artifact; its delivery to the
         # delegate is proven by the wrapper's captured-payload suite.
-        marker = "FINAL_REVIEW_CLAUSE_ABSENT"
+        marker = "FINAL_REVIEW_EVIDENCE_ONLY_CONTRACT_ABSENT"
         script = (ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh").read_text(encoding="utf-8")
         preflight, final = script.split("  final-review)\n", 1)
-        clause = "A contract Behavior Map item is material unless"
+        clause = "do not require omitted Behavior Map, TDD, code-review, verification, preservation"
         self.assertIn(clause, final.split("esac", 1)[0], marker)
         self.assertNotIn(clause, preflight.rsplit("  preflight-advice)\n", 1)[-1], marker)
 
@@ -398,7 +420,7 @@ class ContractProofAuthorityTests(unittest.TestCase):
         except ValueError as exc:
             self.fail(f"{marker}: recorded kind-less map refused to load: {exc}")
         self.assertEqual([entry["id"] for entry in items], ["BM_OLD"], marker)
-        self.assertIsNotNone(behavior_map.edit_blocker(items, "BM_OLD"), marker)
+        self.assertIsNotNone(behavior_map.edit_blocker(items), marker)
 
     def test_new_seam_first_red_asserts_the_seams_existence(self) -> None:
         # Issue #141 D: the first RED for a Seam that does not exist yet is a

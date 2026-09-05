@@ -1,32 +1,30 @@
 #!/usr/bin/env bash
-# Contract tests for ask-codex-advisor.sh. Offline checks run everywhere;
-# the live consult runs only with LIVE=1 (it costs tokens).
-#
-#   bash ~/.claude/skills/codex-advisor/tests/test-ask-codex-advisor.sh
-#   LIVE=1 bash ~/.claude/skills/codex-advisor/tests/test-ask-codex-advisor.sh
+# Contract and composition diagnostics for the sole advisor transport.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 WRAPPER="$ROOT/skills/codex-advisor/scripts/ask-codex-advisor.sh"
+WORKFLOW="$ROOT/skills/repo-production-workflow/scripts/workflow.py"
 pass=0
 fail=0
-
-write_design() {
-  cat >"$1" <<'EOF'
-Chosen architecture: preserve transport behavior under PRES-1 and test ASSUMP-1.
-<!-- governed-design-labels:v1 -->
-```json
-{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"},{"id":"ASSUMP-1","kind":"assumption","behavioral":true}]}
-```
-EOF
-}
 
 check() {
   local name="$1" expected="$2" actual="$3"
   if [[ "$actual" == *"$expected"* ]]; then
     printf 'PASS  %s\n' "$name"; pass=$((pass + 1))
   else
-    printf 'FAIL  %s\n      expected to contain: %s\n      got: %s\n' "$name" "$expected" "${actual:0:200}"; fail=$((fail + 1))
+    printf 'FAIL  %s\n      expected: %s\n      got: %s\n' "$name" "$expected" "${actual:0:240}"
+    fail=$((fail + 1))
+  fi
+}
+
+check_absent() {
+  local name="$1" rejected="$2" actual="$3"
+  if [[ "$actual" != *"$rejected"* ]]; then
+    printf 'PASS  %s\n' "$name"; pass=$((pass + 1))
+  else
+    printf 'FAIL  %s\n      unexpected: %s\n' "$name" "$rejected"
+    fail=$((fail + 1))
   fi
 }
 
@@ -35,799 +33,293 @@ check_status() {
   if [[ "$actual" == "$expected" ]]; then
     printf 'PASS  %s (exit %s)\n' "$name" "$actual"; pass=$((pass + 1))
   else
-    printf 'FAIL  %s: expected exit %s, got %s\n' "$name" "$expected" "$actual"; fail=$((fail + 1))
+    printf 'FAIL  %s: expected exit %s, got %s\n' "$name" "$expected" "$actual"
+    fail=$((fail + 1))
   fi
 }
 
-printf '== offline contract\n'
+count_exact() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+print(open(sys.argv[1], encoding="utf-8").read().count(sys.argv[2]))
+PY
+}
 
-out=$(bash -n "$WRAPPER" 2>&1); check_status "wrapper parses" 0 $?
-[[ -x "$WRAPPER" ]] && { printf 'PASS  wrapper is executable\n'; pass=$((pass+1)); } || { printf 'FAIL  wrapper is not executable\n'; fail=$((fail+1)); }
+write_design() {
+  cat >"$1" <<'EOF'
+UNIQUE-DESIGN-BODY-MARKER
+Chosen architecture preserves PRES-1 and records ASSUMP-1.
+<!-- governed-design-labels:v1 -->
+```json
+{"schemaVersion":1,"labels":[{"id":"PRES-1","kind":"preservation"},{"id":"ASSUMP-1","kind":"assumption","behavioral":false}]}
+```
+EOF
+}
 
-out=$(CODEX_ADVISOR_ACTIVE=1 "$WRAPPER" --slug t --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "nested consult refused" 3 "$status"
-check "nested refusal names the cause" "you ARE the advisor delegate" "$out"
+printf '== static and argument contract\n'
+out=$(bash -n "$WRAPPER" 2>&1); check_status "wrapper parses" 0 "$?"
+[[ -x "$WRAPPER" ]] && { printf 'PASS  wrapper is executable\n'; pass=$((pass + 1)); } || { printf 'FAIL  wrapper is not executable\n'; fail=$((fail + 1)); }
+[[ ! -e "$ROOT/skills/repo-production-workflow/scripts/codex-advisor.sh" ]] \
+  && { printf 'PASS  no second advisor transport exists\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  second advisor transport exists\n'; fail=$((fail + 1)); }
 
-out=$(ADVISOR_ACTIVE=1 "$WRAPPER" --slug t --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "shared ADVISOR_ACTIVE alone refused" 3 "$status"
-check "shared-marker refusal names the cause" "you ARE the advisor delegate" "$out"
+out=$(CODEX_ADVISOR_ACTIVE=1 "$WRAPPER" --slug t --cwd "$PWD" -- q 2>&1); status=$?
+check_status "nested consult refused" 3 "$status"; check "nested refusal names cause" "you ARE the advisor delegate" "$out"
+out=$(ADVISOR_ACTIVE=1 "$WRAPPER" --slug t --cwd "$PWD" -- q 2>&1); status=$?
+check_status "shared nested marker refused" 3 "$status"
+out=$("$WRAPPER" --cwd "$PWD" -- q 2>&1); status=$?
+check_status "missing slug refused" 2 "$status"; check "missing slug named" "--slug is required" "$out"
+out=$("$WRAPPER" --slug t --phase bogus --cwd "$PWD" -- q 2>&1); status=$?
+check_status "unknown phase refused" 2 "$status"
+out=$("$WRAPPER" --slug t --budget 1201 --cwd "$PWD" -- q 2>&1); status=$?
+check_status "oversized budget refused" 2 "$status"
+out=$("$WRAPPER" --slug t --cwd /definitely/not/a/dir -- q 2>&1); status=$?
+check_status "bad cwd refused" 2 "$status"
 
-legacy="$ROOT/skills/repo-production-workflow/scripts/codex-advisor.sh"
-[[ ! -e "$legacy" ]] && { printf 'PASS  no second advisor transport exists\n'; pass=$((pass+1)); } || { printf 'FAIL  legacy transport still present: %s\n' "$legacy"; fail=$((fail+1)); }
-
-out=$("$WRAPPER" --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "missing --slug rejected" 2 "$status"
-check "missing --slug explains" "--slug is required" "$out"
-
-out=$("$WRAPPER" --slug t --phase bogus-phase --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "unknown phase rejected" 2 "$status"
-
-out=$("$WRAPPER" --slug t --cwd /definitely/not/a/dir -- "q" 2>&1); status=$?
-check_status "bad --cwd rejected" 2 "$status"
-
-grep -q 'phase belongs in --phase' "$WRAPPER" \
-  && { printf 'PASS  phase-word warning retained\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  phase-word warning missing\n'; fail=$((fail+1)); }
-
-grep -q 'disallowed-tools "Edit Write NotebookEdit Task"' "$WRAPPER" \
-  && { printf 'PASS  writes and subagents remain blocked\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  tool policy must retain writes and subagent denies\n'; fail=$((fail+1)); }
-
-grep -q -- '--tools "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
-  && { printf 'PASS  direct-measurement built-ins granted\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  --tools must grant the exact direct-measurement built-ins\n'; fail=$((fail+1)); }
-
-if grep -q -- '--strict-mcp-config\|mcp__\*' "$WRAPPER"; then
-  printf 'FAIL  normally configured MCP tools must be inherited\n'; fail=$((fail+1))
+grep -Fq 'provider_tools="Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
+  && { printf 'PASS  phase-less direct-measurement tools retained\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phase-less direct-measurement tools changed\n'; fail=$((fail + 1)); }
+grep -Fq 'phase_args=(--safe-mode --strict-mcp-config)' "$WRAPPER" \
+  && { printf 'PASS  phased customizations and MCP config are disabled\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phased startup isolation missing\n'; fail=$((fail + 1)); }
+grep -Fq 'provider_tools=""' "$WRAPPER" \
+  && { printf 'PASS  phased tool allowlist is empty\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phased tool allowlist is not empty\n'; fail=$((fail + 1)); }
+grep -Fq 'disallowed_tools="Read Grep Glob Skill Bash WebSearch WebFetch Edit Write NotebookEdit Task mcp__gitnexus__*"' "$WRAPPER" \
+  && { printf 'PASS  phased built-ins and GitNexus remain blocked\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  phased process-boundary deny changed\n'; fail=$((fail + 1)); }
+grep -q -- '--expected-candidate-tree "$candidate"' "$WRAPPER" \
+  && { printf 'PASS  checkpoint candidate reaches advisor-result\n'; pass=$((pass + 1)); } \
+  || { printf 'FAIL  checkpoint candidate is not recorded with the result\n'; fail=$((fail + 1)); }
+if grep -q 'workflow_cli" status\|repo context packet\|Repo Context Forge graph evidence\|--- unstaged diff ---\|--- staged diff ---\|--- untracked diff ---' "$WRAPPER"; then
+  printf 'FAIL  superseded phased payload owner remains\n'; fail=$((fail + 1))
 else
-  printf 'PASS  normally configured MCP tools are inherited\n'; pass=$((pass+1))
+  printf 'PASS  superseded phased payload owners deleted\n'; pass=$((pass + 1))
 fi
 
-grep -q 'Load /codebase-design, /tdd, and /code-quality' "$WRAPPER" \
-  && { printf 'PASS  before-code rubric named\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  preflight-advice must name its rubric skills\n'; fail=$((fail+1)); }
+argtmp=$(mktemp -d)
+trap 'rm -rf "$argtmp"' EXIT
+mkdir -p "$argtmp/repo"
+git -C "$argtmp/repo" init -q
+git -C "$argtmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
+write_design "$argtmp/design.md"
 
-grep -q 'Load /code-review, /codebase-design, /tdd, and /code-quality' "$WRAPPER" \
-  && { printf 'PASS  after-code rubric loads code-review\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  final-review must load /code-review\n'; fail=$((fail+1)); }
+out=$("$WRAPPER" --slug t --phase preflight-advice --cwd "$argtmp/repo" -- q 2>&1); status=$?
+check_status "phased consult requires design declaration" 2 "$status"; check "design requirement named" "--design-file or --design-absent" "$out"
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$argtmp/missing" --cwd "$argtmp/repo" -- q 2>&1); status=$?
+check_status "missing design refused" 2 "$status"
+out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$argtmp/design.md" --design-absent no --cwd "$argtmp/repo" -- q 2>&1); status=$?
+check_status "two design declarations refused" 2 "$status"
+out=$("$WRAPPER" --slug t --design-absent no --cwd "$argtmp/repo" -- q 2>&1); status=$?
+check_status "phase-less design refused" 2 "$status"
 
-# A phase prompt is one arm of a case statement, so a whole-file grep cannot tell
-# which phase carries a rule. Extract the arm and assert against that block.
-phase_block() { sed -n "/^  $1)\$/,/;;\$/p" "$WRAPPER"; }
-materiality='Use fix-before-commit only when at least one finding is material true; use commit-ready when context matches and none is material; preserve context-mismatch for mismatched review context.'
-preflight_block=$(phase_block preflight-advice)
-final_block=$(phase_block final-review)
-
-# Each marker doubles as the non-empty check: an extraction that silently matched
-# nothing would let the absence assertion below pass for the wrong reason.
-check "preflight-advice arm extracts" "Checkpoint Interface: preflight-advice" "$preflight_block"
-check "final-review arm extracts" "Checkpoint Interface: final-review" "$final_block"
-check "final-review states the materiality verdict criterion" "$materiality" "$final_block"
-check "final-review remeasures changed findings" "Re-measure any earlier finding whose premise, reachability, or measured domain changed in the implementation." "$final_block"
-for prompt_rule in \
-  "Contract coverage:" \
-  "Design coverage:" \
-  "Framing:" \
-  "Measure before you infer:"; do
-  check "preflight asks ${prompt_rule%:}" "$prompt_rule" "$preflight_block"
-  check "final review asks ${prompt_rule%:}" "$prompt_rule" "$final_block"
+printf '{}' >"$argtmp/packet.json"
+for args in \
+  '--fresh' \
+  "--packet $argtmp/packet.json" \
+  '--base-ref HEAD'; do
+  read -r -a extra <<<"$args"
+  out=$("$WRAPPER" --slug t --phase preflight-advice --design-absent no --cwd "$argtmp/repo" "${extra[@]}" -- q 2>&1); status=$?
+  check_status "phased caller choice refused ($args)" 2 "$status"
 done
-check "preflight GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$preflight_block"
-check "final-review GitNexus absence must be explicit" "report GitNexus unavailable explicitly" "$final_block"
+check "phased fresh names checkpoint ownership" "checkpoint stage owns create or resume mode" "$("$WRAPPER" --slug t --phase preflight-advice --design-absent no --cwd "$argtmp/repo" --fresh -- q 2>&1)"
+check "phased anchor refusal names checkpoint ownership" "checkpoint owns projection and current-pass anchors" "$("$WRAPPER" --slug t --phase preflight-advice --design-absent no --cwd "$argtmp/repo" --packet "$argtmp/packet.json" -- q 2>&1)"
 
-if [[ "$preflight_block" == *"$materiality"* ]]; then
-  printf 'FAIL  materiality rule must stay out of preflight-advice, which emits no gating verdict\n'; fail=$((fail+1))
-else
-  printf 'PASS  materiality rule scoped out of preflight-advice\n'; pass=$((pass+1))
-fi
+printf '== checkpoint and path identity\n'
+state="$argtmp/state"
+out=$(CLAUDE_WORKFLOW_STATE_ROOT="$state" "$WRAPPER" --slug orphan --phase preflight-advice --design-absent no --cwd "$argtmp/repo" -- q 2>&1); status=$?
+check_status "phased consult without workflow refused" 2 "$status"; check "missing workflow named" "requires an active workflow" "$out"
+CLAUDE_WORKFLOW_STATE_ROOT="$state" python3 "$WORKFLOW" begin --repo "$argtmp/repo" --slug real-pass >/dev/null
+out=$(CLAUDE_WORKFLOW_STATE_ROOT="$state" "$WRAPPER" --slug wrong-pass --phase preflight-advice --design-absent no --cwd "$argtmp/repo" -- q 2>&1); status=$?
+check_status "mismatched slug refused" 2 "$status"; check "slug mismatch named" "does not match the active workflow" "$out"
+out=$(CLAUDE_WORKFLOW_STATE_ROOT="$state" "$WRAPPER" --slug real-pass --phase preflight-advice --design-absent no --cwd "$argtmp/repo" -- q 2>&1); status=$?
+check_status "not-ready checkpoint refused" 2 "$status"; check "missing graph step named" "repo-context-forge" "$out"
 
-grep -q 'is never RED/GREEN or production proof' "$WRAPPER" \
-  && { printf 'PASS  fake-test hard rule present\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  fake-test rule must be a hard violation\n'; fail=$((fail+1)); }
-
-grep -q 'cannot require code.*caller enumeration proves absence only on a closed, complete execution surface' "$WRAPPER" \
-  && { printf 'PASS  imaginary-risk rule handles open execution surfaces\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  imaginary-risk open-surface rule missing\n'; fail=$((fail+1)); }
-
-grep -q '"Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch"' "$WRAPPER" \
-  && { printf 'PASS  rubric skills remain permitted\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  Skill must stay available with direct-measurement tools\n'; fail=$((fail+1)); }
-
-if grep -q '\.stamp\|commit gate\|commit-approval' "$WRAPPER"; then
-  printf 'FAIL  commit authorization residue remains\n'; fail=$((fail+1))
-else
-  printf 'PASS  no commit authorization residue\n'; pass=$((pass+1))
-fi
-
-grep -q 'verdict commit-ready, fix-before-commit, or context-mismatch' "$WRAPPER" \
-  && grep -q -- '--input "$output_file"' "$WRAPPER" \
-  && { printf 'PASS  final verdict is carried by the strict recorded envelope\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  strict final envelope contract missing\n'; fail=$((fail+1)); }
-
-if grep -q 'advisor-disposition' "$WRAPPER"; then
-  printf 'FAIL  wrapper must never disposition findings; that is lead-owned\n'; fail=$((fail+1))
-else
-  printf 'PASS  final findings await lead disposition\n'; pass=$((pass+1))
-fi
-
-out=$("$WRAPPER" --slug t --phase final-review --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "final-review without --base-ref rejected" 2 "$status"
-check "final-review base-ref requirement named" "--base-ref is required" "$out"
-
-out=$("$WRAPPER" --slug t --packet /definitely/not/a/file --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "unreadable bounded input rejected" 2 "$status"
-out=$("$WRAPPER" --slug t --packet /dev/zero --cwd "$PWD" -- "q" 2>&1); status=$?
-check_status "non-regular bounded input rejected" 2 "$status"
-check "non-regular packet refusal names the cause" "not a readable regular file" "$out"
-
-printf '== governing-design transport (offline)\n'
-# The design gate is argument-level: it must fire in a stateless scratch repo,
-# BEFORE any workflow lookup, so a phased consult can never spend a checkpoint
-# query - let alone a provider call - without a design declaration.
-designtmp=$(mktemp -d)
-mkdir -p "$designtmp/repo"
-git -C "$designtmp/repo" init -q
-write_design "$designtmp/design.md"
-
-out=$("$WRAPPER" --slug t --phase preflight-advice --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "phased consult without a design declaration refused" 2 "$status"
-check "design gate refuses before workflow checks" "--design-file or --design-absent" "$out"
-if [[ "$out" == *"requires an active workflow"* ]]; then
-  printf 'FAIL  design gate must fire before the workflow lookup\n'; fail=$((fail+1))
-else
-  printf 'PASS  design gate fires before the workflow lookup\n'; pass=$((pass+1))
-fi
-
-out=$("$WRAPPER" --slug t --phase final-review --base-ref HEAD --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "final-review without a design declaration refused" 2 "$status"
-check "final-review design refusal is the design gate, not base-ref resolution" "--design-file or --design-absent" "$out"
-
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/missing.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "missing design file refused" 2 "$status"
-check "missing design file named" "not a readable regular file" "$out"
-
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/repo" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "directory as design file refused" 2 "$status"
-
-# An empty file is not a design: accepting it would hand the delegate a blank
-# artifact without the declared reason --design-absent requires.
-: >"$designtmp/empty.md"
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/empty.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "empty design file refused" 2 "$status"
-check "empty design refusal names the cause" "empty" "$out"
-
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/design.md" --design-absent "reason" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "both design flags together refused" 2 "$status"
-check "exactly-one rule named" "exactly one" "$out"
-
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-absent "   " --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "whitespace-only absence reason refused" 2 "$status"
-
-# The declaration travels verbatim, so an over-limit reason is refused rather
-# than silently cut: everything accepted arrives whole.
-long_reason=$(printf 'r%.0s' $(seq 1 2001))
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-absent "$long_reason" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "over-limit absence reason refused" 2 "$status"
-check "over-limit refusal names the bound" "2000" "$out"
-
-# A valid declaration must clear the gate: in this stateless repo the next
-# refusal is the workflow lookup, which is the proof the gate stopped blocking.
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-absent "trivial pass, no plan artifact" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "declared absence clears the design gate" 2 "$status"
-check "declared absence proceeds to the workflow lookup" "requires an active workflow" "$out"
-
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/design.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "readable design file clears the design gate" 2 "$status"
-check "readable design file proceeds to the workflow lookup" "requires an active workflow" "$out"
-
-cp "$designtmp/design.md" "$designtmp/uncatalogued.md"; printf 'ASSUMP-2\n' >>"$designtmp/uncatalogued.md"
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/uncatalogued.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "uncatalogued design token refused" 1 "$status"
-check "uncatalogued token named" "uncatalogued: ASSUMP-2" "$out"
-cp "$designtmp/design.md" "$designtmp/two-markers.md"; printf '\n<!-- governed-design-labels:v1 -->\n```json\n{}\n```\n' >>"$designtmp/two-markers.md"
-out=$("$WRAPPER" --slug t --phase preflight-advice --design-file "$designtmp/two-markers.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "two design markers refused" 1 "$status"
-check "two-marker refusal named" "exactly one labels marker" "$out"
-
-# Fail closed on a phase-less consult: there is no checkpoint to carry the
-# design to, so accepting the flag would silently drop caller-supplied evidence.
-out=$("$WRAPPER" --slug t --design-file "$designtmp/design.md" --cwd "$designtmp/repo" -- "q" 2>&1); status=$?
-check_status "design file without --phase refused" 2 "$status"
-check "phase-less design refusal names the dependency" "requires --phase" "$out"
-rm -rf "$designtmp"
-
-grep -q 'from hooks.lib.workflow_state import safe_slug' "$WRAPPER" \
-  && { printf 'PASS  evidence attach uses the producer safe_slug contract\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  evidence attach must derive the slug via the producer safe_slug\n'; fail=$((fail+1)); }
-
-printf '== governed pre-consult gate (offline)\n'
-gatetmp=$(mktemp -d)
-# The state root stays outside the repo under test: workflow state written
-# inside it would drift the review manifest against the tree it describes.
-mkdir -p "$gatetmp/home" "$gatetmp/repo"
-git -C "$gatetmp/repo" init -q
-git -C "$gatetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug orphan --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
-check_status "governed consult without an active workflow refused" 2 "$status"
-check "no-workflow refusal names the cause" "requires an active workflow" "$out"
-CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
-  begin --repo "$gatetmp/repo" --slug real-pass >/dev/null 2>&1
-out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug wrong-pass --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
-check_status "mismatched-slug governed consult refused" 2 "$status"
-check "slug-mismatch refusal names both slugs" "does not match the active workflow" "$out"
-out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug real-pass --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
-check_status "not-ready checkpoint refused before the consult" 2 "$status"
-check "checkpoint refusal names the missing steps" "missing: repo-context-forge" "$out"
-
-# Ineligible checkpoints must refuse before the expensive `claude` call. A refusal
-# naming the checkpoint (not the ~/.bashrc transport parse that follows it) is the
-# proof that the gate fired first.
-workflow_py() { CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" python3 -c "$1" "$ROOT" "$gatetmp/repo" "$2"; }
-workflow_py 'import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.lib import workflow_state as w
-from hooks.tests.support import advance_to_final_review
-identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
-w.begin(identity, slug)
-advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)
-wid = str(w.instance_id(w.read_workflow(identity)))
-w.record_advisor_result(identity, slug, wid, "final", "codex-advisor", "commit-ready")
-w.advisor_disposition(identity, slug, wid, "final", "none")
-w.complete(identity)' completed-pass
-out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug completed-pass --phase final-review --base-ref HEAD --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
-check_status "completed workflow refused before the final-review consult" 2 "$status"
-check "terminal refusal names the closed workflow" "open-workflow" "$out"
-
-workflow_py 'import json, sqlite3, sys
-sys.path.insert(0, sys.argv[1])
-from hooks.lib._workflow_db import database_path
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.lib import workflow_state as w
-identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
-w.begin(identity, slug)
-w.set_phase(identity, "repo-context-forge", "passed")
-connection = sqlite3.connect(database_path(identity))
-event_id = connection.execute("SELECT event_id FROM active_projection WHERE slot = 1").fetchone()[0]
-state = json.loads(connection.execute("SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)).fetchone()[0])
-state.pop("workflowId")
-connection.execute("UPDATE workflow_events SET state_json = ? WHERE event_id = ?",
-                   (json.dumps(state, sort_keys=True, separators=(",", ":")), event_id))
-connection.commit(); connection.close()' legacy-pass
-out=$(HOME="$gatetmp/home" CLAUDE_HOME="$gatetmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$gatetmp/state" \
-  "$WRAPPER" --slug legacy-pass --phase preflight-advice --design-absent "gate rig" --cwd "$gatetmp/repo" -- "q" 2>&1); status=$?
-check_status "workflow without an instance id refused before the consult" 2 "$status"
-check "instance-id refusal names the missing field" "workflowId" "$out"
-rm -rf "$gatetmp"
-
-fields=$(printf '%s' '{"slug":"legacy-pass","tdd":"passed","codeReview":{"status":"passed"}}' | python3 -c 'import json,sys
-state = json.load(sys.stdin)
-print(state.get("slug") or "", state.get("workflowId") or "", state.get("tdd") or "", (state.get("codeReview") or {}).get("status") or "", sep="|")')
-IFS='|' read -r f_slug f_wid f_tdd f_review <<<"$fields"
-if [[ "$f_slug" == "legacy-pass" && -z "$f_wid" && "$f_tdd" == "passed" && "$f_review" == "passed" ]]; then
-  printf 'PASS  empty workflowId field survives capture without shifting\n'; pass=$((pass+1))
-else
-  printf 'FAIL  capture field shift: slug=%s wid=%s tdd=%s review=%s\n' "$f_slug" "$f_wid" "$f_tdd" "$f_review"; fail=$((fail+1))
-fi
-
-printf '== session identity (offline)\n'
 idtmp=$(mktemp -d)
 mkdir -p "$idtmp/home" "$idtmp/repo/sub"
 git -C "$idtmp/repo" init -q
-# Each invocation must get past SID creation and fail at the later alias-parse stage.
-# Discarding the status instead would let an early death leave the first SID file in
-# place, so the one-file assertion below would pass without proving path equivalence.
-# The state root is pinned, not inherited: a surrounding run that exports its
-# own synthetic CLAUDE_WORKFLOW_STATE_ROOT would otherwise take every sid with
-# it and the one-file assertion below would count an empty directory.
-offline_invoke() { # label, wrapper --cwd value, optional directory to run from
-  local out status
-  if [[ -n "${3:-}" ]]; then
-    out=$(cd "$3" && HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
-  else
-    out=$(HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/claude/state" "$WRAPPER" --slug session-identity --cwd "$2" -- "q" 2>&1)
-  fi
-  status=$?
-  check_status "session identity ($1) reaches the alias-parse stage" 2 "$status"
-  check "session identity ($1) names the parse failure" "could not parse the claudex alias env" "$out"
-}
-offline_invoke "root" "$idtmp/repo"
-offline_invoke "subdir" "$idtmp/repo/sub"
-offline_invoke "relative" "./sub" "$idtmp/repo"
+for cwd in "$idtmp/repo" "$idtmp/repo/sub"; do
+  HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/state" \
+    "$WRAPPER" --slug path-identity --cwd "$cwd" -- q >/dev/null 2>&1
+done
 ln -s "$idtmp/repo" "$idtmp/link"
-offline_invoke "symlink" "$idtmp/link"
-sid_count=$(ls "$idtmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
-check_status "one session file across root, subdir, relative, and symlinked paths" "1" "$sid_count"
+HOME="$idtmp/home" CLAUDE_HOME="$idtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$idtmp/state" \
+  "$WRAPPER" --slug path-identity --cwd "$idtmp/link" -- q >/dev/null 2>&1
+sid_count=$(ls "$idtmp/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
+check_status "one phase-less SID across canonical paths" 1 "$sid_count"
 rm -rf "$idtmp"
 
-printf '== state-root alignment (offline)\n'
-roottmp=$(mktemp -d)
-mkdir -p "$roottmp/home" "$roottmp/repo" "$roottmp/isolated"
-git -C "$roottmp/repo" init -q
-HOME="$roottmp/home" CLAUDE_HOME="$roottmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$roottmp/isolated" \
-  "$WRAPPER" --slug root-alignment --cwd "$roottmp/repo" -- "q" >/dev/null 2>&1
-override_sids=$(ls "$roottmp/isolated/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
-fallback_sids=$(ls "$roottmp/claude/state/_advisor-sessions" 2>/dev/null | wc -l | tr -d ' ')
-check_status "sid lands under the workflow state root override" "1" "$override_sids"
-check_status "no sid lands under the CLAUDE_HOME fallback" "0" "$fallback_sids"
-rm -rf "$roottmp"
-
-printf '== Repo Context Forge graph evidence (offline)\n'
-envtmp=$(mktemp -d)
-mkdir -p "$envtmp/home" "$envtmp/repo"
-git -C "$envtmp/repo" init -q
-git -C "$envtmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-
-# The hand-authored envelope is gone, not merely ignored: a caller cannot supply
-# graph transport at all.
-out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope \
-  --cwd "$envtmp/repo" --gitnexus /dev/null -- "q" 2>&1); status=$?
-check_status "the retired --gitnexus option is refused" 2 "$status"
-check "retired option names itself" "unknown argument: --gitnexus" "$out"
-
-# Governed consults die at the ~/.bashrc alias-parse stage in this fake HOME, the
-# last stop before the provider. A refusal naming the graph evidence instead proves
-# the wrapper resolved it first, and refused without paying for a consultation.
-env_state="$envtmp/state"
-graph_py() { CLAUDE_WORKFLOW_STATE_ROOT="$env_state" python3 -c "$1" "$ROOT" "$envtmp/repo" "$2"; }
-graph_py 'import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.lib import workflow_state as w
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.tests.support import record_context_forge
-w.begin(resolve_repo_identity(sys.argv[2]), sys.argv[3])
-record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)' graph-pass
-out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
-  "$WRAPPER" --slug graph-pass --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
-check_status "recorded graph evidence clears the consult gate" 2 "$status"
-check "automatic graph evidence reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
-
-# A state that claims evidence this instance does not own must refuse rather than
-# consult on another pass's graph result.
-graph_py 'import json, sqlite3, sys
-sys.path.insert(0, sys.argv[1])
-from hooks.lib._workflow_db import database_path
-from hooks.lib.repo_identity import resolve_repo_identity
-identity = resolve_repo_identity(sys.argv[2])
-connection = sqlite3.connect(database_path(identity))
-event_id = connection.execute("SELECT event_id FROM active_projection WHERE slot = 1").fetchone()[0]
-state = json.loads(connection.execute("SELECT state_json FROM workflow_events WHERE event_id = ?", (event_id,)).fetchone()[0])
-state["repoContextForgeEvidence"] = "evidence-" + "0" * 32
-connection.execute("UPDATE workflow_events SET state_json = ? WHERE event_id = ?",
-                   (json.dumps(state, sort_keys=True, separators=(",", ":")), event_id))
-connection.commit(); connection.close()' graph-pass
-out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
-  "$WRAPPER" --slug graph-pass --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
-check_status "unowned graph evidence refused before the consult" 2 "$status"
-check "unowned refusal instructs a bootstrap rerun" "rerun the Repo Context Forge bootstrap" "$out"
-
-# A graph result far larger than the bound must still be reported within it, and
-# must say how many checks it dropped: an excerpt that quietly exceeds its own
-# limit reads to the delegate as complete evidence while costing unbounded input.
-graph_py 'import json, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.lib.workflow_documents import graph_evidence_document
-from hooks.lib import workflow_state as w
-identity, slug = resolve_repo_identity(sys.argv[2]), sys.argv[3]
-w.begin(identity, slug)
-state, root = w.read_workflow(identity), str(resolve_repo_identity(sys.argv[2]).root)
-entry = lambda n: {"kind": "symbol_context", "file": f"module_{n}.py", "target": f"symbol_{n}",
-                   "direction": "", "status": "resolved",
-                   "resolved_identity": f"Function:module_{n}.py:symbol_{n}",
-                   "callers": [{"identity": f"Function:caller_{n}_{i}.py:run_{i}", "name": f"run_{i}",
-                                "file": f"caller_{n}_{i}.py"} for i in range(40)]}
-packet = {"target_state": {"source_repo": root},
-          "gitnexus": {"analysis": {"status": "resolved", "entries": [entry(n) for n in range(40)],
-                                    "unresolved_checks": [], "elapsed_ms": 1, "process_count": 1,
-                                    "graph_call_count": 40, "output_bytes": 1,
-                                    "authority": {"source_repository": root},
-                                    "producer_revision": {"commit": "0" * 40, "dirty": False}}}}
-packet_path = Path(sys.argv[2]).parent / "oversized-packet.json"
-packet_path.write_text(json.dumps(packet), encoding="utf-8")
-w.commit_evidence_phase(identity, slug, w.instance_id(state), "repo-context-forge",
-                        graph_evidence_document(str(packet_path), slug=slug,
-                                                workflow_id=str(w.instance_id(state)), source_root=root))' oversized-graph
-out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" CLAUDE_WORKFLOW_STATE_ROOT="$env_state" \
-  "$WRAPPER" --slug oversized-graph --phase preflight-advice --design-absent "gate rig" --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
-check_status "an oversized graph result still reaches the consult gate" 2 "$status"
-measured=$(printf '%s' "$out" | sed -n 's/.*codex_advisor_graph_evidence //p')
-bytes=$(printf '%s' "$measured" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
-omitted=$(printf '%s' "$measured" | sed -n 's/.*checks_omitted=\([0-9]*\).*/\1/p')
-check "the wrapper reports what the excerpt actually cost" "checks_total=40" "$measured"
-if [[ -n "$bytes" && "$bytes" -le 9000 ]]; then
-  printf 'PASS  the emitted excerpt honours its own bound (%s bytes)\n' "$bytes"; pass=$((pass + 1))
-else
-  printf 'FAIL  the emitted excerpt honours its own bound\n      expected <=9000 bytes, got: %s\n' "${bytes:-<unreported>}"; fail=$((fail + 1))
-fi
-if [[ -n "$omitted" && "$omitted" -gt 0 ]]; then
-  printf 'PASS  the trimmed excerpt names its omitted checks (%s)\n' "$omitted"; pass=$((pass + 1))
-else
-  printf 'FAIL  the trimmed excerpt names its omitted checks\n      expected >0, got: %s\n' "${omitted:-<unreported>}"; fail=$((fail + 1))
-fi
-
-# Ungoverned consults never had graph evidence to read and must keep working.
-out=$(HOME="$envtmp/home" CLAUDE_HOME="$envtmp/claude" "$WRAPPER" --slug envelope --cwd "$envtmp/repo" -- "q" 2>&1); status=$?
-check_status "ungoverned consult keeps its optional-input behavior" 2 "$status"
-check "ungoverned consult reaches the alias-parse stage" "could not parse the claudex alias env" "$out"
-rm -rf "$envtmp"
-
-printf '== recorded intent reaches the consult input (offline)\n'
-intenttmp=$(mktemp -d)
-# A guard below aborts the run, which would step straight over this block's cleanup line.
-trap 'rm -rf "$intenttmp"' EXIT
-mkdir -p "$intenttmp/home" "$intenttmp/repo"
-git -C "$intenttmp/repo" init -q
-git -C "$intenttmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-# The wrapper's real transport configuration, in this test HOME. Parsing it is the last
-# step before the provider, so the runs above that omit it die before a payload exists;
-# supplying it is what lets these checks see what a consult actually carries.
-cat >"$intenttmp/home/.bashrc" <<'BASHRC'
+printf '== scoped payload and session diagnostics\n'
+rigtmp=$(mktemp -d)
+mkdir -p "$rigtmp/home" "$rigtmp/repo" "$rigtmp/bin" "$rigtmp/capture"
+git -C "$rigtmp/repo" init -q
+git -C "$rigtmp/repo" config user.email test@example.invalid
+git -C "$rigtmp/repo" config user.name Harness
+git -C "$rigtmp/repo" remote add origin https://example.invalid/advisor-rig.git
+printf 'value = 1\n' >"$rigtmp/repo/app.py"
+git -C "$rigtmp/repo" add app.py
+git -C "$rigtmp/repo" commit -q -m base
+write_design "$rigtmp/design.md"
+cat >"$rigtmp/home/.bashrc" <<'BASHRC'
 alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
-claude --model offline-model'
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 claude --model offline-model'
 BASHRC
-# Exactly the shape the recorded task text can take: the pipe would end a '|'-delimited
-# field and the newline would shift every field after it.
-intent_text=$'line one | pipe\nline two'
-printf '%s' "$intent_text" >"$intenttmp/intent.txt"
-intent_state="$intenttmp/state"
-intent_py() { CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 -c "$1" "$ROOT" "$intenttmp/repo"; }
-
-# What the wrapper composes, read from the bytes it actually writes to the provider's
-# stdin. A controlled provider goes FIRST on PATH and copies that stdin to a file, so the
-# offline guarantee is constructed rather than assumed: no `claude` reachable by PATH
-# lookup can be executed, and no run can attempt the network, retry, or hang. PATH
-# precedence is the whole of that guarantee - a shell function of the same name would
-# resolve earlier, which no supported invocation of this suite creates.
-#
-# This is a composition diagnostic, NOT proof of the provider transport. The controlled
-# executable satisfies the Interface of a production callee, so the mock ban bars it from
-# ever being RED/GREEN or production evidence, and nothing here claims otherwise. Proof
-# that the recorded intent crosses the real Seam is the live provider consult recorded on
-# the pass that shipped this behaviour, plus the LIVE=1 block below.
-mkdir -p "$intenttmp/bin"
-cat >"$intenttmp/bin/claude" <<'PROVIDER'
+cat >"$rigtmp/bin/claude" <<'PROVIDER'
 #!/usr/bin/env bash
-# Reads the consult payload and exits at once: no network, no retry, no waiting.
-printf 'ran\n' >>"$CONSULT_PROVIDER_MARKER"
-if [[ -n "${CONSULT_PROVIDER_ENV:-}" ]]; then
-  printf 'CLAUDE_CODE_MAX_CONTEXT_TOKENS=%s\nCLAUDE_CODE_AUTO_COMPACT_WINDOW=%s\nCLAUDE_AUTOCOMPACT_PCT_OVERRIDE=%s\n' \
-    "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-unset}" "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}" "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-unset}" >"$CONSULT_PROVIDER_ENV"
-fi
-cat >"$CONSULT_PROVIDER_CAPTURE"
-PROVIDER
-chmod +x "$intenttmp/bin/claude"
-provider_marker="$intenttmp/provider-ran"
-provider_capture="$intenttmp/consult-payload"
-: >"$provider_marker"
-
-consult_input() {
-  local before after
-  # Truncated per call, so a capture can only ever hold this consult's bytes.
-  : >"$provider_capture"
-  before=$(wc -l <"$provider_marker")
-  PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
-    CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-    CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
-    "$WRAPPER" --cwd "$intenttmp/repo" "$@" >/dev/null 2>&1
-  after=$(wc -l <"$provider_marker")
-  # A bypassed or shadowed provider must fail loudly here rather than read as an empty
-  # payload that every content assertion below would then silently pass or fail against.
-  if [[ "$after" -le "$before" ]]; then
-    printf 'FATAL  the controlled provider never ran; the consult was not observed\n' >&2
-    return 1
-  fi
-  if [[ ! -s "$provider_capture" ]]; then
-    printf 'FATAL  the controlled provider captured an empty consult payload\n' >&2
-    return 1
-  fi
-  cat "$provider_capture"
-}
-
-CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
-  begin --repo "$intenttmp/repo" --slug intent-custody --intent-file "$intenttmp/intent.txt" >/dev/null
-intent_py 'import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.tests.support import record_context_forge
-record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
-preflight_payload=$(consult_input --slug intent-custody --phase preflight-advice --design-absent "intent-custody rig: no plan artifact" -- "scope question") || exit 1
-check "preflight-advice carries the recorded intent verbatim" "$intent_text" "$preflight_payload"
-
-intent_py 'import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.lib.workflow_state import commit_tdd, instance_id, read_workflow
-from hooks.tests.support import advance_to_final_review
-identity = advance_to_final_review(Path(sys.argv[2]), Path(sys.argv[2]).parent)
-state = read_workflow(identity)
-workflow_id = str(instance_id(state))
-commit_tdd(identity, str(state["slug"]), workflow_id, {
-    "schemaVersion": 1,
-    "workflowId": workflow_id,
-    "status": "passed",
-    "behavior": "imported legacy behavior",
-    "seam": "legacy production Interface",
-    "command": "python -m unittest",
-    "runs": [],
-}, "passed", expected_evidence_id=None)'
-# The armH replay: the consult question denies that any governing spec exists. The
-# recorded text has to arrive in the same payload as the denial, so the delegate can
-# see for itself that the premise is false.
-armh_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD --design-absent "intent-custody rig: no plan artifact" \
-  -- "There is no governing spec beyond the recorded workflow intent; judge the diff on its merits alone.") || exit 1
-check "final-review carries the recorded intent verbatim" "$intent_text" "$armh_payload"
-check "the armH denial travels in the same payload as the text that refutes it" \
-  "There is no governing spec beyond the recorded workflow intent" "$armh_payload"
-
-grep -q 'bounded_section design_declaration_section design-declaration' "$WRAPPER" \
-  && { printf 'PASS  canonical design declaration reaches the bounded evidence owner\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  canonical design declaration must reach bounded_section\n'; fail=$((fail+1)); }
-
-grep -q 'bounded_section tdd_section tdd "recorded TDD summary"' "$WRAPPER" \
-  && { printf 'PASS  TDD summary routes through the bounded channel owner\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  TDD summary must route through bounded_section\n'; fail=$((fail+1)); }
-grep -q 'bounded_section review_section review "recorded code-review summary"' "$WRAPPER" \
-  && { printf 'PASS  code-review summary routes through the bounded channel owner\n'; pass=$((pass+1)); } \
-  || { printf 'FAIL  code-review summary must route through bounded_section\n'; fail=$((fail+1)); }
-
-# The payload goes to the provider, not the lead, so each bounded channel also
-# reports itself on stderr, and the assembled prompt reports its total size -
-# measured, not guessed.
-telemetry_file="$intenttmp/consult-stderr"
-: >"$provider_capture"
-PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
-  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug intent-custody --phase preflight-advice \
-  --design-absent "intent-custody rig: no plan artifact" -- "scope question" >/dev/null 2>"$telemetry_file"
-check "design channel reports itself on stderr" "codex_advisor_evidence name=design" "$(cat "$telemetry_file")"
-check "assembled prompt reports its total bytes" "codex_advisor_prompt bytes_total=" "$(cat "$telemetry_file")"
-
-# The preflight prompt frames the consult as falsification of a decided design,
-# bounds the advisor's epistemics, and keeps the decision with measurement.
-check "preflight frames the design as the object under falsification" "the decided design under review: try to falsify it" "$preflight_payload"
-check "the advisor may recommend a family; measurement decides" "You may recommend a different architecture family; the decision is settled by measurement" "$preflight_payload"
-check "unobserved claims are labeled with their settling measurement" "inferred/unverified and name the smallest real-Seam measurement" "$preflight_payload"
-check "an unstated design on architecture-shaping work is a finding" "an absent design artifact is itself a top-ranked finding" "$preflight_payload"
-
-# Window knobs pass through from the resolved model configuration only when
-# configured: absent from the claudex block means absent from the provider env.
-env_file="$intenttmp/provider-env"
-: >"$provider_capture"
-PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
-  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
-  CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-rig -- "scope question" >/dev/null 2>&1
-check "unconfigured max-context knob stays unset" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
-check "unconfigured auto-compact window stays unset" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
-check "unconfigured autocompact percent stays unset" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
-
-cat >"$intenttmp/home/.bashrc" <<'BASHRC'
-alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
-CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 \
-CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \
-CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 \
-claude --model offline-model'
-BASHRC
-: >"$provider_capture"
-PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
-  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
-  CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-rig -- "scope question" >/dev/null 2>&1
-check "configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
-check "configured auto-compact window reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
-check "configured autocompact percent reaches the provider" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80" "$(cat "$env_file")"
-
-# Isolation: a knob reaches the provider exactly when the alias block
-# configures it. A stale parent environment (claudex sessions export all
-# three) must not leak an alias-omitted knob to the provider.
-cat >"$intenttmp/home/.bashrc" <<'BASHRC'
-alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
-CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 \
-claude --model offline-model'
-BASHRC
-: >"$provider_capture"
-PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
-  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-  CLAUDE_CODE_AUTO_COMPACT_WINDOW=999111 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
-  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
-  CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-isolation -- "scope question" >/dev/null 2>&1
-check "the alias-configured knob still reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$env_file")"
-check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$env_file")"
-check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$env_file")"
-
-# Symmetric shape: the max-context knob itself alias-omitted while the parent
-# exports it - already-satisfied regression evidence that isolation is knob-agnostic.
-cat >"$intenttmp/home/.bashrc" <<'BASHRC'
-alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
-CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \
-claude --model offline-model'
-BASHRC
-: >"$provider_capture"
-PATH="$intenttmp/bin:$PATH" HOME="$intenttmp/home" CLAUDE_HOME="$intenttmp/claude" \
-  CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" \
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS=888222 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
-  CONSULT_PROVIDER_MARKER="$provider_marker" CONSULT_PROVIDER_CAPTURE="$provider_capture" \
-  CONSULT_PROVIDER_ENV="$env_file" \
-  "$WRAPPER" --cwd "$intenttmp/repo" --slug knob-isolation -- "scope question" >/dev/null 2>&1
-check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$env_file")"
-check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$env_file")"
-
-# Final review reconciles three authorities. The recorded production preflight
-# must arrive as pass-owned evidence with the same provenance header, the
-# payload must state the precedence once, and the phase prompt must carry the
-# named falsification obligations. The armH payload above is a final-review
-# consult on a pass whose preflight was recorded through the real recorder.
-check "final-review attaches the recorded production preflight" "--- recorded production preflight (bounded: shown=" "$armh_payload"
-check "the attached preflight is the recorded document" "advance to final review" "$armh_payload"
-check "the preflight header carries sha256 provenance" "sha256=" "$armh_payload"
-check "final-review carries the governing-design section too" "governing design artifact, declared absent (bounded: shown=" "$armh_payload"
-check "final-review attaches recorded verification runs" "--- recorded verification runs (bounded: shown=" "$armh_payload"
-check "final-review attaches the current Behavior Map" "--- current Behavior Map (bounded: shown=" "$armh_payload"
-behavior_map_payload=$(printf '%s\n' "$armh_payload" | sed -n '/^--- current Behavior Map (bounded:/,/^--- recorded TDD summary/p')
-check "Behavior Map carries item kind" '"kind":' "$behavior_map_payload"
-check "precedence is stated to the delegate" "the governing design artifact says why this was proposed; the recorded production preflight is the reconciled before-edit contract; the Behavior Map names the authoritative proof obligations, and recorded TDD evidence is its bounded observation, not proof" "$armh_payload"
-check "design/preflight divergence is a finding" "Unreconciled divergence between the design and the recorded preflight is a finding" "$armh_payload"
-check "PRES-n obligations are rechecked" "Recheck each PRES-n preservation obligation" "$armh_payload"
-check "ASSUMP-n assumptions are falsified" "falsify each ASSUMP-n load-bearing assumption" "$armh_payload"
-check "the contradictory-contract gate is applied" "may not also require callers to avoid particular operations" "$armh_payload"
-check "discovery is bounded to one additional failure class" "at most one additional material reachable failure class" "$armh_payload"
-check "contract Behavior Map items carry the issue #141 materiality clause" "A contract Behavior Map item is material unless its recorded state is GREEN, producer-backed already-satisfied" "$armh_payload"
-check "a superseded contract item without a GREEN replacement is material" "superseded without a GREEN terminal replacement is material" "$armh_payload"
-if [[ "$preflight_payload" == *"--- recorded production preflight (bounded:"* ]]; then
-  printf 'FAIL  preflight-advice must not attach a preflight that does not exist yet\n'; fail=$((fail+1))
+set -u
+count_file="$CAPTURE_DIR/count"
+count=0; [[ -f "$count_file" ]] && count=$(cat "$count_file")
+count=$((count + 1)); printf '%s\n' "$count" >"$count_file"
+printf '%s\n' "$PWD" >"$CAPTURE_DIR/pwd-$count"
+printf '%s\n' "$*" >"$CAPTURE_DIR/args-$count"
+printf 'CLAUDE_CODE_MAX_CONTEXT_TOKENS=%s\nCLAUDE_CODE_AUTO_COMPACT_WINDOW=%s\nCLAUDE_AUTOCOMPACT_PCT_OVERRIDE=%s\n' \
+  "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-unset}" "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}" \
+  "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-unset}" >"$CAPTURE_DIR/env-$count"
+cat >"$CAPTURE_DIR/payload-$count"
+if [[ "${FAIL_PROVIDER:-0}" == 1 ]]; then exit 7; fi
+if [[ " $* " == *" --resume "* ]]; then
+  printf '%s\n' '{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}'
 else
-  printf 'PASS  preflight-advice carries no recorded-preflight section\n'; pass=$((pass+1))
+  printf '%s\n' '{"schemaVersion":1,"findings":[],"verdict":"completed"}'
 fi
-
-# The recorded preflight is the reconciled contract: a realistic thirteen-section
-# document runs well past 4000 bytes, and final review must receive it whole.
-# Re-record the rig preflight with content whose marker sits deep in the
-# document, then prove the marker crosses to the delegate.
-CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 -c 'import sys, json, subprocess
+PROVIDER
+chmod +x "$rigtmp/bin/claude"
+rigstate="$rigtmp/state"
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" begin --repo "$rigtmp/repo" --slug scoped-rig --intent 'scoped advisor transport' >/dev/null
+printf 'value = 2\n' >"$rigtmp/repo/app.py"
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 - "$ROOT" "$rigtmp/repo" <<'PY'
+import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from hooks.lib import workflow_state as w
+from hooks.tests.support import record_context_forge
+record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)
+PY
+
+run_wrapper() {
+  PATH="$rigtmp/bin:$PATH" HOME="$rigtmp/home" CLAUDE_HOME="$rigtmp/claude" \
+    CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" CAPTURE_DIR="$rigtmp/capture" \
+    "$WRAPPER" --cwd "$rigtmp/repo" "$@"
+}
+preflight_out=$(run_wrapper --slug scoped-rig --phase preflight-advice --design-file "$rigtmp/design.md" -- 'scope question' 2>"$rigtmp/preflight.err"); status=$?
+check_status "controlled preflight composition exits 0" 0 "$status"
+check "provider runs in selected repository" "$rigtmp/repo" "$(cat "$rigtmp/capture/pwd-1")"
+preflight_args=$(cat "$rigtmp/capture/args-1")
+preflight_sid=$(printf '%s\n' "$preflight_args" | sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p')
+check_status "preflight session id parsed" 36 "${#preflight_sid}"
+check "preflight creates provider session" "--session-id $preflight_sid" "$preflight_args"
+check_absent "preflight does not resume" "--resume" "$preflight_args"
+check "preflight disables customizations" "--safe-mode --strict-mcp-config" "$preflight_args"
+check "preflight denies GitNexus tools" "mcp__gitnexus__*" "$preflight_args"
+check_absent "preflight role has no GitNexus guidance" "configured GitNexus" "$(cat "$rigtmp/capture/payload-1")"
+check "configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$rigtmp/capture/env-1")"
+check "configured auto-compact window reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$rigtmp/capture/env-1")"
+check "configured autocompact percent reaches the provider" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80" "$(cat "$rigtmp/capture/env-1")"
+check "design body is attached as framed evidence" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-1")"
+check_status "one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- governed-design narrative evidence')"
+check "design evidence names line framing" "framing=design-line-prefix" "$(cat "$rigtmp/capture/payload-1")"
+check "design telemetry emitted" "codex_advisor_evidence name=governing-design" "$(cat "$rigtmp/preflight.err")"
+check "canonical design declaration is retained" '"sha256"' "$(cat "$rigtmp/capture/payload-1")"
+check "current-pass diff carries the changed value" "diff> +value = 2" "$(cat "$rigtmp/capture/payload-1")"
+check "projection is framed as untrusted data" "Untrusted repository-derived projection data follows" "$(cat "$rigtmp/capture/payload-1")"
+check "diff is framed as untrusted data" "Untrusted repository diff data follows" "$(cat "$rigtmp/capture/payload-1")"
+check_status "one projection section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- advisor projection (schemaVersion 1) ---')"
+check_status "one current-pass diff section" 1 "$(count_exact "$rigtmp/capture/payload-1" '--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---')"
+for old in 'repo context packet' 'Repo Context Forge graph evidence' '--- unstaged diff ---' '--- staged diff ---' '--- untracked diff ---' 'current Behavior Map' 'recorded TDD summary' 'recorded code-review summary'; do
+  check_absent "old payload absent ($old)" "$old" "$(cat "$rigtmp/capture/payload-1")"
+done
+
+wid=$(CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" status --repo "$rigtmp/repo" | python3 -c 'import json,sys; print(json.load(sys.stdin)["workflowId"])')
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" advisor-disposition --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --stage preflight --findings none >/dev/null
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 - "$ROOT" "$rigtmp/repo" "$rigtmp/preflight.json" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
 from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.lib.workflow_state import read_workflow
 from hooks.tests.support import build_no_change_document
-repo = Path(sys.argv[2])
-identity = resolve_repo_identity(repo)
-state = w.read_workflow(identity)
-filler = "the reconciled contract governs this surface and must arrive whole " * 12
-document = build_no_change_document(filler)
-document["verify"] = filler + " DEEP-PREFLIGHT-MARKER-BEYOND-4000"
-path = repo.parent / "deep-preflight.json"
-path.write_text(json.dumps(document), encoding="utf-8")
-result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-workflow/scripts/workflow.py",
-    "record-preflight", "--repo", str(repo), "--slug", str(state["slug"]),
-    "--workflow-id", str(w.instance_id(state)), "--input", str(path)],
-    capture_output=True, text=True)
-assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$intenttmp/repo" || exit 1
-deep_payload=$(consult_input --slug intent-custody --phase final-review --base-ref HEAD \
-  --design-absent "deep preflight custody check" -- "completion question") || exit 1
-check "a deep preflight section arrives whole" "DEEP-PREFLIGHT-MARKER-BEYOND-4000" "$deep_payload"
+state = read_workflow(resolve_repo_identity(sys.argv[2]))
+doc = build_no_change_document("scoped wrapper diagnostic")
+doc["behaviorMap"][0]["sourceRefs"] = [{"type":"design","evidenceId":state["governedDesignEvidence"],"id":"PRES-1"}]
+open(sys.argv[3], "w", encoding="utf-8").write(json.dumps(doc))
+PY
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" record-preflight --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --input "$rigtmp/preflight.json" >/dev/null
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" tdd --repo "$rigtmp/repo" --slug scoped-rig --not-required 'diagnostic has no production behavior' >/dev/null
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/skills/production-code/scripts/code_quality_gate.py" check --repo "$rigtmp/repo" --json >"$rigtmp/gate.json"
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" record-production-code --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --input "$rigtmp/gate.json" >/dev/null
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" set-phase --repo "$rigtmp/repo" --phase implementation --status passed >/dev/null
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" verify --repo "$rigtmp/repo" --slug scoped-rig -- python3 -c pass >/dev/null
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" verify --repo "$rigtmp/repo" --slug scoped-rig --kind quality-gate --base-ref HEAD >/dev/null
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" set-phase --repo "$rigtmp/repo" --phase code-review --status not-required --findings none >/dev/null
 
-# begin admits an empty intent, so the payload has to render it empty. Substituting a
-# placeholder would report text the pass never recorded, which is the same defect as
-# truncating it.
-CLAUDE_WORKFLOW_STATE_ROOT="$intent_state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
-  begin --repo "$intenttmp/repo" --slug empty-intent >/dev/null
-intent_py 'import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.tests.support import record_context_forge
-record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)'
-empty_payload=$(consult_input --slug empty-intent --phase preflight-advice --design-absent "intent-custody rig: no plan artifact" -- "scope question") || exit 1
-check "an empty intent stays empty instead of becoming a placeholder" \
-  "$(printf 'answerable to ---\n\n--- governing design artifact')" "$empty_payload"
-rm -rf "$intenttmp"
-trap - EXIT
+FAIL_PROVIDER=1 run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' >/dev/null 2>"$rigtmp/resume-fail.err"; status=$?
+check_status "resume provider failure propagates" 7 "$status"
+resume_args=$(cat "$rigtmp/capture/args-2")
+check "final resumes same SID" "--resume $preflight_sid" "$resume_args"
+check_absent "resume failure has no cold-start fallback" "--session-id" "$resume_args"
 
-if [[ "${LIVE:-0}" = "1" ]]; then
-  printf '== live consult (costs tokens)\n'
-  live_out=$("$WRAPPER" --slug wrapper-contract-test --cwd "$PWD" --budget 40 --fresh \
-    -- "Question: Reply with exactly LIVE_OK and nothing else. Do not use tools." 2>/tmp/codex-advisor-test.err)
-  status=$?
-  check_status "live consult exits 0" 0 "$status"
-  check "live consult answers" "LIVE_OK" "$live_out"
-  check "session marker emitted" "codex_advisor_session" "$(cat /tmp/codex-advisor-test.err)"
-  check "completion marker emitted" "codex_advisor_complete status=0 provider=codex" "$(cat /tmp/codex-advisor-test.err)"
-  rm -f /tmp/codex-advisor-test.err
+sid_file=$(ls "$rigstate/_advisor-sessions"/*-scoped-rig-"$wid".sid)
+rm "$sid_file"
+FAIL_PROVIDER=1 run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' >/dev/null 2>&1; status=$?
+check_status "missing SID starts a session and the provider failure propagates" 7 "$status"
+created_sid=$(cat "$sid_file" 2>/dev/null)
+check_status "missing SID persists a new workflow-bound session id" 36 "${#created_sid}"
+check_absent "missing SID does not reuse the preflight session" "$preflight_sid" "$created_sid"
+missing_args=$(cat "$rigtmp/capture/args-3")
+check "missing SID creates the persisted session" "--session-id $created_sid" "$missing_args"
+check_absent "missing SID does not resume" "--resume" "$missing_args"
 
-  # Phased live probe: the governed design transport crossing the real provider.
-  # An isolated rig repo supplies real workflow state; the real claudex env
-  # supplies transport; the design section and its telemetry ride the payload.
-  printf '== live phased consult with design transport (costs tokens)\n'
-  livetmp=$(mktemp -d)
-  mkdir -p "$livetmp/repo"
-  git -C "$livetmp/repo" init -q
-  git -C "$livetmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-  write_design "$livetmp/design.md"
-  CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" python3 "$ROOT/skills/repo-production-workflow/scripts/workflow.py" \
-    begin --repo "$livetmp/repo" --slug live-design-probe >/dev/null
-  CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" python3 -c 'import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.tests.support import record_context_forge
-record_context_forge(Path(sys.argv[2]), Path(sys.argv[2]).parent)' "$ROOT" "$livetmp/repo"
-  live_design_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$livetmp/state" "$WRAPPER" \
-    --slug live-design-probe --phase preflight-advice --cwd "$livetmp/repo" \
-    --design-file "$livetmp/design.md" --budget 40 --fresh \
-    -- "Question: Reply with exactly LIVE_DESIGN_OK and nothing else. Do not use tools." 2>"$livetmp/stderr")
-  status=$?
-  check_status "phased live consult exits 0" 0 "$status"
-  # A phased prompt instructs findings-first review of the attached design, so
-  # the delegate reviews rather than echoing a token; the wrapper itself
-  # enforces non-empty output, asserted here through the real transport.
-  if [[ -n "${live_design_out//[[:space:]]/}" ]]; then
-    printf 'PASS  phased live consult returns a non-empty review\n'; pass=$((pass+1))
-  else
-    printf 'FAIL  phased live consult returned empty output\n'; fail=$((fail+1))
-  fi
-  check "design channel telemetry on the live path" "codex_advisor_evidence name=design" "$(cat "$livetmp/stderr")"
-  check "prompt-size telemetry on the live path" "codex_advisor_prompt bytes_total=" "$(cat "$livetmp/stderr")"
-  check "phased live completion marker" "codex_advisor_complete status=0 provider=codex" "$(cat "$livetmp/stderr")"
-  if grep -q 'unrecognized_model' "$livetmp/stderr"; then
-    printf 'NOTE  unknown-model notice still present; window knobs did not suppress it on this CLI\n'
-  else
-    printf 'NOTE  no unknown-model notice: configured window knobs reached the live provider subprocess\n'
-  fi
-  rm -rf "$livetmp"
+final_out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' 2>"$rigtmp/final.err"); status=$?
+check_status "controlled final composition exits 0" 0 "$status"
+final_args=$(cat "$rigtmp/capture/args-4")
+check "successful final resumes the created session" "--resume $created_sid" "$final_args"
+check "final disables customizations" "--safe-mode --strict-mcp-config" "$final_args"
+check "final denies GitNexus tools" "mcp__gitnexus__*" "$final_args"
+check_status "final has one design narrative section" 1 "$(count_exact "$rigtmp/capture/payload-4" '--- governed-design narrative evidence')"
+check "final carries framed design body" "design> UNIQUE-DESIGN-BODY-MARKER" "$(cat "$rigtmp/capture/payload-4")"
+check_status "final has one projection section" 1 "$(count_exact "$rigtmp/capture/payload-4" '--- advisor projection (schemaVersion 1) ---')"
+check_status "final has one current-pass diff section" 1 "$(count_exact "$rigtmp/capture/payload-4" '--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---')"
+check "final design telemetry emitted" "codex_advisor_evidence name=governing-design" "$(cat "$rigtmp/final.err")"
+check "projection telemetry emitted" "codex_advisor_evidence name=advisor-projection" "$(cat "$rigtmp/final.err")"
+check "diff telemetry emitted" "codex_advisor_evidence name=current-pass-diff" "$(cat "$rigtmp/final.err")"
+check "completion marker emitted" "codex_advisor_complete status=0 provider=codex" "$(cat "$rigtmp/final.err")"
 
-  # Live final-review probe: the final-only Seam - recorded preflight
-  # attachment, final framing, exact terminal-verdict acceptance - crossing the
-  # real provider. A per-run nonce is planted in the recorded production
-  # preflight; only evidence that actually reached the delegate can echo it.
-  printf '== live final-review consult with nonce custody (costs tokens)\n'
-  finaltmp=$(mktemp -d)
-  mkdir -p "$finaltmp/repo"
-  git -C "$finaltmp/repo" init -q
-  git -C "$finaltmp/repo" -c user.email=test@example.invalid -c user.name=Harness commit -q --allow-empty -m base
-  final_nonce="PROOF-NONCE-$RANDOM$RANDOM"
-  CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" python3 -c 'import sys, json, subprocess
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from hooks.lib import workflow_state as w
-from hooks.lib.repo_identity import resolve_repo_identity
-from hooks.tests.support import advance_to_final_review, build_no_change_document
-from hooks.lib.workflow_documents import design_absence
-repo = Path(sys.argv[2])
-identity = resolve_repo_identity(repo)
-w.begin(identity, "live-final-probe")
-advance_to_final_review(repo, repo.parent, design_absence("live final probe"))
-state = w.read_workflow(identity)
-document = build_no_change_document("recorded preflight carries " + sys.argv[3] + " for the live probe")
-path = repo.parent / "nonce-preflight.json"
-path.write_text(json.dumps(document), encoding="utf-8")
-result = subprocess.run([sys.executable, sys.argv[1] + "/skills/repo-production-workflow/scripts/workflow.py",
-    "record-preflight", "--repo", str(repo), "--slug", str(state["slug"]),
-    "--workflow-id", str(w.instance_id(state)), "--input", str(path)],
-    capture_output=True, text=True)
-assert result.returncode == 0, result.stdout + result.stderr' "$ROOT" "$finaltmp/repo" "$final_nonce" || exit 1
-  live_final_out=$(CLAUDE_WORKFLOW_STATE_ROOT="$finaltmp/state" "$WRAPPER" \
-    --slug live-final-probe --phase final-review --base-ref HEAD --cwd "$finaltmp/repo" \
-    --design-absent "live final probe" --budget 60 --fresh \
-    -- "Return only the required strict final-review JSON envelope with one nonmaterial nonbehavioral finding whose claim quotes the exact PROOF-NONCE value in the recorded production preflight, and verdict commit-ready." 2>"$finaltmp/stderr")
-  status=$?
-  check_status "live final-review consult exits 0" 0 "$status"
-  check "the real delegate echoes the final-only nonce" "$final_nonce" "$live_final_out"
-  check "preflight channel telemetry on the live final path" "codex_advisor_evidence name=preflight" "$(cat "$finaltmp/stderr")"
-  check "live final completion marker" "codex_advisor_complete status=0 provider=codex" "$(cat "$finaltmp/stderr")"
-  rm -rf "$finaltmp"
+cat >"$rigtmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 claude --model offline-model'
+BASHRC
+unphased_out=$(CLAUDE_CODE_AUTO_COMPACT_WINDOW=999111 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  run_wrapper --slug scoped-unphased --fresh -- 'unphased question' 2>"$rigtmp/unphased.err"); status=$?
+check_status "controlled unphased consult exits 0" 0 "$status"
+unphased_args=$(cat "$rigtmp/capture/args-5")
+check "unphased consult retains direct-measurement tools" "--tools Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch" "$unphased_args"
+check_absent "unphased consult keeps customizations" "--safe-mode" "$unphased_args"
+check_absent "unphased consult keeps configured MCP tools" "mcp__gitnexus__*" "$unphased_args"
+check "the alias-configured max-context knob reaches the provider" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000" "$(cat "$rigtmp/capture/env-5")"
+check "a parent-exported unconfigured window is cleared" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=unset" "$(cat "$rigtmp/capture/env-5")"
+check "a parent-exported unconfigured percent is cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-5")"
+
+cat >"$rigtmp/home/.bashrc" <<'BASHRC'
+alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 claude --model offline-model'
+BASHRC
+omitted_max_out=$(CLAUDE_CODE_MAX_CONTEXT_TOKENS=888222 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
+  run_wrapper --slug scoped-unphased-max-isolation --fresh -- 'unphased question' 2>"$rigtmp/unphased-max.err"); status=$?
+check_status "controlled max-context isolation consult exits 0" 0 "$status"
+check "a parent-exported unconfigured max-context is cleared" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=unset" "$(cat "$rigtmp/capture/env-6")"
+check "the alias-configured window still reaches the provider" "CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000" "$(cat "$rigtmp/capture/env-6")"
+check "a parent-exported unconfigured percent remains cleared" "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=unset" "$(cat "$rigtmp/capture/env-6")"
+rm -rf "$rigtmp"
+
+if [[ "${LIVE:-0}" == 1 ]]; then
+  printf '== live unphased transport\n'
+  live_out=$("$WRAPPER" --slug wrapper-contract-live --cwd "$PWD" --budget 40 --fresh -- 'Reply with exactly LIVE_OK and nothing else. Do not use tools.' 2>"$argtmp/live.err")
+  status=$?; check_status "live consult exits 0" 0 "$status"; check "live answer" "LIVE_OK" "$live_out"
+  check "live completion marker" "codex_advisor_complete status=0 provider=codex" "$(cat "$argtmp/live.err")"
 else
   printf 'SKIP  live consult (set LIVE=1 to run)\n'
 fi
 
+rm -rf "$argtmp"
+trap - EXIT
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

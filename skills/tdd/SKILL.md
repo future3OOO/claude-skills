@@ -39,11 +39,11 @@ Map:
 - interactions where one behavior can mutate state or invalidate a guarantee owned by another;
 - known load-bearing assumptions that need semantic falsification.
 
-Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. A contract item is `pending` until its RED reaches GREEN; it is never `omitted`, and it becomes `already-satisfied` only when `tdd --phase red` runs its exact mapped surface pre-edit and the surface passes. A preservation item is `pending`, `already-satisfied` with real-Seam evidence, or `omitted` by governing evidence. Proof gaps remain pending. Every applicable category above must be accounted for before the first RED.
+Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. A contract item is `pending` until its RED reaches GREEN; it is never `omitted`, and it becomes `already-satisfied` only when `tdd --phase red` runs its exact mapped surface pre-edit and the surface passes. A preservation item is `pending`, `already-satisfied` with real-Seam evidence, or `omitted` by governing evidence. Proof gaps remain pending. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
 
 ## 2. Drive One Mapped Vertical Slice
 
-Do not write all tests first. Settle every preservation item before the first edit: run its mapped surface through `tdd --phase red` (a pass records it `already-satisfied` as a baseline) or disposition it through `tdd-map`. Then select one pending contract ID.
+Write every contract item's RED first, on the clean tree (the RED sweep), then implement. Settle every preservation item before the first edit: run its mapped surface through `tdd --phase red` (a pass records it `already-satisfied` as a baseline) or disposition it through `tdd-map`. Then select one pending contract ID.
 
 **RED**
 
@@ -59,31 +59,36 @@ Do not write all tests first. Settle every preservation item before the first ed
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
 - Do not anticipate later slices.
 
+**RED SWEEP**
+
+Every contract item earns its RED on the clean tree before the first production edit: the recorder admits a second RED beside an open one, and the edit gate refuses a production edit while any contract item is still pending. One edit may then satisfy several red items; each reaches GREEN through its own RED. A GREEN for an item with no RED is refused; there is no post-edit proof.
+
 Several assertions may jointly prove one behavior; every assertion participating in that joint proof carries the same behavior-specific `redFailure` marker, so whichever guarantee breaks first still names the mapped failure. State after success or failure must match the complete observable contract.
 
-## 3. Reassess After Every GREEN
+## 3. Update the Map When a Proof Changes It
 
-GREEN creates architecture, so it also creates new proof obligations. Before another production edit, record a reassessment:
+GREEN exposes implementation consequences. When one reveals a new load-bearing mechanism, a touched-Seam preservation or interaction behavior, or a defect, add the item before the next production edit; when it reveals nothing, record nothing. Pass the document on stdin instead of a scratch file:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  tdd-map --repo "$PWD" --slug <task> --workflow-id <active-workflowId> \
-  --input <map-update.json>
+  tdd-map --repo "$PWD" --slug <task> --workflow-id <active-workflowId> --input - <<'JSON'
+{"sourceBehaviorId": "BM_...", "reassessment": "...", "items": [...]}
+JSON
 ```
 
-The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only. During post-GREEN reassessment, `sourceBehaviorId` names the GREEN awaiting review. A GREEN item whose outcome a sharper item now owns is dispositioned `superseded` with `supersededBy` naming its replacement in the same map (it may be added in the same update); it counts as resolved only once its terminal replacement (the end of any supersession chain) is GREEN; a target that is already-satisfied or omitted is refused because it can never be GREEN.
+The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only; `sourceBehaviorId` names the GREEN item whose consequence the update records. A proved item whose outcome a sharper item now owns is dispositioned `superseded` with `supersededBy` naming its replacement in the same map (it may be added in the same update); it counts as resolved only once its terminal replacement (the end of any supersession chain) is GREEN; a target that is already-satisfied, omitted, or withdrawn is refused because it can never be GREEN. Two dispositions correct the lead's own map mistakes without abandoning the pass: `withdrawn` retires a contract item that is still pending (never attacked) and carries no `sourceRefs` (or only finding refs whose findings closed without a fix) — it stays in the ledger, counts as no proof, opens no edit, and never satisfies `--not-required`; a disposition to `pending` reopens a preservation item from `omitted` or `already-satisfied`, keeping the prior state in history, after which it baselines or proves like any pending preservation item. Attacked or owned items refuse withdrawal; contract, GREEN, and pending items refuse reopening.
 
 - identify each load-bearing mechanism or state boundary introduced by the GREEN and drive the cheapest real-Seam probe that could falsify it;
 - add any newly exposed touched-Seam preservation or interaction behavior;
 - retain a passing falsifier only as material regression evidence;
 - if review finds a behavioral defect, add it to the map and drive a fresh RED before the fix.
 
-A reassessment with no new item records why. A reassessment that adds items reopens TDD; the next production edit requires a valid RED for one of them. Cycle count is not a quality target.
+An update that adds items reopens TDD; the next production edit requires a valid RED for one of them. Cycle count is not a quality target.
 
 ## 4. Refactor and Complete
 
 The refactor window opens only after every contract item is resolved and at least one reached GREEN through RED; a baseline `already-satisfied` alone never opens it. Refactor only inside that window and rerun relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
 
-TDD is complete only when every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN, already satisfied, or omitted with evidence — a superseded item of either kind instead needs a GREEN terminal replacement — no proof gap or reassessment remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
+TDD is complete only when every contract item is GREEN, baseline `already-satisfied`, or `withdrawn`, every preservation item is GREEN, already satisfied, or omitted with evidence — a superseded item of either kind instead needs a GREEN terminal replacement — no proof gap remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
 
 When governed workflow continuity is active, follow [recorder.md](recorder.md). It records bounded map/RED/GREEN evidence; it is not authorization.

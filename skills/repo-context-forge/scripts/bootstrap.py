@@ -205,6 +205,51 @@ def _snapshot_binding(
 
 
 def main(argv: list[str]) -> int:
+    if "-h" in argv or "--help" in argv:
+        print(
+            "Repo Context Forge bootstrap wrapper. Wrapper options (consumed here, not by the producer):\n"
+            "  --workflow-slug <slug>   record the packet on this active governed workflow\n"
+            "  --revalidate             fast post-edit refresh: local mode, no SoulForge map rebuild;\n"
+            "                           requires --workflow-slug\n"
+            "Every other option is passed to the producer; its help follows.\n"
+        )
+    revalidate = "--revalidate" in argv
+    if revalidate:
+        # Fast post-intake revalidation (issue #182): the typed gate needs a
+        # candidate-bound graph projection, not another SoulForge map build.
+        # These wrapper-owned refusals run before the producer-existence
+        # check, so they hold in every environment — CI without the producer
+        # installed included — while non-revalidate invocations keep the
+        # established producer-first ordering.
+        try:
+            probe_args, probe_slug = _remove_option(list(argv), "--workflow-slug")
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 2
+        if not probe_slug:
+            sys.stderr.write(
+                "error: --revalidate refuses without --workflow-slug: fast revalidation "
+                "re-records graph evidence on an active governed workflow\n"
+            )
+            return 2
+        # Every occurrence, not just the first, and every argparse-recognized
+        # abbreviation ("--mo", "--mod" resolve unambiguously to --mode; "--m"
+        # is ambiguous and the producer refuses it itself): the producer honors
+        # the last mode occurrence, so any admitted non-local one defeats the
+        # forced-local invariant.
+        def mode_option(token: str) -> bool:
+            head = token.split("=", 1)[0]
+            return "--mode".startswith(head) and len(head) >= 4
+        modes = [probe_args[i + 1] for i, arg in enumerate(probe_args)
+                 if mode_option(arg) and "=" not in arg and i + 1 < len(probe_args)]
+        modes += [arg.split("=", 1)[1] for arg in probe_args
+                  if mode_option(arg) and "=" in arg]
+        if any(mode != "local" for mode in modes):
+            sys.stderr.write(
+                "error: --revalidate analyzes the dirty candidate in local mode; "
+                f"refusing modes {sorted(set(modes))!r}\n"
+            )
+            return 2
     if not BOOTSTRAP.exists():
         sys.stderr.write(
             f"<blocker>repo-context-forge source bootstrap not found at {BOOTSTRAP}</blocker>\n"
@@ -215,10 +260,37 @@ def main(argv: list[str]) -> int:
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 2
+    if revalidate:
+        # Slug and modes were validated above; the map phase is the producer's
+        # only wrapper-skippable heavy phase (measured ~23s of ~60s), while
+        # target selection and summaries cost ~1s and stay, so the evidence
+        # remains honestly produced for the current dirty candidate.
+        args = [arg for arg in args if arg != "--revalidate"]
+        # Always trailing: the producer honors the last occurrence, so this
+        # wins over any earlier spelling the validation above admitted.
+        args += ["--mode", "local"]
+        args, _ = _remove_option(args, "--map-build")
+        args += ["--map-build", "never"]
+    elif workflow_slug:
+        # The advisor checkpoint binds its projection to the candidate tree. On a
+        # dirty checkout the producer's own choice (pr, once the branch is past
+        # its base) binds HEAD instead and every consult refuses; measured on a
+        # real pass as one 48s rerun per consult. Local mode analyzes the
+        # candidate, and the trailing occurrence wins over any caller-passed mode.
+        root = Path(_extract_option(args, "--repo") or os.getcwd())
+        head_tree, failure = _git(root, "rev-parse", "HEAD^{tree}")
+        candidate, snapshot_failure = _worktree_snapshot(root)
+        if not failure and not snapshot_failure and candidate != head_tree.strip():
+            sys.stderr.write("note: dirty governed checkout; analyzing the candidate in local mode\n")
+            args += ["--mode", "local"]
     if "--enforce-intake" not in args:
         args.append("--enforce-intake")
     if not workflow_slug:
         return _run_producer(args)
+    if str(SOURCE_ROOT) not in sys.path:
+        sys.path.insert(0, str(SOURCE_ROOT))
+    from repo_context_forge import canonical_repo_identity
+
     try:
         slug = safe_slug(workflow_slug)
         identity = resolve_repo_identity(_extract_option(args, "--repo") or os.getcwd())
@@ -258,6 +330,7 @@ def main(argv: list[str]) -> int:
                     slug=slug,
                     workflow_id=captured_workflow_id,
                     source_root=str(identity.root),
+                    canonical_source_repo=canonical_repo_identity(Path(identity.root)),
                     snapshot=snapshot,
                     snapshot_gap=snapshot_gap or None,
                 ),

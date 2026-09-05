@@ -32,7 +32,7 @@ procedure, but may not weaken or duplicate them. The isolated advisor delegate
 receives one necessary copy because it does not inherit this context.
 
 <!-- HARD_INVARIANT_REAL_SEAM -->
-- **Mock ban.** Tests, smokes, and verification must cross the real production Interface/Seam. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. If the real seam cannot be driven, report the proof gap instead of manufacturing green evidence.
+- **Mock ban.** Tests, smokes, and verification must cross the real production Interface/Seam. A mock, stub, fake, fixture-substituted collaborator, invented gateway, or test-only adapter is never RED/GREEN or production proof. A capture at a Module's own outgoing process boundary is the real Seam for assertions about what that Module emits; the ban targets substituted collaborators inside the asserted contract. If the real seam cannot be driven, report the proof gap instead of manufacturing green evidence.
 <!-- HARD_INVARIANT_DEMONSTRATED_RISK -->
 - **Imaginary-risk ban.** An undemonstrated theoretical failure may be reported, but it cannot justify guards, fallbacks, retries, configuration, abstractions, or code. Require a verified mechanism and demonstrated occurrence before changing production behavior. A real-Seam reproduction of behavior admitted by the supported Interface is occurrence; caller enumeration proves absence only on a closed, complete execution surface.
 <!-- HARD_INVARIANT_CONTRADICTORY_CONTRACT -->
@@ -57,6 +57,11 @@ When your changes create orphans:
 - Don't remove pre-existing dead code unless asked.
 
 The test: every changed line should trace directly to the user's request.
+
+Smallest change means the smallest final diff, not the smallest tool call:
+prepare coherent multi-hunk edits per file, and batch independent edits to
+different files in one message. A run of consecutive single-line edits to the
+same file is the smell this rule exists to prevent.
 
 Cleanup loop, every pass:
 
@@ -110,7 +115,7 @@ When spawning sub-agents via the `Agent` tool, default to:
 Keep delegation bounded:
 
 - **Fan-in before planning.** Every spawned delegate returns before the lead writes the design or plan.
-- **Delegates provide planning inputs; the lead owns the plan.** Explore/Plan delegates explore, compare alternatives, and invoke `codebase-design`; the lead reconciles their reports and authors the governing artifact.
+- **Delegates provide planning inputs; the lead owns the design.** Explore/Plan delegates explore, compare alternatives, and invoke `codebase-design`; the lead reconciles their reports and authors the governing design.
 - Do not run build, typecheck, or proof commands concurrently with a delegated agent unless the user explicitly asks for that level of parallel execution.
 
 If the parent session needs an independent second opinion, spawn a fresh agent rather than asking the same context-laden agent to self-review.
@@ -121,16 +126,16 @@ Use the `repo-production-workflow` skill as the default first skill for producti
 
 The full chain, in order — every named skill is INVOKED with the Skill tool by exact name (reading its `SKILL.md` does not satisfy the step):
 
-`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`, which executes the packet-scoped GitNexus checks and records that graph result as workflow evidence — there is no separate transition to record) → `diagnose` (bugs/regressions/perf only) → `codex-advisor` scope check (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked, then recorded with `workflow.py record-production-code` and the gate's JSON verdict) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
+`repo-production-workflow` → `repo-context-forge` (+ its `bootstrap.py`, which executes the packet-scoped GitNexus checks and records that graph result as workflow evidence — there is no separate transition to record) → `diagnose` (bugs/regressions/perf only) → `codex-advisor` scope check when the request raises a design or scope question (phase `preflight-advice`; its wrapper ONLY) → `production-preflight` → `tdd` failing test first for behavior changes → `production-code` (invoked; its gate run is the baseline) before implementation edits → implementation through final verification → lead structured `code-review` when non-trivial → independent final Codex Advisor review (wrapper phase `final-review`, same `--slug`) → workflow `complete` → commit/push/PR → reviewer completion gate.
 
 Invocation policy:
 
-- Escalate to `repo-large-implementation` for large planned work: anything likely to span multiple PRs, need a tracked governing artifact, or exceed the review budget. It pairs `delivery-governance` with `execution-planning`, then returns to `repo-production-workflow` for each execution pass.
+- Escalate to `repo-large-implementation` for large planned work: anything likely to span multiple PRs, need a durable governing design, or exceed the review budget. Begin a `repo-production-workflow` pass, run Repo Context Forge, then pair `delivery-governance` with `execution-planning` before continuing that same pass for the first implementation. Later execution slices begin their own passes against the governing design. New advisor-bound designs are keyed by the workflow's public `workflowId` under the selected workflow state root, outside the Git checkout; create a tracked planning document only when the user explicitly requests that document as a deliverable, and never maintain one for progress or execution state.
 - Use `diagnose` before fixing bugs, failures, flaky behavior, or performance regressions; the canonical root-cause-first gate above governs entry to a fix.
 - Use `tdd` for behavior changes where a public-Interface failing test is practical; name the real production Seam and apply the canonical mock ban above without exception.
 - Skill invocation is per execution pass, not per session: every new PR slice, every bug or regression outside the active pass's recorded intent, and every reviewer-fix round from signals on a pushed PR head begins a new pass by invoking `repo-production-workflow` with the Skill tool before Repo Context Forge, `diagnose`, or any edit, then follows the rest of the chain. Findings raised by the lead's own `code-review` or final Codex Advisor against the current unpushed tree stay in the active pass and follow the return-to-implementation path owned by `WORKFLOW-MAP.md`. Compaction or resume notes never waive re-invocation for a new pass. A harness compaction notice that says not to re-execute previously invoked skills governs their one-time setup actions only (scheduling, file creation) and is never a waiver of this rule. A pass that spans the compaction boundary keeps the invocations it already made; a new pass begun after compaction re-invokes its chain regardless of the notice's wording.
 - Do not bypass `repo-production-workflow` by jumping from Repo Context Forge straight to edits.
-- Do not re-invoke `execution-planning` for an execution-only pass when a governing artifact exists; execute against it and keep its checklist current.
+- Do not re-invoke `execution-planning` for an execution-only pass when a governing design exists. The design is a falsifiable hypothesis, not an immutable authority: deepen it append-only in the same unpushed workflow, and record the changed declaration at the next advisor consult — the ledger keeps every prior version. Adding or correcting a design or attack obligation never by itself requires another `begin`, another preflight Advisor consultation, or a Repo Context Forge rerun; only changed production behavior invalidates the proof it can affect, and a pushed-head reviewer correction still begins the required new pass under existing delivery policy. The original user intent and public production Interface remain the completeness authority throughout. Repository-scoped workflow history and GitHub PR state carry durable progress; Tasks are session-local convenience only. Existing tracked governing artifacts already controlling in-flight work remain authoritative under their existing contracts and are not migrated or rewritten merely to adopt the workflow-state design policy.
 - Documentation-only changes follow the Repo Context Forge gate exception below.
 
 The **review budget** targets ~500 net lines of code per PR (net = additions minus deletions in human-authored source; measurement and the 1,000-net-line split threshold live in the delivery-governance skill). Split, shrink, or consolidate scope before coding when a planned PR is likely to run past the target.
@@ -203,7 +208,7 @@ The source checkout is input: Repo Context Forge must not leave `.soulforge`, `.
 
 ## 9. GitNexus — Global Workflow
 
-Inside an indexed repository, use GitNexus for structure, blast radius, and execution flow before making changes — packet-scoped per the Repo Context Forge gate above. Its tools appear as `mcp__gitnexus__<tool>`; use the MCP tools directly and reserve the CLI for indexing, status, and admin operations. Use the absolute checkout path (`git rev-parse --show-toplevel`), never its basename, for every GitNexus CLI or MCP `repo` selector.
+Inside an indexed repository, use GitNexus for structure, blast radius, and execution flow before making changes — packet-scoped per the Repo Context Forge gate above. Its tools appear as `mcp__gitnexus__<tool>`; use the MCP tools directly and reserve the CLI for indexing, status, and admin operations. The MCP `repo` selector is the packet's `<gitnexus_status><repo>` name: the packet indexes a cache-owned analysis worktree, and the source checkout has no index until the post-edit `gitnexus analyze` step. After that step, and for every CLI call, the selector is the checkout's absolute path (`git rev-parse --show-toplevel`), never its basename. A `Repository ... not found` reply means the selector named an unindexed checkout; switch to the packet name rather than retrying.
 
 ### Search Flow
 
@@ -243,10 +248,10 @@ Inside an indexed repository, use GitNexus for structure, blast radius, and exec
 
 Hook configuration lives in `~/.claude/settings.json`. Five facts govern how hooks change what you do:
 
-- Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded before-edit sequence through production preflight, and docs, scratch, and non-repository paths are exempt.
+- Production edits are gated: `PreToolUse(Edit|Write|NotebookEdit)` requires the recorded preflight (thirteen sections plus the Behavior Map) and a RED for every contract item, and docs, scratch, and non-repository paths are exempt.
 - Every admitted production edit, and every governance edit, invalidates downstream review readiness before quality feedback returns, so review and final review must be earned again. A production edit against a completed workflow remains blocked and terminal.
 - `SessionStart(compact|resume)` restores the chain from committed SQLite state; compaction never advances or waives a step.
-- Incomplete work latches `Stop` with the exact `nextAction`; record an instance-bound `pause --slug <slug> --workflow-id <id> --reason` for a blocker the payload cannot show.
+- There is no Stop hook; `workflow.py summary` reports the earned proof (`Contract green=n/m`) and the next action on demand.
 - No hook parses Bash or authorizes Git.
 
-The `repo-production-workflow` skill's `WORKFLOW-MAP.md` is the canonical operational documentation for per-hook roles, Stop permit conditions, and re-stop semantics.
+The `repo-production-workflow` skill's `WORKFLOW-MAP.md` is the canonical operational documentation for per-hook roles.

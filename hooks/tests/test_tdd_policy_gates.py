@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -22,7 +20,6 @@ from hooks.tests.support import pending_behavior  # noqa: E402
 # rediscover and re-run the whole repair suite inside this file.
 from hooks.tests import test_tdd_repairs as tdd_repairs  # noqa: E402
 
-STOP_HOOK = ROOT / "hooks" / "post-edit-blast-radius.py"
 EDIT_HOOK = ROOT / "hooks" / "code-quality-gate.py"
 PYTEST_AVAILABLE = importlib.util.find_spec("pytest") is not None
 PYTEST_COMMAND = (sys.executable, "-m", "pytest")
@@ -58,139 +55,23 @@ class MappedTddPolicyGateTests(unittest.TestCase):
         return slug, workflow_id
 
 
-    def test_not_required_cannot_erase_a_pending_post_edit_reassessment(self) -> None:
-        # The bypass: a disposition-only map plus the hook's flag evidence
-        # (which carries no runs) passed both --not-required guards, so the
-        # overwrite erased postEditReassessment and its completion demand.
-        item = pending_behavior("BM_DISPOSED", kind="preservation")
-        item["status"] = "already-satisfied"
-        item["evidence"] = "real-Seam proof recorded before this pass"
-        slug, _ = self.harness.begin_with_map([item], "not-required-flag")
-        identity = resolve_repo_identity(self.harness.repo)
-        first = self.harness.cli(
-            "tdd", "--repo", str(self.harness.repo), "--slug", slug,
-            "--not-required", "all items already satisfied",
-        )
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        hook = subprocess.run(
-            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
-            env=self.harness.env, text=True,
-            input=json.dumps({"session_id": "policy-gate",
-                              "tool_input": {"file_path": str(self.harness.repo / "app.py")}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(hook.returncode, 0, hook.stdout + hook.stderr)
-        state = read_workflow(identity)
-        evidence_before = state.get("tddEvidence")
-        self.assertTrue(
-            any("post-production-edit" in b for b in completion_blockers(identity, state))
-        )
-        result = self.harness.cli(
-            "tdd", "--repo", str(self.harness.repo), "--slug", slug,
-            "--not-required", "cleanup only",
-        )
-        self.assertEqual(
-            result.returncode, 2,
-            "NOT_REQUIRED_ERASED_FLAG: " + result.stdout + result.stderr,
-        )
-        state = read_workflow(identity)
-        self.assertEqual(
-            state.get("tddEvidence"), evidence_before, "NOT_REQUIRED_ERASED_FLAG"
-        )
-        self.assertTrue(
-            any("post-production-edit" in b for b in completion_blockers(identity, state)),
-            "NOT_REQUIRED_ERASED_FLAG",
-        )
-
-
-    def test_not_required_names_the_reassessment_after_green(self) -> None:
-        # After GREEN, reassessmentPending is set on a map that is NOT
-        # disposition-only, so the refusal must come from the flag guard with
-        # its reassessment diagnostic - not the generic disposition message.
-        item = pending_behavior("BM_GREENED")
-        slug, _ = self.harness.begin_with_map([item], "not-required-pending")
+    def test_next_red_proceeds_without_a_map_update_after_green(self) -> None:
+        # A proof that changes nothing records nothing: the next item's RED opens
+        # without a tdd-map acknowledgement and completion demands none.
+        marker = "GREEN_STILL_DEMANDS_EMPTY_REASSESSMENT"
+        slug, _ = self.harness.begin_with_map([pending_behavior("BM_A"), pending_behavior("BM_B")], "no-empty-reassessment")
         command = self.harness.write_unittest(2, "VALUE_NOT_TWO")
-        red = self.harness.tdd(slug, "red", "BM_GREENED", command)
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        red = self.harness.tdd(slug, "red", "BM_A", command)
+        self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
         (self.harness.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = self.harness.tdd(slug, "green", "BM_GREENED", command)
-        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
-        identity = resolve_repo_identity(self.harness.repo)
-        evidence_before = read_workflow(identity).get("tddEvidence")
-        result = self.harness.cli(
-            "tdd", "--repo", str(self.harness.repo), "--slug", slug,
-            "--not-required", "cleanup only",
-        )
-        self.assertEqual(
-            result.returncode, 2,
-            "PENDING_GUARD_DIAGNOSTIC_LOST: " + result.stdout + result.stderr,
-        )
-        self.assertIn(
-            "pending reassessment", result.stderr, "PENDING_GUARD_DIAGNOSTIC_LOST"
-        )
-        self.assertEqual(
-            read_workflow(identity).get("tddEvidence"), evidence_before,
-            "PENDING_GUARD_DIAGNOSTIC_LOST",
-        )
-
-    def test_post_resolution_edit_requires_recorded_reassessment_to_complete(self) -> None:
-        # Post-resolution production edits are admitted without per-edit
-        # ceremony, but the real PostToolUse hook flags the map so COMPLETION
-        # demands one recorded reassessment: the behavioral item, or why the
-        # edits were non-behavioral - the WORKFLOW-MAP records-why edge made
-        # mechanical, so a behavioral edit cannot complete against stale GREEN.
-        slug, workflow_id = self.green_and_reassess("post-edit-window")
+        green = self.harness.tdd(slug, "green", "BM_A", command)
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
         identity = resolve_repo_identity(self.harness.repo)
         state = read_workflow(identity)
-        self.assertEqual(edit_blockers(identity, state), [])
-        hook = subprocess.run(
-            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
-            env=self.harness.env, text=True,
-            input=json.dumps({"session_id": "policy-gate",
-                              "tool_input": {"file_path": str(self.harness.repo / "app.py")}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(hook.returncode, 0, hook.stdout + hook.stderr)
-        state = read_workflow(identity)
-        blockers = completion_blockers(identity, state)
-        self.assertTrue(any("post-production-edit" in b for b in blockers), blockers)
-        self.assertEqual(edit_blockers(identity, state), [])
-        again = subprocess.run(
-            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
-            env=self.harness.env, text=True,
-            input=json.dumps({"session_id": "policy-gate",
-                              "tool_input": {"file_path": str(self.harness.repo / "app.py")}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
-        recorded = self.harness.update_map(slug, workflow_id, {
-            "reassessment": "Cleanup only: wording and structure, no behavior changed.",
-        })
-        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
-        state = read_workflow(identity)
-        self.assertEqual(
-            [b for b in completion_blockers(identity, state) if "post-production-edit" in b], [])
-        # The flag predicate matches the intake gate: production NON-CODE paths
-        # (config, workflows) flag too, while test-path edits never do.
-        test_edit = subprocess.run(
-            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
-            env=self.harness.env, text=True,
-            input=json.dumps({"session_id": "policy-gate",
-                              "tool_input": {"file_path": str(self.harness.repo / "tests" / "test_app.py")}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(test_edit.returncode, 0, test_edit.stdout + test_edit.stderr)
-        state = read_workflow(identity)
-        self.assertEqual(
-            [b for b in completion_blockers(identity, state) if "post-production-edit" in b], [],
-            "a test-path edit must not demand a reassessment")
-        config_edit = subprocess.run(
-            [sys.executable, str(EDIT_HOOK)], cwd=self.harness.repo,
-            env=self.harness.env, text=True,
-            input=json.dumps({"session_id": "policy-gate",
-                              "tool_input": {"file_path": str(self.harness.repo / "settings.toml")}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(config_edit.returncode, 0, config_edit.stdout + config_edit.stderr)
-        state = read_workflow(identity)
-        blockers = completion_blockers(identity, state)
-        self.assertTrue(any("post-production-edit" in b for b in blockers),
-                        f"a production non-code edit must flag the map: {blockers}")
+        self.assertEqual([b for b in completion_blockers(identity, state) if "reassess" in b.lower()], [], marker)
+        self.assertEqual([b for b in edit_blockers(identity, state) if "reassess" in b.lower()], [], marker)
+        second = self.harness.tdd(slug, "red", "BM_B", self.harness.write_unittest(3, "VALUE_NOT_TWO"))
+        self.assertEqual(second.returncode, 0, marker + ": " + second.stdout + second.stderr)
 
     def test_resolved_map_reopens_the_production_edit_window(self) -> None:
         # Refactor-while-green and the workflow's non-behavioral return edge
@@ -201,38 +82,6 @@ class MappedTddPolicyGateTests(unittest.TestCase):
         state = read_workflow(identity)
         self.assertEqual(edit_blockers(identity, state), [])
 
-    def test_stop_reason_names_pending_post_green_reassessment(self) -> None:
-        item = pending_behavior("BM_STOP")
-        slug, _ = self.harness.begin_with_map([item], "stop-reassessment")
-        command = self.harness.write_unittest(2, "VALUE_NOT_TWO")
-        red = self.harness.tdd(slug, "red", "BM_STOP", command)
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        (self.harness.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = self.harness.tdd(slug, "green", "BM_STOP", command)
-        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
-
-        stop = subprocess.run(
-            [sys.executable, str(STOP_HOOK)],
-            cwd=self.harness.repo,
-            env=self.harness.env,
-            text=True,
-            input=json.dumps(
-                {
-                    "cwd": str(self.harness.repo),
-                    "session_id": "mapped-stop-reassessment",
-                    "stop_hook_active": False,
-                }
-            ),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
-        decision = json.loads(stop.stdout)
-        self.assertEqual(decision["decision"], "block")
-        self.assertIn("Behavior Map reassessment", decision["reason"])
-
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
     def test_forced_color_pytest_assertion_is_valid_red(self) -> None:
         marker = "COLORED_PYTEST_PRODUCT_ASSERTION"
         item = pending_behavior("BM_COLOR", red_failure=marker)

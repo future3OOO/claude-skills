@@ -360,6 +360,15 @@ class TddSummaryTests(unittest.TestCase):
         state = json.loads(self.run_script(WORKFLOW, "status", "--repo", str(self.repo)).stdout)
         self.assertEqual(state["tdd"], "in-progress", "a refused candidate moved the TDD gate")
 
+    def test_a_mapless_cycle_never_consults_the_map(self) -> None:
+        marker = "MAPLESS_TDD_CRASHES"
+        target = self.unittest_target()
+        red = self.tdd("red", (sys.executable, "-m", "unittest", target), expected="AssertionError")
+        self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd("green", (sys.executable, "-m", "unittest", target))
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+
     def test_an_opaque_shell_command_keeps_exact_command_identity(self) -> None:
         target = self.unittest_target()
         script = f"{shlex.quote(sys.executable)} -m unittest --failfast {target}"
@@ -698,6 +707,7 @@ class TddSummaryTests(unittest.TestCase):
             "--seam", "workflow.py tdd subprocess boundary", "--", *behavior_command,
         )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        record_context_forge(self.repo, self.tmp)
         summary_id = json.loads(green.stdout.splitlines()[-1])["summaryId"]
         before = self.evidence_document(summary_id)
 

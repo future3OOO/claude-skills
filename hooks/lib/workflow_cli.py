@@ -35,8 +35,6 @@ from .workflow_state import (
     commit_review,
     commit_verification,
     complete,
-    correction_blockers,
-    appeal_revalidation_open,
     evidence_document,
     evidence_record,
     instance_id,
@@ -128,6 +126,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--findings")
     command.add_argument("--reason")
     command.add_argument("--design-declaration", required=True)
+    command.add_argument("--expected-candidate-tree")
 
     command = _instance_command(commands, "advisor-disposition", "record lead disposition of advisor findings")
     command.add_argument("--stage", required=True)
@@ -202,7 +201,7 @@ def _emit_mutation(
 ) -> None:
     """Bind full-state output before its mutation can commit."""
     candidate = _active_candidate_tree(identity)
-    _emit_json(public_status({**operation(candidate), "activeCandidateTree": candidate}))
+    _emit_json(public_status({**operation(candidate), "activeCandidateTree": candidate}, identity))
 
 
 def _state(identity: RepoIdentity) -> dict[str, object]:
@@ -228,10 +227,6 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     state = bound_state(identity, safe_slug(args.slug))
     slug = str(state["slug"])
     workflow_id = _workflow_id(state)
-    if state.get("implementation") != "passed":
-        raise WorkflowError("verification requires implementation")
-    if not appeal_revalidation_open(identity, state, "verification", quality_gate=args.kind == "quality-gate") and (blockers := correction_blockers(identity, state)):
-        raise WorkflowError("correction batch remains open: " + "; ".join(blockers))
 
     existing_id = state.get("verificationLatestEvidence") if isinstance(state.get("verificationLatestEvidence"), str) else None
     existing = evidence_document(identity, existing_id)
@@ -374,7 +369,6 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         expected_evidence_id=existing_id,
         quality_gate_tree=quality_tree,
         quality_gate_green=quality_gate_green,
-        quality_gate_run=args.kind == "quality-gate",
     )
 
     _print_output(raw)
@@ -461,19 +455,25 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif verdict is None:
             raise ValueError("advisor-result requires --input or legacy --verdict")
-        _emit_mutation(identity, lambda candidate: record_advisor_result(
-            identity,
-            args.slug,
-            args.workflow_id,
-            args.stage,
-            args.source,
-            verdict,
-            findings=args.findings,
-            reason=args.reason,
-            design=design_declaration(args.design_declaration),
-            intake=intake,
-            expected_candidate_tree=candidate,
-        ))
+        def record(candidate: str) -> dict[str, object]:
+            expected = args.expected_candidate_tree
+            if expected is not None and expected != candidate:
+                raise WorkflowError("active candidate changed after the advisor checkpoint")
+            return record_advisor_result(
+                identity,
+                args.slug,
+                args.workflow_id,
+                args.stage,
+                args.source,
+                verdict,
+                findings=args.findings,
+                reason=args.reason,
+                design=design_declaration(args.design_declaration),
+                intake=intake,
+                expected_candidate_tree=expected or candidate,
+            )
+
+        _emit_mutation(identity, record)
     elif args.command == "advisor-disposition":
         if args.findings == "addressed" and args.input is None:
             raise ValueError("an addressed disposition requires --input with the lead's disposition document")

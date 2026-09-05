@@ -16,7 +16,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
-POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 CANONICAL_BOOTSTRAP = Path("/home/prop_/.local/share/repo-context-forge/current/scripts/codex_context_bootstrap.py")
 GITNEXUS = shutil.which("gitnexus")
@@ -47,6 +46,7 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.git("init", "-q")
         self.git("config", "user.email", "test@example.invalid")
         self.git("config", "user.name", "Workflow Harness")
+        self.git("remote", "add", "origin", "https://example.invalid/workflow-fixture.git")
         # A callable symbol and a dependent, so the producer's graph plan has real
         # context and impact to resolve rather than an empty single-file surface.
         (self.repo / "app.py").write_text("def compute(value):\n    return value + 1\n", encoding="utf-8")
@@ -131,6 +131,72 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_sha256_repo_records_projection_and_reaches_advisor_checkpoint(self) -> None:
+        marker = "SHA256_WORKFLOW_NOT_READY"
+        repo = self.tmp / "sha256-repo"
+        repo.mkdir()
+        env = self.env | {"CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "sha256-state")}
+
+        def git(*args: str) -> str:
+            result = subprocess.run(
+                ["git", *args], cwd=repo, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            return result.stdout.strip()
+
+        git("init", "-q", "--object-format=sha256")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "user.name", "Workflow Harness")
+        git("remote", "add", "origin", "https://example.invalid/workflow-sha256.git")
+        (repo / "app.py").write_text(
+            "def compute(value):\n    return value + 1\n", encoding="utf-8"
+        )
+        (repo / "caller.py").write_text(
+            "from app import compute\n\n\ndef run():\n    return compute(1)\n", encoding="utf-8"
+        )
+        git("add", "app.py", "caller.py")
+        git("commit", "-q", "-m", "base")
+        head = git("rev-parse", "HEAD")
+        self.assertEqual(len(head), 64)
+
+        slug = "repoforge-sha256"
+        intent = "record the real SHA-256 compute projection"
+        begun = subprocess.run(
+            [sys.executable, str(WORKFLOW), "begin", "--repo", str(repo),
+             "--slug", slug, "--intent", intent],
+            cwd=repo, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        (repo / "caller.py").write_text(
+            "from app import compute\n\n\ndef run():\n    return compute(2)\n", encoding="utf-8"
+        )
+
+        forged = subprocess.run(
+            [sys.executable, str(BOOTSTRAP), "--repo", str(repo),
+             "--workflow-slug", slug, "--mode", "local", "--map-build", "auto",
+             "--gitnexus-mode", "auto", "--top", "5", "--intent", intent],
+            cwd=repo, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
+        )
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+
+        checkpoint = subprocess.run(
+            [sys.executable, str(WORKFLOW), "checkpoint", "--repo", str(repo),
+             "--phase", "preflight-advice"],
+            cwd=repo, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(
+            checkpoint.returncode, 0, marker + "\n" + checkpoint.stdout + checkpoint.stderr,
+        )
+        payload = json.loads(checkpoint.stdout)
+        self.assertTrue(payload["ready"], marker)
+        self.assertEqual(payload["passStartOid"], head, marker)
+        self.assertEqual(len(payload["activeCandidateTree"]), 64, marker)
+
     def test_corrupt_authoritative_ledger_refuses_before_the_bootstrap_runs(self) -> None:
         state = self.status()
         database = (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
@@ -174,6 +240,79 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(redirected.stdout, "")
         self.assertIn("REPO_CONTEXT_FORGE_REQUIRED_INTAKE", output.read_text(encoding="utf-8"))
         self.assertEqual(self.status()["repoContextForge"], "passed")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_no_remote_source_gap_reaches_advisor_checkpoint(self) -> None:
+        marker = "NO_REMOTE_SOURCE_PROVENANCE_BLOCKED"
+        self.git("remote", "remove", "origin")
+        self.git("branch", "-M", "main")
+
+        forged = self.graph_bootstrap(base="main")
+
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        state = self.status()
+        self.assertEqual((state["repoContextForge"], state["gitnexus"]), ("passed", "passed"), marker)
+        evidence = self.evidence(str(state["repoContextForgeEvidence"]))["document"]
+        projection = evidence["advisorProjection"]
+        self.assertEqual(projection["sourceRepo"], {"gap": "source_repo_unavailable"}, marker)
+        self.assertEqual(projection["expectedCandidateTree"], projection["indexedCandidateTree"], marker)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertEqual(checkpoint.returncode, 0, marker + "\n" + checkpoint.stdout + checkpoint.stderr)
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker)
+
+    def governed_bootstrap(self, *, dirty: bool, mode: str | None = None) -> subprocess.CompletedProcess[str]:
+        """The public wrapper on a branch one commit past main, with or without an
+        uncommitted candidate on top: the producer's own mode choice, or the caller's."""
+        # A tracked .gitignore: without one the producer's pr-mode receipt never
+        # publishes (its SoulForge ignore-line cleanup cannot check out an untracked file).
+        (self.repo / ".gitignore").write_text(".gitnexus/\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore the graph index")
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "feature")
+        (self.repo / "app.py").write_text("def compute(value):\n    return value + 2\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "feature")
+        if dirty:
+            (self.repo / "probe.py").write_text(
+                "from app import compute\n\n\ndef probe():\n    return compute(3)\n", encoding="utf-8"
+            )
+        return subprocess.run(
+            [sys.executable, str(BOOTSTRAP), "--repo", str(self.repo), "--workflow-slug", self.slug,
+             "--map-build", "auto", "--gitnexus-mode", "auto", "--top", "5", "--base", "main",
+             "--intent", self.intent, *(["--mode", mode] if mode else [])],
+            cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
+        )
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_clean_governed_branch_keeps_the_producers_mode(self) -> None:
+        marker = "CLEAN_GOVERNED_MODE_CHANGED"
+        forged = self.governed_bootstrap(dirty=False)
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        self.assertIn("mode: pr", forged.stdout, marker)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker + ": " + checkpoint.stdout)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_dirty_governed_branch_reaches_the_advisor_checkpoint(self) -> None:
+        marker = "DIRTY_GOVERNED_CHECKOUT_BLOCKS_ADVISOR_CHECKPOINT"
+        forged = self.governed_bootstrap(dirty=True)
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertEqual(checkpoint.returncode, 0, marker + "\n" + checkpoint.stdout + checkpoint.stderr)
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker + ": " + checkpoint.stdout)
+        self.assertIn("mode: local", forged.stdout, marker)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_dirty_governed_branch_overrides_an_explicit_pr_mode(self) -> None:
+        """The producer honors its last --mode: a caller's pr on a dirty governed
+        checkout would bind the projection to HEAD, so the wrapper's local wins."""
+        marker = "EXPLICIT_PR_MODE_BINDS_A_DIRTY_GOVERNED_CHECKOUT_TO_HEAD"
+        forged = self.governed_bootstrap(dirty=True, mode="pr")
+        self.assertEqual(forged.returncode, 0, marker + "\n" + forged.stdout + forged.stderr)
+        self.assertIn("mode: local", forged.stdout, marker)
+        checkpoint = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertTrue(json.loads(checkpoint.stdout)["ready"], marker + ": " + checkpoint.stdout)
 
     def ledger_bytes(self, state: dict[str, object]) -> bytes:
         return (Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"])
@@ -454,6 +593,49 @@ class RepoForgeWorkflowTests(unittest.TestCase):
             "the evidence is not bound to this source checkout",
         )
         self.assertTrue(graph["producer_revision"]["commit"])
+        projection = record["document"]["advisorProjection"]
+        self.assertEqual(projection["schemaVersion"], 1)
+        self.assertEqual(
+            (projection["expectedCandidateTree"], projection["indexedCandidateTree"]),
+            (state["activeCandidateTree"], state["activeCandidateTree"]),
+        )
+        checkpoint_result = self.pass_state("checkpoint", "--phase", "preflight-advice")
+        self.assertEqual(
+            checkpoint_result.returncode, 0,
+            checkpoint_result.stdout + checkpoint_result.stderr,
+        )
+        checkpoint = json.loads(checkpoint_result.stdout)
+        self.assertEqual(checkpoint["advisorProjectionEvidence"], evidence_id)
+        self.assertEqual(checkpoint["advisorProjection"], projection)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_mutation_and_status_responses_share_graph_candidate_readiness(self) -> None:
+        marker = "MUTATION_STATUS_GRAPH_READINESS_DIVERGED"
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        analyzed = self.status()
+        workflow_id = str(analyzed["workflowId"])
+        (self.repo / "caller.py").write_text(
+            "from app import compute\n\n\ndef run():\n    return compute(3)\n", encoding="utf-8"
+        )
+
+        paused = self.pass_state(
+            "pause", "--slug", self.slug, "--workflow-id", workflow_id,
+            "--reason", "measure candidate readiness",
+        )
+        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
+        mutation, status = json.loads(paused.stdout), self.status()
+        self.assertEqual(
+            (
+                mutation["activeCandidateTree"], mutation["repoContextForge"], mutation["gitnexus"],
+                status["activeCandidateTree"], status["repoContextForge"], status["gitnexus"],
+            ),
+            (
+                status["activeCandidateTree"], "pending", "pending",
+                mutation["activeCandidateTree"], "pending", "pending",
+            ),
+            marker + json.dumps({"mutation": mutation, "status": status}, sort_keys=True),
+        )
 
     def git_out(self, *args: str) -> str:
         result = subprocess.run(
@@ -462,55 +644,6 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         return result.stdout.strip()
-
-    def post_edit(self, relative: str) -> str:
-        """The real PostToolUse gate hook's warning feedback for one edit, as text."""
-        result = subprocess.run(
-            [str(POST_EDIT)], cwd=self.repo, env=self.env, text=True,
-            input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        if not result.stdout:
-            return ""
-        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
-    def test_bootstrap_records_the_pass_base_and_per_edit_growth_reads_cumulative(self) -> None:
-        """The base recorded once at bootstrap makes every per-edit gate run
-        branch-cumulative: the budget warning fires mid-implementation, before
-        the post-hoc typed verification, and the base-binding gap is gone."""
-        fork = self.git_out("rev-parse", "HEAD")
-        self.git("branch", "base-main")
-
-        forged = self.graph_bootstrap(base="base-main")
-        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
-        self.assertEqual(self.status().get("baseOid"), fork, "bootstrap recorded no pass base OID")
-
-        # Committed growth below the budget, then a small edit: cumulative totals
-        # stay measured (no base-binding gap) and no budget warning fires yet.
-        (self.repo / "feature_a.py").write_text(
-            "".join(f"A_{index:04d} = {index}\n" for index in range(300)), encoding="utf-8"
-        )
-        self.git("add", "feature_a.py")
-        self.git("commit", "-q", "-m", "committed growth below budget")
-        (self.repo / "app.py").write_text("def compute(value):\n    return value + 2\n", encoding="utf-8")
-        before = self.post_edit("app.py")
-        self.assertNotIn("no caller-supplied base", before)
-        self.assertNotIn("exceeds the 500-line review budget", before)
-
-        # The worktree edit that crosses the budget cumulatively: 300 committed
-        # + 300 uncommitted, each side alone under 500. Only a branch-cumulative
-        # measurement can see 600, so this is the early mid-implementation signal.
-        (self.repo / "feature_b.py").write_text(
-            "".join(f"B_{index:04d} = {index}\n" for index in range(300)), encoding="utf-8"
-        )
-        after = self.post_edit("feature_b.py")
-        self.assertIn(
-            "QG54-GROWTH-CUMULATIVE: human-authored net growth 600 exceeds the 500-line review budget",
-            after,
-        )
-        self.assertNotIn("no caller-supplied base", after)
 
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_a_rerun_keeps_the_first_recorded_base_and_reports_the_conflict(self) -> None:
@@ -538,108 +671,11 @@ class RepoForgeWorkflowTests(unittest.TestCase):
 
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_a_pass_without_a_resolvable_base_records_no_base_oid(self) -> None:
-        """Honest absence: when the producer resolves no base, nothing is
-        recorded and the per-edit gate keeps naming the base-binding gap."""
+        """Honest absence: when the producer resolves no base, nothing is recorded."""
         self.git("branch", "-m", "feature-work")
         forged = self.graph_bootstrap()
         self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
         self.assertNotIn("baseOid", self.status())
-        (self.repo / "app.py").write_text("def compute(value):\n    return value + 3\n", encoding="utf-8")
-        self.assertIn("no caller-supplied base", self.post_edit("app.py"))
-
-    def bulk_production_growth(self) -> None:
-        """Uncommitted production growth past both the per-cycle budget and the
-        gate's own review budget, so the measurement itself stays visible."""
-        (self.repo / "feature.py").write_text(
-            "".join(f"A_{index:04d} = {index}\n" for index in range(600)), encoding="utf-8"
-        )
-
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
-    def test_a_pass_without_a_recorded_base_reports_no_growth_per_cycle(self) -> None:
-        """Honest gap: a cycle was recorded and the growth is past the budget,
-        but without a base the number is a working delta rather than the
-        branch-cumulative growth the ratio claims, so nothing is said."""
-        self.git("branch", "-m", "feature-work")
-        forged = self.graph_bootstrap()
-        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
-        self.assertNotIn("baseOid", self.status())
-        self.advance_to_tdd()
-        red = self.tdd("red", "compute adds two", 3, expected="AssertionError")
-        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        self.assertEqual(self.status().get("tddCycleCount"), 1)
-
-        self.bulk_production_growth()
-        feedback = self.post_edit("feature.py")
-        self.assertIn("no caller-supplied base", feedback)
-        self.assertNotIn("lines per cycle", feedback)
-
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
-    def test_a_not_required_pass_reports_no_growth_per_cycle(self) -> None:
-        """Honest gap: a pass that recorded no cycle has no denominator. The
-        growth is measured and reported all the same - only the ratio is absent."""
-        self.git("branch", "base-main")
-        forged = self.graph_bootstrap(base="base-main")
-        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
-        self.advance_to_tdd()
-        decided = self.pass_state(
-            "tdd", "--slug", self.slug, "--not-required", "fixture proves the honest gap, not a behavior",
-        )
-        self.assertEqual(decided.returncode, 0, decided.stdout + decided.stderr)
-        self.assertNotIn("tddCycleCount", self.status(), "a not-required decision counted a cycle")
-
-        self.bulk_production_growth()
-        feedback = self.post_edit("feature.py")
-        self.assertIn("human-authored net growth 600", feedback)
-        self.assertNotIn("lines per cycle", feedback)
-
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
-    def test_growth_per_recorded_cycle_warns_at_the_crossing_and_a_new_cycle_clears_it(self) -> None:
-        """Feature breadth per proof cycle, on the per-edit channel.
-
-        The measured number is the gate's branch-cumulative PRODUCTION growth,
-        not its human-authored total: the fixture carries 400 net test lines so
-        the two readings differ by three times the budget, and the tracer-bullet
-        signal must never charge a pass for the tests that prove it.
-        """
-        fork = self.git_out("rev-parse", "HEAD")
-        self.git("branch", "base-main")
-        forged = self.graph_bootstrap(base="base-main")
-        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
-        self.assertEqual(self.status().get("baseOid"), fork, "bootstrap recorded no pass base OID")
-        self.advance_to_tdd()
-        first = self.tdd("red", "compute adds two", 3, expected="AssertionError")
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-
-        (self.repo / "tests").mkdir()
-        (self.repo / "tests" / "test_bulk.py").write_text(
-            "".join(f"def test_{index:04d}():\n    assert True\n" for index in range(200)), encoding="utf-8"
-        )
-        (self.repo / "feature.py").write_text(
-            "".join(f"A_{index:04d} = {index}\n" for index in range(200)), encoding="utf-8"
-        )
-        at_budget = self.post_edit("feature.py")
-        self.assertIn("human-authored net growth 600 exceeds the 500-line review budget", at_budget)
-        self.assertNotIn("lines per cycle", at_budget, "exactly at the budget is not exceeding it")
-
-        with (self.repo / "feature.py").open("a", encoding="utf-8") as extra:
-            extra.write("".join(f"B_{index:04d} = {index}\n" for index in range(10)))
-        crossed = self.post_edit("feature.py")
-        self.assertIn(
-            "210 net production lines across 1 TDD cycles exceeds ~200 lines per cycle", crossed,
-        )
-
-        self.compute_returns(2)
-        green = self.tdd("green", "compute adds two", 3)
-        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
-        self.assertIn(
-            "210 net production lines across 1 TDD cycles", self.post_edit("app.py"),
-            "closing a cycle changed the denominator",
-        )
-
-        second = self.tdd("red", "compute adds three", 4, expected="AssertionError")
-        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
-        cleared = self.post_edit("app.py")
-        self.assertNotIn("lines per cycle", cleared, "a second recorded cycle did not clear the warning")
 
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_the_recorder_counts_cycle_openings_and_nothing_else(self) -> None:
@@ -711,12 +747,57 @@ class GraphEvidenceContractTests(unittest.TestCase):
         path = self.tmp / "packet.json"
         path.write_text(json.dumps(packet), encoding="utf-8")
         return graph_evidence_document(
-            str(path), slug="contract", workflow_id="wid", source_root=str(self.root), **binding,
+            str(path), slug="contract", workflow_id="wid", source_root=str(self.root),
+            canonical_source_repo="example.invalid/workflow-fixture", **binding,
         )
+
+    def packet(self) -> dict[str, object]:
+        packet = graph_packet(str(self.root), "c" * 40, "a" * 40)
+        packet["git"]["merge_base"] = "b" * 40
+        packet["advisorProjection"]["sourceBaseOid"] = "b" * 40
+        return packet
+
+    def test_recorded_projection_targets_keep_only_the_advisor_fields(self) -> None:
+        # Issue #191: a real projection carried 154,449 bytes of per-file ranking
+        # metadata in the wrapper's format against an 8,000-byte cap.
+        marker = "PROJECTION_TARGETS_UNTRIMMED"
+        packet = self.packet()
+        packet["advisorProjection"]["targets"] = [{
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4,
+            "changed_symbols": [{"name": "_map_update", "kind": "function", "line": 672, "end_line": 783}],
+            "symbols": [{"name": "_map_update"}], "why_selected": ["changed in base...HEAD diff"],
+            "analysis_repo": "/cache/analysis-worktrees/x", "changed_ranges": [[678, 679]],
+            "cochanges": [], "dependent_count": 0, "dirty_kinds": ["unstaged"], "graph_neighbors": [],
+            "in_soulforge_map": True, "intent_required_file": False, "intent_required_symbols": [],
+            "line_count": 791, "pagerank": 0.159, "priority_score": 2500.0,
+            "rank_signals": ["changed_file"], "scope_contaminated": True,
+            "soulforge_impact": {"dependents": []}, "source_dirty_overlap": True, "symbol_count": 20,
+        }]
+        document = self.document_for(packet)
+        target = document["advisorProjection"]["targets"][0]
+        self.assertEqual(target, {
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4,
+            "changed_symbols": ["_map_update"], "why_selected": ["changed in base...HEAD diff"],
+        }, marker + ": " + json.dumps(target)[:300])
+
+    def test_recorded_projection_targets_keep_why_selected(self) -> None:
+        marker = "PROJECTION_WHY_SELECTED_DROPPED"
+        packet = self.packet()
+        packet["advisorProjection"]["targets"] = [{
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4,
+            "changed_symbols": [], "symbols": [], "pagerank": 0.1,
+            "why_selected": ["changed in base...HEAD diff", "contains symbols overlapping changed hunks"],
+        }]
+        target = self.document_for(packet)["advisorProjection"]["targets"][0]
+        self.assertIn("why_selected", target, marker)
+        self.assertEqual(target, {
+            "path": "hooks/lib/tdd_workflow.py", "surface_role": "production", "rank": 4, "changed_symbols": [],
+            "why_selected": ["changed in base...HEAD diff", "contains symbols overlapping changed hunks"],
+        }, marker + ": " + json.dumps(target)[:300])
 
     def test_a_packet_for_another_checkout_is_refused(self) -> None:
         foreign = self.tmp / "elsewhere"
-        packet = graph_packet(str(self.root))
+        packet = self.packet()
         packet["target_state"] = {"source_repo": str(foreign)}
         with self.assertRaises(ValueError) as refusal:
             self.document_for(packet)
@@ -728,16 +809,100 @@ class GraphEvidenceContractTests(unittest.TestCase):
             f"the packet was produced for {str(foreign)!r}, not {self.root}",
         )
 
-    def test_a_resolved_packet_for_this_checkout_is_accepted(self) -> None:
-        document = self.document_for(graph_packet(str(self.root)))
-        self.assertEqual(document["graph"]["status"], "resolved")
-        self.assertEqual(document["workflowId"], "wid")
-        self.assertNotIn("gateContext", document)
-        self.assertNotIn("gateContextGap", document)
+        packet = self.packet()
+        packet["gitnexus"]["analysis"]["authority"]["source_repository"] = str(foreign)
+        with self.assertRaisesRegex(ValueError, str(foreign), msg="FOREIGN_GRAPH_IDENTITY_ACCEPTED"):
+            self.document_for(packet)
+
+    def test_a_projection_for_another_canonical_source_is_refused(self) -> None:
+        packet = self.packet()
+        packet["advisorProjection"]["sourceRepo"] = "github.com/foreign-owner/foreign-repo"
+        marker = "FOREIGN_ADVISOR_SOURCE_REPO_ACCEPTED"
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            self.document_for(packet)
+        self.assertEqual(
+            str(refusal.exception),
+            "the advisor projection was produced for 'github.com/foreign-owner/foreign-repo', "
+            "not 'example.invalid/workflow-fixture'",
+            marker,
+        )
+
+    def test_a_projection_for_another_merge_base_is_refused(self) -> None:
+        packet = self.packet()
+        packet["advisorProjection"]["sourceBaseOid"] = "d" * 40
+        marker = "FOREIGN_SOURCE_BASE_OID_ACCEPTED"
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            self.document_for(packet)
+        self.assertEqual(
+            str(refusal.exception),
+            f"the advisor projection was produced for source base {'d' * 40!r}, "
+            f"not {'b' * 40!r}",
+            marker,
+        )
+
+    def test_a_projection_for_another_committed_head_is_refused(self) -> None:
+        packet = self.packet()
+        packet["advisorProjection"]["committedHeadOid"] = "d" * 40
+        marker = "FOREIGN_COMMITTED_HEAD_OID_ACCEPTED"
+        with self.assertRaises(ValueError, msg=marker) as refusal:
+            self.document_for(packet)
+        self.assertEqual(
+            str(refusal.exception),
+            f"the advisor projection was produced for committed head {'d' * 40!r}, "
+            f"not {'a' * 40!r}",
+            marker,
+        )
+
+    def test_a_projection_for_the_packet_head_is_accepted_with_distinct_merge_base(self) -> None:
+        marker = "VALID_COMMITTED_HEAD_REJECTED"
+        document = self.document_for(self.packet())
+        projection = document["advisorProjection"]
+        self.assertEqual(projection["committedHeadOid"], "a" * 40, marker)
+        self.assertEqual(projection["sourceBaseOid"], "b" * 40, marker)
+        self.assertEqual(document["graph"]["status"], "resolved", marker)
+        self.assertEqual(document["workflowId"], "wid", marker)
+        self.assertNotIn("gateContext", document, marker)
+        self.assertNotIn("gateContextGap", document, marker)
+
+    def test_a_diverged_base_tip_does_not_replace_merge_base_provenance(self) -> None:
+        marker = "DIVERGED_BASE_TIP_REJECTED"
+        document = self.document_for(
+            self.packet(),
+            snapshot={"base": "a" * 40, "candidate": "c" * 40},
+        )
+        self.assertEqual(document["advisorProjection"]["sourceBaseOid"], "b" * 40, marker)
+        self.assertEqual(document["gateContext"]["base"], "a" * 40, marker)
+
+    def test_invalid_advisor_projections_are_refused_before_recording(self) -> None:
+        mutations = {
+            "unsupported schema": lambda projection: projection.__setitem__("schemaVersion", 2),
+            "missing producer": lambda projection: projection.__setitem__("producerRevision", {}),
+            "missing source": lambda projection: projection.__setitem__("sourceRepo", ""),
+            "missing base": lambda projection: projection.__setitem__("sourceBaseOid", ""),
+            "candidate mismatch": lambda projection: projection.__setitem__("indexedCandidateTree", "d" * 40),
+            "unresolved graph": lambda projection: projection["graph"].__setitem__("status", "blocked"),
+            "required omission": lambda projection: projection["graph"].__setitem__("requiredOmissions", ["missing"]),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                packet = self.packet()
+                projection = packet["advisorProjection"]
+                self.assertIsInstance(projection, dict)
+                mutate(projection)
+                with self.assertRaises(ValueError):
+                    self.document_for(packet)
+
+    def test_advisory_coverage_gaps_remain_retained(self) -> None:
+        packet = self.packet()
+        projection = packet["advisorProjection"]
+        self.assertIsInstance(projection, dict)
+        projection["coverageGaps"] = [{"kind": "absent_symbol", "reference": "optional"}]
+        document = self.document_for(packet)
+        self.assertEqual(document["advisorProjection"]["coverageGaps"], projection["coverageGaps"])
 
     def test_a_snapshot_binding_records_the_gate_shaped_context(self) -> None:
         document = self.document_for(
-            graph_packet(str(self.root)),
+            self.packet(),
             snapshot={"base": "b" * 40, "candidate": "c" * 40},
         )
         self.assertEqual(document["gateContext"], {
@@ -752,7 +917,7 @@ class GraphEvidenceContractTests(unittest.TestCase):
 
     def test_an_unbound_run_records_its_measured_gap_instead(self) -> None:
         document = self.document_for(
-            graph_packet(str(self.root)),
+            self.packet(),
             snapshot_gap="the worktree changed during the producer run (aaaaaaaaaaaa then bbbbbbbbbbbb)",
         )
         self.assertNotIn("gateContext", document)
@@ -761,15 +926,25 @@ class GraphEvidenceContractTests(unittest.TestCase):
     def test_a_binding_and_a_gap_together_are_refused(self) -> None:
         with self.assertRaises(ValueError):
             self.document_for(
-                graph_packet(str(self.root)),
+                self.packet(),
                 snapshot={"base": "b" * 40, "candidate": "c" * 40},
                 snapshot_gap="also a gap",
             )
 
     def test_a_binding_without_base_or_candidate_is_refused(self) -> None:
         with self.assertRaises(ValueError):
-            self.document_for(graph_packet(str(self.root)), snapshot={"base": "b" * 40})
+            self.document_for(self.packet(), snapshot={"base": "b" * 40})
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class BootstrapHelpTests(unittest.TestCase):
+    def test_help_lists_the_wrapper_options(self) -> None:
+        # X6R11 queried --help twice and then read the wrapper source to find these.
+        marker = "WRAPPER_HELP_HIDES_ITS_OPTIONS"
+        run = subprocess.run([sys.executable, str(BOOTSTRAP), "--help"], text=True, capture_output=True, check=False)
+        self.assertIn("--workflow-slug", run.stdout, marker + ": " + run.stdout[-300:] + run.stderr[-300:])
+        self.assertIn("--revalidate", run.stdout, marker)
+

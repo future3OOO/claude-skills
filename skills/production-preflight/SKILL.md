@@ -241,8 +241,17 @@ Record a non-empty JSON array. Every item has these eight required fields:
 - `kind` is `contract` for the requested behavior and `preservation` for what the change must keep true. List contract items first. A map with any pending item carries at least one contract item; `basis` is prose and carries no authority.
 - `redFailure` names the product failure. A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`).
 - A contract item starts `pending`: it is never `omitted`, and only `tdd --phase red` passing its exact mapped surface pre-edit records it `already-satisfied`. A preservation item starts `pending`, `already-satisfied`, or `omitted`; `evidence` is additionally required for `already-satisfied` and `omitted`, and forbidden for `pending`.
+- Every item is a concrete falsifier: an adversarial attack on one load-bearing public promise through its real production Seam. Derive attacks from what the design promises, not from a universal checklist: rollback/atomicity implies success, ordinary failure, supported interruption/cancellation, nested ownership, and every caller-reachable transaction-ending path; cleanup/resource ownership implies interruption and repeated or finalized lifecycle operations; persistence implies close/reopen and a second connection or process; parsers and matchers imply malformed boundaries plus the captured production corpus; shared mutable state implies every writer and material interleaving; lifecycle state machines imply repeated, out-of-order, nested, superseded, and terminal operations the Interface admits. If the Interface deliberately excludes an implication, narrow the promise explicitly instead of contradicting it.
 - Map every declared success/failure, meaningful state transition, material guarantee at a wrapped or rerouted Seam, visible interaction, and known architecture assumption needing falsification.
+- Only runtime behavior is mappable: delivery line accounting, budget measurement, and other non-runtime bookkeeping never become items.
+- A pending behavioral finding is owned by giving an attack item a finding entry in `sourceRefs`; the recorder refuses a map that leaves one unowned. No preservation-only item is needed when existing focused regression evidence already owns the obligation — reference that evidence in an `already-satisfied` disposition instead.
 - Split independently-failable outcomes.
+- When a behavioral finding is accepted for proof, its owning map items mirror
+  the finding's enumerated sub-surfaces — one item per independently-failable
+  sub-surface: each ordering, each named seam, each input form, each
+  failure-matrix row the claim covers. One blanket item per finding is a
+  coverage gap, not a judgement call; prose in a later disposition cannot
+  widen what the mapped attacks prove.
 - Proof gaps stay in `openQuestions`; they are not omissions.
 
 ## Execution Gate

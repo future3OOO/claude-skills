@@ -77,7 +77,7 @@ Record the intake first. When it contains findings, capture the returned
 lead dispositions:
 
 ```json
-{"context":{"workflowId":"<active-workflowId>","candidateTree":"<40-hex Git tree>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"accepted-for-proof","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"seam":"<real Seam>","reproduction":{"command":"...","result":"..."}},"materialConsequence":{"claim":"...","command":"...","result":"..."},"reservedBehaviorIds":["BM_SPEC_1","BM_SPEC_1_PRESERVE"],"seam":"<real Seam>","preservationObligations":["..."]}]}
+{"context":{"workflowId":"<active-workflowId>","candidateTree":"<40-hex Git tree>","prHead":"<optional 40-hex HEAD>"},"intakeEvidenceId":"<summaryId>","dispositions":[{"finding_id":"SPEC-1","status":"fixed","kind":"behavioral","premise":{"claim":"...","command":"...","result":"..."},"occurrence":{"domain":"<the finding's complete caller-reachable surface>","count":0,"complete":true,"command":"...","result":"..."},"materialConsequence":{"claim":"...","command":"...","result":"..."},"evidence":"owning attack GREEN through its recorded RED"}]}
 ```
 
 Print the canonical disposition and governed-design shape table, generated from
@@ -92,14 +92,26 @@ Both documents use the same command:
   --review-context-id "<review-context-id>" --input -
 ```
 
+A disposition that links Behavior Map items may claim no domain wider than the
+union of those items' executed attacks — claim wide over narrow is the defect,
+not a style issue — while a disposition with no linked items proves its domain
+with its own quoted measurement; a rejection's evidence quotes the executed
+measurement command and output;
+a document rejecting three or more material findings draws a recorded
+bulk-rejection warning.
 A false premise records the normalized premise `result` as exactly `false`;
 otherwise rejection requires zero occurrence on a complete domain. `report-only`
-resolves completion without authorizing an edit and is terminal. A behavioral
-finding may reserve exact Behavior Map IDs with `accepted-for-proof`;
-that disposition also names its real Seam and preservation obligations, and
-`fixed` then requires those linked items GREEN and reassessed. The first
-disposition classifies the complete intake; later closure names only changed
-findings and links the prior effective evidence. While that correction batch is
+resolves completion without authorizing an edit and is terminal; for a behavioral
+finding it also needs an owning attack the tdd producer proved (GREEN, or a
+recorded pre-edit baseline). A command or evidence citing a path under the
+system temporary directory refuses. A behavioral
+finding directly owns Behavior Map attack items through finding `sourceRefs`;
+`fixed` requires an owning attack GREEN
+through its recorded RED plus a zero-count complete-domain occurrence over the
+finding's recorded surface, and a later map update that would un-own a fixed
+finding refuses. Dispositions may cover any subset of an intake; later closure
+names only changed findings and links the prior effective evidence. While that
+correction batch is
 open, generic verification, the typed gate, and a new lead-review intake refuse;
 targeted TDD and changed-Seam probes remain available. The summary is continuity
 state, not a certificate or Git authorization. Material unresolved findings

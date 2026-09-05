@@ -25,7 +25,10 @@ WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 
 
-class ReviewSummaryTests(unittest.TestCase):
+class ReviewSummaryHarness(unittest.TestCase):
+    """Fixture repository and review-stage drivers shared by the suites below;
+    carries no tests of its own so subclasses never duplicate them."""
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="review-summary-"))
         self.repo = self.tmp / "repo"
@@ -142,6 +145,7 @@ class ReviewSummaryTests(unittest.TestCase):
             "--resolved-model", model, "--review-context-id", context, "--input", str(path),
         )
 
+class ReviewSummaryTests(ReviewSummaryHarness):
     def test_material_findings_require_intake_then_appended_disposition(self) -> None:
         finding = {
             "id": "SPEC-1", "axis": "Spec", "severity": "high", "material": True,
@@ -164,10 +168,6 @@ class ReviewSummaryTests(unittest.TestCase):
         intake = self.record_review(path, "fresh-review-1")
         self.assertEqual(intake.returncode, 0, intake.stdout + intake.stderr)
         intake_id = json.loads(intake.stdout)["summaryId"]
-        path.write_text(json.dumps({"findings": []}), encoding="utf-8")
-        empty = self.record_review(path, "empty-rerun")
-        self.assertEqual(empty.returncode, 2, "an open correction admitted another lead review")
-        self.assertIn("correction batch remains open", empty.stderr)
 
         before_events = self.event_count()
         for invalid in (
@@ -250,24 +250,6 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, "LEGACY_EMPTY_REVIEW_REJECTED" + recorded.stdout + recorded.stderr)
         self.assertEqual(json.loads(recorded.stdout)["status"], "passed", "LEGACY_EMPTY_REVIEW_REJECTED")
 
-    def test_nonmaterial_intake_requires_an_appended_disposition(self) -> None:
-        path = self.tmp / "follow-up.json"
-        for material, expected in ((False, "passed"), (True, "pending")):
-            identifier = "M1" if material else "N1"
-            finding = {
-                "id": identifier, "axis": "Spec", "severity": "low", "material": material, "kind": "nonbehavioral",
-                "location": "app.py:1", "claim": "minor issue", "evidence": "review evidence", "consequence": "minor consequence", "smallest_action": "follow up"}
-            path.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
-            intake_id = json.loads(self.record_review(path, f"{identifier}-intake").stdout)["summaryId"]
-            if not material:
-                path.write_text(json.dumps({"findings": []}), encoding="utf-8")
-                refused = self.record_review(path, "nonmaterial-empty")
-                self.assertEqual(refused.returncode, 2, "NONMATERIAL_INTAKE_BYPASSED")
-            path.write_text(json.dumps(self.disposition_document(
-                intake_id, identifier, "accepted-follow-up")), encoding="utf-8")
-            status = json.loads(self.record_review(path, f"{identifier}-follow-up").stdout)["status"]
-            self.assertEqual(status, expected, "MATERIAL_FOLLOWUP_UNBLOCKED" if material else "NONMATERIAL_FOLLOWUP_BLOCKED")
-
     def test_disposition_requires_current_measurements(self) -> None:
         marker = "UNMEASURED_REVIEW_FINDING_DISPOSITION_ACCEPTED"
         path = self.tmp / "measured-disposition.json"
@@ -322,7 +304,7 @@ class ReviewSummaryTests(unittest.TestCase):
         from hooks.lib import workflow_documents
         shapes = workflow_documents.DOCUMENT_SHAPES
         table = workflow_documents.DOCUMENT_SHAPE_TABLE
-        self.assertEqual(list(shapes), ["fixed", "rejected-with-evidence", "report-only", "accepted-follow-up", "accepted-for-proof", "governed-design"], marker)
+        self.assertEqual(list(shapes), ["fixed", "rejected-with-evidence", "report-only", "accepted-follow-up", "governed-design"], marker)
         for name, shape in shapes.items():
             self.assertIn(f"| `{name}` | {shape} |", table, marker)
             self.assertEqual(f"| `{name}` | {shape} |".count("|"), 3, "DOCUMENT_SHAPE_TABLE_HAS_EXTRA_COLUMN")
@@ -344,15 +326,8 @@ class ReviewSummaryTests(unittest.TestCase):
         intake = self.record_review(path, "review-shape-intake")
         intake_id = json.loads(intake.stdout)["summaryId"]
         corrected = self.disposition_document(
-            intake_id, "SPEC-1", "accepted-for-proof", kind="behavioral",
-            reservedBehaviorIds=["BM_SPEC_1"], seam="workflow CLI",
-            preservationObligations=["preserve review state"],
+            intake_id, "SPEC-1", "rejected-with-evidence", kind="behavioral",
         )
-        item = corrected["dispositions"][0]
-        item.pop("evidence")
-        item["occurrence"] = {"seam": "workflow CLI", "reproduction": {
-            "command": "run record-review", "result": "wrong shape refused",
-        }}
         wrong = json.loads(json.dumps(corrected))
         wrong["dispositions"][0]["occurrence"] = {}
         path.write_text(json.dumps(wrong), encoding="utf-8")
@@ -360,7 +335,7 @@ class ReviewSummaryTests(unittest.TestCase):
         refused = self.record_review(path, "review-shape-refusal")
         self.assertEqual((refused.returncode, (self.run_script(WORKFLOW, "status").stdout, self.event_count())),
                          (2, before), marker + refused.stdout + refused.stderr)
-        self.assertIn("accepted-for-proof expected shape", refused.stderr, marker)
+        self.assertIn("rejected-with-evidence expected shape", refused.stderr, marker)
         self.assertIn('"finding_id"', refused.stderr, marker)
         self.assertIn('"kind"', refused.stderr, marker)
         path.write_text(json.dumps(corrected), encoding="utf-8")
@@ -387,11 +362,11 @@ class ReviewSummaryTests(unittest.TestCase):
         self.assertIn("candidateTree", refused.stderr)
         subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "same tree"],
                        cwd=self.repo, env=self.env, check=True)
-        unlinked = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
-        path.write_text(json.dumps(unlinked), encoding="utf-8")
-        refused = self.record_review(path, "unlinked-proof")
+        retired = self.disposition_document(intake_id, "SPEC-1", "accepted-for-proof")
+        path.write_text(json.dumps(retired), encoding="utf-8")
+        refused = self.record_review(path, "retired-reservation")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-        self.assertIn("ids, Seam, and preservation obligations", refused.stderr)
+        self.assertIn("invalid or duplicate disposition", refused.stderr)
         report_only = self.disposition_document(intake_id, "SPEC-1", "report-only")
         path.write_text(json.dumps(report_only), encoding="utf-8")
         material = self.record_review(path, "material-report-only")
@@ -488,6 +463,101 @@ class ReviewSummaryTests(unittest.TestCase):
         )
         self.assertEqual(premature.returncode, 2, "a premature recorder call was accepted before verification")
         self.assertEqual(self.event_count(), before_events, "a rejected recorder call appended an event")
+
+
+class ReportOnlyOwnershipReviewTests(ReviewSummaryHarness):
+    """Issue #191: the review caller applies the same report-only ownership rule."""
+
+    def test_report_only_refuses_a_behavioral_finding_without_an_owner_on_the_review_caller(self) -> None:
+        marker = "REVIEW_REPORT_ONLY_UNOWNED_ACCEPTED"
+        path = self.tmp / "unowned-report-only.json"
+        finding = {**self.review_finding(), "kind": "behavioral"}
+        path.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+        intake_id = json.loads(self.record_review(path, "unowned-intake").stdout)["summaryId"]
+        closure = self.disposition_document(intake_id, "SPEC-1", "report-only", kind="behavioral")
+        closure["dispositions"][0]["materialConsequence"]["result"] = "false"
+        path.write_text(json.dumps(closure), encoding="utf-8")
+        before = read_workflow(resolve_repo_identity(self.repo))
+        refused = self.record_review(path, "unowned-closure")
+        self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("owning", refused.stderr, marker)
+        self.assertEqual(read_workflow(resolve_repo_identity(self.repo)), before, marker)
+
+
+class BulkRejectionReviewTests(ReviewSummaryHarness):
+    """Issue #186 part 3: bulk material rejections through the review caller."""
+
+    def rejection_review(self, count: int, *, valid: bool = True, material: int | None = None,
+                         rejected: int | None = None) -> subprocess.CompletedProcess[str]:
+        material = count if material is None else material
+        rejected = count if rejected is None else rejected
+        findings = [dict(self.review_finding(), id=f"SPEC-{i}", material=(i <= material))
+                    for i in range(1, count + 1)]
+        intake_path = self.tmp / "bulk-intake.json"
+        intake_path.write_text(json.dumps({"findings": findings}), encoding="utf-8")
+        recorded = self.record_review(intake_path)
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        summary_id = json.loads(recorded.stdout)["summaryId"]
+        premise_result = "false" if valid else "the premise held on inspection"
+        document = {"context": self.disposition_context(), "intakeEvidenceId": summary_id,
+                    "dispositions": [{
+                        "finding_id": f"SPEC-{i}",
+                        "status": "rejected-with-evidence" if i <= rejected else "report-only",
+                        "kind": "nonbehavioral",
+                        "premise": {"claim": f"claimed defect {i}", "command": "inspect app.py",
+                                    "result": premise_result},
+                        "occurrence": {"domain": "the complete fixture repository",
+                                       "count": 0 if valid else 2, "complete": valid,
+                                       "command": "inspect app.py", "result": "measured"},
+                        "materialConsequence": {"claim": "the fixture is affected",
+                                                "command": "inspect app.py",
+                                                "result": "measured" if i <= rejected else "false"},
+                        "evidence": "measured rejection evidence",
+                    } for i in range(1, count + 1)]}
+        doc_path = self.tmp / "bulk-dispositions.json"
+        doc_path.write_text(json.dumps(document), encoding="utf-8")
+        return self.record_review(doc_path)
+
+    def review_states(self) -> list[str]:
+        result = self.run_script(WORKFLOW, "status")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return [entry["status"] for entry in json.loads(result.stdout).get("findingStates", [])
+                if entry.get("stage") == "code-review"]
+
+    def test_three_material_rejections_warn_on_the_review_caller(self) -> None:
+        marker = "BULK_REJECTION_UNFLAGGED_REVIEW"
+        result = self.rejection_review(3)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+        self.assertIn("3", result.stderr, marker)
+        self.assertEqual(self.review_states(), ["rejected-with-evidence"] * 3,
+                         marker + ": statuses did not persist")
+
+    def test_two_rejections_stay_silent_on_the_review_caller(self) -> None:
+        marker = "SMALL_DOC_FALSELY_FLAGGED"
+        result = self.rejection_review(2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_three_rejections_with_two_material_stay_silent_on_the_review_caller(self) -> None:
+        # The warning counts MATERIAL rejections, not total rejections.
+        marker = "IMMATERIAL_REJECTIONS_MISCOUNTED"
+        result = self.rejection_review(3, material=2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_three_material_with_two_rejected_stay_silent_on_the_review_caller(self) -> None:
+        # The warning counts REJECTIONS, not every material disposition.
+        marker = "NONREJECTION_DISPOSITIONS_MISCOUNTED"
+        result = self.rejection_review(3, rejected=2)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertNotIn("bulk-rejection warning", result.stderr, marker + ": " + result.stderr)
+
+    def test_an_unmeasured_rejection_still_refuses_on_the_review_caller(self) -> None:
+        marker = "REJECTION_SHAPE_ENFORCEMENT_LOST"
+        result = self.rejection_review(1, valid=False)
+        self.assertNotEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertIn("false premise or zero occurrence", result.stdout + result.stderr, marker)
 
 
 if __name__ == "__main__":

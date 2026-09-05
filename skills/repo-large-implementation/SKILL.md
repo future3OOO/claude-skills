@@ -1,6 +1,6 @@
 ---
 name: repo-large-implementation
-description: Govern large planned repo work — anything spanning multiple PRs, needing a tracked governing artifact, or exceeding the review budget. Pairs delivery-governance with execution-planning, then hands each execution pass to repo-production-workflow. Use before broad plans, PR restructuring, or stacked-branch recovery.
+description: Govern large planned repo work — anything spanning multiple PRs, needing a durable governing design, or exceeding the review budget. Begins repo-production-workflow and Repo Context Forge before delivery-governance and execution-planning, continues that pass for first implementation, and uses new passes for later slices. Use before broad plans, PR restructuring, or stacked-branch recovery.
 ---
 
 # Repo Large Implementation
@@ -14,15 +14,17 @@ It enforces the workflow order that large work must follow in this repo.
 
 For qualifying work, use the following order:
 
-1. delivery-governance skill, when planning needs delivery-shape decisions
-2. [execution-planning](../execution-planning/SKILL.md) to create or refresh the tracked governing artifact under `docs/plans/` or `docs/reviews/` when the work is new and non-trivial
-3. [repo-production-workflow](../repo-production-workflow/SKILL.md) for each implementation, refactor, bug-fix, or review-comment execution pass
+1. [repo-production-workflow](../repo-production-workflow/SKILL.md) to begin the workflow state
+2. [repo-context-forge](../repo-context-forge/SKILL.md) to establish repository context
+3. delivery-governance skill, when planning needs delivery-shape decisions
+4. [execution-planning](../execution-planning/SKILL.md) to create the durable governing design under the selected workflow state root when the work is new and non-trivial
+5. continue the same repo-production-workflow pass for the first implementation
 
-If delivery-governance does not apply, start at [execution-planning](../execution-planning/SKILL.md) and keep the governing artifact self-contained inside this repo.
+If delivery-governance does not apply, proceed from Repo Context Forge directly to [execution-planning](../execution-planning/SKILL.md). Keep the advisor-bound design outside the Git checkout.
 
-If a governing artifact already exists for the current work, do not rerun [execution-planning](../execution-planning/SKILL.md) for an execution-only pass. Execute against the existing artifact through [repo-production-workflow](../repo-production-workflow/SKILL.md) and keep it current instead.
+If a governing design already exists for the current work, do not rerun [execution-planning](../execution-planning/SKILL.md) for an execution-only pass. Execute against the governing design through [repo-production-workflow](../repo-production-workflow/SKILL.md). Repository-scoped workflow history and GitHub PR state carry durable progress; Tasks are session-local convenience only, never durable authority. The design deepens append-only in the same unpushed workflow; a metadata-only correction never begins a new pass.
 
-Do not skip the planning step for new non-trivial work and jump straight into tracked edits.
+Do not skip the planning step for new non-trivial work and jump straight into implementation edits.
 
 ## When This Skill Is Required
 
@@ -52,16 +54,18 @@ For stateful or control-loop work, use the full transaction-sensitive form below
 
 Load and apply the [canonical transaction doctrine](../production-code/references/transaction-doctrine.md)
 whenever the work changes a mutation boundary or shared
-replay/projection/recovery behavior. This skill owns the governing-artifact
+replay/projection/recovery behavior. This skill owns the governing-design
 consequence: each PR slice names the canonical transaction fields and proof it
 owns, and no review-local plan may narrow that surrounding surface.
 
 ## Repo-Specific Rules
 
 - WSL-native paths and tools are authoritative for this repo.
-- For new non-trivial plans or remediation programs, create the governing artifact in the tracked format defined by [execution-planning](../execution-planning/SKILL.md).
-- The tracked format means an on-disk Markdown artifact under `docs/plans/` or `docs/reviews/` that includes explicit PR ownership, PR order, verification, and an execution checklist.
-- If such a governing artifact already exists for the current work, treat it as binding for execution and keep it honest rather than creating a second competing plan in chat.
+- For new non-trivial plans or remediation programs, create the governing design in the durable workflow-state format defined by [execution-planning](../execution-planning/SKILL.md).
+- The design is an on-disk Markdown artifact keyed by the workflow's public `workflowId` under the selected workflow state root, outside the Git checkout. It includes explicit PR ownership, PR order, and verification from its initial write.
+- Deepen the design append-only when execution surfaces new obligations; use repository-scoped workflow history and GitHub PR state for durable execution progress, with Tasks only as session-local convenience.
+- Create a tracked planning document under `docs/plans/` or `docs/reviews/` only when the user explicitly requests that document as a deliverable. It is not the advisor-bound design.
+- Existing tracked governing artifacts already controlling in-flight work remain authoritative under their existing contracts; do not migrate, rename, or rewrite them merely to adopt this policy.
 - Keep the root repo read-only when running a multi-worktree recovery or reconciliation program.
 - Use one untouched donor/reference worktree when comparing against production or another reviewed tip.
 - Do not use a stale local deploy-baseline branch alias as a trusted base after it has drifted. Use the remote branch as the reference source.
@@ -74,7 +78,7 @@ owns, and no review-local plan may narrow that surrounding surface.
 
 ## Required Planning Output
 
-Before tracked edits begin, the governing artifact must define:
+Before implementation edits begin, the governing design must define:
 
 - objective and scope
 - trusted base branch or reference source
@@ -88,9 +92,9 @@ Before tracked edits begin, the governing artifact must define:
 - consolidation trigger
 - deploy freeze rule if production or donor reconciliation is involved
 
-If the governing artifact cannot say which PR owns a behavior, it is not ready.
+If the governing design cannot say which PR owns a behavior, it is not ready.
 
-If the work is new and non-trivial, do not stop at a chat summary. Save the artifact on disk in the tracked format first.
+If the work is new and non-trivial, do not stop at a chat summary. Save and validate the durable governing design outside the Git checkout first.
 
 ## Rebase And Merge Discipline
 
@@ -104,7 +108,7 @@ If the work is new and non-trivial, do not stop at a chat summary. Save the arti
 
 A large implementation is not complete until:
 
-- the governing artifact exists and was followed
+- the governing design exists and was followed
 - the owning PR is green under the repo quality gate
 - the owning PR is within the review budget, or the user explicitly approved a justified exception before the oversize work continued
 - coupled tests/docs/contracts moved with the code

@@ -73,25 +73,34 @@ preferably in a dedicated chat pane. It attaches the recorded graph evidence
 itself. Supply the contract, packet, intended proof, and no-change surfaces. Invoke `codebase-design` first
 when adding/changing a Module, public Interface, or Seam.
 
-The wrapper records the raw completed result with findings pending. After
-validating its output, the lead records the separate disposition before
-production preflight:
+The consult is optional: skip it when the request raises no design or scope
+question. The wrapper emits the completed answer, then records it; an intake
+with no material finding is closed at recording and needs no disposition.
+A material behavioral finding rides the pass as a map-owned attack and is
+dispositioned once that attack is GREEN; a nonbehavioral or measured-false
+finding is dispositioned whenever its measurement exists. Findings block
+completion, never an edit, a verification run, or a review:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings none
+  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings addressed --input <document>
 ```
 
 The active `workflowId` comes from `workflow.py status`. A disposition is
 bound to that instance and cannot create or alter immutable advisor intake.
 For strict findings, `--findings addressed --input <document>` carries current
 workflow/candidate context, intake identity, and measured dispositions at either stage.
-Behavioral `accepted-for-proof` reserves exact Behavior Map IDs, a real Seam, and preservation obligations.
-At preflight, `record-preflight` consumes the exact reservation; initial or pre-GREEN `fixed` is invalid,
-while later explicit `fixed` requires consumed GREEN proof and reassessment. `report-only` requires false material consequence.
-The legacy form remains compatible for measured nonbehavioral results but cannot
-reserve proof. Refusal mutates nothing. An unavailable consult requires `--reason` with the
-measured transport failure and needs no disposition.
+A material behavioral finding needs no disposition to proceed: leave it pending
+and it rides the pass as a direct attack obligation — `record-preflight` refuses
+a map that does not own it through a finding `sourceRefs` attack item, and
+`tdd-map` adds owners later in the same pass. `fixed` for a behavioral finding
+requires an owning attack GREEN through its recorded RED plus a zero-count
+complete-domain occurrence over the finding's recorded surface; a narrowed
+Interface or a measured false premise is recorded as `rejected-with-evidence`.
+`report-only` requires false material consequence. The legacy inline form
+remains compatible for measured nonbehavioral results. Refusal mutates nothing.
+An unavailable consult requires `--reason` with the measured transport failure
+and needs no disposition.
 
 ### 5. Production preflight
 
@@ -124,7 +133,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <targeted-command>
 ```
 
-A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose, and a preservation item may additionally be dispositioned through `tdd-map`.
+A passing pre-edit surface is recorded by that same `tdd --phase red` run as `already-satisfied` (a baseline: no cycle, no editing opened); a contract item is never dispositioned by prose — the one correction is `withdrawn` (step 8) for a never-attacked, unowned item — and a preservation item may additionally be dispositioned through `tdd-map`. Every contract item earns its RED on the clean tree before the first production edit (the RED sweep); one edit may satisfy several red items, and each reaches GREEN through its own RED. A GREEN for an item with no RED is refused.
 
 In this governed workflow the public TDD producers are required; `set-phase` does not accept the `tdd` phase. They keep bounded evidence and advance state but are not proof by themselves. For genuinely non-behavioral work, `--not-required` is available only after every map item is already satisfied or omitted by governing evidence:
 
@@ -134,24 +143,20 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --not-required "<specific non-behavioral reason>"
 ```
 
-After production preflight, test-like edits are admitted while TDD is pending. Production edits require the production-code baseline in step 7 plus a valid RED for an active `contract` item, with every other preservation item GREEN, `already-satisfied`, or `omitted`; a preservation RED alone, a baseline `already-satisfied`, and a `--not-required` decision open nothing. Once every contract item is resolved and at least one reached GREEN through RED, further production edits (refactoring while GREEN) stay admitted with TDD `passed`; each such edit flags the map, and completion then demands one recorded `tdd-map` reassessment - the behavioral item, or the recorded why-non-behavioral. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
+After production preflight, test-like edits are admitted while TDD is pending. Production edits require every contract item at RED (or already resolved) and every preservation item GREEN, `already-satisfied`, or `omitted`; a preservation RED alone, a baseline `already-satisfied`, and a `--not-required` decision open nothing. Once every contract item is resolved and at least one reached GREEN through RED, further production edits (refactoring while GREEN) stay admitted with TDD `passed`; a refactor that changes behavior adds its item with `tdd-map` and proves it. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
 
 ### 7. Production code
 
-Invoke `production-code` with the Skill tool, run its bundled gate, then
-record the step through its recorder with the gate's JSON verdict — a
-clean-baseline proof over the pre-implementation tree:
+Invoke `production-code` with the Skill tool and run its bundled gate over the
+pre-implementation tree; the verdict is the lead's baseline and nothing waits
+on a recording of it:
 
 ```bash
 python3 "$HOME/.claude/skills/production-code/scripts/code_quality_gate.py" \
   check --repo "$PWD" --json > gate.json
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  record-production-code --repo "$PWD" --slug "<task>" \
-  --workflow-id "<active-workflowId>" --input gate.json
 ```
 
-The recorder refuses anything but the gate's parseable `ok: true` verdict, and
-only after the TDD decision. This run passes no base ref on purpose: it proves
+This run passes no base ref on purpose: it proves
 the pre-implementation tree is a clean baseline (worktree against `HEAD` — no
 branch delta yet), so its cumulative-growth claim is intentionally incomplete.
 Branch-cumulative growth against the review budget is measured per edit by the
@@ -179,25 +184,26 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <same test surface>
 ```
 
-After every GREEN, record a `workflow.py tdd-map` reassessment before another
-production edit:
+When a GREEN exposes a new obligation (a touched-Seam
+preservation, interaction, semantic falsification, or review-discovered
+behavior), add it with `workflow.py tdd-map` before the next production edit;
+when it exposes nothing, record nothing. Pass the document on stdin:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
-  --input <map-update.json>
+  tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input - <<'JSON'
+{"sourceBehaviorId": "BM_...", "reassessment": "...", "items": [...]}
+JSON
 ```
 
-The JSON document accepts `sourceBehaviorId` (the GREEN under review),
-`reassessment`, `items`, and `dispositions` only. Add newly exposed touched-Seam preservation, interaction,
-semantic falsification, or review-discovered behavior; an empty addition records
-why the GREEN created no further obligation. Only after GREEN and reassessment
-leave TDD `passed` or `not-required` may implementation be recorded passed:
-
-```bash
-python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  set-phase --repo "$PWD" --phase implementation --status passed
-```
+The JSON document accepts `sourceBehaviorId` (the GREEN item whose consequence it records),
+`reassessment`, `items`, and `dispositions` only. The same document corrects the
+lead's own map mistakes inside the pass: `withdrawn` retires a never-attacked,
+unowned contract item whoever declared it, and a `pending`
+disposition reopens a preservation item from `omitted` or `already-satisfied`;
+neither is proof, and neither touches an attacked or owned item. Terminal proof
+(TDD `passed` or `not-required`) opens verification directly; no implementation
+acknowledgement is recorded.
 
 ### 9. Verification
 
@@ -250,23 +256,29 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 A no-finding intake binds the reviewed tree and passes immediately. A finding
 intake stays pending until its appended dispositions resolve every material
-finding. Its first disposition classifies the whole intake; later correction
-documents name only changed findings. Broad verification, the typed gate, and a
-new lead review refuse while current classification, reservation, mapped GREEN,
-or reassessment work remains open. A false premise records normalized `result`
+finding. Dispositions may cover any subset of an intake; every material finding still
+needs a terminal disposition before completion; a `material:false` note needs none. Verification, the typed gate, and a new lead review all run while findings
+are open; open findings block completion only. A false premise records normalized `result`
 exactly `false`; otherwise
 rejection requires zero occurrence on a complete domain. `report-only` resolves
-completion without authorizing an edit and cannot later become `fixed`. Before
-fixing a behavioral finding, reserve its exact
-Behavior Map IDs, real Seam, and preservation obligations with
-`accepted-for-proof`, then drive RED/GREEN and reassessment; nonbehavioral
-corrections record their current-tree evidence directly.
+completion without authorizing an edit and cannot later become `fixed`. A
+behavioral finding is fixed by owning it: add the attack item with its finding
+`sourceRefs` through `tdd-map`, drive RED/GREEN, then record
+`fixed` with the zero-count complete-domain occurrence; nonbehavioral
+corrections record their current-tree evidence directly. A later map update
+that would leave a fixed finding without its owning attack refuses.
 
 ### 11. Independent final Codex Advisor review
 
 The final Codex Advisor review is the workflow's sole independent reviewer; do
 not spawn a second review agent. Invoke it against the live diff with wrapper
-phase `final-review`, the same slug, and the base ref. It challenges the lead's
+phase `final-review`, the same slug, and the base ref. It re-derives the attack
+surface before checking declared evidence: what the recorded original request
+and public Interface promise, which operations can falsify each promise, which
+of those are unattacked through the real Seam, and whether any disposition
+narrowed its finding's domain — only then implementation detail and declared-map
+closure. A promised load-bearing surface with no attack forbids `commit-ready`
+even when every declared item is green. It challenges the lead's
 review rather than trusting it. Address and disposition material findings. The
 wrapper leaves final findings pending; the lead explicitly records `none` or
 `addressed` only after validating the output. Any production edit repeats
@@ -279,7 +291,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   complete --repo "$PWD"
 ```
 
-`complete` refuses, from inside its transaction, unless every contract item is GREEN or baseline `already-satisfied`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no post-GREEN reassessment or proof gap remains, required phases are ready, material code-review findings are dispositioned, and the context-matched final `codex-advisor` intake has only effective terminal findings. The immutable raw verdict remains evidence but is not an indefinite veto after closure; `context-mismatch`, a pending one-response rejection appeal, or persistent disagreement still blocks. The reviewable working tree must match the manifest recorded by the lead review, and every evidence phase must carry its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
+`complete` refuses, from inside its transaction, unless every contract item is GREEN, baseline `already-satisfied`, or `withdrawn`, every preservation item is GREEN or validly dispositioned — a superseded item of either kind instead needs a GREEN terminal replacement — no proof gap remains, required phases are ready, material code-review findings are dispositioned, and the context-matched final `codex-advisor` intake has only effective terminal findings. The immutable raw verdict remains evidence but is not an indefinite veto after closure; `context-mismatch` or a pending one-response rejection appeal still blocks; a material re-raise reopens the finding as pending until the lead dispositions it once more against the new measurement; that second measured disposition stands. The reviewable working tree must match the manifest recorded by the lead review, and every evidence phase must carry its producer's evidence reference — a passed phase without one is a bare claim and reads pending, including legacy in-flight state at upgrade time. It changes workflow state only. It does not inspect, intercept, authorize, or execute Git.
 
 ### 13. Delivery and reviewer completion
 
@@ -305,13 +317,10 @@ Missing or corrupt workflow state is pending, never success. Preflight advisor
 transport may be recorded `unavailable` only with the measured reason; final
 review has no unavailable exception. Ordinary documentation, scratch, and
 non-repository work keeps the lightweight exception; governance docs still
-reset downstream review readiness. Stop blocks with the exact `nextAction`
-while completion readiness is missing and no pause is recorded; authoritative
-workflow or mapped-evidence corruption is repair-only and cannot be released by
-`pause`. Any advancing update — including an edit-triggered invalidation — clears
-a recorded pause. [WORKFLOW-MAP.md](WORKFLOW-MAP.md) owns the full permit and
-re-stop conditions. Unavailable blast-radius impact is reported as `unknown`.
+reset downstream review readiness. There is no Stop hook; `workflow.py summary` reports the earned proof
+(`Contract green=n/m`) and the next action on demand.
+[WORKFLOW-MAP.md](WORKFLOW-MAP.md) owns the hook roles. Unavailable blast-radius impact is reported as `unknown`.
 
 ## Final response
 
-Report Behavior Map dispositions, behavior-specific RED/GREEN proof, post-GREEN reassessments, verification, review findings and dispositions, both advisor outcomes, workflow completion, reviewer-loop state, and any explicitly unverified surface. Never describe state summaries as proof, authorization, or tamper-resistant evidence.
+Report Behavior Map dispositions, behavior-specific RED/GREEN proof, map updates, verification, review findings and dispositions, both advisor outcomes, workflow completion, reviewer-loop state, and any explicitly unverified surface. Never describe state summaries as proof, authorization, or tamper-resistant evidence.

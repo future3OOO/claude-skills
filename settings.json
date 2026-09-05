@@ -78,16 +78,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/prop_/.claude/hooks/post-edit-blast-radius.py"
-          }
-        ]
-      }
     ]
   },
   "enabledPlugins": {

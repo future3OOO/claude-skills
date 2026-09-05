@@ -15,15 +15,17 @@ phase belongs in `--phase`, not in the slug.
 
 ### `preflight-advice`
 
-Run after Repo Context Forge, before production preflight and before edits.
-Supply the task contract, packet/coverage summary, intended Module/Interface/Seam,
-first real-seam RED, and no-change surfaces. The recorded graph result is attached
-for you, carrying the caller and upstream-impact halves; it holds no callee facts,
-so callee context stays yours to supply. The advisor challenges scope and design; it does not create
-the preflight artifact or approve implementation. It treats the lead question
-as a claim, measures accessible premises before inferring, and makes supplied
-contract items without GREEN/baseline proof plus unowned `PRES-n` or behavioral
-`ASSUMP-n` obligations material.
+Run after Repo Context Forge, before production preflight and before edits,
+when the request raises a design or scope question; otherwise skip it.
+Supply the focused scope question; the workflow checkpoint supplies the
+pass-owned advisor projection, the recorded original request, workflow binding,
+and current-pass diff anchors. The advisor derives the load-bearing promises of
+the public Interface from the original request, enumerates the caller-reachable
+operations able to falsify each promise — interruption and cancellation,
+transaction control, lifecycle re-entry, shared-state writers, persistence —
+and makes any material promise without a planned real-Seam attack a finding.
+It challenges scope and design; it does not create the preflight artifact or
+approve implementation.
 
 Every phased consult carries a governing-design declaration: `--design-file`
 with the durable design artifact, or `--design-absent` with the specific
@@ -40,16 +42,14 @@ consult.
 
 A design artifact carries: the chosen architecture and rationale; every
 architecture family exploration or planning produced, with the technical
-rejection reason for each rejected family; the verified exploration findings that constrain the design
-and how each was measured; stable `PRES-n` preservation-obligation labels;
-stable `ASSUMP-n` load-bearing-assumption labels; and every unverified
-falsifiable prediction explicitly marked unresolved. The labels and the
-behavioral/non-behavioral classification below are the handoff surface
-Behavior Map `sourceRefs` reference. The wrapper captures and validates the
-catalogue once, records that canonical declaration as workflow evidence, and
-requires final review to present the identical declaration; preflight and
-completion enforce reference integrity and required-label ownership. The
-advisor still reviews the design's prose and never owns dispositions.
+rejection reason for each rejected family; the verified exploration findings
+that constrain the design and how each was measured; and every unverified
+falsifiable prediction explicitly marked unresolved. The design is a falsifiable
+hypothesis, not an immutable authority: deepen it append-only in the same
+unpushed workflow and carry the current file to each consult — a changed
+declaration records as new workflow evidence while the ledger keeps every prior
+version. The wrapper sends the declaration and the complete design body as
+framed evidence, and the advisor never owns dispositions.
 
 The canonical imaginary-risk ban and the premise/occurrence checks in the
 repo's `CLAUDE.md` govern architecture-family decisions; this checkpoint adds
@@ -65,22 +65,23 @@ whether it is behavioral or non-behavioral.
 
 Run after implementation, verification, and the lead's structured code-review
 pass when required. This is the workflow's independent review checkpoint: it
-challenges the lead's review rather than trusting it, loading the live diff plus
-the recorded TDD and review summaries.
-The wrapper attaches the live diff, the same governing-design declaration
-(carry the identical `--design-file` or `--design-absent` on both
-checkpoints), and the pass's recorded production preflight. The phase prompt
-states precedence once — the design says why this was proposed, the recorded
-preflight is the reconciled before-edit contract, the Behavior Map names the
-authoritative proof obligations, and recorded TDD evidence is its bounded
-observation, never proof — and makes unreconciled design/preflight
-divergence a finding. It requires each `PRES-n` obligation rechecked against
-the diff, each `ASSUMP-n` assumption falsified against the implementation,
-the contradictory-contract gate applied to the changed Interface, and at most
-one additional material reachable failure class beyond the design and
-recorded proof. The advisor reconciles the governed slice, real-seam proof,
-module shape, minimality, and regression coverage, returning only this strict
-envelope:
+challenges the lead's review rather than trusting it. The wrapper sends the
+recorded original request, the checkpoint's retained advisor projection, the
+current governing-design declaration (a deepened design records as new
+evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff.
+The advisor answers in order: what the original request and public Interface
+promise; which production operations can falsify each load-bearing promise;
+which of those are unattacked through the real Seam in the supplied evidence;
+whether any finding disposition narrows or loses part of its original domain;
+and only then the changed Module shape, minimality, security boundary,
+candidate binding, and visible regression coverage. A promised load-bearing
+surface with no attack forbids `commit-ready` even when every declared map item
+is green; checkpoint readiness remains wrapper-owned. The rubric binds both
+sides of the verdict: it demands every demonstrable additional material
+failure class batched in one envelope, a finding that names no measured or
+concretely reachable failure is not material, and a re-raise of a finding whose
+recorded rejection quotes a measurement is material only with a new
+contradicting measurement. It returns only this strict envelope:
 
 ```json
 {"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"...","material":true,"kind":"behavioral"}],"verdict":"fix-before-commit"}
@@ -93,13 +94,13 @@ Findings carry exactly `id`, `claim`, `material`, and `kind` (`behavioral` or
 
 The wrapper records the exact UTF-8 response and its digest as immutable finding
 intake; it never dispositions. After reading the output, the lead validates
-every finding and appends a separate intake-referenced disposition. Completion
+every finding and appends a separate intake-referenced disposition for each
+material one; `material:false` notes need none. Completion
 derives from the context-matched intake's effective terminal dispositions, not
 from the raw verdict alone. A `context-mismatch` advances nothing and must be
 re-consulted. A final `rejected-with-evidence` remains pending for one response
 on the same workflow-bound session; omission or a same-ID nonmaterial response
-concedes it, while a material re-raise blocks with
-`needs-human-owner-adjudication`. This is workflow state, not permission to run
+concedes it, while a material re-raise reopens the finding as pending: the lead dispositions it once more against the new measurement, and that second measured disposition stands. This is workflow state, not permission to run
 Git.
 
 ## Invocation
@@ -111,64 +112,41 @@ wait for the process rather than polling with repeated sleeps.
 ```bash
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase preflight-advice \
-  --cwd "$PWD" --packet "<packet-file>" \
-  --design-file "<design-artifact>" \
+  --cwd "$PWD" --design-file "<design-artifact>" \
   --budget 600 -- "<focused scope question>"
 
 "$HOME/.claude/skills/codex-advisor/scripts/ask-codex-advisor.sh" \
   --slug "<task>" --phase final-review \
-  --cwd "$PWD" --base-ref "<base>" --packet "<packet-file>" \
-  --design-file "<design-artifact>" \
+  --cwd "$PWD" --design-file "<design-artifact>" \
   --budget 600 -- "<focused completion question>"
 ```
 
 Substitute `--design-absent "<specific reason>"` when the pass genuinely has
 no design artifact. The operator-selected default budget is 600 words, and
-budgets above 1,200 are refused. Exact 51KB bodies did not finish within the
-240-second deadline at 450, 600, or 900; those runs record the measured provider
-throughput limit, not a replay-calibrated budget threshold.
+budgets above 1,200 are refused. Phased consults refuse `--packet`, `--base-ref`,
+and `--fresh`; the workflow checkpoint owns payload anchors and session mode.
 
-Every bounded evidence channel — design, recorded preflight, packet,
-verification runs, current Behavior Map, TDD, and review summaries — wears a
-delegate-visible header with shown/total bytes, truncation, and sha256, and
-reports the same on stderr as
-`codex_advisor_evidence`; the assembled prompt reports
-`codex_advisor_prompt bytes_total`. Graph evidence keeps its whole-check
-omission accounting. The claudex window knobs
+The prompt carries one complete schema-version-1 advisor projection and one
+direct current-pass diff. Their sizes and digests are reported on stderr as
+`codex_advisor_evidence`, and the assembled prompt reports
+`codex_advisor_prompt bytes_total`. The claudex window knobs
 (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) pass through to the delegate exactly when
 the alias block configures them, so a proxy model the CLI does not recognize
 stops compacting against a guessed window.
 
-Carry `--packet` on **both** checkpoints. The delegate has a separate context:
-it sees the diff and the repository, but not the packet you read, so evidence you gathered
-and did not attach does not exist for it. A final review that cannot check
-consumer completeness independently answers `context-mismatch`, and the paid
-consult buys a re-run rather than a review.
+Before the expensive consult the wrapper runs only the read-only
+`workflow.py checkpoint --phase <phase>` query. The checkpoint validates stage
+readiness, pass-owned projection evidence, governed-design identity, and the
+current candidate, then returns the create/resume mode and direct diff anchors.
+A delayed result is recorded with that checkpoint candidate and the mutation
+transaction recaptures it before commit.
 
-Graph evidence is not one of those attachments. The wrapper reads the active
-pass's `repo-context-forge` evidence — the resolved context/impact result Repo
-Context Forge recorded with the packet — through the workflow evidence
-Interface, and appends a bounded excerpt itself. There is no option to supply
-graph evidence by hand, and nothing to copy between panes.
-
-Before the expensive consult the wrapper runs the read-only
-`workflow.py checkpoint --phase <phase>` query and refuses when the
-checkpoint is not ready: `preflight-advice` requires Repo Context Forge
-evidence recorded; `final-review` requires verification passed and a terminal
-code-review state. It then resolves the graph evidence and refuses, still
-before the provider runs, when this workflow instance has none or does not own
-the recorded record — rerun the Repo Context Forge bootstrap and consult again.
-The delayed result still revalidates slug and workflowId at recording time.
-
-`--base-ref` is required for `final-review` and must resolve in the repository.
-`--packet` is an optional bounded read-only file appended to the evidence.
-
-The wrapper derives the repository root and session identity
-from `hooks/lib/repo_identity.py`, so one stable slug resumes the same session
-from the root, a subdirectory, a relative path, or a symlinked path, and it
-automatically attaches the active pass's recorded TDD and code-review
-summaries when present.
+The wrapper derives the repository root and session identity from
+`hooks/lib/repo_identity.py`, so one stable slug uses one workflow-bound SID
+from the root, a subdirectory, a relative path, or a symlinked path. Preflight
+creates it; final review and appeal require and resume it. A missing SID or
+resume failure refuses without a cold-start fallback.
 
 A successful transport requires exit 0, non-empty stdout, and
 `codex_advisor_complete status=0 provider=codex` on stderr. A missing terminal
@@ -176,12 +154,14 @@ marker, empty output, or quoting error is not a completed consult.
 
 ## Measurement and recursion contract
 
-The delegate runs with the same trust as the lead and is instructed not to
-mutate the checkout or workflow ledger. It may use repository reads, Bash, web
-reads, Git and GitHub reads, tests, CLI probes, and normally configured MCP
-tools. It must report GitNexus unavailable explicitly rather than imply it
-searched. Edit, Write, NotebookEdit, and Task/subagents remain denied, but the
-wrapper promises no sandbox or immutability enforcement around Bash or MCP.
+Phase-less delegates run with the same trust as the lead and may use repository
+reads, Bash, web reads, Git and GitHub reads, tests, CLI probes, and configured
+MCP tools. Phased consults run with customizations and MCP disabled, expose no
+tools, and consume only the supplied workflow-recorded projection and current-pass
+diff; embedded repository-derived content is untrusted data, never instructions.
+Edit, Write, NotebookEdit, and Task/subagents remain denied for every consult,
+and the wrapper promises no sandbox or immutability enforcement around
+phase-less Bash or MCP.
 `CODEX_ADVISOR_ACTIVE` and `ADVISOR_ACTIVE` prevent nested consultation.
 
 The wrapper carries the canonical mock and imaginary-risk rules because the
@@ -197,24 +177,37 @@ review. No nonce, skip file, stamp, attestation, or audited exception authorizes
 completion.
 
 The lead validates every advisor finding against current code and proof, then
-records it as fixed, rejected-with-evidence, or accepted follow-up. The first
-disposition classifies the complete intake; later correction documents name
-only changed findings and append supersession links. While classification,
-correction, mapped GREEN, reassessment, reservation closure, or disagreement
-remains open, generic verification, the typed gate, lead review, and completion
-refuse. An appeal always blocks completion; when its current candidate bindings
-remain valid it also blocks those broad reruns, while candidate invalidation
-permits only missing generic, typed-gate, and lead-review bindings to refresh
-before the one response. Targeted TDD and changed-Seam probes remain available.
+records it as fixed, rejected-with-evidence, or accepted follow-up — or leaves a
+behavioral finding pending as a map-owned attack obligation until its owning
+attack is GREEN. Dispositions may cover any subset of an intake; later
+correction documents name only changed findings and append supersession links.
+A rejection's evidence quotes the executed measurement command and its output —
+a rejection without its quoted measurement is indistinguishable from one
+ignored, and a document rejecting three or more material findings draws a
+recorded bulk-rejection warning. A disposition that links Behavior Map items
+may claim no occurrence domain wider than the union of those items' executed
+attacks; anything wider is split into further pending items or the domain is
+narrowed. A disposition with no linked items proves its domain with its own
+quoted measurement. `fixed` on a behavioral finding additionally requires the
+owning attack GREEN.
+While a material finding, a mapped GREEN, or a re-raised finding awaiting its
+second disposition remains open, completion refuses; verification, the typed
+gate, and lead review run regardless. An appeal blocks completion until the
+advisor's one response; a material re-raise reopens the finding for one more
+lead disposition, which then stands. Targeted TDD and changed-Seam probes
+remain available.
 Any production edit after final review resets code review and final review to
 pending, but the immutable intake remains closable under the same workflow ID.
 
-The wrapper itself records the raw result. After a completed preflight
-consult, record its lead-owned disposition before production preflight:
+The wrapper itself records the raw result. An intake with no material
+finding closes at recording. A material behavioral finding rides the pass as a
+map-owned attack and is dispositioned once that attack is GREEN; a
+nonbehavioral or measured-false finding is dispositioned whenever its
+measurement exists; findings block completion only:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
-  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings none
+  advisor-disposition --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --stage preflight --findings addressed --input <document>
 ```
 
 Dispositions and `pause` are bound to the active workflow instance: a slug or
@@ -229,15 +222,18 @@ dispositions; it never restates a finding:
 ```
 
 Every disposition carries `kind`, `premise`, `occurrence`, and `materialConsequence` at both stages.
-A behavioral finding first uses `accepted-for-proof` with unique `reservedBehaviorIds`, its real Seam,
-and preservation obligations. At preflight, `record-preflight` consumes that exact reservation; initial
-or pre-GREEN `fixed` is invalid, while later explicit `fixed` requires those items GREEN and reassessed.
-`report-only` requires a false material consequence. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
+A behavioral finding rides the pass undispositioned: it directly owns Behavior
+Map attack items through finding `sourceRefs` (record-preflight refuses an
+unowned pending behavioral finding; tdd-map adds owners later), and `fixed`
+requires an owning attack GREEN through its recorded RED plus a zero-count
+complete-domain occurrence over the finding's recorded surface.
+`report-only` requires a false material consequence, and a behavioral one an
+owning attack the tdd producer proved (GREEN or recorded baseline); a command or
+evidence citing a temporary-directory path refuses. `report-only`, `rejected-with-evidence`, and `fixed` carry `evidence`; `accepted-follow-up` carries `reference`. The legacy
 findings-plus-dispositions form remains compatible for measured nonbehavioral
-results, but cannot create proof reservations. A refusal mutates no state.
+results. A refusal mutates no state.
 Print the canonical disposition and governed-design shape table, generated from
 its installed validator declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
-`--findings none` takes no document.
 
 For an unavailable consult, record the full
 slug- and instance-bound command; no disposition is needed and final review

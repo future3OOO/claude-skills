@@ -10,6 +10,7 @@ from pathlib import Path
 from hooks.lib.behavior_map import no_change_item
 from hooks.lib.preflight_document import BEHAVIOR_MAP_SECTION, SECTIONS
 from hooks.lib.repo_identity import RepoIdentity, resolve_repo_identity
+from hooks.lib.state_store import _active_candidate_tree
 from hooks.lib.workflow_documents import graph_evidence_document
 from hooks.lib.workflow_state import (
     advisor_disposition,
@@ -81,7 +82,7 @@ def build_no_change_document(fill: str) -> dict[str, object]:
     )
 
 
-def graph_packet(root: str) -> dict[str, object]:
+def graph_packet(root: str, candidate: str, head: str) -> dict[str, object]:
     """A machine packet shaped exactly as the canonical producer emits one.
 
     Suites that are about workflow policy rather than the producer contract advance
@@ -90,7 +91,8 @@ def graph_packet(root: str) -> dict[str, object]:
     Forge, real GitNexus, and a real repository in test_repoforge_workflow.py.
     """
     return {
-        "target_state": {"source_repo": root},
+        "target_state": {"source_repo": root, "head_sha": head},
+        "git": {"merge_base": head},
         "gitnexus": {
             "analysis": {
                 "status": "resolved",
@@ -121,6 +123,23 @@ def graph_packet(root: str) -> dict[str, object]:
                 "authority": {"source_repository": root},
                 "producer_revision": {"commit": "0" * 40, "dirty": False},
             }
+        },
+        "advisorProjection": {
+            "schemaVersion": 1,
+            "producerRevision": {"commit": "0" * 40, "dirty": False},
+            "sourceRepo": "example.invalid/workflow-fixture",
+            "sourceBaseOid": head,
+            "committedHeadOid": head,
+            "expectedCandidateTree": candidate,
+            "indexedCandidateTree": candidate,
+            "targets": [],
+            "graph": {
+                "status": "resolved",
+                "references": ["gitnexus.analysis.entries[0]"],
+                "requiredOmissions": [],
+                "optionalOmissionCount": 0,
+            },
+            "coverageGaps": [],
         },
     }
 
@@ -217,7 +236,9 @@ def record_context_forge(repo: Path, tmp: Path) -> RepoIdentity:
     identity = resolve_repo_identity(repo)
     state = read_workflow(identity)
     packet = tmp / "graph-packet.json"
-    packet.write_text(json.dumps(graph_packet(str(identity.root))), encoding="utf-8")
+    packet.write_text(json.dumps(graph_packet(
+        str(identity.root), str(_active_candidate_tree(identity)), str(state["passStartOid"]),
+    )), encoding="utf-8")
     commit_evidence_phase(
         identity,
         str(state["slug"]),
@@ -228,6 +249,7 @@ def record_context_forge(repo: Path, tmp: Path) -> RepoIdentity:
             slug=str(state["slug"]),
             workflow_id=str(instance_id(state)),
             source_root=str(identity.root),
+            canonical_source_repo="example.invalid/workflow-fixture",
         ),
     )
     return identity

@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Mapping, Sequence
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 SURFACE_SCHEMA_VERSION = 1
 INTERPRETER = re.compile(r"^python(3(\.\d+)?)?$")
@@ -36,6 +36,9 @@ EVIDENCE_ONLY = frozenset({"ignored"})
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 UNITTEST_RAN = re.compile(r"(?m)^Ran (\d+) tests? in ")
 UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
+# pytest's terminal summary line, framed with = at normal verbosity and bare
+# under -q; the only place a pass count describes the run.
+PYTEST_SUMMARY = re.compile(r"(?m)^(?:=+ )?(.+?) in \d+\.\d+s(?: \([^)]*\))?(?: =+)?$")
 PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
 PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
 PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
@@ -67,6 +70,177 @@ def identify(command: Sequence[str]) -> dict[str, object]:
         else:
             ignored.add(dropped)
     return _surface(runner, shlex.join(prefix), arguments, sorted(ignored), None)
+
+
+UNITTEST_VALUE_OPTIONS = frozenset({"-k"})
+UNITTEST_DISCOVER_VALUE_OPTIONS = frozenset({
+    "-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "-k",
+})
+UNITTEST_START_OPTIONS = frozenset({"-s", "--start-directory"})
+# pytest core options that take no value, measured from pytest 9.1.1's own
+# argparse actions (nargs == 0); a path after one of these is a target, a
+# path after an option in neither table may be a plugin option's value.
+PYTEST_FLAG_OPTIONS = frozenset({
+    "--cache-clear", "--co", "--collect-in-virtualenv", "--collect-only", "--collectonly",
+    "--continue-on-collection-errors", "--disable-plugin-autoload", "--disable-pytest-warnings",
+    "--disable-warnings", "--doctest-continue-on-failure", "--doctest-ignore-import-errors",
+    "--doctest-modules", "--exitfirst", "--failed-first", "--ff", "--fixtures",
+    "--fixtures-per-test", "--force-short-summary", "--full-trace", "--fulltrace", "--funcargs",
+    "--help", "--keep-duplicates", "--keepduplicates", "--last-failed", "--lf", "--markers",
+    "--new-first", "--nf", "--no-fold-skipped", "--no-header", "--no-showlocals",
+    "--no-summary", "--noconftest", "--pdb", "--pyargs", "--quiet", "--runxfail",
+    "--setup-only", "--setup-plan", "--setup-show", "--setuponly", "--setupplan", "--setupshow",
+    "--showlocals", "--stepwise", "--stepwise-reset", "--stepwise-skip", "--strict",
+    "--strict-config", "--strict-markers", "--sw", "--sw-reset", "--sw-skip", "--trace",
+    "--trace-config", "--traceconfig", "--verbose", "--version", "--xfail-tb", "-V", "-h", "-l",
+    "-q", "-s", "-v", "-x",
+})
+# The complete value-taking core option domain measured from pytest's own
+# parser (every registered option whose action stores a value); plugin options
+# stay under the fail-closed target-shape rule.
+PYTEST_VALUE_OPTIONS = frozenset({
+    "-W", "-c", "-k", "-m", "-o", "-p", "-r",
+    "--assert", "--basetemp", "--cache-show", "--capture", "--code-highlight",
+    "--color", "--confcutdir", "--config-file", "--debug", "--deselect",
+    "--doctest-glob", "--doctest-report", "--durations", "--durations-min",
+    "--ignore", "--ignore-glob", "--import-mode", "--junit-prefix",
+    "--junit-xml", "--junitprefix", "--junitxml", "--last-failed-no-failures",
+    "--lfnf", "--log-auto-indent", "--log-cli-date-format", "--log-cli-format",
+    "--log-cli-level", "--log-date-format", "--log-disable", "--log-file",
+    "--log-file-date-format", "--log-file-format", "--log-file-level",
+    "--log-file-mode", "--log-format", "--log-level", "--max-warnings",
+    "--maxfail", "--override-ini", "--pastebin", "--pdbcls",
+    "--pythonwarnings", "--report-chars", "--rootdir", "--show-capture",
+    "--tb", "--verbosity",
+})
+
+
+def proof_targets(
+    surface: Mapping[str, object], root: object
+) -> tuple[list[str], bool, list[str]]:
+    """The test targets a unittest or pytest surface names, whether it is a
+    discover run, and the ambiguous path tokens.
+
+    Option values are skipped by each runner's value-taking option table; a
+    pytest bare word or number that names nothing under ``root`` is an unknown
+    option's value, not a target. Every path-shaped pytest token after the first
+    unknown option (a plugin's) may be one of its values, so they are returned as
+    ambiguous: resolved fail-closed by callers, never a named target. A discover
+    run with no start directory targets ``.``.
+    """
+    runner = surface.get("runner")
+    top = Path(str(root)).resolve()
+    raw = surface.get("arguments")
+    tokens = [token for token in raw if isinstance(token, str)] if isinstance(raw, list) else []
+    discover = runner == "unittest" and bool(tokens) and tokens[0] == "discover"
+    value_options = (
+        UNITTEST_DISCOVER_VALUE_OPTIONS if discover
+        else UNITTEST_VALUE_OPTIONS if runner == "unittest" else PYTEST_VALUE_OPTIONS
+    )
+    targets: list[str] = []
+    ambiguous: list[str] = []
+    pending_start = False
+    pending_value = False
+    after_unknown_option = False
+    for token in tokens[1 if discover else 0:]:
+        if pending_value:
+            if pending_start:
+                targets.append(token)
+            pending_start = pending_value = False
+            continue
+        if token == "--":
+            continue
+        if token.startswith("-"):
+            name, separator, inline = token.partition("=")
+            # The separator, not the value's truthiness, says a value was given:
+            # -k= carries an empty value and does not take the next token.
+            has_value = bool(separator)
+            known_cluster = False
+            if runner == "pytest" and name[1:2] != "-" and len(name) > 2:
+                # A short cluster reads left to right: no-value flags, then at
+                # most one value option whose value is the rest of the token or
+                # the next token (-xktest_a is -x -k test_a; -qk test is -q -k test).
+                letters = name[1:]
+                head = 0
+                while head < len(letters) and f"-{letters[head]}" in PYTEST_FLAG_OPTIONS:
+                    head += 1
+                if head == len(letters) and not separator:
+                    known_cluster = True
+                elif head < len(letters) and f"-{letters[head]}" in value_options:
+                    rest = token[2 + head:]
+                    name, has_value = f"-{letters[head]}", bool(rest)
+                    inline = rest[1:] if rest.startswith("=") else rest
+            # Once an unknown pytest option appears, nothing after it is a named
+            # target: an option declared with REMAINDER swallows later flags and
+            # the sentinel too, so ambiguity never clears. Targets go first.
+            after_unknown_option = after_unknown_option or (
+                runner == "pytest" and not has_value and name not in value_options
+                and name not in PYTEST_FLAG_OPTIONS and not known_cluster
+                and not REPEATED_VERBOSITY.match(name)
+            )
+            if name in value_options:
+                if has_value:
+                    if discover and name in UNITTEST_START_OPTIONS:
+                        targets.append(inline)
+                else:
+                    pending_value = True
+                    pending_start = discover and name in UNITTEST_START_OPTIONS
+            continue
+        if runner == "pytest" and not (
+            "/" in token or "\\" in token or "::" in token
+            or token.endswith(".py") or (top / token).exists()
+        ):
+            continue
+        (ambiguous if after_unknown_option else targets).append(token)
+    if discover and not targets:
+        targets.append(".")
+    return targets, discover, ambiguous
+
+
+def repository_resolution(surface: Mapping[str, object], root: object) -> str | None:
+    """Why the mapped proof targets do not resolve inside ``root``, or None.
+
+    The narrowed promise is target-name resolution: unittest selectors,
+    discover start directories, and pytest targets must resolve under the
+    repository root. Deliberately routing executed test source from outside
+    the repository through an in-repo re-export, load_tests, or conftest
+    delegation remains the audited fabrication class, not a mechanical
+    refusal - the ledger is continuity, not an attestation system.
+    """
+    runner = surface.get("runner")
+    if runner not in {"unittest", "pytest"}:
+        return None
+    top = Path(str(root)).resolve()
+    raw = surface.get("arguments")
+    tokens = [token for token in raw if isinstance(token, str)] if isinstance(raw, list) else []
+    if runner == "pytest" and "--pyargs" in tokens:
+        return "--pyargs selects import targets whose location the repository root cannot establish; use repository path targets"
+    targets, discover, ambiguous = proof_targets(surface, root)
+    unresolved: list[str] = []
+    for target in targets + ambiguous:
+        selector = target.split("::", 1)[0] if runner == "pytest" else target
+        if (
+            runner == "unittest"
+            and not discover
+            and "/" not in selector
+            and "\\" not in selector
+            and not selector.endswith(".py")
+        ):
+            head = selector.split(".", 1)[0]
+            if not ((top / f"{head}.py").exists() or (top / head).is_dir()):
+                unresolved.append(target)
+            continue
+        candidate = Path(selector)
+        try:
+            resolved = (candidate if candidate.is_absolute() else top / candidate).resolve()
+            in_repo = resolved.is_relative_to(top) and resolved.exists()
+        except OSError:
+            in_repo = False
+        if not in_repo:
+            unresolved.append(target)
+    if unresolved:
+        return "proof target(s) do not resolve under the repository root: " + ", ".join(sorted(set(unresolved)))
+    return None
 
 
 def differences(
