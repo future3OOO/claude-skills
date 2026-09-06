@@ -844,7 +844,6 @@ class RepoForgeWorkflowTests(unittest.TestCase):
             self.assertEqual(self.status().get("baseOid"), feat1, f"{marker}: after the {name} change")
             self.assertIn(f"pass base already recorded as {feat1}", rerun.stderr, f"{marker}: {name}")
 
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_an_upstream_targeted_branch_keeps_the_producers_upstream_base(self) -> None:
         """The producer prefers upstream/main over origin/main. A branch whose PR
         goes to the parent project has no PR in the origin fork, so only its
@@ -866,7 +865,6 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         # ref as the base is proved once, by the stacked-branch test below.
         self.assertEqual(self.resolve_base(), "refs/remotes/upstream/main", "UPSTREAM_MAIN_PREFERENCE_LOST")
 
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_a_tag_coexisting_with_the_base_branch_is_not_measured(self) -> None:
         """git resolves a bare name through refs/tags before refs/heads, so the
         name handed to the producer must carry the namespace the adapter checked."""
@@ -909,7 +907,6 @@ class RepoForgeWorkflowTests(unittest.TestCase):
                        "git@example.invalid:mirror/github.com/owner/repo.git"):
             self.assertIsNone(bootstrap.github_slug(origin), "ORIGIN_PATH_TREATED_AS_GITHUB_HOST")
 
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_a_tag_sharing_the_base_name_is_not_the_base_branch(self) -> None:
         """The recorded base names the branch the PR merges into; a tag that
         happens to carry that name resolves to a commit but is not that branch."""
@@ -924,7 +921,6 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         # and the producer's own base selection stands.
         self.assertIsNone(self.resolve_base(), "TAG_ACCEPTED_AS_BASE_BRANCH")
 
-    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_a_local_base_branch_whose_name_holds_a_slash_is_resolved(self) -> None:
         """The estate's branches are `fix/...`; a base that exists only locally
         must be found under refs/heads, not read as a remote and its branch."""

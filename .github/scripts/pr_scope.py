@@ -2,8 +2,8 @@
 """Print the CI lane for a delta: `pr_scope.py <repo> <base> [head]`.
 
 The gate's path policy owns what each path is, dependency manifests included.
-Bytes, because git C-quotes odd names and a pathname need not be UTF-8; a failed
-diff or an empty delta is production, never an empty documentation-only lane.
+Bytes, because `-z` emits pathnames raw, unquoted and not necessarily UTF-8; a
+failed diff or an empty delta is production, never an empty documentation lane.
 """
 import importlib
 import os

@@ -129,13 +129,18 @@ def classify_path(path: str) -> PathClass:
 
 
 def is_dependency_manifest(path: str) -> bool:
-    """Whether the path pins dependencies, under any spelling of the convention."""
-    name = Path(normalize_path(path)).name.lower()
-    stem = name.removesuffix(".txt")
-    if stem == name:
+    """Whether the path pins dependencies, under any spelling of the convention.
+
+    The literal name decides, not the name stripping would produce: Git keeps a
+    pathname's whitespace, so `requirements.txt ` is a different file.
+    """
+    literal = Path(path)
+    stem = literal.name.lower().removesuffix(".txt")
+    if stem == literal.name.lower():
         return False
-    parent = Path(normalize_path(path)).parent.name.lower()
-    return parent in MANIFEST_STEMS or any(part in MANIFEST_STEMS for part in re.split(r"[-.]", stem))
+    return literal.parent.name.lower() in MANIFEST_STEMS or any(
+        part in MANIFEST_STEMS for part in re.split(r"[-.]", stem)
+    )
 
 
 def language_for_path(path: str) -> str:
