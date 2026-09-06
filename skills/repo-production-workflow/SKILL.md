@@ -206,7 +206,10 @@ Run focused tests, the integrated suite, lint/typecheck/build where applicable,
 the production quality gate, cleanup, named no-change checks, and GitNexus
 reanalysis/detect-changes when required. Verification records only through the unified CLI runner, which executes the command it records and derives status
 per-command-latest — any distinct command whose latest run failed keeps
-verification pending until that same command reruns green:
+verification pending until that same command reruns green, overlapping runs
+record in completion order without rerunning, and a run whose reviewable tree
+changed between its start and its commit is retained invalid naming the
+drifted paths:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \

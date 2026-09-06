@@ -1376,11 +1376,11 @@ class PassLifecycleTests(unittest.TestCase):
         self.assertFalse(run["valid"])
         # Either attribution proves the same thing: the gate never saw a tree that
         # held still. Which one surfaces depends on whether the write landed in the
-        # runner's own sampling window or inside the gate's `git add` capture, and
+        # recorder's own sampling window or inside the gate's `git add` capture, and
         # the second is what made this test intermittent before it was named.
         reason = run["bindingError"] or ""
         self.assertTrue(
-            reason == "reviewable tree changed during the quality-gate run"
+            reason.startswith("reviewable tree changed during the quality-gate run")
             or reason.startswith("the quality gate could not capture the reviewable tree:"),
             f"the mid-run mutation went unattributed: {reason!r}",
         )
