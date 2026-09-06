@@ -218,38 +218,27 @@ def _workflow_id(state: dict[str, object]) -> str:
     return value
 
 
-def _verification_key(run: dict[str, object]) -> str:
-    kind = run.get("kind")
-    return "quality-gate" if kind == "quality-gate" else f"generic:{run.get('command')}"
-
-
 def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     state = bound_state(identity, safe_slug(args.slug))
     slug = str(state["slug"])
     workflow_id = _workflow_id(state)
 
-    existing_id = state.get("verificationLatestEvidence") if isinstance(state.get("verificationLatestEvidence"), str) else None
-    existing = evidence_document(identity, existing_id)
-    prior_runs = (
-        existing.get("runs")
-        if isinstance(existing, dict) and existing.get("workflowId") == workflow_id and isinstance(existing.get("runs"), list)
-        else []
-    )
-    quality_tree: dict[str, str] | None = None
+    # The tree this run's result will describe. The recorder compares it with
+    # the tree at commit; a run that could not sample it is recorded invalid.
     binding_error: str | None = None
     tree_before: dict[str, str] | None = None
     graph_evidence_id: str | None = None
     graph_context_path: str | None = None
+    try:
+        tree_before = tree_manifest(identity)
+    except RuntimeError as exc:
+        binding_error = str(exc)
 
     if args.kind == "quality-gate":
         if not args.base_ref:
             raise ValueError("quality-gate verification requires --base-ref")
         if args.runner_command:
             raise ValueError("quality-gate verification runs the bundled gate and accepts no command")
-        try:
-            tree_before = tree_manifest(identity)
-        except RuntimeError as exc:
-            binding_error = str(exc)
         command = [
             sys.executable,
             str(ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"),
@@ -293,11 +282,9 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
     finally:
         if graph_context_path is not None:
             os.unlink(graph_context_path)
-    valid = not timed_out and exit_code == 0
+    valid = binding_error is None and not timed_out and exit_code == 0
     gate: dict[str, object] | None = None
     if args.kind == "quality-gate":
-        if binding_error is not None:
-            valid = False
         try:
             gate = validate_gate_result(json.loads(raw.decode("utf-8")))
             valid = valid and gate.get("ok") is True
@@ -322,18 +309,6 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
             valid = False
             binding_error = str(exc)
-        if valid:
-            try:
-                quality_tree = tree_manifest(identity)
-            except RuntimeError as exc:
-                valid = False
-                binding_error = str(exc)
-            # The manifest must be the tree the gate checked, not whatever the
-            # tree became while it ran.
-            if quality_tree is not None and quality_tree != tree_before:
-                valid = False
-                quality_tree = None
-                binding_error = "reviewable tree changed during the quality-gate run"
 
     run = _run_entry(
         raw, exit_code, timed_out,
@@ -344,43 +319,21 @@ def _verify(args: argparse.Namespace, identity: RepoIdentity) -> int:
         run["gate"] = gate
         run["bindingError"] = binding_error
         run["graphEvidenceId"] = graph_evidence_id
-    runs = [*prior_runs, run]
-    latest: dict[str, bool] = {}
-    for item in runs:
-        if isinstance(item, dict):
-            latest[_verification_key(item)] = item.get("valid") is True
-    has_generic = any(key.startswith("generic:") for key in latest)
-    status = "passed" if runs and has_generic and all(latest.values()) else "pending"
-    quality_gate_green = latest.get("quality-gate") is True
-    document = {
-        "schemaVersion": 1,
-        "slug": slug,
-        "workflowId": workflow_id,
-        "status": status,
-        "runs": runs,
-        "updatedAt": utc_timestamp(),
-    }
-    _, evidence_id = commit_verification(
-        identity,
-        slug,
-        workflow_id,
-        document,
-        status=status,
-        expected_evidence_id=existing_id,
-        quality_gate_tree=quality_tree,
-        quality_gate_green=quality_gate_green,
-    )
+    elif binding_error is not None:
+        run["bindingError"] = binding_error
+    state, evidence_id, recorded = commit_verification(identity, slug, workflow_id, run, tree_before=tree_before)
 
     _print_output(raw)
     _emit_json({
         "evidenceId": evidence_id,
         "exitCode": exit_code,
         "kind": args.kind,
-        "verification": status,
-        "valid": valid,
+        "verification": state["verification"],
+        "valid": recorded["valid"],
     })
-    if not valid:
-        print("verification command failed; verification stays pending until its rerun is green", file=sys.stderr)
+    if recorded["valid"] is not True:
+        reason = recorded.get("bindingError") or "verification command failed"
+        print(f"{reason}; verification stays pending until its rerun is green", file=sys.stderr)
         return 2
     return 0
 

@@ -316,6 +316,12 @@ def _tree_drift(
         current = tree_manifest(identity)
     except RuntimeError as exc:
         return f"{missing} (uncomputable: {exc})"
+    return _manifest_drift(recorded, current, stale=stale)
+
+
+def _manifest_drift(
+    recorded: dict[str, str], current: dict[str, str], *, stale: str,
+) -> str | None:
     difference = manifest_diff(recorded, current)
     if not any(difference.values()):
         return None
@@ -691,39 +697,91 @@ def record_base_oid(identity: RepoIdentity, slug: str, workflow_id: str | None, 
         return _commit(transaction, state, "record-base-oid")
 
 
+def _verification_key(run: JsonObject) -> str:
+    return "quality-gate" if run.get("kind") == "quality-gate" else f"generic:{run.get('command')}"
+
+
 def commit_verification(
     identity: RepoIdentity,
     slug: str,
     workflow_id: str | None,
-    evidence_doc: JsonObject,
+    run: JsonObject,
     *,
-    status: str,
-    expected_evidence_id: str | None,
-    quality_gate_tree: dict[str, str] | None,
-    quality_gate_green: bool,
-) -> tuple[JsonObject, str]:
-    """Commit typed verification, preserving or replacing its final-tree binding."""
+    tree_before: dict[str, str] | None,
+) -> tuple[JsonObject, str, JsonObject]:
+    """Merge one completed run with the verification evidence current at commit.
+
+    The runner hands over its finished run and the reviewable-tree manifest it
+    sampled before the command started; nothing is read ahead of execution, so
+    a competing completion that landed meanwhile is merged rather than refused
+    and recorded order is completion order. A valid run whose reviewable tree
+    differs at commit is retained invalid, naming the drift: its result
+    describes another tree. `tree_before` is None only when the runner could
+    not sample it, and that run already carries its reason as invalid.
+    Readiness and the typed-gate binding derive from the merged runs, so a
+    generic completion can neither drop a valid binding nor revive one a later
+    typed run invalidated. The binding is kept only while its manifest still
+    describes the tree: a valid run measures one tree and reports no drift, so
+    run results alone never notice that the gate's tree has since moved on.
+    """
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
-        if state.get("verificationLatestEvidence") != expected_evidence_id:
-            raise WorkflowError("verification evidence changed during the run; re-read and re-run the command")
+        prior = transaction.evidence(state.get("verificationLatestEvidence"))
+        prior_runs = (
+            prior["runs"]
+            if isinstance(prior, dict) and prior.get("workflowId") == state["workflowId"]
+            and isinstance(prior.get("runs"), list)
+            else []
+        )
         prior_manifest_id = state.get("qualityGateManifestId")
+        run = dict(run)
+        typed = run.get("kind") == "quality-gate"
+        try:
+            current: dict[str, str] | None = tree_manifest(identity)
+        except RuntimeError as exc:
+            current, sampling_error = None, f"the reviewable tree could not be sampled at commit: {exc}"
+        if tree_before is not None and run.get("valid") is True:
+            drift = (
+                _manifest_drift(
+                    tree_before, current,
+                    stale=f"reviewable tree changed during the {'quality-gate' if typed else 'verification'} run",
+                )
+                if current is not None else sampling_error
+            )
+            if drift is not None:
+                run["valid"] = False
+                run["bindingError"] = drift
+        runs = [*prior_runs, run]
+        latest = {_verification_key(item): item.get("valid") is True for item in runs if isinstance(item, dict)}
+        status = "passed" if any(key.startswith("generic:") for key in latest) and all(latest.values()) else "pending"
         _apply_step(identity, state, "verification", status)
         manifests: list[ManifestWrite] = []
-        if quality_gate_tree is not None and quality_gate_green:
-            manifest = manifest_write(str(state["workflowId"]), "quality-gate-tree", quality_gate_tree)
+        if typed and run["valid"] is True:
+            manifest = manifest_write(str(state["workflowId"]), "quality-gate-tree", tree_before)
             manifests.append(manifest)
             quality_manifest_id: str | None = manifest.manifest_id
-        elif quality_gate_green and isinstance(prior_manifest_id, str):
+        elif (
+            latest.get("quality-gate") is True
+            and isinstance(prior_manifest_id, str)
+            and current is not None
+            and transaction.manifest(prior_manifest_id) == current
+        ):
             quality_manifest_id = prior_manifest_id
         else:
             quality_manifest_id = None
+        document: JsonObject = {
+            "schemaVersion": 1,
+            "slug": state["slug"],
+            "workflowId": state["workflowId"],
+            "status": status,
+            "runs": runs,
+            "updatedAt": utc_timestamp(),
+        }
         if quality_manifest_id is not None:
-            evidence_doc = json.loads(json.dumps(evidence_doc))
-            evidence_doc["qualityGateManifestId"] = quality_manifest_id
-        write = evidence_write(str(state["workflowId"]), "verification", evidence_doc)
+            document["qualityGateManifestId"] = quality_manifest_id
+        write = evidence_write(str(state["workflowId"]), "verification", document)
         state["verificationLatestEvidence"] = write.evidence_id
-        if quality_gate_green and quality_manifest_id is not None:
+        if quality_manifest_id is not None:
             state["qualityGateEvidence"] = write.evidence_id
             state["qualityGateManifestId"] = quality_manifest_id
         else:
@@ -738,7 +796,7 @@ def commit_verification(
             "record-verification",
             evidence=[write],
             manifests=manifests,
-        ), write.evidence_id
+        ), write.evidence_id, run
 
 
 def evidence_document(identity: RepoIdentity, evidence_id: str | None) -> JsonObject | None:
