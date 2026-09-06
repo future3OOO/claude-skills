@@ -18,7 +18,10 @@ aliases resolved to the name that module defines. Not followed, and the reason
 each needs its own design: a second import hop and star imports (a transitive
 dependency closure), conftest-declared fixtures (pytest's directory discovery),
 inherited or nested helpers and receiver-typed calls (cross-module class
-resolution).
+resolution), a module-qualified call made inside an already-forwarded helper
+rather than in the changed hunk (a second hop through the emitted bodies), and
+`import a.b` without `as`, whose call receiver is the dotted path rather than
+the bound name.
 """
 from __future__ import annotations
 
@@ -44,7 +47,10 @@ _CALL = re.compile(r"(?<!\.)\b(\w+)[ \t]*\(")
 _ATTRIBUTE_CALL = re.compile(r"\.(\w+)[ \t]*\(")
 _WORD = re.compile(r"\b(\w+)\b")
 _SHELL_DEF = re.compile(r"^(?:function[ \t]+)?(\w+)[ \t]*(?:\(\))?[ \t]*\{[ \t]*$")
-_HEREDOC = re.compile(r"<<(?P<dash>-?)[ \t]*['\"]?(?P<word>\w+)['\"]?")
+# A heredoc redirection, not a herestring, an arithmetic shift, or the same
+# characters inside a quoted string: the delimiter is a shell word starting
+# with a letter or underscore, and `<<<` and `<< 2` are neither.
+_HEREDOC = re.compile(r"(?<!<)<<(?P<dash>-?)(?!<)[ \t]*(?P<quote>['\"]?)(?P<word>[A-Za-z_][\w.-]*)(?P=quote)")
 _SHELL_SUFFIXES = (b".sh", b".bash")
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -324,6 +330,21 @@ def _resolve(scopes: dict[str | None, dict[str, ast.AST]], scope: str | None,
     return matches[0] if len(matches) == 1 else None
 
 
+def _heredoc_start(line: str) -> tuple[str, bool] | None:
+    """The (delimiter, dash) a line opens a heredoc with, or None.
+
+    A match inside a quoted string is text, not a redirection, so the quotes
+    before it are counted; unbalanced means the match sits inside one.
+    """
+    match = _HEREDOC.search(line)
+    if match is None:
+        return None
+    before = line[:match.start()]
+    if before.count('"') % 2 or before.count("'") % 2:
+        return None
+    return match.group("word"), bool(match.group("dash"))
+
+
 def _shell_block_end(lines: list[str], start: int) -> int:
     """The line after the function's closing brace, skipping heredoc bodies.
 
@@ -340,8 +361,8 @@ def _shell_block_end(lines: list[str], start: int) -> int:
             word, dash = delimiter
             if (line.lstrip("\t") if dash else line) == word:
                 delimiter = None
-        elif heredoc := _HEREDOC.search(line):
-            delimiter = (heredoc.group("word"), bool(heredoc.group("dash")))
+        elif heredoc := _heredoc_start(line):
+            delimiter = heredoc
         elif line == "}":
             break
         end += 1

@@ -1266,6 +1266,65 @@ class WrapperPromptTests(HookHarness):
         payload = self.final_consult(env, "member-alias", edit=edit, marker=marker)
         self.assertIn("test>     return compute(1)  # PACKAGE-MEMBER-SEAM", payload, marker)
 
+    def test_a_hyphenated_heredoc_delimiter_ends_its_heredoc(self) -> None:
+        marker = "HEREDOC_DELIMITER_TRUNCATED"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  cat <<EOF-1\n"
+            "body\n"
+            "EOF-1\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # HYPHEN-DELIMITER-SEAM\n"
+            "}\n\n"
+            "unrelated_helper() {\n"
+            "  echo UNRELATED-BODY-MARKER\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_delim.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_delim.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "heredoc-delim", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # HYPHEN-DELIMITER-SEAM", payload, marker)
+        self.assertNotIn("UNRELATED-BODY-MARKER", payload, marker)
+
+    def test_a_shift_or_quoted_marker_is_not_a_heredoc(self) -> None:
+        marker = "HEREDOC_FALSE_POSITIVE_ABSORBED_FUNCTIONS"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  shifted=$(( 1 << 2 ))\n"
+            "  echo \"<<EOF\"\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # SHIFT-SEAM\n"
+            "}\n\n"
+            "unrelated_helper() {\n"
+            "  echo UNRELATED-BODY-MARKER\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_shift.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_shift.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "heredoc-shift", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # SHIFT-SEAM", payload, marker)
+        self.assertNotIn("UNRELATED-BODY-MARKER", payload, marker)
+
     def test_a_parent_relative_import_forwards_its_helper(self) -> None:
         marker = "PARENT_RELATIVE_NOT_RESOLVED"
         env = self.wrapper_rig()
