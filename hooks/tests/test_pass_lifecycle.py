@@ -499,6 +499,35 @@ class PassLifecycleTests(unittest.TestCase):
             marker,
         )
 
+    def test_gate_context_omits_the_unindexed_entry(self) -> None:
+        marker = "UNINDEXED_ENTRY_LEAKED_INTO_GATE_SYMBOLS"
+        slug, wid = "unindexed-gate-context", self.begin_slug("unindexed-gate-context")
+        path, root = self._packet_with_unindexed_entry(slug, "file_context")
+        document = graph_evidence_document(
+            path, slug=slug, workflow_id=wid, source_root=root,
+            canonical_source_repo="example.invalid/workflow-fixture",
+            snapshot={"base": "a" * 40, "candidate": _active_candidate_tree(resolve_repo_identity(self.repo))},
+        )
+        self.assertEqual(
+            [(symbol["name"], symbol["file"]) for symbol in document["gateContext"]["symbols"]],
+            [("compute", "app.py")],
+            marker,
+        )
+
+    def test_graph_evidence_still_refuses_a_resolved_entry_without_identity(self) -> None:
+        marker = "IDENTITYLESS_RESOLVED_ENTRY_ACCEPTED"
+        slug, wid = "identityless-resolved-entry", self.begin_slug("identityless-resolved-entry")
+        path, root = self._packet_with_unindexed_entry(slug, "file_context")
+        packet = json.loads(Path(path).read_text(encoding="utf-8"))
+        packet["gitnexus"]["analysis"]["entries"][1]["status"] = "resolved"
+        Path(path).write_text(json.dumps(packet), encoding="utf-8")
+        with self.assertRaises(ValueError, msg=marker) as raised:
+            graph_evidence_document(
+                path, slug=slug, workflow_id=wid, source_root=root,
+                canonical_source_repo="example.invalid/workflow-fixture",
+            )
+        self.assertEqual(str(raised.exception), "a graph entry is unresolved or missing its identity", marker)
+
     def test_graph_evidence_still_refuses_an_unindexed_symbol_entry(self) -> None:
         marker = "UNINDEXED_SYMBOL_ENTRY_ACCEPTED"
         slug, wid = "unindexed-symbol-entry", self.begin_slug("unindexed-symbol-entry")
