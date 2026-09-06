@@ -2782,6 +2782,30 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
     assert "repo" not in fields, "EvaluationSnapshot must hold no repository handle after the freeze"
 
 
+def test_dependency_manifests_classify_as_production() -> None:
+    # Dependency pins are configuration, not prose, whatever their spelling: the
+    # gate and the CI lane read one answer, and this is where it lives.
+    marker = "GATE_CALLED_A_MANIFEST_DOCUMENTATION"
+    module = _load_path_policy(SCRIPT_DIR / "_quality_gate" / "path_policy.py")
+    for path in ("requirements.txt", "requirements-dev.txt", "dev-requirements.txt",
+                 "requirements.dev.txt", "requirements/dev.txt", "constraints/base.txt"):
+        found = module.classify_path(path)
+        assert found.role == module.ROLE_PRODUCTION, f"{marker}: {path} is {found.role}"
+        assert found.human_authored is True, f"{marker}: {path} is not human-authored"
+    for path in ("docs/notes.md", "skills/guide.txt", "README.md"):
+        assert module.classify_path(path).role == module.ROLE_DOCS, f"{marker}: {path}"
+
+
+@with_repo
+def test_a_manifest_change_counts_as_production(repo: Path) -> None:
+    marker = "MANIFEST_CHANGE_NOT_COUNTED_AS_PRODUCTION"
+    write(repo / "requirements.txt", "ruff==0.16.2\n")
+    _, payload, _ = run_gate(repo)
+    growth = payload["evaluation"]["growth"]
+    assert growth["production"]["added"] >= 1, f"{marker}: {growth}"
+    assert growth["humanAuthored"]["added"] >= 1, f"{marker}: {growth}"
+
+
 def test_full_history_test_like_classification_is_unchanged() -> None:
     # The standalone predicate workflow state loads must keep the exact
     # pre-snapshot truth table over every path that ever existed here. The

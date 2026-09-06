@@ -239,8 +239,12 @@ def _pr_base_ref(root: Path, env: dict[str, str] | None = None) -> str | None:
         except subprocess.TimeoutExpired:
             answer = None
         name = answer.stdout.strip() if answer is not None and answer.returncode == 0 else ""
-        if name:
-            return _branch_ref(root, name, ("origin",))
+        # A base this checkout never fetched resolves to nothing; the config is
+        # still a signal, so a named-but-absent branch falls through rather than
+        # ending the search.
+        resolved = _branch_ref(root, name, ("origin",)) if name else None
+        if resolved:
+            return resolved
     configured, _ = _git(root, "config", "--get", f"branch.{branch}.gh-merge-base")
     name = configured.strip()
     if not name:
