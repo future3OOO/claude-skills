@@ -25,6 +25,29 @@ OPTIONAL_FIELDS = frozenset({
     "redCommand", "redProof",
 })
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
+# A baselined item keeps its passing command in `evidence` behind this stamp;
+# the tdd producer writes it and readers of executed selections parse it back.
+BASELINE_STAMP = "baseline-passed: "
+
+
+def executed_commands(entry: JsonObject) -> dict[str, str]:
+    """The commands this item actually ran, by the phase that recorded each."""
+    evidence = entry.get("evidence")
+    baseline = (
+        str(evidence)[len(BASELINE_STAMP):].strip()
+        if isinstance(evidence, str) and evidence.startswith(BASELINE_STAMP)
+        else ""
+    )
+    recorded = {
+        "red": entry.get("redCommand"),
+        "green": entry.get("proofCommand"),
+        "baseline": baseline,
+    }
+    return {
+        phase: str(command).strip()
+        for phase, command in recorded.items()
+        if isinstance(command, str) and command.strip()
+    }
 _CONTRACT_DISPOSITION_REFUSED = (
     "behavior {} is a contract item: it is never omitted, and already-satisfied "
     "is recorded only by tdd --phase red passing its mapped surface"
