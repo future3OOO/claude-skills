@@ -24,5 +24,7 @@ python3 -u "$ROOT/hooks/tests/test_tdd_policy_gates.py"
 python3 -u "$ROOT/hooks/tests/test_tdd_intake_fail_closed.py"
 python3 -u "$ROOT/hooks/tests/test_tdd_summary.py"
 python3 -u "$ROOT/hooks/tests/test_repoforge_workflow.py"
+# The installed estate carries skills/ and hooks/ only, so this one is absent there.
+[ -f "$ROOT/.github/scripts/test_pr_scope.py" ] && python3 -u "$ROOT/.github/scripts/test_pr_scope.py"
 python3 -u "$ROOT/skills/production-code/scripts/test_code_quality_gate.py"
 bash "$ROOT/skills/codex-advisor/tests/test-ask-codex-advisor.sh"

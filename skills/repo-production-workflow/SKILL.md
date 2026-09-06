@@ -202,9 +202,9 @@ acknowledgement is recorded.
 
 ### 9. Verification
 
-Run focused tests, the integrated suite, lint/typecheck/build where applicable,
-the production quality gate, cleanup, named no-change checks, and GitNexus
-reanalysis/detect-changes when required. Verification records only through the unified CLI runner, which executes the command it records and derives status
+Run locally the changed-behavior RED/GREEN, the affected suites, preservation and
+no-change checks, lint/typecheck/build, cleanup, the typed gate, and GitNexus
+reanalysis/detect-changes when required. CI's `contracts` job owns the full runner here and step 13 waits for it; other repositories run it locally unless their CI supplies that coverage. Verification records only through the unified CLI runner, which executes the command it records and derives status
 per-command-latest — any distinct command whose latest run failed keeps
 verification pending until that same command reruns green, overlapping runs
 record in completion order without rerunning, and a run whose reviewable tree

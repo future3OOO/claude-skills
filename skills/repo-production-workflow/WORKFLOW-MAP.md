@@ -56,6 +56,9 @@ workflow advisor-result|advisor-disposition
 workflow pause|checkpoint|complete|prune
 ```
 
+A documentation-only pull request takes the CI job's cheap lane, decided by
+`.github/scripts/pr_scope.py` from the pull-request delta and governed by step 9.
+
 ### `workflow status` contract
 
 `workflow status` is a public JSON Interface, not a dump of persistence internals.
