@@ -466,6 +466,50 @@ class PassLifecycleTests(unittest.TestCase):
             marker + json.dumps(checkpoint, sort_keys=True),
         )
 
+    def _packet_with_unindexed_entry(self, slug: str, kind: str) -> tuple[str, str]:
+        identity = resolve_repo_identity(self.repo)
+        state = read_workflow(identity)
+        packet = graph_packet(
+            str(identity.root), str(_active_candidate_tree(identity)),
+            str(state["passStartOid"]),
+        )
+        packet["gitnexus"]["analysis"]["entries"].append({
+            "kind": kind, "file": "package-lock.json", "target": "package-lock.json",
+            "direction": "", "status": "unindexed", "resolved_identity": "",
+            "diagnostic": "GitNexus does not index this file",
+        })
+        path = self.tmp / f"{slug}.json"
+        path.write_text(json.dumps(packet), encoding="utf-8")
+        return str(path), str(identity.root)
+
+    def test_graph_evidence_accepts_an_unindexed_file_context_entry(self) -> None:
+        marker = "UNINDEXED_ENTRY_REFUSED"
+        slug, wid = "unindexed-file-entry", self.begin_slug("unindexed-file-entry")
+        path, root = self._packet_with_unindexed_entry(slug, "file_context")
+        try:
+            document = graph_evidence_document(
+                path, slug=slug, workflow_id=wid, source_root=root,
+                canonical_source_repo="example.invalid/workflow-fixture",
+            )
+        except ValueError as error:
+            self.fail(f"{marker}: {error}")
+        self.assertEqual(
+            [entry["status"] for entry in document["graph"]["entries"]],
+            ["resolved", "unindexed"],
+            marker,
+        )
+
+    def test_graph_evidence_still_refuses_an_unindexed_symbol_entry(self) -> None:
+        marker = "UNINDEXED_SYMBOL_ENTRY_ACCEPTED"
+        slug, wid = "unindexed-symbol-entry", self.begin_slug("unindexed-symbol-entry")
+        path, root = self._packet_with_unindexed_entry(slug, "symbol_context")
+        with self.assertRaises(ValueError, msg=marker) as raised:
+            graph_evidence_document(
+                path, slug=slug, workflow_id=wid, source_root=root,
+                canonical_source_repo="example.invalid/workflow-fixture",
+            )
+        self.assertEqual(str(raised.exception), "a graph entry is unresolved or missing its identity", marker)
+
     def test_checkpoint_refuses_non_integer_graph_evidence_schemas(self) -> None:
         slug, wid = "checkpoint-schema-refusal", self.begin_slug("checkpoint-schema-refusal")
         identity = resolve_repo_identity(self.repo)

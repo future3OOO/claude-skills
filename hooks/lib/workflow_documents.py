@@ -212,10 +212,14 @@ def _resolved_graph(value: object) -> JsonObject:
     # How many checks a packet plans is the producer's decision, and a packet that
     # planned none still resolved. Demanding facts here would invent a refusal for
     # every surface Repo Context Forge legitimately had nothing to ask about.
+    # A present file GitNexus does not index (a lockfile) resolves as "unindexed" with
+    # no identity; that is the producer's resolved answer for a file_context check.
     for entry in entries:
-        if not isinstance(entry, dict) or entry.get("status") != "resolved" or not all(
-            _text(entry.get(field)) for field in ("kind", "file", "target", "resolved_identity")
-        ):
+        if not isinstance(entry, dict) or not all(_text(entry.get(field)) for field in ("kind", "file", "target")):
+            raise ValueError("a graph entry is unresolved or missing its identity")
+        if entry.get("status") == "unindexed" and entry.get("kind") == "file_context":
+            continue
+        if entry.get("status") != "resolved" or not _text(entry.get("resolved_identity")):
             raise ValueError("a graph entry is unresolved or missing its identity")
     if any(type(value.get(metric)) is not int for metric in
            ("elapsed_ms", "process_count", "graph_call_count", "output_bytes")):
