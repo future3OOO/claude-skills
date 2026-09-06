@@ -3,8 +3,21 @@
 Production paths keep git's ordinary three-line context. Test-classified paths
 (the estate's single classifier) carry git function context, so a changed
 assertion arrives with the definition that invokes the Seam, and test paths
-additionally forward the same-file setup and helper definitions the shown hunks
-invoke. Every byte comes from the two immutable trees.
+additionally forward the setup and helper definitions the shown hunks invoke.
+Every byte comes from the two immutable trees.
+
+`.py` context uses git's built-in python driver unless the repository's own
+attributes name one, because the default funcname makes a method's context its
+whole class (measured 189,425 bytes against 1,883 for one changed line).
+
+Forwarded: same-file setUp/setUpClass/asyncSetUp/setUpModule, setup_method,
+setup_function, helper chains, pytest fixtures including autouse and
+fixture-to-fixture chains, shell functions, and one import hop into another
+test module of the same repository, aliases resolved to the name that module
+defines. Not followed, and the reason each needs its own design: a second
+import hop and star or relative imports (a transitive dependency closure),
+conftest-declared fixtures (pytest's directory discovery), inherited or nested
+helpers and receiver-typed calls (cross-module class resolution).
 """
 from __future__ import annotations
 
