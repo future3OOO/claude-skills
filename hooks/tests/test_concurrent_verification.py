@@ -62,7 +62,32 @@ class ConcurrentVerificationTests(HookHarness):
         self.markers.mkdir()
         self.blocking = self.tmp / "blocking.py"
         self.blocking.write_text(BLOCKING, encoding="utf-8")
-        self.launched = 0
+        self.launched: list[str] = []
+        self.processes: list[subprocess.Popen[str]] = []
+
+    def tearDown(self) -> None:
+        """End every process this test started, however the test ended.
+
+        An assertion failing between start_blocking() and release() leaves the
+        command waiting for a marker that now never arrives, and the runner
+        waiting on it. Releasing every launched run is what actually stops the
+        command: it runs in its own session, so terminating the runner would
+        orphan it until its own deadline instead. Every command this suite
+        starts waits on one of these markers, so the release is what ends them;
+        both waits are bounded and the second follows a kill, which is the bound
+        against a runner wedged on something else. The fixture is removed only
+        afterwards, so nothing is still writing into the directory as it goes.
+        """
+        for name in (*(f"release-{run}" for run in self.launched), "gate-release"):
+            (self.markers / name).write_text("1", encoding="utf-8")
+        for process in self.processes:
+            if process.poll() is None:
+                try:
+                    process.communicate(timeout=60)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=30)
+        super().tearDown()
 
     def advance_to_verification(self, slug: str = "concurrent") -> str:
         begun = self.state("begin", "--slug", slug)
@@ -76,15 +101,18 @@ class ConcurrentVerificationTests(HookHarness):
         return slug
 
     def verify(self, slug: str, *extra: str, env_extra: dict[str, str] | None = None) -> subprocess.Popen[str]:
-        return subprocess.Popen(
+        """The one place this suite starts a process, so tearDown sees them all."""
+        process = subprocess.Popen(
             [sys.executable, str(WORKFLOW), "verify", "--repo", str(self.repo), "--slug", slug, *extra],
             cwd=ROOT, env={**self.env, **(env_extra or {})}, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        self.processes.append(process)
+        return process
 
     def launch(self, slug: str, label: str, exit_code: int) -> tuple[str, subprocess.Popen[str]]:
-        self.launched += 1
-        run = f"run{self.launched}"
+        run = f"run{len(self.launched) + 1}"
+        self.launched.append(run)
         process = self.verify(
             slug, "--", sys.executable, str(self.blocking), str(self.markers), label,
             env_extra={"S211_RUN": run, "S211_EXIT": str(exit_code)},
