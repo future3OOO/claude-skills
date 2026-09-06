@@ -1,0 +1,277 @@
+"""The current-pass diff the advisor wrapper sends, with test hunks inside their definitions.
+
+Production paths keep git's ordinary three-line context. Test-classified paths
+(the estate's single classifier) carry git function context, so a changed
+assertion arrives with the definition that invokes the Seam, and test paths
+additionally forward the same-file setup and helper definitions the shown hunks
+invoke. Every byte comes from the two immutable trees.
+"""
+from __future__ import annotations
+
+import ast
+import re
+import subprocess
+import tempfile
+
+from .state_store import is_test_path
+
+# git's default funcname makes a Python method's context the whole class
+# (measured 189,425 bytes for one changed line in a 3,123-line test module);
+# git's built-in python driver bounds it to the enclosing def (1,883 bytes).
+# A repository's own .gitattributes still wins by git's attribute lookup order.
+_ATTRIBUTES = "*.py diff=python\n"
+# The diff header is this Module's index into the diff, so it is pinned: a
+# literal non-ASCII path, and the a/ b/ prefixes a repository may switch off.
+_HEADER_CONFIG = ("-c", "core.quotePath=false", "-c", "diff.noprefix=false",
+                  "-c", "diff.mnemonicPrefix=false")
+_SETUP = ("setUp", "setUpClass", "asyncSetUp", "setUpModule", "setup_method", "setup_function")
+_CALL = re.compile(r"(?<!\.)\b(\w+)[ \t]*\(")
+_ATTRIBUTE_CALL = re.compile(r"\.(\w+)[ \t]*\(")
+_WORD = re.compile(r"\b(\w+)\b")
+_SHELL_DEF = re.compile(r"^(?:function[ \t]+)?(\w+)[ \t]*(?:\(\))?[ \t]*\{[ \t]*$")
+_SHELL_SUFFIXES = (b".sh", b".bash")
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _git(root: str, *args: str | bytes) -> bytes:
+    return subprocess.run(["git", "-C", root, *args], check=True, stdout=subprocess.PIPE).stdout
+
+
+def current_pass_evidence(root: str, base_tree: str, candidate_tree: str) -> tuple[bytes, str]:
+    """Return (diff, invoked test definitions) for base_tree -> candidate_tree."""
+    diff_args = (*_HEADER_CONFIG, "diff", "--no-ext-diff", "--binary", base_tree, candidate_tree)
+    changed = _git(root, "diff", "--no-renames", "--name-only", "-z", base_tree, candidate_tree)
+    test_paths = [
+        path for path in changed.split(b"\0")
+        if path and is_test_path(path.decode("utf-8", "surrogateescape"))
+    ]
+    if not test_paths:
+        return _git(root, *diff_args), ""
+    production = _git(root, *diff_args, "--", *(b":(exclude,literal)" + path for path in test_paths))
+    with tempfile.NamedTemporaryFile("w", suffix=".gitattributes") as attributes:
+        attributes.write(_ATTRIBUTES)
+        attributes.flush()
+        # The same attribute binding and rename policy for both, so the lines
+        # the definitions step reads are exactly the lines the payload shows.
+        # --no-renames belongs to this test-path view only: the production and
+        # no-test diffs stay exactly what git renders.
+        bound = ("-c", f"core.attributesFile={attributes.name}", *diff_args,
+                 "--no-renames", "--function-context")
+        tests = _git(root, *bound, "--", *(b":(literal)" + path for path in test_paths))
+        definitions = "".join(
+            _invoked_definitions(root, bound, candidate_tree, path) for path in test_paths
+        )
+    return production + tests, definitions
+
+
+def _invoked_definitions(root: str, bound: tuple[str, ...], candidate_tree: str, path: bytes) -> str:
+    """The same-file definitions the shown hunks of `path` invoke, plus its setup, once each."""
+    shown = _shown_lines(root, bound, path)
+    if not shown:  # nothing of this path survives in the candidate
+        return ""
+    blob = _git(root, "show", candidate_tree.encode() + b":" + path)
+    text = blob.decode("utf-8", "surrogateescape")
+    imported: dict[bytes, set[str]] = {}
+    if path.endswith(b".py"):
+        bodies = _python_definitions(blob, text, shown, imported)
+    elif path.endswith(_SHELL_SUFFIXES):
+        bodies = _shell_definitions(text, shown)
+    else:
+        return ""
+    section = ""
+    if bodies:
+        section = "=== " + path.decode("utf-8", "surrogateescape") + "\n" + "\n\n".join(bodies) + "\n"
+    for source, names in sorted(imported.items()):
+        section += _imported_definitions(root, candidate_tree, source, names)
+    return section
+
+
+def _imported_definitions(root: str, candidate_tree: str, path: bytes, names: set[str]) -> str:
+    """The named definitions of an imported same-repository test module, one hop out."""
+    if not is_test_path(path.decode("utf-8", "surrogateescape")):
+        return ""
+    try:
+        blob = _git(root, "show", candidate_tree.encode() + b":" + path)
+    except subprocess.CalledProcessError:
+        return ""
+    text = blob.decode("utf-8", "surrogateescape")
+    # Every definition of the imported module is "shown" to nothing, so the
+    # named ones are emitted with their own same-file closure.
+    bodies = _python_definitions(blob, text, {}, {}, wanted=names)
+    if not bodies:
+        return ""
+    return "=== " + path.decode("utf-8", "surrogateescape") + "\n" + "\n\n".join(bodies) + "\n"
+
+
+def _shown_lines(root: str, bound: tuple[str, ...], path: bytes) -> dict[int, str]:
+    """New-file line number -> source, for every context or added line git showed.
+
+    Asked of git one path at a time: matching a path against a rendered header
+    is what quoting, prefix configuration, and renames all break.
+    """
+    chunk = _git(root, *bound, "--", b":(literal)" + path)
+    shown: dict[int, str] = {}
+    number = 0
+    for line in chunk.decode("utf-8", "surrogateescape").split("\n"):
+        hunk = _HUNK.match(line)
+        if hunk:
+            number = int(hunk.group(1))
+        elif number and line[:1] in (" ", "+"):
+            shown[number] = line[1:]
+            number += 1
+    return shown
+
+
+def _python_definitions(blob: bytes, text: str, shown: dict[int, str],
+                        imported: dict[bytes, set[str]], wanted: set[str] | None = None) -> list[str]:
+    """Definition bodies the shown lines invoke, resolved through Python's own parser.
+
+    ast honours the file's PEP 263 encoding declaration and reports each
+    definition's real span, so a multiline signature, a decorator, or a dedented
+    string inside a body cannot truncate what is forwarded.
+    """
+    try:
+        tree = ast.parse(blob)
+    except (SyntaxError, ValueError):
+        return ["# unparsed candidate source; no definitions extracted for this path"]
+    # split("\n"), not splitlines(): ast counts newlines only, while
+    # splitlines() also breaks on U+2028 and friends and shifts every span.
+    lines = text.split("\n")
+    scopes: dict[str | None, dict[str, ast.AST]] = {}
+    spans: dict[ast.AST, tuple[int, int]] = {}
+    owners: dict[ast.AST, str | None] = {}
+    for scope, node in _python_scopes(tree):
+        scopes.setdefault(scope, {})[node.name] = node
+        start = min([node.lineno, *(item.lineno for item in node.decorator_list)])
+        spans[node] = (start, node.end_lineno or node.lineno)
+        owners[node] = scope
+    visible = {node for node, (start, end) in spans.items() if start in shown or node.lineno in shown}
+    # Each shown definition resolves its own calls in its own class, so two
+    # changed classes each keep their same-named helper.
+    queue: list[tuple[str | None, str, bool]] = []
+    for node in sorted(visible, key=lambda item: spans[item][0]):
+        start, end = spans[node]
+        body = [shown[number] for number in range(start, end + 1) if number in shown]
+        queue += _wanted(node, owners[node], body)
+    covered = {number for node in visible for number in range(spans[node][0], spans[node][1] + 1)}
+    outside = [line for number, line in shown.items() if number not in covered]
+    queue += [(None, name, False) for name in sorted(_names(_CALL, outside))]
+    queue += [(None, name, False) for name in sorted(wanted or ())]
+    # An autouse fixture runs without being named anywhere, so declaration is
+    # its invocation.
+    queue += [(owners[node], node.name, owners[node] is not None)
+              for node in sorted(spans, key=lambda item: spans[item][0]) if _autouse(node)]
+    sources = _import_sources(tree)
+    emitted: set[ast.AST] = set(visible)
+    bodies: list[str] = []
+    while queue:
+        scope, name, attribute = queue.pop(0)
+        node = _resolve(scopes, scope, name, attribute)
+        if node is None:
+            # Not defined here: the Seam may run in a helper imported from
+            # another test module of the same repository, one hop out.
+            if name in sources:
+                source, original = sources[name]
+                imported.setdefault(source, set()).add(original)
+            continue
+        if node in emitted:
+            continue
+        emitted.add(node)
+        start, end = spans[node]
+        body = lines[start - 1:end]
+        bodies.append("\n".join(body))
+        queue += _wanted(node, owners[node], body)
+    return bodies
+
+
+def _wanted(node: ast.AST, scope: str | None, body: list[str]) -> list[tuple[str | None, str, bool]]:
+    """What this definition invokes: its calls, and the fixtures it names as parameters."""
+    wanted: list[tuple[str | None, str, bool]] = [(scope, name, True) for name in _SETUP]
+    wanted += [(scope, name, True) for name in sorted(_names(_ATTRIBUTE_CALL, body))]
+    wanted += [(scope, name, False) for name in sorted(_names(_CALL, body))]
+    # A pytest fixture is invoked by naming it in a parameter, and a fixture
+    # may itself take fixtures, so every emitted definition contributes its own.
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        wanted += [(scope, argument.arg, False)
+                   for argument in (*node.args.args, *node.args.kwonlyargs) if argument.arg != "self"]
+    return wanted
+
+
+def _import_sources(tree: ast.AST) -> dict[str, tuple[bytes, str]]:
+    """Local name -> (module path in the repository, the name defined there)."""
+    sources: dict[str, tuple[bytes, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            path = (node.module.replace(".", "/") + ".py").encode("utf-8", "surrogateescape")
+            for alias in node.names:
+                if alias.name != "*":
+                    # The alias is what the test calls; the original name is
+                    # what the imported module defines.
+                    sources[alias.asname or alias.name] = (path, alias.name)
+    return sources
+
+
+def _autouse(node: ast.AST) -> bool:
+    return any(
+        isinstance(decorator, ast.Call)
+        and any(keyword.arg == "autouse" and getattr(keyword.value, "value", False) is True
+                for keyword in decorator.keywords)
+        for decorator in getattr(node, "decorator_list", [])
+    )
+
+
+def _python_scopes(tree: ast.AST):
+    """Every function definition with the class that owns it, or None at module level."""
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield None, node
+        elif isinstance(node, ast.ClassDef):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield node.name, child
+
+
+def _resolve(scopes: dict[str | None, dict[str, ast.AST]], scope: str | None,
+             name: str, attribute: bool) -> ast.AST | None:
+    """Resolve the way Python binds: an attribute call takes the owning class
+    first, a bare call takes module scope first. Then a unique class match."""
+    own = scopes.get(scope, {}) if scope is not None else {}
+    module = scopes.get(None, {})
+    first, second = (own, module) if attribute else (module, own)
+    if name in first:
+        return first[name]
+    if name in second:
+        return second[name]
+    matches = [table[name] for owner, table in scopes.items() if owner is not None and name in table]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _shell_definitions(text: str, shown: dict[int, str]) -> list[str]:
+    """Shell function bodies the shown lines name, by the estate's `name() {` form."""
+    lines = text.splitlines()
+    spans: dict[str, tuple[int, int]] = {}
+    for index, line in enumerate(lines):
+        match = _SHELL_DEF.match(line)
+        if not match:
+            continue
+        end = index + 1
+        while end < len(lines) and lines[end] != "}":
+            end += 1
+        spans[match.group(1)] = (index, min(end + 1, len(lines)))
+    emitted = {name for name, (start, _) in spans.items() if start + 1 in shown}
+    queue = sorted(_names(_WORD, shown.values()) - emitted)
+    bodies: list[str] = []
+    while queue:
+        name = queue.pop(0)
+        if name in emitted or name not in spans:
+            continue
+        emitted.add(name)
+        start, end = spans[name]
+        body = lines[start:end]
+        bodies.append("\n".join(body))
+        queue += sorted(_names(_WORD, body) - emitted - set(queue))
+    return bodies
+
+
+def _names(pattern: re.Pattern[str], lines) -> set[str]:
+    return {match.group(1) for line in lines for match in pattern.finditer(line)}

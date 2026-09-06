@@ -66,11 +66,19 @@ whether it is behavioral or non-behavioral.
 Run after implementation, verification, and the lead's structured code-review
 pass when required. This is the workflow's independent review checkpoint: it
 challenges the lead's review rather than trusting it. The wrapper sends the
-recorded original request, the checkpoint's retained advisor projection, the
-current governing-design declaration (a deepened design records as new
-evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff.
-The advisor answers in order: what the original request and public Interface
-promise; which production operations can falsify each load-bearing promise;
+recorded original request once, the checkpoint's retained advisor projection,
+the current governing-design declaration (a deepened design records as new
+evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff in
+which test-classified paths carry git function context (each changed hunk
+inside its enclosing definition; `.py` through git's built-in python driver
+unless the repository's own attributes name a driver) followed by the setup and
+helper definitions those hunks invoke: same-file setUp, helpers, fixtures and
+shell functions, and one import hop into another test module of the same
+repository. Star and relative imports, conftest-declared fixtures, inherited
+helpers and receiver-typed calls are not followed. Production hunks keep
+ordinary context. The advisor answers in order: what the
+original request and public Interface promise; which production operations can
+falsify each load-bearing promise;
 which of those are unattacked through the real Seam in the supplied evidence;
 whether any finding disposition narrows or loses part of its original domain;
 and only then the changed Module shape, minimality, security boundary,
@@ -91,6 +99,11 @@ Findings carry exactly `id`, `claim`, `material`, and `kind` (`behavioral` or
 `nonbehavioral`). Final verdict is `commit-ready`, `fix-before-commit`, or
 `context-mismatch`; use `fix-before-commit` only with a material finding, and
 `commit-ready` only when context matches and none is material.
+`context-mismatch` is reserved for a candidate or projection identity mismatch
+(the supplied binding does not describe the diff); a lead rejection of a claim
+about the request's literal wording that quotes a real-Seam measurement receives
+a verdict, either a material re-raise carrying a new contradicting measurement
+or `commit-ready`.
 
 The wrapper records the exact UTF-8 response and its digest as immutable finding
 intake; it never dispositions. After reading the output, the lead validates

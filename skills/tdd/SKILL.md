@@ -83,7 +83,7 @@ The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions`
 
 - identify each load-bearing mechanism, state boundary, or cross-system value the GREEN introduced and drive the cheapest real-Seam probe that could falsify it;
 - add any newly exposed touched-Seam preservation or interaction behavior;
-- retain a passing falsifier only as material regression evidence;
+- a retained real-Seam probe (its command, tested domain, result, and candidate context kept in the `tdd --phase red` baseline or the `tdd-map` disposition prose) can establish a preservation obligation or support a disposition through that existing evidence route; it never waives RED/GREEN for new behavior or a reproduced regression, and a passing falsifier is retained only as regression evidence;
 - if review finds a behavioral defect, add it to the map and drive a fresh RED before the fix.
 
 An update that adds items reopens TDD; the next production edit requires a valid RED for one of them. Cycle count is not a quality target.
