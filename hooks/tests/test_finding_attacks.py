@@ -1139,7 +1139,7 @@ class MapCorrectionAttacks(AttackHarness):
         self.refused_unchanged(marker, lambda: self.withdraw(slug, "BM_EXTRA"))
         self.assertEqual(self.map_items()["BM_EXTRA"]["status"], "red", marker)
 
-    def test_a_withdrawn_only_map_keeps_the_edit_gate_closed(self) -> None:
+    def test_a_withdrawn_only_map_keeps_the_edit_gate_advising(self) -> None:
         marker = "WITHDRAWN_OPENED_EDITING"
         slug = "withdrawn-gate"
         self.open_pass(slug, [self.KEEP_OMITTED])
@@ -1149,9 +1149,9 @@ class MapCorrectionAttacks(AttackHarness):
                               cwd=self.repo, env=self.env, text=True, capture_output=True, check=False,
                               input=json.dumps({"tool_input": {"file_path": str(self.repo / "app.py")}}))
         self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
-        decision = json.loads(gate.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny", marker + ": " + gate.stdout)
-        self.assertIn("RED", decision["permissionDecisionReason"], marker + ": " + gate.stdout)
+        output = json.loads(gate.stdout)["hookSpecificOutput"]
+        self.assertNotIn("permissionDecision", output, marker + ": " + gate.stdout)
+        self.assertIn("RED", output["additionalContext"], marker + ": " + gate.stdout)
 
     def rejected_owner(self, slug: str, marker: str, status: str = "rejected-with-evidence") -> None:
         """A finding mapped on a false premise leaves an owned pending item behind;

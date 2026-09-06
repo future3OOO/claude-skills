@@ -9,7 +9,7 @@ description: TDD for production behavior changes through real Seams. Use when ch
 
 Production behavior changes require one **behavior-specific RED** before production code changes.
 
-A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`). Contract before preservation: the map's `contract` items are the requested behavior, and only a contract RED opens production editing.
+A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`). Contract before preservation: the requested behavior's RED comes first.
 
 The recorder can establish assertion reach for directly invoked pytest and unittest; its verdict is a bounded reading of the runner's report text - evidence the lead verifies, not an attestation, because the ledger is continuity. Other exact-bound commands remain useful for surface identity but cannot satisfy a mapped RED because their output cannot establish Seam reach. Use a supported real assertion surface or leave the proof gap pending; do not manufacture a second test path.
 
@@ -41,19 +41,19 @@ Map:
 
 Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
 
-**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing RED run instead records a **baseline**, `already-satisfied`: for a preflight-declared contract item only before the first production edit (a later pass is the edits' work and is refused), for a `tdd-map`-added contract item or any preservation item whenever it passes. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
+**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing RED run instead records a **baseline**, `already-satisfied`, whatever the tree state. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
 
 ## 2. Drive One Mapped Vertical Slice
 
-Write every contract item's RED first, on the clean tree (the RED sweep), then implement. Settle every preservation item before the first edit: baseline it through `tdd --phase red` or disposition it through `tdd-map`. Then select one pending contract ID.
+Select one pending contract ID and write its RED before the production edit that satisfies it. Settle each preservation item by baselining it through `tdd --phase red` or dispositioning it through `tdd-map`, early enough that a later RED on it means a regression.
 
 **RED**
 
 - Write one test for that atomic behavior through its recorded Seam.
 - Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
-- A passing run baselines the item and opens no editing; do not manufacture a RED or edit production code for it.
-- A preservation RED cannot open the first edit; the recorder refuses it until a contract item has reached GREEN. After implementation a preservation item goes RED only when the real Seam shows the change regressed it.
+- A passing run baselines the item; do not manufacture a RED or edit production code for it.
+- A preservation RED records like any other RED. After implementation a preservation item goes RED only when the real Seam shows the change regressed it.
 
 **GREEN**
 
@@ -61,9 +61,9 @@ Write every contract item's RED first, on the clean tree (the RED sweep), then i
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
 - Do not anticipate later slices.
 
-**RED SWEEP**
+**ORDER OF PROOF**
 
-Every contract item earns its RED on the clean tree before the first production edit: the recorder admits a second RED beside an open one, and the edit gate refuses a production edit while any contract item is still pending. One edit may then satisfy several red items; each reaches GREEN through its own RED. A GREEN for an item with no RED is refused. Map updates are admitted while cycles are open.
+Each contract item's RED belongs on the tree before the production edit that satisfies it; the recorder admits a second RED beside an open one, and the edit hook names any contract item still without its RED instead of refusing. A RED or baseline taken after production changed is **late**: recorded as such, labelled in `summary`, shown to the final review, never refused. One edit may satisfy several red items; each reaches GREEN through its own RED. A GREEN for an item with no RED is refused. Map updates are admitted while cycles are open.
 
 Several assertions may jointly prove one behavior; every assertion participating in that joint proof carries the same behavior-specific `redFailure` marker, so whichever guarantee breaks first still names the mapped failure. State after success or failure must match the complete observable contract.
 
