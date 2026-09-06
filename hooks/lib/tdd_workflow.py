@@ -276,7 +276,7 @@ def _candidate_command(
     return command, shlex.join(command), tdd_surface.identify(command)
 
 
-_BASELINE_STAMP = "baseline-passed: "
+_BASELINE_STAMP = behavior_map.BASELINE_STAMP
 
 
 def _baseline_proof(
