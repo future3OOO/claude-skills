@@ -1045,6 +1045,128 @@ class WrapperPromptTests(HookHarness):
         self.assertIn("test>     return compute(1)  # IMPORTED-SEAM-INVOCATION", payload, marker)
         self.assertIn("test> === tests/support.py", payload, marker)
 
+    def test_pytest_class_and_module_hooks_are_forwarded(self) -> None:
+        marker = "XUNIT_CLASS_HOOKS_NOT_FORWARDED"
+        env = self.wrapper_rig()
+        module = ("from app import compute\n\n\n"
+                  "def setup_module(module):\n"
+                  "    module.prepared = compute(1)  # MODULE-HOOK-SEAM\n\n\n"
+                  "class TestHooks:\n"
+                  "    def setup_class(cls):\n"
+                  "        cls.base = compute(1)  # CLASS-HOOK-SEAM\n\n"
+                  "    def test_hooked(self):\n"
+                  "        assert self.base == 2\n")
+        self.commit_fixtures({"tests/test_hooks.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_hooks.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        assert isinstance(self.base, int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "xunit-hooks", edit=edit, marker=marker)
+        self.assertIn("test>         cls.base = compute(1)  # CLASS-HOOK-SEAM", payload, marker)
+        self.assertIn("test>     module.prepared = compute(1)  # MODULE-HOOK-SEAM", payload, marker)
+
+    def test_a_relative_import_forwards_its_helper(self) -> None:
+        marker = "RELATIVE_IMPORT_NOT_RESOLVED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # RELATIVE-SEAM-INVOCATION\n")
+        module = ("import unittest\n"
+                  "from .support import run_app\n\n\n"
+                  "class RelativeTests(unittest.TestCase):\n"
+                  "    def test_relative(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_relative.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_relative.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "relative-import", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # RELATIVE-SEAM-INVOCATION", payload, marker)
+        self.assertIn("test> === tests/support.py", payload, marker)
+
+    def test_a_parent_relative_import_forwards_its_helper(self) -> None:
+        marker = "PARENT_RELATIVE_NOT_RESOLVED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # PARENT-RELATIVE-SEAM\n")
+        module = ("import unittest\n"
+                  "from ..support import run_app\n\n\n"
+                  "class ParentTests(unittest.TestCase):\n"
+                  "    def test_parent(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/unit/__init__.py": b"", "tests/unit/test_parent.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "unit" / "test_parent.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "parent-relative", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # PARENT-RELATIVE-SEAM", payload, marker)
+        self.assertIn("test> === tests/support.py", payload, marker)
+
+    def test_a_relative_import_above_the_root_reads_nothing(self) -> None:
+        marker = "RELATIVE_IMPORT_ESCAPED_ROOT"
+        env = self.wrapper_rig()
+        module = ("import unittest\n"
+                  "from ....outside import run_app\n\n\n"
+                  "class EscapeTests(unittest.TestCase):\n"
+                  "    def test_escape(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/test_escape.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_escape.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsNotNone(run_app())\n",
+                              encoding="utf-8")
+
+        # The consult completes and carries no definitions section at all: the
+        # unresolvable level yields no path, so nothing is read or forwarded.
+        payload = self.final_consult(env, "escape-import", edit=edit, marker=marker)
+        self.assertNotIn(DEFINITIONS_SECTION, payload, marker)
+        self.assertNotIn("outside", payload.split(DIFF_SECTION, 1)[0], marker)
+
+    def test_an_above_root_import_reads_nothing_outside_the_candidate(self) -> None:
+        # Emission is not the claim; the claim is about reads, so git's own
+        # trace records every object this Module asks for.
+        marker = "OUTSIDE_CANDIDATE_READ_OBSERVED"
+        module = ("import unittest\n"
+                  "from ....outside import run_app\n\n\n"
+                  "class EscapeTests(unittest.TestCase):\n"
+                  "    def test_escape(self):\n"
+                  "        self.assertIsNotNone(run_app())\n")
+        self.commit_fixtures({"tests/test_escape.py": module.encode()})
+        (self.repo / "tests" / "test_escape.py").write_text(
+            module + "        self.assertTrue(run_app())\n", encoding="utf-8")
+        base = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=self.repo, env=self.env,
+                              text=True, capture_output=True, check=True).stdout.strip()
+        self.git("add", "-A")
+        candidate = subprocess.run(["git", "write-tree"], cwd=self.repo, env=self.env,
+                                   text=True, capture_output=True, check=True).stdout.strip()
+        trace = self.tmp / "git-trace.log"
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             ("import sys; sys.path.insert(0, sys.argv[1]);"
+              "from hooks.lib.advisor_diff import current_pass_evidence;"
+              "current_pass_evidence(*sys.argv[2:])"),
+             str(ROOT), str(self.repo), base, candidate],
+            cwd=ROOT, env={**self.env, "GIT_TRACE": str(trace)}, text=True, capture_output=True, check=False)
+        self.assertEqual(probe.returncode, 0, marker + ": " + probe.stderr)
+        reads = [line for line in trace.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
+                 if "'show'" in line or " show " in line]
+        self.assertTrue(trace.exists(), marker)
+        self.assertFalse([line for line in reads if "outside" in line], marker + f": {reads}")
+        for line in reads:
+            self.assertIn(candidate, line, marker + f": read outside the candidate tree: {line}")
+
     def test_an_aliased_import_forwards_the_original_definition(self) -> None:
         marker = "ALIASED_IMPORT_NOT_FORWARDED"
         env = self.wrapper_rig()

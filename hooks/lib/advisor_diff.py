@@ -10,14 +10,15 @@ Every byte comes from the two immutable trees.
 attributes name one, because the default funcname makes a method's context its
 whole class (measured 189,425 bytes against 1,883 for one changed line).
 
-Forwarded: same-file setUp/setUpClass/asyncSetUp/setUpModule, setup_method,
-setup_function, helper chains, pytest fixtures including autouse and
-fixture-to-fixture chains, shell functions, and one import hop into another
-test module of the same repository, aliases resolved to the name that module
-defines. Not followed, and the reason each needs its own design: a second
-import hop and star or relative imports (a transitive dependency closure),
-conftest-declared fixtures (pytest's directory discovery), inherited or nested
-helpers and receiver-typed calls (cross-module class resolution).
+Forwarded: same-file setUp/setUpClass/asyncSetUp/setUpModule and pytest's
+setup_method/setup_function/setup_class/setup_module, helper chains, fixtures
+including autouse and fixture-to-fixture chains, shell functions, and one import
+hop into another test module of the same repository, absolute or relative, with
+aliases resolved to the name that module defines. Not followed, and the reason
+each needs its own design: a second import hop and star imports (a transitive
+dependency closure), conftest-declared fixtures (pytest's directory discovery),
+inherited or nested helpers and receiver-typed calls (cross-module class
+resolution).
 """
 from __future__ import annotations
 
@@ -37,7 +38,8 @@ _ATTRIBUTES = "*.py diff=python\n"
 # literal non-ASCII path, and the a/ b/ prefixes a repository may switch off.
 _HEADER_CONFIG = ("-c", "core.quotePath=false", "-c", "diff.noprefix=false",
                   "-c", "diff.mnemonicPrefix=false")
-_SETUP = ("setUp", "setUpClass", "asyncSetUp", "setUpModule", "setup_method", "setup_function")
+_SETUP = ("setUp", "setUpClass", "asyncSetUp", "setUpModule",
+          "setup_method", "setup_function", "setup_class", "setup_module")
 _CALL = re.compile(r"(?<!\.)\b(\w+)[ \t]*\(")
 _ATTRIBUTE_CALL = re.compile(r"\.(\w+)[ \t]*\(")
 _WORD = re.compile(r"\b(\w+)\b")
@@ -86,7 +88,7 @@ def _invoked_definitions(root: str, bound: tuple[str, ...], candidate_tree: str,
     text = blob.decode("utf-8", "surrogateescape")
     imported: dict[bytes, set[str]] = {}
     if path.endswith(b".py"):
-        bodies = _python_definitions(blob, text, shown, imported)
+        bodies = _python_definitions(blob, text, shown, imported, path)
     elif path.endswith(_SHELL_SUFFIXES):
         bodies = _shell_definitions(text, shown)
     else:
@@ -110,7 +112,7 @@ def _imported_definitions(root: str, candidate_tree: str, path: bytes, names: se
     text = blob.decode("utf-8", "surrogateescape")
     # Every definition of the imported module is "shown" to nothing, so the
     # named ones are emitted with their own same-file closure.
-    bodies = _python_definitions(blob, text, {}, {}, wanted=names)
+    bodies = _python_definitions(blob, text, {}, {}, path, wanted=names)
     if not bodies:
         return ""
     return "=== " + path.decode("utf-8", "surrogateescape") + "\n" + "\n\n".join(bodies) + "\n"
@@ -136,7 +138,8 @@ def _shown_lines(root: str, bound: tuple[str, ...], path: bytes) -> dict[int, st
 
 
 def _python_definitions(blob: bytes, text: str, shown: dict[int, str],
-                        imported: dict[bytes, set[str]], wanted: set[str] | None = None) -> list[str]:
+                        imported: dict[bytes, set[str]], path: bytes,
+                        wanted: set[str] | None = None) -> list[str]:
     """Definition bodies the shown lines invoke, resolved through Python's own parser.
 
     ast honours the file's PEP 263 encoding declaration and reports each
@@ -174,7 +177,7 @@ def _python_definitions(blob: bytes, text: str, shown: dict[int, str],
     # its invocation.
     queue += [(owners[node], node.name, owners[node] is not None)
               for node in sorted(spans, key=lambda item: spans[item][0]) if _autouse(node)]
-    sources = _import_sources(tree)
+    sources = _import_sources(tree, path)
     emitted: set[ast.AST] = set(visible)
     bodies: list[str] = []
     while queue:
@@ -210,18 +213,38 @@ def _wanted(node: ast.AST, scope: str | None, body: list[str]) -> list[tuple[str
     return wanted
 
 
-def _import_sources(tree: ast.AST) -> dict[str, tuple[bytes, str]]:
+def _import_sources(tree: ast.AST, path: bytes) -> dict[str, tuple[bytes, str]]:
     """Local name -> (module path in the repository, the name defined there)."""
     sources: dict[str, tuple[bytes, str]] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            path = (node.module.replace(".", "/") + ".py").encode("utf-8", "surrogateescape")
-            for alias in node.names:
-                if alias.name != "*":
-                    # The alias is what the test calls; the original name is
-                    # what the imported module defines.
-                    sources[alias.asname or alias.name] = (path, alias.name)
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        source = _module_path(node.module, node.level, path)
+        if source is None:
+            continue
+        for alias in node.names:
+            if alias.name != "*":
+                # The alias is what the test calls; the original name is
+                # what the imported module defines.
+                sources[alias.asname or alias.name] = (source, alias.name)
     return sources
+
+
+def _module_path(module: str, level: int, path: bytes) -> bytes | None:
+    """The repository path a from-import names, or None when it leaves the tree.
+
+    A relative import counts levels from the importing file's own directory, so
+    the answer stays inside the candidate; a level that walks past the root has
+    no path here and is not resolved against the filesystem.
+    """
+    suffix = module.replace(".", "/") + ".py"
+    if not level:
+        return suffix.encode("utf-8", "surrogateescape")
+    parents = path.decode("utf-8", "surrogateescape").split("/")[:-1]
+    if level - 1 > len(parents):
+        return None
+    base = parents[:len(parents) - (level - 1)]
+    return "/".join([*base, suffix]).encode("utf-8", "surrogateescape")
 
 
 def _autouse(node: ast.AST) -> bool:
