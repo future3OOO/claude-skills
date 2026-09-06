@@ -189,6 +189,12 @@ def _python_definitions(blob: bytes, text: str, shown: dict[int, str],
     queue += [(owners[node], node.name, owners[node] is not None)
               for node in sorted(spans, key=lambda item: spans[item][0]) if _autouse(node)]
     sources = _import_sources(tree, path)
+    # A module bound by `from . import support` is called through its name, so
+    # `support.run_app()` in a shown line names run_app in that module.
+    modules = _module_aliases(tree, path)
+    for alias, source in modules.items():
+        for call in _names(re.compile(rf"\b{re.escape(alias)}\.(\w+)[ \t]*\("), shown.values()):
+            imported.setdefault(source, set()).add(call)
     emitted: set[ast.AST] = set(visible)
     bodies: list[str] = []
     while queue:
@@ -239,6 +245,23 @@ def _import_sources(tree: ast.AST, path: bytes) -> dict[str, tuple[bytes, str]]:
                 # what the imported module defines.
                 sources[alias.asname or alias.name] = (source, alias.name)
     return sources
+
+
+def _module_aliases(tree: ast.AST, path: bytes) -> dict[str, bytes]:
+    """Local name -> module path, for imports that bind a module rather than a name."""
+    aliases: dict[str, bytes] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and not node.module:
+            for alias in node.names:
+                source = _module_path(alias.name, node.level, path)
+                if source is not None:
+                    aliases[alias.asname or alias.name] = source
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                source = _module_path(alias.name, 0, path)
+                if source is not None:
+                    aliases[alias.asname or alias.name.split(".")[0]] = source
+    return aliases
 
 
 def _module_path(module: str, level: int, path: bytes) -> bytes | None:

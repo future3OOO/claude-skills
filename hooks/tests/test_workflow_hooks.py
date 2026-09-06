@@ -1167,6 +1167,30 @@ class WrapperPromptTests(HookHarness):
         self.assertIn("test>     return compute(1)  # PACKAGE-SEAM-INVOCATION", payload, marker)
         self.assertIn("test> === tests/helpers/__init__.py", payload, marker)
 
+    def test_a_helper_called_through_a_module_alias_is_forwarded(self) -> None:
+        marker = "MODULE_ALIAS_CALL_NOT_FOLLOWED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # MODULE-ALIAS-SEAM\n")
+        module = ("import unittest\n"
+                  "from . import support\n\n\n"
+                  "class AliasModuleTests(unittest.TestCase):\n"
+                  "    def test_alias_module(self):\n"
+                  "        self.assertEqual(support.run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_alias_module.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_alias_module.py"
+            target.write_text(
+                target.read_text(encoding="utf-8") + "        self.assertIsInstance(support.run_app(), int)\n",
+                encoding="utf-8")
+
+        payload = self.final_consult(env, "module-alias", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # MODULE-ALIAS-SEAM", payload, marker)
+        self.assertIn("test> === tests/support.py", payload, marker)
+
     def test_a_parent_relative_import_forwards_its_helper(self) -> None:
         marker = "PARENT_RELATIVE_NOT_RESOLVED"
         env = self.wrapper_rig()
