@@ -68,11 +68,9 @@ pass when required. This is the workflow's independent review checkpoint: it
 challenges the lead's review rather than trusting it. The wrapper sends the
 recorded original request once, the checkpoint's retained advisor projection,
 the current governing-design declaration (a deepened design records as new
-evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff in
-which each changed test hunk arrives inside its enclosing definition, followed
-by the setup and helper definitions it invokes, same file plus one import hop.
-Production hunks keep ordinary context; `hooks/lib/advisor_diff.py` states which
-forms are followed. The advisor answers in order: what the
+evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff:
+test-classified hunks arrive inside their enclosing definition (git function
+context), production hunks keep ordinary context. The advisor answers in order: what the
 original request and public Interface promise; which production operations can
 falsify each load-bearing promise;
 which of those are unattacked through the real Seam in the supplied evidence;
