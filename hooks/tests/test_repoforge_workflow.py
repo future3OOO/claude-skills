@@ -677,6 +677,258 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
         self.assertNotIn("baseOid", self.status())
 
+    def stack(self) -> str:
+        """A two-branch stack: feat1 is the lower PR, feat2 the leaf whose PR base
+        is feat1 (gh's per-branch `gh-merge-base` config). Returns feat1's tip,
+        the merge-base the leaf's pass must record."""
+        self.git("checkout", "-q", "-b", "feat1")
+        (self.repo / "lower.py").write_text("def lower():\n    return 1\n", encoding="utf-8")
+        self.git("add", "lower.py")
+        self.git("commit", "-q", "-m", "feat1 carries an escape")
+        self.git("checkout", "-q", "-b", "feat2")
+        (self.repo / "leaf.py").write_text("def leaf():\n    return 2\n", encoding="utf-8")
+        self.git("add", "leaf.py")
+        self.git("commit", "-q", "-m", "feat2 is clean")
+        self.git("config", "branch.feat2.gh-merge-base", "feat1")
+        return self.git_out("rev-parse", "feat1")
+
+    def gate(self, base: str) -> dict[str, object]:
+        result = subprocess.run(
+            [sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--base-ref", base, "--json"],
+            cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        return json.loads(result.stdout)
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_run_cancelled_after_its_packet_records_no_base(self) -> None:
+        """Cancellation, not refusal: the packet is already rendered when the run
+        is killed, which is the window the recording sits in."""
+        feat1 = self.stack()
+        cancelled = subprocess.Popen(
+            self.graph_command(), cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        emitted = False
+        for line in cancelled.stdout:
+            if "END_REPO_CONTEXT_FORGE_REQUIRED_INTAKE" in line:
+                emitted = True
+                cancelled.kill()
+                break
+        cancelled.wait(timeout=120)
+        cancelled.stdout.close()
+        cancelled.stderr.close()
+        self.assertTrue(emitted, "CANCELLED_RUN_LEFT_A_BASE: the producer never emitted its packet")
+        self.assertNotIn("baseOid", self.status(), "CANCELLED_RUN_LEFT_A_BASE")
+
+        retry = self.graph_bootstrap()
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertEqual(self.status().get("baseOid"), feat1, "CANCELLED_RUN_LEFT_A_BASE")
+        self.assertNotIn("pass base already recorded", retry.stderr, "CANCELLED_RUN_LEFT_A_BASE")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_stacked_branch_records_the_merge_base_with_its_pr_base_branch(self) -> None:
+        """Measured on GitNexus #18: the producer's fallback base is the fork point
+        from main, so a stacked pass measured the whole stack. The leaf's pass
+        records the merge-base with the branch its PR merges into."""
+        feat1 = self.stack()
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(self.status().get("baseOid"), feat1, "STACKED_BASE_NOT_RECORDED")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_the_typed_gate_on_a_stacked_branch_measures_only_its_own_delta(self) -> None:
+        """No manual --base-ref: the gate reads the recorded base and never sees
+        the lower PR's files."""
+        self.stack()
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        verdict = self.gate(str(self.status().get("baseOid")))
+        self.assertNotIn("lower.py", verdict.get("changedFilesSample"), "STACKED_GATE_MEASURED_OTHER_PR")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_revalidation_on_a_stacked_branch_resolves_the_same_pr_base(self) -> None:
+        feat1 = self.stack()
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        command = self.bootstrap_command(mode="local", gitnexus_mode="auto", map_build="never") + ["--revalidate"]
+        rerun = subprocess.run(
+            command, cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
+        )
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertNotIn("pass base already recorded", rerun.stderr, "STACKED_REVALIDATE_MOVED_BASE")
+        self.assertIn("<base_ref>refs/heads/feat1</base_ref>", rerun.stdout, "STACKED_REVALIDATE_MOVED_BASE")
+        self.assertEqual(self.status().get("baseOid"), feat1, "STACKED_REVALIDATE_MOVED_BASE")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_repointed_pr_base_keeps_the_first_recorded_base(self) -> None:
+        """The lookup can change after the first recording; the pass base cannot."""
+        feat1 = self.stack()
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.git("config", "branch.feat2.gh-merge-base", "main")
+        rerun = self.graph_bootstrap()
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(self.status().get("baseOid"), feat1, "REPOINTED_LOOKUP_REPLACED_FIRST_BASE")
+        self.assertIn(f"pass base already recorded as {feat1}", rerun.stderr, "REPOINTED_LOOKUP_REPLACED_FIRST_BASE")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_an_upstream_targeted_branch_keeps_the_producers_upstream_base(self) -> None:
+        """The producer prefers upstream/main over origin/main. A branch whose PR
+        goes to the parent project has no PR in the origin fork, so only its
+        `gh-merge-base` config names a base; that config must not flip the pass
+        onto the fork's diverged main."""
+        upstream = self.git_out("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/upstream/main", upstream)
+        (self.repo / "fork.py").write_text("def forked():\n    return 1\n", encoding="utf-8")
+        self.git("add", "fork.py")
+        self.git("commit", "-q", "-m", "the fork's main moved on")
+        self.git("update-ref", "refs/remotes/origin/main", self.git_out("rev-parse", "HEAD"))
+        self.git("checkout", "-q", "-b", "feature")
+        (self.repo / "work.py").write_text("def work():\n    return 2\n", encoding="utf-8")
+        self.git("add", "work.py")
+        self.git("commit", "-q", "-m", "work for the parent project")
+        self.git("config", "branch.feature.gh-merge-base", "main")
+
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(
+            self.status().get("baseOid"),
+            self.git_out("merge-base", "refs/remotes/upstream/main", "HEAD"),
+            "UPSTREAM_MAIN_PREFERENCE_LOST",
+        )
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_tag_coexisting_with_the_base_branch_is_not_measured(self) -> None:
+        """git resolves a bare name through refs/tags before refs/heads, so the
+        name handed to the producer must carry the namespace the adapter checked."""
+        self.git("checkout", "-q", "-b", "lower")
+        (self.repo / "lower.py").write_text("def lower():\n    return 1\n", encoding="utf-8")
+        self.git("add", "lower.py")
+        self.git("commit", "-q", "-m", "the lower branch")
+        branch = self.git_out("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-b", "leaf")
+        (self.repo / "leaf.py").write_text("def leaf():\n    return 2\n", encoding="utf-8")
+        self.git("add", "leaf.py")
+        self.git("commit", "-q", "-m", "the leaf branch")
+        # A tag of the same name, on a different commit: git prefers it for a bare name.
+        self.git("tag", "lower", "HEAD")
+        self.git("config", "branch.leaf.gh-merge-base", "lower")
+
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(self.status().get("baseOid"), branch, "TAG_SHADOWED_THE_BASE_BRANCH")
+
+    def test_an_impostor_host_supplies_no_github_slug(self) -> None:
+        """The slug pattern names GitHub itself, not any host whose name ends in
+        it: a lookup bound to the wrong project asks GitHub about a repository
+        this checkout does not have."""
+        bootstrap = self.adapter_module()
+        self.assertTrue(hasattr(bootstrap, "github_slug"), "NON_GITHUB_HOST_TREATED_AS_GITHUB")
+        self.assertIsNone(
+            bootstrap.github_slug("https://notgithub.com/owner/repo"),
+            "NON_GITHUB_HOST_TREATED_AS_GITHUB",
+        )
+        for origin in ("https://github.com/owner/repo.git", "git@github.com:owner/repo.git",
+                       "ssh://git@github.com/owner/repo.git"):
+            self.assertEqual(bootstrap.github_slug(origin), "owner/repo", "NON_GITHUB_HOST_TREATED_AS_GITHUB")
+
+    def test_a_github_looking_path_supplies_no_slug(self) -> None:
+        """The slug comes from the origin's host, not from a segment of its path."""
+        bootstrap = self.adapter_module()
+        self.assertTrue(hasattr(bootstrap, "github_slug"), "ORIGIN_PATH_TREATED_AS_GITHUB_HOST")
+        for origin in ("https://example.invalid/mirror/@github.com/owner/repo",
+                       "https://example.invalid/github.com/owner/repo",
+                       "git@example.invalid:mirror/github.com/owner/repo.git"):
+            self.assertIsNone(bootstrap.github_slug(origin), "ORIGIN_PATH_TREATED_AS_GITHUB_HOST")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_tag_sharing_the_base_name_is_not_the_base_branch(self) -> None:
+        """The recorded base names the branch the PR merges into; a tag that
+        happens to carry that name resolves to a commit but is not that branch."""
+        main = self.git_out("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-b", "feature")
+        (self.repo / "work.py").write_text("def work():\n    return 2\n", encoding="utf-8")
+        self.git("add", "work.py")
+        self.git("commit", "-q", "-m", "work")
+        self.git("tag", "release-base", "HEAD")
+        self.git("config", "branch.feature.gh-merge-base", "release-base")
+
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(self.status().get("baseOid"), main, "TAG_ACCEPTED_AS_BASE_BRANCH")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_local_base_branch_whose_name_holds_a_slash_is_resolved(self) -> None:
+        """The estate's branches are `fix/...`; a base that exists only locally
+        must be found under refs/heads, not read as a remote and its branch."""
+        self.git("checkout", "-q", "-b", "fix/lower")
+        (self.repo / "lower.py").write_text("def lower():\n    return 1\n", encoding="utf-8")
+        self.git("add", "lower.py")
+        self.git("commit", "-q", "-m", "the lower branch")
+        lower = self.git_out("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-b", "fix/leaf")
+        (self.repo / "leaf.py").write_text("def leaf():\n    return 2\n", encoding="utf-8")
+        self.git("add", "leaf.py")
+        self.git("commit", "-q", "-m", "the leaf branch")
+        self.git("config", "branch.fix/leaf.gh-merge-base", "fix/lower")
+
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(self.status().get("baseOid"), lower, "LOCAL_SLASHED_BASE_NOT_RESOLVED")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_run_that_failed_before_recording_leaves_the_retry_to_record_once(self) -> None:
+        """Recording follows a completed packet: a run that never got one leaves
+        no base behind, and the retry records it as the first."""
+        feat1 = self.stack()
+        interrupted = subprocess.run(
+            self.graph_command() + ["--top", "not-a-number"], cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
+        )
+        self.assertNotEqual(interrupted.returncode, 0, interrupted.stdout + interrupted.stderr)
+        self.assertNotIn("baseOid", self.status(), "INTERRUPTED_RUN_LEFT_A_BASE")
+
+        retry = self.graph_bootstrap()
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertEqual(self.status().get("baseOid"), feat1, "INTERRUPTED_RUN_LEFT_A_BASE")
+        self.assertNotIn("pass base already recorded", retry.stderr, "INTERRUPTED_RUN_LEFT_A_BASE")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_repointed_origin_keeps_the_first_recorded_base(self) -> None:
+        """The resolver reads origin on every run; the pass base is read once."""
+        feat1 = self.stack()
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(self.status().get("baseOid"), feat1)
+
+        self.git("remote", "set-url", "origin", "https://example.invalid/moved.git")
+        self.git("config", "branch.feat2.gh-merge-base", "main")
+        rerun = self.graph_bootstrap()
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(self.status().get("baseOid"), feat1, "ORIGIN_CHANGE_REPLACED_FIRST_BASE")
+        self.assertIn(
+            f"pass base already recorded as {feat1}", rerun.stderr, "ORIGIN_CHANGE_REPLACED_FIRST_BASE",
+        )
+
+    def adapter_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("repoforge_bootstrap_under_test", BOOTSTRAP)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_a_branch_with_no_pr_base_signal_keeps_the_producers_base(self) -> None:
+        main = self.git_out("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-b", "feature")
+        (self.repo / "feature.py").write_text("def grown():\n    return 1\n", encoding="utf-8")
+        self.git("add", "feature.py")
+        self.git("commit", "-q", "-m", "feature off main")
+        forged = self.graph_bootstrap()
+        self.assertEqual(forged.returncode, 0, forged.stdout + forged.stderr)
+        self.assertEqual(self.status().get("baseOid"), main, "MAIN_BASED_PASS_CHANGED_BASE")
+
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_the_recorder_counts_cycle_openings_and_nothing_else(self) -> None:
         """`tddCycleCount` is the recorder's own count of cycle-opening REDs.

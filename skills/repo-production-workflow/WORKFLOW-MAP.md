@@ -56,6 +56,15 @@ workflow advisor-result|advisor-disposition
 workflow pause|checkpoint|complete|prune
 ```
 
+`workflow verify` records what ran, not what suffices. Locally that is the
+changed-behavior RED/GREEN, the affected suites, the preservation checks, and
+the typed gate; this estate's CI `contracts` job runs the full integrated runner
+on the pushed candidate and the reviewer completion gate waits for it. A
+documentation-only pull request takes that job's cheap lane (the Markdown
+contract tests only), decided by `.github/scripts/pr_scope.py` from the
+pull-request delta; mixed, configuration, and history-less deltas take the
+production lane.
+
 ### `workflow status` contract
 
 `workflow status` is a public JSON Interface, not a dump of persistence internals.

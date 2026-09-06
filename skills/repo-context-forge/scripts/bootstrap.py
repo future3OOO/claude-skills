@@ -6,10 +6,13 @@ from __future__ import annotations
 import filecmp
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -115,6 +118,87 @@ def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> tuple[str
     if result.returncode != 0:
         return "", result.stderr.strip() or str(result.returncode)
     return result.stdout, ""
+
+
+SSH_ORIGIN = re.compile(r"^(?:[^@/\s]+@)?(?P<host>[^:/\s]+):(?P<path>.+)$")
+
+
+def github_slug(origin: str) -> str | None:
+    """The `owner/repo` a GitHub origin names, or None for any other origin.
+
+    The slug comes from the URL's own host: a path segment spelled like GitHub,
+    and a host merely ending in it, name someone else's project, and a lookup
+    bound to that project answers about a repository this checkout does not
+    have.
+    """
+    origin = origin.strip()
+    if not origin:
+        return None
+    parsed = urlsplit(origin)
+    host, path = parsed.hostname, parsed.path
+    if not host:
+        ssh = SSH_ORIGIN.match(origin)
+        if not ssh:
+            return None
+        host, path = ssh.group("host").lower(), ssh.group("path")
+    owner, _, repo = path.strip("/").removesuffix(".git").rpartition("/")
+    if host != "github.com" or not owner or not repo or "/" in owner:
+        return None
+    return f"{owner}/{repo}"
+
+
+def _branch_ref(root: Path, name: str, remotes: tuple[str, ...]) -> str | None:
+    """The named branch as a full ref, preferring `remotes` in order.
+
+    Branch namespaces only, and the full ref is what the producer is given: a
+    tag resolves to a commit just as a branch does, and git reads a bare name
+    through `refs/tags` before `refs/heads`, so only the full ref names the
+    branch the pull request merges into.
+    """
+    candidates = [f"refs/remotes/{remote}/{name}" for remote in remotes]
+    candidates.append(f"refs/heads/{name}")
+    for candidate in candidates:
+        _, missing = _git(root, "rev-parse", "--verify", "-q", candidate)
+        if not missing:
+            return candidate
+    return None
+
+
+def _pr_base_ref(root: Path) -> str | None:
+    """The branch this checkout's PR merges into, as a ref of this repository.
+
+    The producer's own lookup asks gh without naming a repository; on a
+    two-remote fork gh resolves the parent project, finds no PR, and the
+    producer falls back to the fork point from upstream main (measured on
+    GitNexus #18: the stacked pass then measured the whole stack). A live pull
+    request in the origin fork therefore decides, and it merges into that
+    fork's branch. gh's per-branch `gh-merge-base` config is the offline and
+    pre-pull-request signal, and it names a branch without saying which remote
+    holds it, so it keeps the producer's own upstream-first order: a config of
+    `main` on a branch bound for the parent project must not move the pass onto
+    the fork's diverged main. With no branch of that name, nothing is returned
+    and the producer's own resolution stands.
+    """
+    branch, failure = _git(root, "branch", "--show-current")
+    branch = branch.strip()
+    if failure or not branch:
+        return None
+    origin, _ = _git(root, "remote", "get-url", "origin")
+    slug = github_slug(origin)
+    if slug and shutil.which("gh"):
+        answer = subprocess.run(
+            ["gh", "pr", "view", branch, "--json", "baseRefName", "--jq", ".baseRefName"],
+            cwd=root, env={**os.environ, "GH_REPO": slug}, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8", check=False,
+        )
+        name = answer.stdout.strip() if answer.returncode == 0 else ""
+        if name:
+            return _branch_ref(root, name, ("origin",))
+    configured, _ = _git(root, "config", "--get", f"branch.{branch}.gh-merge-base")
+    name = configured.strip()
+    if not name:
+        return None
+    return _branch_ref(root, name, ("upstream", "origin"))
 
 
 def _worktree_snapshot(root: Path) -> tuple[str, str]:
@@ -283,6 +367,13 @@ def main(argv: list[str]) -> int:
         if not failure and not snapshot_failure and candidate != head_tree.strip():
             sys.stderr.write("note: dirty governed checkout; analyzing the candidate in local mode\n")
             args += ["--mode", "local"]
+    if workflow_slug and _extract_option(args, "--base") is None:
+        # The recorded base names what the PR merges into, on the first run and
+        # on every revalidation, so the packet surface, the snapshot-binding
+        # base, and baseOid all come from one ref. A caller's --base still wins.
+        base = _pr_base_ref(Path(_extract_option(args, "--repo") or os.getcwd()))
+        if base:
+            args += ["--base", base]
     if "--enforce-intake" not in args:
         args.append("--enforce-intake")
     if not workflow_slug:
