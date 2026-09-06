@@ -1090,6 +1090,60 @@ class WrapperPromptTests(HookHarness):
         self.assertIn("test>     return compute(1)  # RELATIVE-SEAM-INVOCATION", payload, marker)
         self.assertIn("test> === tests/support.py", payload, marker)
 
+    def test_a_shell_helper_survives_a_split_sensitive_character(self) -> None:
+        # git counts newlines; str.splitlines() also breaks on form feed and
+        # friends, which would shift every span after it.
+        marker = "SHELL_SPLIT_SHIFTS_SPAN"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "banner() {\n"
+            "  printf 'page\x0cbreak'\n"  # a real form feed, which splitlines() breaks on
+            "}\n\n"
+            "invoke_seam() {\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # SPLIT-SHELL-SEAM\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ \"$result\" == 2 ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_split.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_split.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ "$result" == 2 ]]\n', '  [[ "$result" == 2 ]]\n  [[ -n "$result" ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "shell-split", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # SPLIT-SHELL-SEAM", payload, marker)
+
+    def test_a_shell_helper_survives_a_brace_inside_a_heredoc(self) -> None:
+        marker = "SHELL_BLOCK_ENDED_EARLY"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  cat <<'EOF'\n"
+            "}\n"
+            "EOF\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # HEREDOC-SHELL-SEAM\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_heredoc.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_heredoc.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "shell-heredoc", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # HEREDOC-SHELL-SEAM", payload, marker)
+
     def test_a_parent_relative_import_forwards_its_helper(self) -> None:
         marker = "PARENT_RELATIVE_NOT_RESOLVED"
         env = self.wrapper_rig()
@@ -1160,9 +1214,13 @@ class WrapperPromptTests(HookHarness):
              str(ROOT), str(self.repo), base, candidate],
             cwd=ROOT, env={**self.env, "GIT_TRACE": str(trace)}, text=True, capture_output=True, check=False)
         self.assertEqual(probe.returncode, 0, marker + ": " + probe.stderr)
+        self.assertTrue(trace.exists(), marker + ": git produced no trace")
         reads = [line for line in trace.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
                  if "'show'" in line or " show " in line]
-        self.assertTrue(trace.exists(), marker)
+        # Positive first: the Module must have read the changed test file, or
+        # the two checks below would pass on an empty trace.
+        self.assertTrue(reads, marker + ": no git show was traced, so the checks below prove nothing")
+        self.assertTrue(any("test_escape.py" in line for line in reads), marker + f": {reads}")
         self.assertFalse([line for line in reads if "outside" in line], marker + f": {reads}")
         for line in reads:
             self.assertIn(candidate, line, marker + f": read outside the candidate tree: {line}")

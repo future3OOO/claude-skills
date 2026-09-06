@@ -44,6 +44,7 @@ _CALL = re.compile(r"(?<!\.)\b(\w+)[ \t]*\(")
 _ATTRIBUTE_CALL = re.compile(r"\.(\w+)[ \t]*\(")
 _WORD = re.compile(r"\b(\w+)\b")
 _SHELL_DEF = re.compile(r"^(?:function[ \t]+)?(\w+)[ \t]*(?:\(\))?[ \t]*\{[ \t]*$")
+_HEREDOC = re.compile(r"<<-?[ \t]*['\"]?(?P<word>\w+)['\"]?")
 _SHELL_SUFFIXES = (b".sh", b".bash")
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -282,18 +283,38 @@ def _resolve(scopes: dict[str | None, dict[str, ast.AST]], scope: str | None,
     return matches[0] if len(matches) == 1 else None
 
 
+def _shell_block_end(lines: list[str], start: int) -> int:
+    """The line after the function's closing brace, skipping heredoc bodies.
+
+    A heredoc can carry a line that is exactly a closing brace, which would
+    otherwise end the function before the Seam it invokes afterwards.
+    """
+    end = start + 1
+    delimiter: str | None = None
+    while end < len(lines):
+        line = lines[end]
+        if delimiter is not None:
+            if line.strip() == delimiter:
+                delimiter = None
+        elif heredoc := _HEREDOC.search(line):
+            delimiter = heredoc.group("word")
+        elif line == "}":
+            break
+        end += 1
+    return min(end + 1, len(lines))
+
+
 def _shell_definitions(text: str, shown: dict[int, str]) -> list[str]:
     """Shell function bodies the shown lines name, by the estate's `name() {` form."""
-    lines = text.splitlines()
+    # split("\n") for the same reason the Python path does it: these indexes are
+    # compared against git's line numbers, and git counts newlines only.
+    lines = text.split("\n")
     spans: dict[str, tuple[int, int]] = {}
     for index, line in enumerate(lines):
         match = _SHELL_DEF.match(line)
         if not match:
             continue
-        end = index + 1
-        while end < len(lines) and lines[end] != "}":
-            end += 1
-        spans[match.group(1)] = (index, min(end + 1, len(lines)))
+        spans[match.group(1)] = (index, _shell_block_end(lines, index))
     emitted = {name for name, (start, _) in spans.items() if start + 1 in shown}
     queue = sorted(_names(_WORD, shown.values()) - emitted)
     bodies: list[str] = []
