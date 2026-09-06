@@ -373,6 +373,57 @@ class ExecutedSelectionsTests(unittest.TestCase):
         self.assertIsInstance(value, dict, marker)
         return value
 
+    def authored_selection(self, marker: str, **overrides: object) -> object:
+        """What status reports for an authored item that never ran.
+
+        The status read is part of the attack: a projection that refuses is as
+        much a failure as one that invents a selection.
+        """
+        item = pending_behavior("BM_AUTHORED", red_failure="AUTHORED_MARKER")
+        item.update(overrides)
+        self.record_map(pending_behavior("BM_REAL", red_failure="REAL_MARKER"), item)
+        result = self.workflow("status")
+        self.assertEqual(result.returncode, 0, f"{marker}: status refused: {result.stderr.strip()}")
+        return (json.loads(result.stdout).get("mapSelections") or {}).get("BM_AUTHORED")
+
+    def test_authored_baseline_text_is_not_an_executed_selection(self) -> None:
+        """A selection claims a test ran; authored prose makes no such claim.
+
+        `evidence` is author-written on a disposed preservation item, and the
+        producer happens to stamp its baseline command into that same field, so
+        a supported runner in authored text parses into real-looking targets.
+        """
+        marker = "AUTHORED_BASELINE_REPORTED_AS_A_SELECTION"
+        selection = self.authored_selection(
+            marker,
+            kind="preservation",
+            status="already-satisfied",
+            evidence="baseline-passed: python3 -m unittest test_authored.Probe.test_behavior",
+        )
+
+        self.assertIsNone(selection, marker)
+
+    def test_authored_proof_command_on_a_pending_item_is_not_green(self) -> None:
+        """proofCommand is not refused in authored documents; status must be."""
+        marker = "AUTHORED_GREEN_REPORTED_AS_A_SELECTION"
+        selection = self.authored_selection(
+            marker, proofCommand="python3 -m unittest tests.test_never_executed",
+        )
+
+        self.assertIsNone(selection, marker)
+
+    def test_malformed_authored_text_leaves_status_readable(self) -> None:
+        """Authored prose is never parsed, so its quoting cannot break the projection."""
+        marker = "MALFORMED_AUTHORED_TEXT_BROKE_STATUS"
+        selection = self.authored_selection(
+            marker,
+            kind="preservation",
+            status="already-satisfied",
+            evidence='baseline-passed: python3 -m unittest "unclosed',
+        )
+
+        self.assertIsNone(selection, marker)
+
     def test_status_exposes_red_green_and_baseline_selections(self) -> None:
         marker = "EXECUTED_SELECTIONS_ABSENT"
         self.record_map(
@@ -472,27 +523,6 @@ class ExecutedSelectionsTests(unittest.TestCase):
         self.assertIn("BM_READONLY", json.dumps(self.selections(marker)), marker)
         self.assertEqual(history(), before, marker)
 
-    def test_an_authored_baseline_evidence_line_cannot_pass_as_a_selection(self) -> None:
-        """Authored prose is not a producer-recorded proof, so it decides nothing.
-
-        `evidence` is an authored field on a disposed preservation item, and the
-        producer writes its baseline command into that same field. Text shaped
-        like the stamp therefore reaches the reader, and it must resolve to
-        unknown rather than to an empty selection that would read as ownership.
-        """
-        marker = "UNKNOWN_SELECTION_REPORTED_AS_EMPTY"
-        disposed = pending_behavior("BM_AUTHORED", red_failure="AUTHORED_MARKER")
-        disposed.update({
-            "kind": "preservation",
-            "status": "already-satisfied",
-            "evidence": "baseline-passed: ./run-the-suite.sh --everything",
-        })
-        self.record_map(pending_behavior("BM_REAL", red_failure="REAL_MARKER"), disposed)
-
-        record = self.selections(marker)["BM_AUTHORED"]["baseline"]
-
-        self.assertIsNone(record["targets"], marker)
-        self.assertTrue(str(record.get("unknown") or "").strip(), marker)
 
     @unittest.skipUnless(PYTEST, "the real pytest runner is unavailable")
     def test_an_ambiguous_selection_stays_unknown_while_an_empty_one_is_empty(self) -> None:
