@@ -1191,6 +1191,58 @@ class WrapperPromptTests(HookHarness):
         self.assertIn("test>     return compute(1)  # MODULE-ALIAS-SEAM", payload, marker)
         self.assertIn("test> === tests/support.py", payload, marker)
 
+    def test_an_imported_helper_beats_a_same_named_method_elsewhere(self) -> None:
+        marker = "IMPORT_SHADOWED_BY_DECOY_METHOD"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # IMPORTED-OVER-DECOY-SEAM\n")
+        module = ("import unittest\n"
+                  "from tests.support import run_app\n\n\n"
+                  "class DecoyTests(unittest.TestCase):\n"
+                  "    def run_app(self):\n"
+                  "        return None  # DECOY-METHOD-BODY\n\n\n"
+                  "class ImporterTests(unittest.TestCase):\n"
+                  "    def test_imported(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_decoy.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_decoy.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "import-decoy", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # IMPORTED-OVER-DECOY-SEAM", payload, marker)
+
+    def test_an_indented_delimiter_does_not_end_a_plain_heredoc(self) -> None:
+        marker = "HEREDOC_TERMINATOR_MATCHED_INDENTED"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  cat <<'EOF'\n"
+            "  EOF\n"
+            "}\n"
+            "EOF\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # INDENTED-HEREDOC-SEAM\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_indent.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_indent.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "heredoc-indent", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # INDENTED-HEREDOC-SEAM", payload, marker)
+
     def test_a_parent_relative_import_forwards_its_helper(self) -> None:
         marker = "PARENT_RELATIVE_NOT_RESOLVED"
         env = self.wrapper_rig()

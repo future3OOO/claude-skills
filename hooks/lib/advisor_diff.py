@@ -44,7 +44,7 @@ _CALL = re.compile(r"(?<!\.)\b(\w+)[ \t]*\(")
 _ATTRIBUTE_CALL = re.compile(r"\.(\w+)[ \t]*\(")
 _WORD = re.compile(r"\b(\w+)\b")
 _SHELL_DEF = re.compile(r"^(?:function[ \t]+)?(\w+)[ \t]*(?:\(\))?[ \t]*\{[ \t]*$")
-_HEREDOC = re.compile(r"<<-?[ \t]*['\"]?(?P<word>\w+)['\"]?")
+_HEREDOC = re.compile(r"<<(?P<dash>-?)[ \t]*['\"]?(?P<word>\w+)['\"]?")
 _SHELL_SUFFIXES = (b".sh", b".bash")
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -199,7 +199,9 @@ def _python_definitions(blob: bytes, text: str, shown: dict[int, str],
     bodies: list[str] = []
     while queue:
         scope, name, attribute = queue.pop(0)
-        node = _resolve(scopes, scope, name, attribute)
+        # An imported name outranks the cross-class guess: a same-named method
+        # of an unrelated class is a decoy, not what the changed line calls.
+        node = _resolve(scopes, scope, name, attribute, guess=name not in sources)
         if node is None:
             # Not defined here: the Seam may run in a helper imported from
             # another test module of the same repository, one hop out.
@@ -302,9 +304,10 @@ def _python_scopes(tree: ast.AST):
 
 
 def _resolve(scopes: dict[str | None, dict[str, ast.AST]], scope: str | None,
-             name: str, attribute: bool) -> ast.AST | None:
+             name: str, attribute: bool, guess: bool = True) -> ast.AST | None:
     """Resolve the way Python binds: an attribute call takes the owning class
-    first, a bare call takes module scope first. Then a unique class match."""
+    first, a bare call takes module scope first. Then, unless the name is bound
+    by an import, a unique class match."""
     own = scopes.get(scope, {}) if scope is not None else {}
     module = scopes.get(None, {})
     first, second = (own, module) if attribute else (module, own)
@@ -312,6 +315,8 @@ def _resolve(scopes: dict[str | None, dict[str, ast.AST]], scope: str | None,
         return first[name]
     if name in second:
         return second[name]
+    if not guess:
+        return None
     matches = [table[name] for owner, table in scopes.items() if owner is not None and name in table]
     return matches[0] if len(matches) == 1 else None
 
@@ -323,14 +328,17 @@ def _shell_block_end(lines: list[str], start: int) -> int:
     otherwise end the function before the Seam it invokes afterwards.
     """
     end = start + 1
-    delimiter: str | None = None
+    delimiter: tuple[str, bool] | None = None
     while end < len(lines):
         line = lines[end]
         if delimiter is not None:
-            if line.strip() == delimiter:
+            # Shell ends a heredoc on the delimiter alone, and strips leading
+            # tabs only for the <<- form, so an indented line is body text.
+            word, dash = delimiter
+            if (line.lstrip("\t") if dash else line) == word:
                 delimiter = None
         elif heredoc := _HEREDOC.search(line):
-            delimiter = heredoc.group("word")
+            delimiter = (heredoc.group("word"), bool(heredoc.group("dash")))
         elif line == "}":
             break
         end += 1
