@@ -109,7 +109,7 @@ packet, graph, advisor findings, and governing artifact. Resolve, interview, or
 block on every material unknown. For transaction-sensitive work, load the
 [transaction doctrine](../production-code/references/transaction-doctrine.md).
 
-The recorded preflight owns the initial Behavior Map: stable, atomic proof obligations for the contract, state transitions, every material guarantee at a wrapped or rerouted Seam, visible interactions, and known architecture assumptions needing falsification. It is authoritative for proof obligations, not architecture selection; a plan may reference it but is not a second proof owner.
+The recorded preflight owns the initial Behavior Map; read the tdd skill's [Record the Behavior Map in Preflight](../tdd/SKILL.md) section before writing it. It is authoritative for proof obligations, not architecture selection; a plan may reference it but is not a second proof owner.
 
 Record a completed preflight only through its recorder, which demands the
 skill's structured document (thirteen non-empty text sections plus a non-empty

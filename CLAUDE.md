@@ -176,7 +176,8 @@ Exception: documentation-only changes do not require Repo Context Forge, even wh
 
 Governance docs that change agent behavior, such as `CLAUDE.md`,
 `AGENTS.md`, or `docs/agents/`, should also run `code-review` before handoff;
-trivial docs edits can stay on the lightweight path.
+trivial docs edits can stay on the lightweight path. Before the first edit under
+`skills/**` in a pass, invoke `writing-great-skills`.
 
 Choose one stable task slug, begin its workflow state, then run the installed
 bootstrap wrapper with the same slug:
