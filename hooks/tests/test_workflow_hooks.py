@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -735,6 +736,40 @@ Chosen architecture preserves PRES-1 and records ASSUMP-1.
 BATCH_DEMAND = "do not ration findings across rounds"
 VERDICT_SYMMETRY = "names no measured or concretely reachable failure is not material"
 BOUNDARY_SEAM = "outgoing process boundary is the real Seam"
+RESERVED_MISMATCH = "Reserve context-mismatch for a candidate or projection identity mismatch"
+WORDING_VERDICT = ("original request's literal wording that quotes a real-Seam measurement "
+                   "is answered with a verdict, never context-mismatch")
+DIFF_SECTION = "--- current-pass diff: passStartOid^{tree} -> activeCandidateTree ---"
+DEFINITIONS_SECTION = "--- invoked test definitions"
+PROBE_RULE = "retained real-Seam probe"
+
+# A test-classified module whose Seam is invoked directly in the test and again
+# through a two-level same-file helper chain, with the assertion 60 lines below
+# the direct invocation so an ordinary three-line hunk never reaches it.
+TEST_MODULE = (
+    "import unittest\n"
+    "from app import compute\n\n\n"
+    "class ComputeTests(unittest.TestCase):\n"
+    "    def setUp(self):\n"
+    "        self.base = 1  # SETUP-BODY\n\n"
+    "    def invoke(self, value):\n"
+    "        return compute(value)  # HELPER-SEAM-INVOCATION\n\n"
+    "    def run_app(self):\n"
+    "        return self.invoke(self.base)\n\n"
+    "    def test_compute_adds_one(self):\n"
+    "        direct = compute(1)  # DIRECT-SEAM-INVOCATION\n"
+    "        via_helper = self.run_app()\n"
+    + "".join(f"        pad_{index} = {index}\n" for index in range(60))
+    + "        self.assertEqual(direct, 2)\n"
+    "        self.assertEqual(via_helper, 2)\n"
+)
+ADDED_ASSERTION = "        self.assertIsInstance(direct, int)  # ADDED-ASSERTION\n"
+PRODUCTION_MODULE = (
+    "def compute(value):\n    return value + 1\n\n\n"
+    'FAR_LINE = "PRODUCTION-FAR-LINE"\n'
+    + "".join(f"pad_{index} = {index}\n" for index in range(20))
+    + "value = 1\n"
+)
 
 
 class WrapperPromptTests(HookHarness):
@@ -769,16 +804,24 @@ class WrapperPromptTests(HookHarness):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
     def payload(self, env: dict[str, str], index: int) -> str:
-        return (Path(env["CAPTURE_DIR"]) / f"payload-{index}").read_text(encoding="utf-8")
+        # surrogateescape: a payload may carry test source that is not UTF-8.
+        return (Path(env["CAPTURE_DIR"]) / f"payload-{index}").read_text(
+            encoding="utf-8", errors="surrogateescape")
 
-    def preflight_consult(self, env: dict[str, str], slug: str) -> None:
-        begun = self.state("begin", "--slug", slug)
+    def preflight_consult(self, env: dict[str, str], slug: str, *, intent: str | None = None,
+                          edit=None, marker: str = "") -> None:
+        """`edit` runs after begin and before the graph recording, so the candidate
+        tree the checkpoint binds is the edited one. `marker` labels a wrapper
+        failure with the caller's mapped behavior."""
+        begun = self.state("begin", "--slug", slug, *(("--intent", intent) if intent else ()))
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        if edit is not None:
+            edit()
         record_context_forge(self.repo, self.tmp)
         rig = Path(env["CAPTURE_DIR"]).parent
         result = self.run_advisor(env, "--slug", slug, "--phase", "preflight-advice",
                                   "--design-file", str(rig / "design.md"), "--", "scope question")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, marker + result.stdout + result.stderr)
 
     def test_the_preflight_prompt_lacks_the_batch_demand(self) -> None:
         marker = "PREFLIGHT_PROMPT_CONTAMINATED"
@@ -786,9 +829,11 @@ class WrapperPromptTests(HookHarness):
         self.preflight_consult(env, "prompt-pre")
         self.assertNotIn(BATCH_DEMAND, self.payload(env, 1), marker)
 
-    def final_consult(self, env: dict[str, str], slug: str) -> str:
-        """Advance a no-change pass to final review and return the final payload."""
-        self.preflight_consult(env, slug)
+    def final_consult(self, env: dict[str, str], slug: str, *, intent: str | None = None,
+                      edit=None, marker: str = "") -> str:
+        """Advance a pass (no change unless `edit` makes one) to final review and
+        return the final payload."""
+        self.preflight_consult(env, slug, intent=intent, edit=edit, marker=marker)
         wid = json.loads(self.state("status").stdout)["workflowId"]
         self.assertEqual(self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid,
                                     "--stage", "preflight", "--findings", "none").returncode, 0)
@@ -840,6 +885,850 @@ class WrapperPromptTests(HookHarness):
         self.assertIn("never RED/GREEN or production proof", args, marker)
         self.assertIn(BOUNDARY_SEAM, args, marker)
         self.assertIn("inside the asserted contract", args, marker)
+
+    def commit_fixtures(self, files: dict[str, bytes]) -> None:
+        for relative, content in files.items():
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "fixtures")
+
+    def extend_test(self) -> None:
+        target = self.repo / "tests" / "test_app.py"
+        target.write_text(target.read_text(encoding="utf-8") + ADDED_ASSERTION, encoding="utf-8")
+
+    def diff_section(self, payload: str) -> str:
+        """The diff the wrapper sent, with its line framing removed."""
+        body = payload.split(DIFF_SECTION + "\n", 1)[1].split("\n=== Consult\n", 1)[0]
+        lines = body.split("\n")[1:]  # the untrusted-data framing line
+        return "".join(line[len("diff> "):] + "\n" for line in lines if line.startswith("diff> "))
+
+    def test_a_changed_test_hunk_arrives_inside_its_enclosing_definition(self) -> None:
+        # GitNexus #12's wording pass: an assertion added inside an existing test
+        # reached the advisor as a three-line hunk with no Seam invocation.
+        marker = "TEST_HUNK_LACKS_ENCLOSING_DEFINITION"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"tests/test_app.py": TEST_MODULE.encode()})
+        payload = self.final_consult(env, "test-context", edit=self.extend_test)
+        self.assertIn("diff> +" + ADDED_ASSERTION.rstrip("\n"), payload, marker)
+        self.assertIn("diff>      def test_compute_adds_one(self):", payload, marker)
+        self.assertIn("diff>          direct = compute(1)  # DIRECT-SEAM-INVOCATION", payload, marker)
+        candidate = json.loads(self.state("status").stdout)["activeCandidateTree"]
+        blob = subprocess.run(["git", "rev-parse", f"{candidate}:tests/test_app.py"], cwd=self.repo,
+                              env=self.env, text=True, capture_output=True, check=True).stdout.strip()
+        index_line = re.search(r"^diff> index [0-9a-f]+\.\.([0-9a-f]+)", payload.split("b/tests/test_app.py", 1)[1], re.MULTILINE)
+        self.assertIsNotNone(index_line, marker)
+        self.assertTrue(blob.startswith(index_line.group(1)), marker + f": {blob} vs {index_line.group(1)}")
+
+    def test_setup_and_invoked_helpers_follow_the_changed_test(self) -> None:
+        marker = "INVOKED_DEFINITIONS_NOT_FORWARDED"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"tests/test_app.py": TEST_MODULE.encode()})
+        payload = self.final_consult(env, "invoked-defs", edit=self.extend_test)
+        self.assertIn(DEFINITIONS_SECTION, payload, marker)
+        self.assertIn("test>         self.base = 1  # SETUP-BODY", payload, marker)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+        self.assertEqual(payload.count("test>     def run_app(self):"), 1, marker)
+        self.assertEqual(payload.count("test>     def invoke(self, value):"), 1, marker)
+
+    def test_a_non_ascii_test_path_keeps_its_definitions(self) -> None:
+        # git quotes non-ASCII paths in the diff header under default core.quotePath.
+        marker = "QUOTED_PATH_LOSES_DEFINITIONS"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"tests/test_café.py": TEST_MODULE.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_café.py"
+            target.write_text(target.read_text(encoding="utf-8") + ADDED_ASSERTION, encoding="utf-8")
+
+        payload = self.final_consult(env, "quoted-path", edit=edit)
+        self.assertIn(DEFINITIONS_SECTION, payload, marker)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_a_multiline_helper_signature_forwards_its_whole_body(self) -> None:
+        marker = "MULTILINE_DEFINITION_TRUNCATED"
+        env = self.wrapper_rig()
+        module = TEST_MODULE.replace(
+            "    def invoke(self, value):\n",
+            "    def invoke(\n        self,\n        value,\n    ):\n",
+        )
+        self.commit_fixtures({"tests/test_app.py": module.encode()})
+        payload = self.final_consult(env, "multiline-def", edit=self.extend_test)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_a_same_named_helper_in_another_class_does_not_suppress_the_changed_one(self) -> None:
+        marker = "SHOWN_HELPER_NAME_SUPPRESSES_ANOTHER_SCOPE"
+        env = self.wrapper_rig()
+        decoy = (
+            "class OtherTests(unittest.TestCase):\n"
+            "    def invoke(self, value):\n"
+            "        return None  # DECOY-HELPER\n\n"
+            "    def test_other(self):\n"
+            "        self.assertIsNone(self.invoke(1))\n\n\n"
+        )
+        module = TEST_MODULE.replace("class ComputeTests", decoy + "class ComputeTests", 1)
+        self.commit_fixtures({"tests/test_app.py": module.encode()})
+
+        def edit() -> None:
+            # The decoy's own invoke is shown in the diff, so a bare-name
+            # emitted set marks "invoke" done and drops the changed class's helper.
+            target = self.repo / "tests" / "test_app.py"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                "        return None  # DECOY-HELPER\n",
+                "        return None  # DECOY-HELPER CHANGED\n") + ADDED_ASSERTION, encoding="utf-8")
+
+        payload = self.final_consult(env, "scoped-helper", edit=edit)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_two_changed_classes_each_resolve_their_own_helper(self) -> None:
+        marker = "CALLS_RESOLVED_IN_ONE_ARBITRARY_SCOPE"
+        env = self.wrapper_rig()
+        second = (
+            "class SecondTests(unittest.TestCase):\n"
+            "    def invoke(self, value):\n"
+            "        return compute(value)  # SECOND-CLASS-SEAM\n\n"
+            "    def test_second(self):\n"
+            "        self.assertEqual(self.invoke(1), 2)\n\n\n"
+        )
+        module = TEST_MODULE.replace("class ComputeTests", second + "class ComputeTests", 1)
+        self.commit_fixtures({"tests/test_app.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_app.py"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                "        self.assertEqual(self.invoke(1), 2)\n",
+                "        self.assertEqual(self.invoke(1), 2)\n        self.assertIsInstance(self.invoke(1), int)\n",
+            ) + ADDED_ASSERTION, encoding="utf-8")
+
+        payload = self.final_consult(env, "per-scope", edit=edit)
+        self.assertIn("test>         return compute(value)  # SECOND-CLASS-SEAM", payload, marker)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_a_production_rename_without_test_changes_is_gits_own_diff(self) -> None:
+        marker = "NO_TEST_DIFF_CHANGED"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"lib.py": ("value = 1\n" + "".join(f"pad_{i} = {i}\n" for i in range(40))).encode()})
+        payload = self.final_consult(
+            env, "prod-rename", edit=lambda: self.git("mv", "lib.py", "renamed_lib.py"), marker=marker)
+        state = json.loads(self.state("status").stdout)
+        expected = subprocess.run(
+            ["git", "diff", "--no-ext-diff", "--binary", state["passStartOid"] + "^{tree}", state["activeCandidateTree"]],
+            cwd=self.repo, env=self.env, text=True, capture_output=True, check=True).stdout
+        self.assertEqual(self.diff_section(payload), expected, marker)
+
+    def test_a_helper_imported_from_another_test_module_is_forwarded(self) -> None:
+        # This repository's own shape: hooks/tests/* import their helpers from
+        # hooks/tests/support.py, so the Seam runs outside the changed file.
+        marker = "IMPORTED_HELPER_NOT_FORWARDED"
+        env = self.wrapper_rig()
+        support = (
+            "from app import compute\n\n\n"
+            "def run_app():\n"
+            "    return compute(1)  # IMPORTED-SEAM-INVOCATION\n"
+        )
+        module = (
+            "import unittest\n"
+            "from tests.support import run_app\n\n\n"
+            "class ImportedTests(unittest.TestCase):\n"
+            "    def test_imported(self):\n"
+            "        self.assertEqual(run_app(), 2)\n"
+        )
+        self.commit_fixtures({"tests/support.py": support.encode(), "tests/test_imported.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_imported.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "imported-helper", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # IMPORTED-SEAM-INVOCATION", payload, marker)
+        self.assertIn("test> === tests/support.py", payload, marker)
+
+    def test_pytest_class_and_module_hooks_are_forwarded(self) -> None:
+        marker = "XUNIT_CLASS_HOOKS_NOT_FORWARDED"
+        env = self.wrapper_rig()
+        module = ("from app import compute\n\n\n"
+                  "def setup_module(module):\n"
+                  "    module.prepared = compute(1)  # MODULE-HOOK-SEAM\n\n\n"
+                  "class TestHooks:\n"
+                  "    def setup_class(cls):\n"
+                  "        cls.base = compute(1)  # CLASS-HOOK-SEAM\n\n"
+                  "    def test_hooked(self):\n"
+                  "        assert self.base == 2\n")
+        self.commit_fixtures({"tests/test_hooks.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_hooks.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        assert isinstance(self.base, int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "xunit-hooks", edit=edit, marker=marker)
+        self.assertIn("test>         cls.base = compute(1)  # CLASS-HOOK-SEAM", payload, marker)
+        self.assertIn("test>     module.prepared = compute(1)  # MODULE-HOOK-SEAM", payload, marker)
+
+    def test_a_relative_import_forwards_its_helper(self) -> None:
+        marker = "RELATIVE_IMPORT_NOT_RESOLVED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # RELATIVE-SEAM-INVOCATION\n")
+        module = ("import unittest\n"
+                  "from .support import run_app\n\n\n"
+                  "class RelativeTests(unittest.TestCase):\n"
+                  "    def test_relative(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_relative.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_relative.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "relative-import", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # RELATIVE-SEAM-INVOCATION", payload, marker)
+        self.assertIn("test> === tests/support.py", payload, marker)
+
+    def test_a_shell_helper_survives_a_split_sensitive_character(self) -> None:
+        # git counts newlines; str.splitlines() also breaks on form feed and
+        # friends, which would shift every span after it.
+        marker = "SHELL_SPLIT_SHIFTS_SPAN"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "banner() {\n"
+            "  printf 'page\x0cbreak'\n"  # a real form feed, which splitlines() breaks on
+            "}\n\n"
+            "invoke_seam() {\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # SPLIT-SHELL-SEAM\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ \"$result\" == 2 ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_split.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_split.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ "$result" == 2 ]]\n', '  [[ "$result" == 2 ]]\n  [[ -n "$result" ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "shell-split", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # SPLIT-SHELL-SEAM", payload, marker)
+
+    def test_a_shell_helper_survives_a_brace_inside_a_heredoc(self) -> None:
+        marker = "SHELL_BLOCK_ENDED_EARLY"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  cat <<'EOF'\n"
+            "}\n"
+            "EOF\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # HEREDOC-SHELL-SEAM\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_heredoc.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_heredoc.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "shell-heredoc", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # HEREDOC-SHELL-SEAM", payload, marker)
+
+    def test_a_package_import_target_forwards_its_helper(self) -> None:
+        marker = "PACKAGE_IMPORT_TARGET_NOT_RESOLVED"
+        env = self.wrapper_rig()
+        package_init = ("from app import compute\n\n\n"
+                        "def run_app():\n"
+                        "    return compute(1)  # PACKAGE-SEAM-INVOCATION\n")
+        module = ("import unittest\n"
+                  "from tests.helpers import run_app\n\n\n"
+                  "class PackageTests(unittest.TestCase):\n"
+                  "    def test_package(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/helpers/__init__.py": package_init.encode(),
+                              "tests/test_package.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_package.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "package-import", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # PACKAGE-SEAM-INVOCATION", payload, marker)
+        self.assertIn("test> === tests/helpers/__init__.py", payload, marker)
+
+    def test_a_helper_called_through_a_module_alias_is_forwarded(self) -> None:
+        marker = "MODULE_ALIAS_CALL_NOT_FOLLOWED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # MODULE-ALIAS-SEAM\n")
+        module = ("import unittest\n"
+                  "from . import support\n\n\n"
+                  "class AliasModuleTests(unittest.TestCase):\n"
+                  "    def test_alias_module(self):\n"
+                  "        self.assertEqual(support.run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_alias_module.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_alias_module.py"
+            target.write_text(
+                target.read_text(encoding="utf-8") + "        self.assertIsInstance(support.run_app(), int)\n",
+                encoding="utf-8")
+
+        payload = self.final_consult(env, "module-alias", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # MODULE-ALIAS-SEAM", payload, marker)
+        self.assertIn("test> === tests/support.py", payload, marker)
+
+    def test_an_imported_helper_beats_a_same_named_method_elsewhere(self) -> None:
+        marker = "IMPORT_SHADOWED_BY_DECOY_METHOD"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # IMPORTED-OVER-DECOY-SEAM\n")
+        module = ("import unittest\n"
+                  "from tests.support import run_app\n\n\n"
+                  "class DecoyTests(unittest.TestCase):\n"
+                  "    def run_app(self):\n"
+                  "        return None  # DECOY-METHOD-BODY\n\n\n"
+                  "class ImporterTests(unittest.TestCase):\n"
+                  "    def test_imported(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_decoy.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_decoy.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "import-decoy", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # IMPORTED-OVER-DECOY-SEAM", payload, marker)
+
+    def test_an_indented_delimiter_does_not_end_a_plain_heredoc(self) -> None:
+        marker = "HEREDOC_TERMINATOR_MATCHED_INDENTED"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  cat <<'EOF'\n"
+            "  EOF\n"
+            "}\n"
+            "EOF\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # INDENTED-HEREDOC-SEAM\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_indent.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_indent.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "heredoc-indent", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # INDENTED-HEREDOC-SEAM", payload, marker)
+
+    def test_a_package_member_module_alias_is_followed(self) -> None:
+        marker = "PACKAGE_MEMBER_ALIAS_NOT_FOLLOWED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # PACKAGE-MEMBER-SEAM\n")
+        module = ("import unittest\n"
+                  "from tests import support\n\n\n"
+                  "class MemberTests(unittest.TestCase):\n"
+                  "    def test_member(self):\n"
+                  "        self.assertEqual(support.run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_member.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_member.py"
+            target.write_text(
+                target.read_text(encoding="utf-8") + "        self.assertIsInstance(support.run_app(), int)\n",
+                encoding="utf-8")
+
+        payload = self.final_consult(env, "member-alias", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # PACKAGE-MEMBER-SEAM", payload, marker)
+
+    def test_a_hyphenated_heredoc_delimiter_ends_its_heredoc(self) -> None:
+        marker = "HEREDOC_DELIMITER_TRUNCATED"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  cat <<EOF-1\n"
+            "body\n"
+            "EOF-1\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # HYPHEN-DELIMITER-SEAM\n"
+            "}\n\n"
+            "unrelated_helper() {\n"
+            "  echo UNRELATED-BODY-MARKER\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_delim.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_delim.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "heredoc-delim", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # HYPHEN-DELIMITER-SEAM", payload, marker)
+        self.assertNotIn("UNRELATED-BODY-MARKER", payload, marker)
+
+    def test_a_shift_or_quoted_marker_is_not_a_heredoc(self) -> None:
+        marker = "HEREDOC_FALSE_POSITIVE_ABSORBED_FUNCTIONS"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  shifted=$(( 1 << 2 ))\n"
+            "  echo \"<<EOF\"\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # SHIFT-SEAM\n"
+            "}\n\n"
+            "unrelated_helper() {\n"
+            "  echo UNRELATED-BODY-MARKER\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ -n \"$result\" ]]\n"
+            "}\n"
+        )
+        self.commit_fixtures({"tests/test_shift.sh": shell.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_shift.sh"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                '  [[ -n "$result" ]]\n', '  [[ -n "$result" ]]\n  [[ "$result" == 2 ]]\n'), encoding="utf-8")
+
+        payload = self.final_consult(env, "heredoc-shift", edit=edit, marker=marker)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # SHIFT-SEAM", payload, marker)
+        self.assertNotIn("UNRELATED-BODY-MARKER", payload, marker)
+
+    def test_a_parent_relative_import_forwards_its_helper(self) -> None:
+        marker = "PARENT_RELATIVE_NOT_RESOLVED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # PARENT-RELATIVE-SEAM\n")
+        module = ("import unittest\n"
+                  "from ..support import run_app\n\n\n"
+                  "class ParentTests(unittest.TestCase):\n"
+                  "    def test_parent(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/unit/__init__.py": b"", "tests/unit/test_parent.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "unit" / "test_parent.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "parent-relative", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # PARENT-RELATIVE-SEAM", payload, marker)
+        self.assertIn("test> === tests/support.py", payload, marker)
+
+    def test_a_relative_import_above_the_root_reads_nothing(self) -> None:
+        marker = "RELATIVE_IMPORT_ESCAPED_ROOT"
+        env = self.wrapper_rig()
+        module = ("import unittest\n"
+                  "from ....outside import run_app\n\n\n"
+                  "class EscapeTests(unittest.TestCase):\n"
+                  "    def test_escape(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/test_escape.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_escape.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsNotNone(run_app())\n",
+                              encoding="utf-8")
+
+        # The consult completes and carries no definitions section at all: the
+        # unresolvable level yields no path, so nothing is read or forwarded.
+        payload = self.final_consult(env, "escape-import", edit=edit, marker=marker)
+        self.assertNotIn(DEFINITIONS_SECTION, payload, marker)
+        self.assertNotIn("outside", payload.split(DIFF_SECTION, 1)[0], marker)
+
+    def test_an_above_root_import_reads_nothing_outside_the_candidate(self) -> None:
+        # Emission is not the claim; the claim is about reads, so git's own
+        # trace records every object this Module asks for.
+        marker = "OUTSIDE_CANDIDATE_READ_OBSERVED"
+        module = ("import unittest\n"
+                  "from ....outside import run_app\n\n\n"
+                  "class EscapeTests(unittest.TestCase):\n"
+                  "    def test_escape(self):\n"
+                  "        self.assertIsNotNone(run_app())\n")
+        self.commit_fixtures({"tests/test_escape.py": module.encode()})
+        (self.repo / "tests" / "test_escape.py").write_text(
+            module + "        self.assertTrue(run_app())\n", encoding="utf-8")
+        base = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=self.repo, env=self.env,
+                              text=True, capture_output=True, check=True).stdout.strip()
+        self.git("add", "-A")
+        candidate = subprocess.run(["git", "write-tree"], cwd=self.repo, env=self.env,
+                                   text=True, capture_output=True, check=True).stdout.strip()
+        trace = self.tmp / "git-trace.log"
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             ("import sys; sys.path.insert(0, sys.argv[1]);"
+              "from hooks.lib.advisor_diff import current_pass_evidence;"
+              "current_pass_evidence(*sys.argv[2:])"),
+             str(ROOT), str(self.repo), base, candidate],
+            cwd=ROOT, env={**self.env, "GIT_TRACE": str(trace)}, text=True, capture_output=True, check=False)
+        self.assertEqual(probe.returncode, 0, marker + ": " + probe.stderr)
+        self.assertTrue(trace.exists(), marker + ": git produced no trace")
+        reads = [line for line in trace.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
+                 if "'show'" in line or " show " in line]
+        # Positive first: the Module must have read the changed test file, or
+        # the two checks below would pass on an empty trace.
+        self.assertTrue(reads, marker + ": no git show was traced, so the checks below prove nothing")
+        self.assertTrue(any("test_escape.py" in line for line in reads), marker + f": {reads}")
+        self.assertFalse([line for line in reads if "outside" in line], marker + f": {reads}")
+        for line in reads:
+            self.assertIn(candidate, line, marker + f": read outside the candidate tree: {line}")
+
+    def test_an_aliased_import_forwards_the_original_definition(self) -> None:
+        marker = "ALIASED_IMPORT_NOT_FORWARDED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # ALIASED-SEAM-INVOCATION\n")
+        module = ("import unittest\n"
+                  "from tests.support import run_app as run\n\n\n"
+                  "class AliasTests(unittest.TestCase):\n"
+                  "    def test_alias(self):\n"
+                  "        self.assertEqual(run(), 2)\n")
+        self.commit_fixtures({"tests/support.py": support.encode(), "tests/test_alias.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_alias.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "aliased-import", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # ALIASED-SEAM-INVOCATION", payload, marker)
+
+    def test_an_autouse_fixture_is_forwarded_without_a_reference(self) -> None:
+        marker = "AUTOUSE_FIXTURE_NOT_FORWARDED"
+        env = self.wrapper_rig()
+        module = ("import pytest\n"
+                  "from app import compute\n\n\n"
+                  "@pytest.fixture(autouse=True)\n"
+                  "def prepared():\n"
+                  "    return compute(1)  # AUTOUSE-SEAM-INVOCATION\n\n\n"
+                  "def test_autouse():\n"
+                  "    assert True\n")
+        self.commit_fixtures({"tests/test_autouse.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_autouse.py"
+            target.write_text(target.read_text(encoding="utf-8").replace(
+                "    assert True\n", "    assert True\n    assert 1 == 1\n"), encoding="utf-8")
+
+        payload = self.final_consult(env, "autouse", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # AUTOUSE-SEAM-INVOCATION", payload, marker)
+
+    def test_a_unicode_line_separator_does_not_shift_definition_spans(self) -> None:
+        # str.splitlines() breaks on U+2028; ast counts only newlines.
+        marker = "LINE_SEPARATOR_SHIFTS_SPAN"
+        env = self.wrapper_rig()
+        module = TEST_MODULE.replace(
+            "    def invoke(self, value):\n",
+            "    def invoke(self, value):\n        note = \"para graph\"\n        assert note\n",
+        )
+        self.commit_fixtures({"tests/test_app.py": module.encode()})
+        payload = self.final_consult(env, "line-separator", edit=self.extend_test)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_a_fixture_that_depends_on_another_fixture_forwards_both(self) -> None:
+        marker = "FIXTURE_DEPENDENCY_NOT_FOLLOWED"
+        env = self.wrapper_rig()
+        module = (
+            "import pytest\n"
+            "from app import compute\n\n\n"
+            "@pytest.fixture\n"
+            "def base():\n"
+            "    return compute(1)  # BASE-FIXTURE-SEAM\n\n\n"
+            "@pytest.fixture\n"
+            "def wrapped(base):\n"
+            "    return base\n\n\n"
+            "def test_wrapped(wrapped):\n"
+            "    assert wrapped == 2\n"
+        )
+        self.commit_fixtures({"tests/test_chain.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_chain.py"
+            target.write_text(target.read_text(encoding="utf-8") + "    assert isinstance(wrapped, int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "fixture-chain", edit=edit)
+        self.assertIn("test>     return compute(1)  # BASE-FIXTURE-SEAM", payload, marker)
+
+    def test_a_bare_call_resolves_to_the_module_level_definition(self) -> None:
+        marker = "BARE_CALL_RESOLVED_TO_METHOD"
+        env = self.wrapper_rig()
+        module = (
+            "import unittest\n"
+            "from app import compute\n\n\n"
+            "def helper():\n"
+            "    return compute(1)  # MODULE-LEVEL-SEAM\n\n\n"
+            "class OtherTests(unittest.TestCase):\n"
+            "    def helper(self):\n"
+            "        return None  # METHOD-DECOY\n\n\n"
+            "class BareTests(unittest.TestCase):\n"
+            "    def test_bare(self):\n"
+            "        self.assertEqual(helper(), 2)\n"
+        )
+        self.commit_fixtures({"tests/test_bare.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_bare.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(helper(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "bare-call", edit=edit)
+        self.assertIn("test>     return compute(1)  # MODULE-LEVEL-SEAM", payload, marker)
+
+    def test_a_bare_call_beats_a_same_named_method_in_its_own_class(self) -> None:
+        marker = "BARE_CALL_RESOLVED_TO_OWN_METHOD"
+        env = self.wrapper_rig()
+        module = (
+            "import unittest\n"
+            "from app import compute\n\n\n"
+            "def helper():\n"
+            "    return compute(1)  # MODULE-LEVEL-SEAM\n\n\n"
+            "class OwnTests(unittest.TestCase):\n"
+            "    def helper(self):\n"
+            "        return None  # OWN-METHOD-DECOY\n\n"
+            "    def test_bare(self):\n"
+            "        self.assertEqual(helper(), 2)\n"
+        )
+        self.commit_fixtures({"tests/test_own.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_own.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(helper(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "bare-own", edit=edit)
+        self.assertIn("test>     return compute(1)  # MODULE-LEVEL-SEAM", payload, marker)
+
+    def test_a_noprefix_repository_keeps_its_definitions(self) -> None:
+        marker = "NOPREFIX_HEADER_LOSES_DEFINITIONS"
+        env = self.wrapper_rig()
+        self.git("config", "diff.noprefix", "true")
+        self.commit_fixtures({"tests/test_app.py": TEST_MODULE.encode()})
+        payload = self.final_consult(env, "noprefix", edit=self.extend_test)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_a_test_to_test_rename_delivers_the_new_paths_definitions(self) -> None:
+        # The old path's chunk is a pure deletion, so it contributes no shown
+        # lines and the deleted blob is never requested.
+        marker = "RENAMED_TEST_PATH_ABORTS"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"tests/test_app.py": TEST_MODULE.encode()})
+
+        def edit() -> None:
+            self.git("mv", "tests/test_app.py", "tests/test_app_renamed.py")
+            target = self.repo / "tests" / "test_app_renamed.py"
+            target.write_text(target.read_text(encoding="utf-8") + ADDED_ASSERTION, encoding="utf-8")
+
+        payload = self.final_consult(env, "renamed-test", edit=edit, marker=marker)
+        # The renamed path arrives as an add, so its helper is in the diff itself.
+        self.assertIn("diff> +        return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+        headers = re.findall(r"^diff> diff --git a/(\S+) b/(\S+)$", payload, re.MULTILINE)
+        self.assertEqual(sorted(new for _, new in headers),
+                         ["tests/test_app.py", "tests/test_app_renamed.py"], marker)
+
+    def test_a_separator_in_a_changed_line_does_not_shift_the_diff_reader(self) -> None:
+        marker = "DIFF_READER_SPLITS_ON_SEPARATOR"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"tests/test_app.py": TEST_MODULE.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_app.py"
+            target.write_text(
+                target.read_text(encoding="utf-8")
+                + "        note = \"para graph\"\n"
+                + "        self.assertTrue(note)\n"
+                + "        self.assertEqual(self.run_app(), 2)\n",
+                encoding="utf-8")
+
+        payload = self.final_consult(env, "diff-separator", edit=edit, marker=marker)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_the_payload_retains_the_transports_whole_diff(self) -> None:
+        marker = "PAYLOAD_DIFF_NOT_RETAINED"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"tests/test_app.py": TEST_MODULE.encode()})
+        payload = self.final_consult(env, "retention", edit=self.extend_test)
+        state = json.loads(self.state("status").stdout)
+        produced = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]);"
+             "from hooks.lib.advisor_diff import current_pass_evidence;"
+             "diff, definitions = current_pass_evidence(*sys.argv[2:]);"
+             "sys.stdout.buffer.write(diff + b'\\0' + definitions.encode('utf-8', 'surrogateescape'))",
+             str(ROOT), str(self.repo), state["passStartOid"] + "^{tree}", state["activeCandidateTree"]],
+            cwd=ROOT, env=self.env, capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")
+        diff, definitions = produced.split("\0", 1)
+        self.assertEqual(self.diff_section(payload), diff, marker)
+        # Both channels, not just the diff: the definitions the transport
+        # produced must reach the payload whole.
+        framed = payload.split(DEFINITIONS_SECTION, 1)[1].split("\n", 2)[2].split("\n=== Consult\n", 1)[0]
+        self.assertEqual("".join(line[len("test> "):] + "\n" for line in framed.split("\n")
+                                 if line.startswith("test> ")), definitions, marker)
+
+    def test_a_quoted_test_filename_keeps_its_definitions(self) -> None:
+        marker = "QUOTED_FILENAME_LOSES_DEFINITIONS"
+        env = self.wrapper_rig()
+        # git quotes a name containing a double quote whatever core.quotePath says.
+        self.commit_fixtures({'tests/test_"app".py': TEST_MODULE.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / 'test_"app".py'
+            target.write_text(target.read_text(encoding="utf-8") + ADDED_ASSERTION, encoding="utf-8")
+
+        payload = self.final_consult(env, "quoted-name", edit=edit, marker=marker)
+        self.assertIn("test>         return compute(value)  # HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_a_declared_latin1_test_module_still_produces_a_payload(self) -> None:
+        # Source decoded with surrogateescape must survive the write back out.
+        marker = "NON_UTF8_DEFINITION_REFUSED"
+        env = self.wrapper_rig()
+        module = TEST_MODULE.replace(
+            "        return compute(value)  # HELPER-SEAM-INVOCATION\n",
+            "        return compute(value)  # HELPER-SEAM-INVOCATION café\n",
+        )
+        self.commit_fixtures({"tests/test_app.py": b"# -*- coding: latin-1 -*-\n" + module.encode("latin-1")})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_app.py"
+            target.write_bytes(target.read_bytes() + ADDED_ASSERTION.encode("latin-1"))
+
+        payload = self.final_consult(env, "latin1-source", edit=edit, marker=marker)
+        self.assertIn("HELPER-SEAM-INVOCATION", payload, marker)
+
+    def test_shell_helpers_and_pytest_fixtures_reach_the_payload(self) -> None:
+        marker = "HELPER_FORMS_NOT_FORWARDED"
+        env = self.wrapper_rig()
+        shell = (
+            "#!/usr/bin/env bash\n"
+            "invoke_seam() {\n"
+            "  python3 -c 'import app; print(app.compute(1))'  # SHELL-SEAM-INVOCATION\n"
+            "}\n\n"
+            "test_compute() {\n"
+            "  result=$(invoke_seam)\n"
+            "  [[ \"$result\" == 2 ]]\n"
+            "}\n"
+        )
+        fixture = (
+            "import pytest\n"
+            "from app import compute\n\n\n"
+            "@pytest.fixture\n"
+            "def computed():\n"
+            "    return compute(1)  # FIXTURE-SEAM-INVOCATION\n\n\n"
+            "def test_computed(computed):\n"
+            "    assert computed == 2\n"
+        )
+        self.commit_fixtures({"tests/test_shell.sh": shell.encode(), "tests/test_fixture.py": fixture.encode()})
+
+        def edit() -> None:
+            shell_path = self.repo / "tests" / "test_shell.sh"
+            shell_path.write_text(shell_path.read_text(encoding="utf-8").replace(
+                '  [[ "$result" == 2 ]]\n', '  [[ "$result" == 2 ]]\n  [[ -n "$result" ]]\n'), encoding="utf-8")
+            fixture_path = self.repo / "tests" / "test_fixture.py"
+            fixture_path.write_text(fixture_path.read_text(encoding="utf-8") + "    assert isinstance(computed, int)\n",
+                                    encoding="utf-8")
+
+        payload = self.final_consult(env, "helper-forms", edit=edit)
+        self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # SHELL-SEAM-INVOCATION", payload, marker)
+        self.assertIn("test>     return compute(1)  # FIXTURE-SEAM-INVOCATION", payload, marker)
+
+    def test_the_final_prompt_reserves_context_mismatch_for_identity_mismatch(self) -> None:
+        # RCF #22's appeal: a measured rejection of an intent-wording claim was
+        # answered with context-mismatch and zero findings, which advances nothing.
+        marker = "CONTEXT_MISMATCH_NOT_RESERVED"
+        env = self.wrapper_rig()
+        payload = self.final_consult(env, "prompt-reserved")
+        self.assertIn(RESERVED_MISMATCH, payload, marker)
+        self.assertIn(WORDING_VERDICT, payload, marker)
+        self.assertNotIn(RESERVED_MISMATCH, self.payload(env, 1), marker)
+
+    def test_the_recorded_intent_reaches_the_final_review_exactly_once(self) -> None:
+        marker = "INTENT_NOT_EXACTLY_ONCE"
+        env = self.wrapper_rig()
+        intent = "INTENT-ONCE-3f9c wording pass for the advisor transport"
+        payload = self.final_consult(env, "intent-once", intent=intent)
+        self.assertEqual(payload.count(intent), 1, marker)
+
+    def test_production_hunks_keep_ordinary_context_beside_test_context(self) -> None:
+        marker = "PRODUCTION_HUNK_EXPANDED"
+        env = self.wrapper_rig()
+        self.commit_fixtures({"app.py": PRODUCTION_MODULE.encode(), "tests/test_app.py": TEST_MODULE.encode()})
+
+        def edit() -> None:
+            self.extend_test()
+            (self.repo / "app.py").write_text(PRODUCTION_MODULE.replace("value = 1\n", "value = 2\n"), encoding="utf-8")
+
+        payload = self.final_consult(env, "mixed-change", edit=edit)
+        self.assertIn("diff> +value = 2", payload, marker)
+        self.assertNotIn("PRODUCTION-FAR-LINE", payload, marker)
+
+    def test_every_changed_path_appears_once_across_the_partition(self) -> None:
+        marker = "PATH_PARTITION_INCOMPLETE"
+        env = self.wrapper_rig()
+        self.commit_fixtures({
+            "tests/test_app.py": TEST_MODULE.encode(),
+            "tests/test_[glob].py": b"def test_glob():\n    assert True\n",
+            "tests/fixtures/blob.bin": bytes(range(256)),
+        })
+
+        def edit() -> None:
+            self.git("mv", "tests/test_app.py", "probe.py")  # test -> production
+            (self.repo / "tests" / "test_[glob].py").write_text("def test_glob():\n    assert 1 == 1\n", encoding="utf-8")
+            (self.repo / "tests" / "fixtures" / "blob.bin").write_bytes(bytes(reversed(range(256))))
+            (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+
+        payload = self.final_consult(env, "partition", edit=edit)
+        headers = re.findall(r"^diff> diff --git a/(\S+) b/(\S+)$", payload, re.MULTILINE)
+        self.assertEqual(len(headers), len(set(headers)), marker + f": {headers}")
+        old_paths, new_paths = [pair[0] for pair in headers], [pair[1] for pair in headers]
+        self.assertEqual(old_paths.count("tests/test_app.py"), 1, marker + f": {headers}")
+        self.assertEqual(new_paths.count("probe.py"), 1, marker + f": {headers}")
+        for path in ("app.py", "tests/test_[glob].py", "tests/fixtures/blob.bin"):
+            self.assertEqual(new_paths.count(path), 1, marker + f": {path} in {headers}")
+
+    def test_a_pass_without_test_changes_sends_gits_own_diff(self) -> None:
+        marker = "NO_TEST_DIFF_CHANGED"
+        env = self.wrapper_rig()
+        payload = self.final_consult(
+            env, "no-test-diff", edit=lambda: (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8"))
+        state = json.loads(self.state("status").stdout)
+        expected = subprocess.run(
+            ["git", "diff", "--no-ext-diff", "--binary", state["passStartOid"] + "^{tree}", state["activeCandidateTree"]],
+            cwd=self.repo, env=self.env, text=True, capture_output=True, check=True).stdout
+        self.assertEqual(self.diff_section(payload), expected, marker)
 
     def ready_for_final_review(self, slug: str) -> str:
         """A pass at a ready final-review checkpoint that never consulted the advisor."""
@@ -905,6 +1794,24 @@ class WrapperPromptTests(HookHarness):
         resumed = (Path(env["CAPTURE_DIR"]) / "args-2").read_text(encoding="utf-8").split()
         self.assertEqual(resumed[resumed.index("--resume") + 1], created, marker)
         self.assertEqual(json.loads(self.state("status").stdout)["finalReview"]["status"], "commit-ready", marker)
+
+
+class SkillTextTests(unittest.TestCase):
+    """The skill Markdown agents read states each #211 slice-3 rule once."""
+
+    def test_the_tdd_skill_states_the_probe_rule_once(self) -> None:
+        marker = "PROBE_GUIDANCE_NOT_STATED_ONCE"
+        tdd = (ROOT / "skills" / "tdd" / "SKILL.md").read_text(encoding="utf-8")
+        workflow = (ROOT / "skills" / "repo-production-workflow" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(tdd.count(PROBE_RULE), 1, marker)
+        self.assertIn("never waives RED/GREEN", tdd, marker)
+        self.assertNotIn(PROBE_RULE, workflow, marker)
+
+    def test_the_advisor_skill_mirrors_the_reserved_verdict_rule(self) -> None:
+        marker = "SKILL_VERDICT_TEXT_STALE"
+        skill = (ROOT / "skills" / "codex-advisor" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("reserved for a candidate or projection identity mismatch", skill, marker)
+        self.assertIn("literal wording", skill, marker)
 
 
 class TollDeletionTests(HookHarness):
