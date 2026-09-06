@@ -253,9 +253,12 @@ def _module_aliases(tree: ast.AST, path: bytes) -> dict[str, bytes]:
     """Local name -> module path, for imports that bind a module rather than a name."""
     aliases: dict[str, bytes] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and not node.module:
+        if isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                source = _module_path(alias.name, node.level, path)
+                # The imported name may be a module inside that package rather
+                # than a definition in it, so it is a candidate either way.
+                member = f"{node.module}.{alias.name}" if node.module else alias.name
+                source = _module_path(member, node.level, path)
                 if source is not None:
                     aliases[alias.asname or alias.name] = source
         elif isinstance(node, ast.Import):

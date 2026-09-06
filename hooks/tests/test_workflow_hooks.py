@@ -1243,6 +1243,29 @@ class WrapperPromptTests(HookHarness):
         payload = self.final_consult(env, "heredoc-indent", edit=edit, marker=marker)
         self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # INDENTED-HEREDOC-SEAM", payload, marker)
 
+    def test_a_package_member_module_alias_is_followed(self) -> None:
+        marker = "PACKAGE_MEMBER_ALIAS_NOT_FOLLOWED"
+        env = self.wrapper_rig()
+        support = ("from app import compute\n\n\n"
+                   "def run_app():\n"
+                   "    return compute(1)  # PACKAGE-MEMBER-SEAM\n")
+        module = ("import unittest\n"
+                  "from tests import support\n\n\n"
+                  "class MemberTests(unittest.TestCase):\n"
+                  "    def test_member(self):\n"
+                  "        self.assertEqual(support.run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/support.py": support.encode(),
+                              "tests/test_member.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_member.py"
+            target.write_text(
+                target.read_text(encoding="utf-8") + "        self.assertIsInstance(support.run_app(), int)\n",
+                encoding="utf-8")
+
+        payload = self.final_consult(env, "member-alias", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # PACKAGE-MEMBER-SEAM", payload, marker)
+
     def test_a_parent_relative_import_forwards_its_helper(self) -> None:
         marker = "PARENT_RELATIVE_NOT_RESOLVED"
         env = self.wrapper_rig()
