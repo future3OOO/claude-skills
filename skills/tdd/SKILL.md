@@ -37,6 +37,7 @@ Map:
 - every meaningful state transition and rejected transition, including permitted nesting or re-entry;
 - at every wrapped or rerouted Seam, each material success, failure, input-form, state, and atomicity guarantee the new path can alter;
 - interactions where one behavior can mutate state or invalidate a guarantee owned by another;
+- every value one evaluation system produces and another decides under its own semantics; the item names which system's rules decide, and its attack is **differential** (tests.md);
 - known load-bearing assumptions that need semantic falsification.
 
 Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
@@ -80,7 +81,7 @@ JSON
 
 The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only; `sourceBehaviorId` names the GREEN item whose consequence the update records. Dispositions take the statuses of Section 1: `superseded` names its replacement in `supersededBy` (addable in the same update) and resolves only once the chain's terminal replacement is GREEN, so a target that can never be GREEN refuses; `withdrawn` refuses an attacked or finding-owning item; `pending` refuses anything but an `omitted` or `already-satisfied` preservation item.
 
-- identify each load-bearing mechanism or state boundary introduced by the GREEN and drive the cheapest real-Seam probe that could falsify it;
+- identify each load-bearing mechanism, state boundary, or cross-system value the GREEN introduced and drive the cheapest real-Seam probe that could falsify it;
 - add any newly exposed touched-Seam preservation or interaction behavior;
 - retain a passing falsifier only as material regression evidence;
 - if review finds a behavioral defect, add it to the map and drive a fresh RED before the fix.
