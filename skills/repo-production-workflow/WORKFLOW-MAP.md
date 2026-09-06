@@ -208,7 +208,7 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Advise, never refuse: name the steps the pass has not recorded (active workflow, preflight, a contract item without its RED, an unsettled preservation item, reassessment) as context and admit the edit; silent for test-like, docs, scratch, and non-repository paths |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Advise, never refuse: name what the pass has not recorded and admit the edit; docs, scratch, and non-repository paths are silent; test-like paths skip only the RED advice |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
 

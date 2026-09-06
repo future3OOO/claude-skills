@@ -584,7 +584,11 @@ def _run_tdd(values: list[str]) -> int:
             elif phase == "red" and valid:
                 updated_item["status"] = "red"
                 updated_item["redCommand"] = command_text
-                updated_item["redProof"] = proof
+                # Lateness is sticky: a rerun on a cleaner tree keeps every path an
+                # earlier RED for this item recorded.
+                previous = mapped.get("redProof") if isinstance(mapped.get("redProof"), dict) else {}
+                changed = sorted({*previous.get("productionChanged", []), *proof.get("productionChanged", [])})
+                updated_item["redProof"] = {**proof, "productionChanged": changed} if changed else proof
                 next_active = args.behavior_id
                 reassessment_pending = None
                 action = "in-progress" if matches else "reopen"

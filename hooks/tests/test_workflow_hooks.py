@@ -462,6 +462,20 @@ class WorkflowHookTests(HookHarness):
         self.assertNotIn("permissionDecision", output, advised.stdout)
         self.assertIn("new active workflow", output["additionalContext"])
 
+    def test_the_gate_names_a_revalidation_window_distinctly(self) -> None:
+        marker = "REVALIDATION_ADVICE_INDISTINCT"
+        self.complete_workflow()
+        completed = json.loads(self.intake("app.py").stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("new active workflow", completed, marker)
+        self.assertNotIn("revalidation", completed, marker + ": " + completed)
+        governance = self.repo / "skills" / "diagnose" / "SKILL.md"
+        governance.parent.mkdir(parents=True)
+        governance.write_text("updated agent behavior\n", encoding="utf-8")
+        self.assertEqual(self.post_edit("skills/diagnose/SKILL.md").returncode, 0)
+        revalidating = json.loads(self.intake("app.py").stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("new active workflow", revalidating, marker)
+        self.assertIn("revalidation", revalidating, marker + ": " + revalidating)
+
     def test_first_governance_edit_resumes_at_the_first_pending_phase(self) -> None:
         begun = self.state("begin", "--slug", "governance-sequence")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
@@ -1831,6 +1845,30 @@ class RedFirstTests(HookHarness):
         self.assertEqual(self.map_status(), {"BM_A": "green", "BM_C": "green", "BM_D": "green", "BM_B": "already-satisfied"}, marker)
         # The fixture's own in-pass commit makes every item late; the late baseline must be among them.
         self.assertIn("BM_B", self.summary().rsplit("Late RED: ", 1)[-1], marker + ": " + self.summary())
+
+    def test_a_late_red_stays_late_when_rerun_on_a_clean_tree(self) -> None:
+        marker = "LATE_MARKER_LOST_ON_RERUN"
+        slug = "sticky-late"
+        self.open_pass(slug)
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        self.assertIn("Late RED: BM_A", self.summary())
+        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")  # reverted
+        (self.repo / "extra.py").write_text("d = 1\n", encoding="utf-8")  # a different path is dirty for the rerun
+        rerun = self.tdd(slug, "red", "BM_A", "a")
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(self.map_item("BM_A").get("redProof", {}).get("productionChanged"), ["app.py", "extra.py"],
+                         "UNION_DROPS_A_RECORDED_PATH: " + json.dumps(self.map_item("BM_A"))[:300])
+        (self.repo / "extra.py").unlink()  # the next rerun launches clean
+        rerun = self.tdd(slug, "red", "BM_A", "a")
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(self.map_item("BM_A").get("redProof", {}).get("productionChanged"), ["app.py", "extra.py"],
+                         marker + ": " + json.dumps(self.map_item("BM_A"))[:300])
+        self.assertIn("Late RED: BM_A", self.summary(), marker + ": " + self.summary())
+        # A clean RED followed by a clean rerun stays unlabelled.
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        self.assertEqual(self.summary().rsplit("Late RED: ", 1)[-1].split(".")[0], "BM_A", marker + ": " + self.summary())
 
     def map_update(self, slug: str, wid: str, name: str, document: dict) -> subprocess.CompletedProcess[str]:
         path = self.tmp / f"{name}.json"

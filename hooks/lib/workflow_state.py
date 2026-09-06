@@ -1640,7 +1640,9 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
     state = read_workflow(identity)
     if state is None:
         return False, ["active workflow"]
-    if state.get("phase") == "complete" or state.get("revalidation"):
+    if state.get("revalidation"):
+        return False, ["new active workflow (governance revalidation is re-verifying the completed pass; a production edit belongs to the next one)"]
+    if state.get("phase") == "complete":
         return False, ["new active workflow (this one is complete; begin the next pass)"]
     missing = [
         name for name, ready in (
