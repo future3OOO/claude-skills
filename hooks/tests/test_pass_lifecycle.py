@@ -473,9 +473,12 @@ class PassLifecycleTests(unittest.TestCase):
             str(identity.root), str(_active_candidate_tree(identity)),
             str(state["passStartOid"]),
         )
+        # The producer's own shape: an entry starts as {kind, file, target, direction,
+        # status} and unindexed_file() adds only status and diagnostic, so there is no
+        # resolved_identity key at all (repo-context-forge gitnexus_analysis.py).
         packet["gitnexus"]["analysis"]["entries"].append({
             "kind": kind, "file": "package-lock.json", "target": "package-lock.json",
-            "direction": "", "status": "unindexed", "resolved_identity": "",
+            "direction": "", "status": "unindexed",
             "diagnostic": "GitNexus does not index this file",
         })
         path = self.tmp / f"{slug}.json"
