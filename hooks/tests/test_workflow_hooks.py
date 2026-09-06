@@ -1144,6 +1144,29 @@ class WrapperPromptTests(HookHarness):
         payload = self.final_consult(env, "shell-heredoc", edit=edit, marker=marker)
         self.assertIn("test>   python3 -c 'import app; print(app.compute(1))'  # HEREDOC-SHELL-SEAM", payload, marker)
 
+    def test_a_package_import_target_forwards_its_helper(self) -> None:
+        marker = "PACKAGE_IMPORT_TARGET_NOT_RESOLVED"
+        env = self.wrapper_rig()
+        package_init = ("from app import compute\n\n\n"
+                        "def run_app():\n"
+                        "    return compute(1)  # PACKAGE-SEAM-INVOCATION\n")
+        module = ("import unittest\n"
+                  "from tests.helpers import run_app\n\n\n"
+                  "class PackageTests(unittest.TestCase):\n"
+                  "    def test_package(self):\n"
+                  "        self.assertEqual(run_app(), 2)\n")
+        self.commit_fixtures({"tests/__init__.py": b"", "tests/helpers/__init__.py": package_init.encode(),
+                              "tests/test_package.py": module.encode()})
+
+        def edit() -> None:
+            target = self.repo / "tests" / "test_package.py"
+            target.write_text(target.read_text(encoding="utf-8") + "        self.assertIsInstance(run_app(), int)\n",
+                              encoding="utf-8")
+
+        payload = self.final_consult(env, "package-import", edit=edit, marker=marker)
+        self.assertIn("test>     return compute(1)  # PACKAGE-SEAM-INVOCATION", payload, marker)
+        self.assertIn("test> === tests/helpers/__init__.py", payload, marker)
+
     def test_a_parent_relative_import_forwards_its_helper(self) -> None:
         marker = "PARENT_RELATIVE_NOT_RESOLVED"
         env = self.wrapper_rig()

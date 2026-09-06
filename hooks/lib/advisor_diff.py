@@ -103,12 +103,22 @@ def _invoked_definitions(root: str, bound: tuple[str, ...], candidate_tree: str,
 
 
 def _imported_definitions(root: str, candidate_tree: str, path: bytes, names: set[str]) -> str:
-    """The named definitions of an imported same-repository test module, one hop out."""
-    if not is_test_path(path.decode("utf-8", "surrogateescape")):
-        return ""
-    try:
-        blob = _git(root, "show", candidate_tree.encode() + b":" + path)
-    except subprocess.CalledProcessError:
+    """The named definitions of an imported same-repository test module, one hop out.
+
+    An import names a module or a package, so the package's `__init__.py` is
+    the second candidate for the same dotted name.
+    """
+    blob = None
+    for candidate in (path, path[:-len(b".py")] + b"/__init__.py"):
+        if not is_test_path(candidate.decode("utf-8", "surrogateescape")):
+            continue
+        try:
+            blob = _git(root, "show", candidate_tree.encode() + b":" + candidate)
+        except subprocess.CalledProcessError:
+            continue
+        path = candidate
+        break
+    if blob is None:
         return ""
     text = blob.decode("utf-8", "surrogateescape")
     # Every definition of the imported module is "shown" to nothing, so the
