@@ -180,8 +180,8 @@ class ContractProofAuthorityTests(unittest.TestCase):
         )
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
 
-    def intake_reason(self, relative: str = "app.py") -> str:
-        """The real PreToolUse hook's deny reason for a production path, '' when allowed."""
+    def intake_advice(self, relative: str = "app.py") -> str:
+        """The real PreToolUse hook's advisory context for a production path, '' when nothing is missing."""
         hook = subprocess.run(
             [sys.executable, str(INTAKE)], cwd=self.repo, env=self.h.env, text=True,
             input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
@@ -190,44 +190,39 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(hook.returncode, 0, hook.stdout + hook.stderr)
         if not hook.stdout:
             return ""
-        return json.loads(hook.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        output = json.loads(hook.stdout)["hookSpecificOutput"]
+        self.assertNotIn("permissionDecision", output, hook.stdout)
+        return output["additionalContext"]
 
-    def assert_red_refused(
-        self, red: subprocess.CompletedProcess[str], names: str, marker: str
-    ) -> None:
-        """A RED the contract-first rule cannot honor is refused at cycle-open, unrecorded."""
-        # The nested runner's report stays out of the message: two FAIL blocks
-        # for one failure would make this test's own RED unattributable.
-        last = (red.stderr.strip().splitlines() or [""])[-1]
-        self.assertEqual(red.returncode, 2, f"{marker}: {last}")
-        self.assertIn(names, last, marker)
+    def item_status(self, behavior_id: str) -> str:
         state = read_workflow(self.identity)
-        self.assertEqual(state["tdd"], "pending", marker)
-        self.assertNotIn("tddCycleCount", state, marker)
+        document = json.loads(self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"])).stdout)["document"]
+        return next(str(entry["status"]) for entry in document["behaviorMap"] if entry["id"] == behavior_id)
 
-    def test_preservation_red_cannot_open_the_first_edit(self) -> None:
-        marker = "PRESERVATION_RED_OPENED_EDIT"
+    def test_a_preservation_red_before_any_contract_green_records(self) -> None:
+        marker = "PRESERVATION_RED_STILL_REFUSED"
         slug, _ = self.h.begin_to_preflight([contract("BM_C"), preservation("BM_P", red_failure="VALUE_NOT_ONE")])
         red = self.h.tdd(slug, "red", "BM_P", "import app; assert app.value == 3, 'VALUE_NOT_ONE'")
-        self.assert_red_refused(red, "BM_C", marker)
-        self.assertIn("contract", red.stderr, marker)
-        self.assertIn("TDD", self.intake_reason(), marker)
+        self.assertEqual(red.returncode, 0, marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
+        self.assertNotIn("RED refused before opening a cycle", red.stderr, marker)
+        self.assertEqual(self.item_status("BM_P"), "red", marker)
+        self.assertIn("BM_C", self.intake_advice(), marker)
 
-    def test_pending_preservation_blocks_the_contract_red_until_dispositioned(self) -> None:
-        marker = "PENDING_PRESERVATION_IGNORED"
+    def test_a_contract_red_beside_a_pending_preservation_item_records(self) -> None:
+        marker = "CONTRACT_RED_STILL_REFUSED"
         slug, workflow_id = self.h.begin_to_preflight([contract("BM_C"), preservation("BM_P")])
         red = self.h.tdd(slug, "red", "BM_C", "import app; assert app.value == 2, 'VALUE_NOT_TWO'")
-        self.assert_red_refused(red, "BM_P", marker)
+        self.assertEqual(red.returncode, 0, marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
+        self.assertEqual(self.item_status("BM_C"), "red", marker)
+        self.assertIn("BM_P", self.intake_advice(), marker)
         dispositioned = self.h.update_map(slug, workflow_id, {
             "reassessment": "preservation baseline recorded before the first edit",
             "dispositions": [{"id": "BM_P", "status": "already-satisfied",
                               "evidence": "app.value == 1 observed through the public import"}],
         })
         self.assertEqual(dispositioned.returncode, 0, marker + ": " + dispositioned.stdout + dispositioned.stderr)
-        red = self.h.tdd(slug, "red", "BM_C", "import app; assert app.value == 2, 'VALUE_NOT_TWO'")
-        self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
         self.record_production_code(slug, workflow_id)
-        self.assertEqual(self.intake_reason(), "", marker)
+        self.assertEqual(self.intake_advice(), "", marker)
 
     def test_passing_pre_edit_red_records_producer_backed_already_satisfied(self) -> None:
         marker = "BASELINE_PASS_NOT_RECORDED"
@@ -248,10 +243,10 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertIn("test_behavior_probe.BehaviorProbe.test_behavior", present["evidence"], marker)
         self.assertIsNone(recorded.get("activeBehaviorId"), marker)
         self.record_production_code(slug, workflow_id)
-        self.assertIn("contract", self.intake_reason(), marker)
+        self.assertIn("contract", self.intake_advice(), marker)
         not_required = self.h.cli("tdd", "--slug", slug, "--not-required", "the mapped behavior exists")
         self.assertEqual(not_required.returncode, 0, marker + ": " + not_required.stdout + not_required.stderr)
-        self.assertIn("contract", self.intake_reason(), marker)
+        self.assertIn("contract", self.intake_advice(), marker)
 
     def test_baseline_requires_an_executed_passing_test(self) -> None:
         # A baseline is the surface passing, not the command exiting 0: a
@@ -314,9 +309,9 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(green.returncode, 0, (green.stderr.strip().splitlines() or [""])[-1])
 
     def test_contract_baseline_counts_only_this_passes_edits(self) -> None:
-        # The recorded baseOid is the branch fork point; a reviewer-fix pass on
-        # a PR head must not read earlier PR commits as its own edits.
-        marker = "PRIOR_COMMITS_REFUSED_CONTRACT_BASELINE"
+        # A reviewer-fix pass on a PR head must not read earlier PR commits as
+        # its own edits: the changed set is measured from the pass start commit.
+        marker = "PRIOR_COMMITS_COUNTED_AS_THIS_PASSES_EDITS"
         base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, env=self.h.env,
                               text=True, stdout=subprocess.PIPE, check=True).stdout.strip()
         (self.repo / "app.py").write_text("value = 1\nnote = 'earlier PR commit'\n", encoding="utf-8")
@@ -326,27 +321,9 @@ class ContractProofAuthorityTests(unittest.TestCase):
         baseline = self.h.tdd(slug, "red", "BM_PRESENT", "import app; assert app.value == 1, 'VALUE_WAS_NOT_ONE'")
         self.assertEqual(baseline.returncode, 0, marker + ": " + (baseline.stderr.strip().splitlines() or [""])[-1])
         self.assertEqual(json.loads(baseline.stdout.strip().splitlines()[-1]).get("status"), "already-satisfied", marker)
-
-    def test_contract_baseline_is_refused_after_production_edits(self) -> None:
-        # A contract surface passing after this pass's edits is the edits'
-        # work; a preservation item added by reassessment may still baseline.
-        marker = "CONTRACT_BASELINE_AFTER_EDIT_RECORDED"
-        slug, workflow_id = self.h.begin_to_preflight(
-            [contract("BM_A"), contract("BM_LATER", red_failure="VALUE_NOT_TWO_LATER")]
-        )
-        self.green(slug, "BM_A", 2, "VALUE_NOT_TWO")
-        assessed = self.h.update_map(slug, workflow_id, {
-            "sourceBehaviorId": "BM_A", "reassessment": "preserve the import path",
-            "items": [preservation("BM_P", red_failure="IMPORT_PATH_REGRESSED")],
-        })
-        self.assertEqual(assessed.returncode, 0, assessed.stdout + assessed.stderr)
-        before = read_workflow(self.identity)["tddEvidence"]
-        refused = self.h.tdd(slug, "red", "BM_LATER", "import app; assert app.value == 2, 'VALUE_NOT_TWO_LATER'")
-        self.assertEqual(refused.returncode, 2, marker + ": " + (refused.stderr.strip().splitlines() or [""])[-1])
-        self.assertEqual(read_workflow(self.identity)["tddEvidence"], before, marker)
-        baseline = self.h.tdd(slug, "red", "BM_P", "import app; assert app.value == 2, 'IMPORT_PATH_REGRESSED'")
-        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
-        self.assertEqual(json.loads(baseline.stdout.strip().splitlines()[-1]).get("status"), "already-satisfied", marker)
+        state = read_workflow(self.identity)
+        document = json.loads(self.h.cli("evidence", "--evidence-id", str(state["tddEvidence"])).stdout)["document"]
+        self.assertEqual(document["runs"][-1].get("productionChanged"), [], marker)
 
     def proved_first_item(self) -> tuple[str, str]:
         """BM_A GREEN through RED and reassessed; BM_B pending on the dirty candidate."""

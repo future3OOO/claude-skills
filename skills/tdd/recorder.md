@@ -32,7 +32,7 @@ JSON
 
 `sourceBehaviorId`, when given, names the GREEN item whose consequence the update records. New items use the preflight schema and reopen TDD; dispositions take the statuses in [SKILL.md](SKILL.md). A missing `supersededBy` target, self-reference, cycle, non-GREEN source, or a terminal replacement that can never be GREEN refuses the whole update. Updates are admitted while cycles are open.
 
-While an item's cycle is open, a changed surface for that item refuses before execution; other pending contract items record their own RED beside it (the sweep). GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
+While an item's cycle is open, a changed surface for that item refuses before execution; other pending contract items record their own RED beside it. Every RED-phase run entry carries `productionChanged` (production paths differing from the pass start commit, tracked or untracked, measured when the run is launched), `passStartOid`, and `headOid`; a non-empty set is copied into the item's `redProof` or `baselineProof` and surfaces as `Late RED` in `summary` and `lateRed` in the final-review checkpoint. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 
 ## No behavior change
 

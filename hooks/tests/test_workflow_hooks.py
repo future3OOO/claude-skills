@@ -30,6 +30,7 @@ QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_g
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
 POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
 RCF_BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
+ADVISOR = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
 SESSION = "real-hook-session"
 
 
@@ -227,46 +228,24 @@ class HookHarness(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 class WorkflowHookTests(HookHarness):
-    def test_production_edit_requires_the_recorded_before_edit_sequence(self) -> None:
-        blocked = self.intake("app.py")
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        self.assertTrue(blocked.stdout, "production edit was allowed without workflow state")
-        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("active workflow", decision["permissionDecisionReason"])
+    def test_the_edit_gate_advises_missing_steps_instead_of_denying(self) -> None:
+        marker = "GATE_STILL_DENIES_MISSING_STEPS"
 
-        text_config = self.intake("requirements.txt")
-        self.assertEqual(text_config.returncode, 0, text_config.stdout + text_config.stderr)
-        self.assertEqual(
-            json.loads(text_config.stdout)["hookSpecificOutput"]["permissionDecision"],
-            "deny",
-        )
+        def advice(relative: str) -> str:
+            result = self.intake(relative)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(result.stdout, marker + ": no advice for " + relative)
+            output = json.loads(result.stdout)["hookSpecificOutput"]
+            self.assertNotIn("permissionDecision", output, marker + ": " + result.stdout)
+            self.assertEqual(output["hookEventName"], "PreToolUse", marker)
+            return output["additionalContext"]
 
+        self.assertIn("active workflow", advice("app.py"), marker)
+        self.assertIn("active workflow", advice("requirements.txt"), marker)
         docs = self.intake("notes.md")
         self.assertEqual(docs.returncode, 0, docs.stdout + docs.stderr)
         self.assertEqual(docs.stdout, "")
 
-        begun = self.state("begin", "--slug", "hook-sequence")
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-        record_context_forge(self.repo, self.tmp)
-        transitions = (
-            ("advisor-result", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed"),
-            ("advisor-disposition", "--slug", "hook-sequence", "--workflow-id", wid, "--stage", "preflight", "--findings", "none"),
-        )
-        for transition in transitions:
-            result = self.state(*transition)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.record_preflight_evidence("hook-sequence", wid)
-
-        still_blocked = self.intake("app.py")
-        self.assertEqual(still_blocked.returncode, 0, still_blocked.stdout + still_blocked.stderr)
-        self.assertTrue(still_blocked.stdout, "production edit was admitted while TDD was pending")
-        decision = json.loads(still_blocked.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("TDD", decision["permissionDecisionReason"])
-
-    def test_production_edit_blocked_until_valid_red_or_not_required(self) -> None:
         begun = self.state("begin", "--slug", "tdd-ordering")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         wid = json.loads(begun.stdout)["workflowId"]
@@ -277,24 +256,21 @@ class WorkflowHookTests(HookHarness):
         ):
             result = self.state(*transition)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("production preflight", advice("app.py"), marker)
         self.record_preflight_evidence("tdd-ordering", wid, behavior_map=[pending_behavior("BM_HOOK", behavior="app value must be 2", seam="app module import", expected="value equals 2", red_failure="VALUE_NOT_TWO")])
-
-        blocked = self.intake("app.py")
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        self.assertTrue(blocked.stdout, "production edit before RED was allowed")
-        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("TDD", decision["permissionDecisionReason"])
+        self.assertIn("TDD", advice("app.py"), marker)
 
         test_edit = self.intake("tests/test_app.py")
         self.assertEqual(test_edit.returncode, 0, test_edit.stdout + test_edit.stderr)
-        self.assertEqual(test_edit.stdout, "", "test-file edit before RED was denied")
+        self.assertEqual(test_edit.stdout, "", "test-file edit before RED was advised")
 
         red = self.red("tdd-ordering")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
         after_red = self.intake("app.py")
-        self.assertEqual(after_red.returncode, 0, after_red.stdout + after_red.stderr)
-        self.assertEqual(after_red.stdout, "", "the production edit stayed blocked after a recorded RED")
+        self.assertEqual(after_red.stdout, "", "the gate kept advising after a recorded RED")
+
+        self.complete_workflow()
+        self.assertIn("new active workflow", advice("app.py"), marker)
 
     def app_value_command(self) -> tuple[str, ...]:
         (self.repo / "test_app_behavior.py").write_text(
@@ -321,16 +297,6 @@ class WorkflowHookTests(HookHarness):
              "--", *self.app_value_command()],
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
-
-    def test_completed_workflow_does_not_authorize_the_next_production_edit(self) -> None:
-        self.complete_workflow()
-
-        blocked = self.intake("app.py")
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        self.assertTrue(blocked.stdout, "completed workflow authorized a new production edit")
-        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("new active workflow", decision["permissionDecisionReason"])
 
     def test_a_clean_edit_emits_no_gate_feedback(self) -> None:
         # Issue #182: per-edit feedback is limited to genuinely local signals.
@@ -490,11 +456,11 @@ class WorkflowHookTests(HookHarness):
         self.assertEqual(state["codeReview"], {"status": "pending", "findings": "pending"})
         self.assertEqual(state["finalReview"], {"source": None, "status": "pending", "findings": "pending"})
 
-        blocked = self.intake("app.py")
-        self.assertEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        decision = json.loads(blocked.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("new active workflow", decision["permissionDecisionReason"])
+        advised = self.intake("app.py")
+        self.assertEqual(advised.returncode, 0, advised.stdout + advised.stderr)
+        output = json.loads(advised.stdout)["hookSpecificOutput"]
+        self.assertNotIn("permissionDecision", output, advised.stdout)
+        self.assertIn("new active workflow", output["additionalContext"])
 
     def test_first_governance_edit_resumes_at_the_first_pending_phase(self) -> None:
         begun = self.state("begin", "--slug", "governance-sequence")
@@ -1012,6 +978,85 @@ class TollDeletionTests(HookHarness):
         completed = self.state("complete")
         self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
 
+    def late_pass_to_review(self, slug: str) -> str:
+        """A pass whose contract RED ran after a production edit, driven to final-review readiness."""
+        wid = self.open_pass(slug, consult=False)
+        self.record_preflight_evidence(slug, wid, behavior_map=self.MAP)
+        (self.repo / "app.py").write_text("value = 3\n", encoding="utf-8")  # production edited before its RED
+        red = self.tdd(slug, "red")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.post_edit("app.py")
+        green = self.tdd(slug, "green")
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        record_context_forge(self.repo, self.tmp)
+        verified = self.verify(slug, "--", sys.executable, "-m", "unittest", "test_probe")
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        gate = self.verify(slug, "--kind", "quality-gate", "--base-ref", "HEAD")
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        self.owner_phase("code-review", "not-required", findings="none")
+        return wid
+
+    def test_a_late_pass_still_completes(self) -> None:
+        marker = "LATE_PASS_REFUSED_AT_COMPLETE"
+        slug = "late-pass"
+        wid = self.late_pass_to_review(slug)
+        final = self.final_intake(slug, wid, [])
+        self.assertEqual(final.returncode, 0, marker + ": " + final.stdout + final.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
+
+    def test_the_advisor_wrapper_forwards_late_reds_to_the_final_review(self) -> None:
+        marker = "WRAPPER_DROPS_LATE_RED"
+        slug = "late-wrapper"
+        self.late_pass_to_review(slug)
+        # The provider is the wrapper's outgoing process boundary: a capture there
+        # is the real Seam for what the wrapper sends the final review.
+        rig = self.tmp / "rig"
+        for name in ("bin", "home", "capture"):
+            (rig / name).mkdir(parents=True)
+        (rig / "home" / ".bashrc").write_text(
+            "alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token "
+            "CLAUDE_CODE_SUBAGENT_MODEL=offline-model \\\nclaude --model offline-model'\n", encoding="utf-8")
+        provider = rig / "bin" / "claude"
+        provider.write_text('#!/usr/bin/env bash\ncat >"$CAPTURE_DIR/payload"\n'
+                            "printf '%s\\n' '{\"schemaVersion\":1,\"findings\":[],\"verdict\":\"commit-ready\"}'\n", encoding="utf-8")
+        provider.chmod(0o755)
+        env = {**self.env, "PATH": f"{rig / 'bin'}:{os.environ['PATH']}", "HOME": str(rig / "home"),
+               "CLAUDE_HOME": str(rig / "claude"), "CAPTURE_DIR": str(rig / "capture")}
+        consult = subprocess.run(
+            [str(ADVISOR), "--slug", slug, "--phase", "final-review", "--cwd", str(self.repo),
+             "--design-absent", "hook-suite rig", "--", "completion question"],
+            cwd=ROOT, env=env, text=True, capture_output=True, check=False)
+        self.assertEqual(consult.returncode, 0, consult.stdout + consult.stderr)
+        payload = (rig / "capture" / "payload").read_text(encoding="utf-8")
+        self.assertIn("--- late RED: contract items whose RED or baseline ran after production had changed ---", payload,
+                      marker + ": " + consult.stderr)
+        self.assertIn('"id": "BM_HOOK"', payload, marker)
+        self.assertIn("codex_advisor_evidence name=late-red", consult.stderr, marker)
+
+    def test_a_late_baseline_pass_completes(self) -> None:
+        marker = "LATE_BASELINE_PASS_REFUSED_AT_COMPLETE"
+        slug = "late-baseline-pass"
+        wid = self.open_pass(slug, consult=False)
+        self.record_preflight_evidence(slug, wid, behavior_map=self.MAP)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")  # the behavior landed before its RED ran
+        self.post_edit("app.py")
+        baseline = self.tdd(slug, "red")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout, marker)
+        self.assertIn("Late RED: BM_HOOK", self.state("summary").stdout, marker + ": " + self.state("summary").stdout)
+        record_context_forge(self.repo, self.tmp)
+        verified = self.verify(slug, "--", sys.executable, "-m", "unittest", "test_probe")
+        self.assertEqual(verified.returncode, 0, marker + ": " + verified.stdout + verified.stderr)
+        gate = self.verify(slug, "--kind", "quality-gate", "--base-ref", "HEAD")
+        self.assertEqual(gate.returncode, 0, marker + ": " + gate.stdout + gate.stderr)
+        self.owner_phase("code-review", "not-required", findings="none")
+        final = self.final_intake(slug, wid, [])
+        self.assertEqual(final.returncode, 0, marker + ": " + final.stdout + final.stderr)
+        completed = self.state("complete")
+        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
+
     def test_verification_runs_while_a_material_finding_is_pending(self) -> None:
         marker = "VERIFY_REFUSED_ON_PENDING_FINDING"
         slug = "verify-pending"
@@ -1176,6 +1221,24 @@ class RedFirstTests(HookHarness):
         items = document.get("behaviorMap") or (document.get("document") or {}).get("behaviorMap")
         return {str(entry["id"]): str(entry["status"]) for entry in items}
 
+    def tdd_document(self) -> dict:
+        """The recorded TDD document, read back through a fresh workflow.py process."""
+        state = json.loads(self.state("status").stdout)
+        return json.loads(self.state("evidence", "--evidence-id", str(state["tddEvidence"])).stdout)["document"]
+
+    def latest_run(self) -> dict:
+        return (self.tdd_document().get("runs") or [{}])[-1]
+
+    def map_item(self, identifier: str) -> dict:
+        return next(entry for entry in self.tdd_document()["behaviorMap"] if entry["id"] == identifier)
+
+    def summary(self) -> str:
+        return self.state("summary").stdout
+
+    def rev_parse(self, ref: str) -> str:
+        return subprocess.run(["git", "rev-parse", ref], cwd=self.repo, env=self.env, text=True,
+                              stdout=subprocess.PIPE, check=True).stdout.strip()
+
     def events(self) -> int:
         return len(json.loads(self.state("history").stdout)["events"])
 
@@ -1338,18 +1401,6 @@ class RedFirstTests(HookHarness):
         second = self.tdd(slug, "red", "BM_B", "b")
         self.assertEqual(second.returncode, 0, marker + ": " + second.stdout + second.stderr)
         self.assertEqual(self.map_status(), {"BM_A": "red", "BM_B": "red"}, marker)
-
-    def test_the_edit_gate_waits_for_every_contract_red(self) -> None:
-        marker = "EDIT_ADMITTED_WITH_PENDING_CONTRACT"
-        slug = "sweep-gate"
-        self.open_pass(slug)
-        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
-        blocked = self.intake("app.py")
-        self.assertIn("deny", blocked.stdout, marker + ": an edit was admitted with BM_B pending")
-        self.assertIn("BM_B", json.loads(blocked.stdout)["hookSpecificOutput"]["permissionDecisionReason"], marker)
-        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
-        admitted = self.intake("app.py")
-        self.assertEqual(admitted.stdout, "", marker + ": " + admitted.stdout)
 
     def test_each_red_item_reaches_green_through_its_own_red(self) -> None:
         marker = "NON_ACTIVE_RED_GREEN_REFUSED"
@@ -1631,39 +1682,160 @@ class RedFirstTests(HookHarness):
         recorded = self.state("record-preflight", "--slug", slug, "--workflow-id", wid, "--input", str(path))
         self.assertNotEqual(recorded.returncode, 0, marker + ": " + recorded.stdout)
 
+    def test_the_edit_gate_advises_a_pending_contract_item(self) -> None:
+        marker = "GATE_STILL_DENIES_PENDING_ITEM"
+        slug = "sweep-gate"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        advised = self.intake("app.py")
+        self.assertEqual(advised.returncode, 0, advised.stdout + advised.stderr)
+        output = json.loads(advised.stdout)["hookSpecificOutput"]
+        self.assertNotIn("permissionDecision", output, marker + ": " + advised.stdout)
+        self.assertIn("BM_B", output.get("additionalContext", ""), marker + ": " + advised.stdout)
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        self.assertEqual(self.intake("app.py").stdout, "", marker)
+
+    def test_a_red_run_binds_the_tree_it_ran_on(self) -> None:
+        marker = "RED_RUN_LACKS_TREE_BINDING"
+        slug = "tree-binding"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        head = self.rev_parse("HEAD")
+        run = self.latest_run()
+        self.assertEqual(run.get("productionChanged"), [], marker + ": " + json.dumps(run)[:300])
+        self.assertEqual(run.get("headOid"), head, marker)
+        self.assertEqual(run.get("passStartOid"), head, marker)
+        self.assertNotIn("productionChanged", self.map_item("BM_A").get("redProof", {}), marker)
+
+    def test_a_late_red_records_every_changed_production_path(self) -> None:
+        marker = "LATE_RED_UNRECORDED"
+        slug = "late-red"
+        self.open_pass(slug)
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\n", encoding="utf-8")
+        (self.repo / "extra.py").write_text("d = 1\n", encoding="utf-8")
+        self.git("add", "app.py")  # a staged edit is still a changed production path
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        self.assertEqual(self.latest_run().get("productionChanged"), ["app.py", "extra.py"], marker)
+        self.assertEqual(self.map_item("BM_A").get("redProof", {}).get("productionChanged"), ["app.py", "extra.py"], marker)
+
+    def test_a_commit_inside_the_pass_cannot_hide_a_late_red(self) -> None:
+        marker = "LATE_RED_HIDDEN_BY_COMMIT"
+        slug = "late-commit"
+        self.open_pass(slug)
+        start = self.rev_parse("HEAD")
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\n", encoding="utf-8")
+        self.git("commit", "-qam", "edited inside the pass")
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        run = self.latest_run()
+        self.assertEqual(run.get("productionChanged"), ["app.py"], marker + ": " + json.dumps(run)[:300])
+        self.assertEqual(run.get("passStartOid"), start, marker)
+        self.assertNotEqual(run.get("headOid"), start, marker)
+
+    def test_a_declared_contract_item_baselines_after_edits_with_the_change_recorded(self) -> None:
+        marker = "DIRTY_BASELINE_STILL_REFUSED"
+        slug = "declared-dirty"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        baseline = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertEqual(self.map_status()["BM_B"], "already-satisfied", marker)
+        self.assertEqual(self.map_item("BM_B").get("baselineProof", {}).get("productionChanged"), ["app.py"], marker)
+        self.assertIn("Late RED: BM_B", self.summary(), marker + ": a late baseline is labelled too: " + self.summary())
+
+    def test_summary_names_a_late_red_and_keeps_it_after_green(self) -> None:
+        marker = "LATE_RED_UNLABELED"
+        slug = "late-summary"
+        wid = self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        self.assertNotIn("Late RED", self.summary(), marker + ": " + self.summary())
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        self.assertIn("Late RED: BM_B", self.summary(), marker + ": " + self.summary())
+        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_B", "b").returncode, 0)
+        self.assertIn("Late RED: BM_B", self.summary(), marker + ": " + self.summary())
+        superseded = self.map_update(slug, wid, "supersede-b", {"sourceBehaviorId": "BM_B", "reassessment": "a sharper attack owns b",
+            "items": [pending_behavior("BM_B2", behavior="b is two through the sharper probe", seam="app module", expected="app.b == 2", red_failure="B2_NOT_TWO")],
+            "dispositions": [{"id": "BM_B", "status": "superseded", "supersededBy": "BM_B2", "evidence": "BM_B2 asserts the same outcome"}]})
+        self.assertEqual(superseded.returncode, 0, superseded.stdout + superseded.stderr)
+        self.assertIn("Late RED: BM_B", self.summary(), marker + ": lateness must survive supersession: " + self.summary())
+
+    def test_the_final_review_checkpoint_carries_late_reds(self) -> None:
+        marker = "LATE_RED_INVISIBLE_TO_FINAL_REVIEW"
+        slug = "late-checkpoint"
+        self.open_pass(slug)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
+        checkpoint = json.loads(self.state("checkpoint", "--phase", "final-review").stdout)
+        self.assertEqual(checkpoint.get("lateRed"), [], marker + ": " + json.dumps(checkpoint)[:400])
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
+        checkpoint = json.loads(self.state("checkpoint", "--phase", "final-review").stdout)
+        self.assertEqual(checkpoint.get("lateRed"), [{"id": "BM_B", "productionChanged": ["app.py"]}], marker + ": " + json.dumps(checkpoint)[:400])
+
+    def test_the_binding_describes_the_tree_the_red_was_launched_on(self) -> None:
+        marker = "BINDING_MEASURED_AFTER_THE_RUN"
+        slug = "launch-binding"
+        self.open_pass(slug)
+        start = self.rev_parse("HEAD")
+        # A RED command that restores the file it was launched against before returning.
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\n", encoding="utf-8")
+        (self.repo / "test_probe_a.py").write_text(
+            "import app, unittest\n"
+            "class Probe(unittest.TestCase):\n"
+            "    def tearDown(self): open('app.py', 'w').write('a = 1\\nb = 1\\n')\n"
+            "    def test_value(self): self.assertEqual(app.a, 2, 'A_NOT_TWO')\n", encoding="utf-8")
+        red = self.workflow("tdd", "--slug", slug, "--phase", "red", "--behavior-id", "BM_A",
+                            "--", sys.executable, "-m", "unittest", "test_probe_a")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        self.assertEqual(self.latest_run().get("productionChanged"), ["app.py"], marker + ": " + json.dumps(self.latest_run())[:300])
+        # A RED command that commits before returning.
+        (self.repo / "test_probe_b.py").write_text(
+            "import app, subprocess, unittest\n"
+            "class Probe(unittest.TestCase):\n"
+            "    def tearDown(self):\n"
+            "        open('app.py', 'w').write('a = 1\\nb = 1\\nc = 3\\n')\n"
+            "        subprocess.run(['git', 'commit', '-qam', 'committed by the probe'], check=True)\n"
+            "    def test_value(self): self.assertEqual(app.b, 2, 'B_NOT_TWO')\n", encoding="utf-8")
+        red = self.workflow("tdd", "--slug", slug, "--phase", "red", "--behavior-id", "BM_B",
+                            "--", sys.executable, "-m", "unittest", "test_probe_b")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        run = self.latest_run()
+        self.assertEqual(run.get("headOid"), start, marker + ": " + json.dumps(run)[:300])
+        self.assertEqual(run.get("productionChanged"), [], marker)
+
+    def test_open_cycles_finish_after_a_late_baseline_lands_beside_them(self) -> None:
+        marker = "OPEN_CYCLES_STRANDED_BY_LATE_BASELINE"
+        slug = "open-cycles"
+        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
+                                    pending_behavior("BM_C", behavior="c is two", seam="app module", expected="app.c == 2", red_failure="C_NOT_TWO"),
+                                    pending_behavior("BM_D", behavior="d is two", seam="app module", expected="app.d == 2", red_failure="D_NOT_TWO")])
+        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\nd = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "four attributes")
+        for item, attr in (("BM_A", "a"), ("BM_C", "c"), ("BM_D", "d")):
+            self.assertEqual(self.tdd(slug, "red", item, attr).returncode, 0)
+        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 1\nd = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
+        # Two cycles still red when the review-discovered item lands on the dirty tree.
+        added = self.map_update(slug, wid, "add-b-open", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
+            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
+        self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
+        baseline = self.tdd(slug, "red", "BM_B", "b")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertEqual(self.intake("app.py").stdout, "", marker + ": the gate advised with every contract item red or resolved")
+        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 2\nd = 2\n", encoding="utf-8")
+        for item, attr in (("BM_C", "c"), ("BM_D", "d")):
+            green = self.tdd(slug, "green", item, attr)
+            self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        self.assertEqual(self.map_status(), {"BM_A": "green", "BM_C": "green", "BM_D": "green", "BM_B": "already-satisfied"}, marker)
+        # The fixture's own in-pass commit makes every item late; the late baseline must be among them.
+        self.assertIn("BM_B", self.summary().rsplit("Late RED: ", 1)[-1], marker + ": " + self.summary())
+
     def map_update(self, slug: str, wid: str, name: str, document: dict) -> subprocess.CompletedProcess[str]:
         path = self.tmp / f"{name}.json"
         path.write_text(json.dumps(document), encoding="utf-8")
         return self.workflow("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(path))
-
-    def test_a_contract_item_added_after_edits_baselines_when_its_surface_passes(self) -> None:
-        marker = "POST_EDIT_BASELINE_REFUSED"
-        slug = "post-edit-baseline"
-        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
-        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
-        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
-        added = self.map_update(slug, wid, "add-b", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
-            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
-        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
-        baseline = self.tdd(slug, "red", "BM_B", "b")
-        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
-        self.assertEqual(self.map_status()["BM_B"], "already-satisfied", marker + ": " + json.dumps(self.map_status()))
-        gate = self.intake("app.py")
-        self.assertNotIn("BLOCKED", gate.stdout + gate.stderr, marker + ": the edit gate still refuses: " + gate.stdout + gate.stderr)
-
-    def test_a_pending_added_contract_item_still_blocks_edits(self) -> None:
-        marker = "PENDING_ADDED_ITEM_ADMITS_EDIT"
-        slug = "pending-added-blocks"
-        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
-        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
-        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
-        added = self.map_update(slug, wid, "add-b-pending", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
-            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
-        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
-        gate = self.intake("app.py")
-        self.assertIn("BLOCKED", gate.stdout + gate.stderr, marker + ": " + gate.stdout + gate.stderr)
 
     def test_a_failing_added_surface_runs_red_then_green(self) -> None:
         marker = "ADDED_RED_GREEN_BROKEN"
@@ -1682,80 +1854,6 @@ class RedFirstTests(HookHarness):
         green = self.tdd(slug, "green", "BM_B", "b")
         self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
         self.assertEqual(self.map_status()["BM_B"], "green", marker)
-
-    def test_a_contract_item_added_by_an_older_recorder_baselines(self) -> None:
-        marker = "LEGACY_ADDED_BASELINE_REFUSED"
-        slug = "legacy-added"
-        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
-        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
-        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
-        added = self.map_update(slug, wid, "add-b-legacy", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
-            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
-        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
-
-        def strip_to_schema(document: dict) -> None:
-            # An item the previous recorder added carries only the eight schema fields.
-            keep = {"id", "kind", "basis", "behavior", "seam", "expected", "redFailure", "status"}
-            document["behaviorMap"] = [{k: v for k, v in item.items() if k in keep} if item.get("id") == "BM_B" else item
-                                       for item in document["behaviorMap"]]
-        self.rewrite_latest_evidence(strip_to_schema)
-        baseline = self.tdd(slug, "red", "BM_B", "b")
-        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
-        self.assertEqual(self.map_status()["BM_B"], "already-satisfied", marker + ": " + json.dumps(self.map_status()))
-
-    def test_an_arm_shaped_ledger_recovers_and_finishes_its_open_cycles(self) -> None:
-        marker = "ARM_SHAPE_NOT_RECOVERED"
-        slug = "arm-shape"
-        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
-                                    pending_behavior("BM_C", behavior="c is two", seam="app module", expected="app.c == 2", red_failure="C_NOT_TWO")])
-        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\n", encoding="utf-8")
-        self.git("commit", "-q", "-am", "three attributes")
-        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
-        self.assertEqual(self.tdd(slug, "red", "BM_C", "c").returncode, 0)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 1\n", encoding="utf-8")
-        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
-        # Dirty tree, BM_C still red, and a review-discovered item added on top: the arms' shape.
-        added = self.map_update(slug, wid, "add-b-arm", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
-            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
-        self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
-        gate = self.intake("app.py")
-        self.assertIn("BLOCKED", gate.stdout + gate.stderr, marker + ": pending BM_B must block: " + gate.stdout + gate.stderr)
-        baseline = self.tdd(slug, "red", "BM_B", "b")
-        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
-        self.assertEqual(self.map_status()["BM_B"], "already-satisfied", marker + ": " + json.dumps(self.map_status()))
-        gate = self.intake("app.py")
-        self.assertNotIn("BLOCKED", gate.stdout + gate.stderr, marker + ": BM_C red must reopen edits: " + gate.stdout + gate.stderr)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 2\n", encoding="utf-8")
-        green = self.tdd(slug, "green", "BM_C", "c")
-        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
-        self.assertEqual({k: v for k, v in self.map_status().items()}, {"BM_A": "green", "BM_C": "green", "BM_B": "already-satisfied"}, marker)
-
-    def test_an_arm_shaped_ledger_with_several_open_cycles_recovers(self) -> None:
-        marker = "ARM_SHAPE_SEVERAL_OPEN_NOT_RECOVERED"
-        slug = "arm-shape-several"
-        wid = self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
-                                    pending_behavior("BM_C", behavior="c is two", seam="app module", expected="app.c == 2", red_failure="C_NOT_TWO"),
-                                    pending_behavior("BM_D", behavior="d is two", seam="app module", expected="app.d == 2", red_failure="D_NOT_TWO")])
-        (self.repo / "app.py").write_text("a = 1\nb = 1\nc = 1\nd = 1\n", encoding="utf-8")
-        self.git("commit", "-q", "-am", "four attributes")
-        for item, attr in (("BM_A", "a"), ("BM_C", "c"), ("BM_D", "d")):
-            self.assertEqual(self.tdd(slug, "red", item, attr).returncode, 0)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 1\nd = 1\n", encoding="utf-8")
-        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
-        # Two cycles still red when the review-discovered item lands on the dirty tree.
-        added = self.map_update(slug, wid, "add-b-several", {"sourceBehaviorId": "BM_A", "reassessment": "review found b must be two as well",
-            "items": [pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]})
-        self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
-        baseline = self.tdd(slug, "red", "BM_B", "b")
-        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
-        gate = self.intake("app.py")
-        self.assertNotIn("BLOCKED", gate.stdout + gate.stderr, marker + ": " + gate.stdout + gate.stderr)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 2\nd = 2\n", encoding="utf-8")
-        for item, attr in (("BM_C", "c"), ("BM_D", "d")):
-            green = self.tdd(slug, "green", item, attr)
-            self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
-        self.assertEqual(self.map_status(), {"BM_A": "green", "BM_C": "green", "BM_D": "green", "BM_B": "already-satisfied"}, marker)
 
     def test_a_baseline_owner_cannot_close_a_finding_as_fixed(self) -> None:
         marker = "BASELINE_OWNER_CLOSED_FIXED"
@@ -1791,18 +1889,6 @@ class RedFirstTests(HookHarness):
                              "--review-context-id", "ctx", "--input", str(closure))
         self.assertNotEqual(refused.returncode, 0, marker + ": " + refused.stdout + refused.stderr)
         self.assertIn("baseline alone", refused.stdout + refused.stderr, marker + ": " + refused.stdout + refused.stderr)
-
-    def test_a_declared_contract_item_is_still_refused_as_a_baseline_after_edits(self) -> None:
-        marker = "DECLARED_CONTRACT_BASELINED_AFTER_EDIT"
-        slug = "declared-dirty"
-        self.open_pass(slug)
-        self.assertEqual(self.tdd(slug, "red", "BM_A", "a").returncode, 0)
-        (self.repo / "app.py").write_text("a = 2\nb = 2\n", encoding="utf-8")
-        self.assertEqual(self.tdd(slug, "green", "BM_A", "a").returncode, 0)
-        refused = self.tdd(slug, "red", "BM_B", "b")
-        self.assertNotEqual(refused.returncode, 0, marker + ": " + refused.stdout + refused.stderr)
-        self.assertIn("before any production edit", refused.stdout + refused.stderr, marker)
-        self.assertEqual(self.map_status()["BM_B"], "pending", marker)
 
     def test_a_map_update_is_admitted_while_a_cycle_is_red(self) -> None:
         marker = "MAP_UPDATE_REFUSED_DURING_RED"

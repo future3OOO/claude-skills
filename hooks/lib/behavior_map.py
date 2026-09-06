@@ -427,10 +427,8 @@ def may_refactor(items: list[JsonObject]) -> bool:
 
 
 def edit_blocker(items: list[JsonObject]) -> str | None:
-    """Why the map forbids the next production edit, or None when it opens.
-
-    The RED sweep: every contract item earns its RED on the clean tree before the
-    first implementation edit, so a pending contract item refuses the edit."""
+    """What the map still lacks before the next production edit, or None when it
+    lacks nothing. Advice the edit hook surfaces, never a refusal."""
     preservation = [
         str(entry["id"]) for entry in items
         if entry.get("kind") != "contract" and entry.get("status") == "pending"
@@ -442,7 +440,7 @@ def edit_blocker(items: list[JsonObject]) -> str | None:
         if entry.get("kind") == "contract" and entry.get("status") == "pending"
     ]
     if unswept:
-        return "RED sweep: every contract item needs its own RED before a production edit: " + ", ".join(unswept)
+        return "contract item(s) without a RED: " + ", ".join(unswept)
     if any(entry.get("kind") == "contract" and entry.get("status") == "red" for entry in items):
         return None
     if may_refactor(items):

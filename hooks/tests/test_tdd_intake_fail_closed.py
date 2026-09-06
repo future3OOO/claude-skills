@@ -93,7 +93,7 @@ class MappedIntakeFailureTests(unittest.TestCase):
             check=False,
         )
 
-    def test_malformed_map_evidence_emits_structured_denial(self) -> None:
+    def test_malformed_map_evidence_emits_advisory_context(self) -> None:
         begun = self.command(
             "begin", "--slug", "malformed-map", "--intent", "change app value"
         )
@@ -209,9 +209,10 @@ class MappedIntakeFailureTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(intake.returncode, 0, intake.stdout + intake.stderr)
-        decision = json.loads(intake.stdout)["hookSpecificOutput"]
-        self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("workflow evidence is unreadable", decision["permissionDecisionReason"])
+        marker = "GATE_STILL_DENIES_UNREADABLE_EVIDENCE"
+        output = json.loads(intake.stdout)["hookSpecificOutput"]
+        self.assertNotIn("permissionDecision", output, marker + ": " + intake.stdout)
+        self.assertIn("workflow evidence is unreadable", output["additionalContext"], marker)
         self.assertNotIn("Traceback", intake.stderr)
 
 

@@ -96,12 +96,11 @@ that the analysis is good; fabrication remains deception and stays covered by
 the transcript audit.
 
 The database and its containing directory are private and agent-writable. Committed transactions provide continuity across process restart and compaction; it is not tamper-proof and does not authorize Git. A normal
-commit or HEAD change does not invalidate it. After production preflight,
-test-like edits are admitted while TDD is pending. Production edits are admitted
-once every contract item holds its RED (the sweep) or the map is fully
-resolved with at least one GREEN through RED; a `not-required` decision opens
-nothing. A `tdd-map` update is needed only when a GREEN exposes a new
-obligation. A normally
+commit or HEAD change does not invalidate it. The edit hook advises, never
+refuses (hook table below). Every RED-phase run records the production paths
+changed since the pass began, so a late RED or baseline is labelled in
+`summary` and shown to the final review; nothing refuses on it. A `tdd-map`
+update is needed only when a GREEN exposes a new obligation. A normally
 completed workflow is terminal: every mutation except `begin` is rejected.
 
 A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
@@ -209,7 +208,7 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Require recorded preflight; admit test-like edits while TDD is pending; admit production edits once every contract item holds its RED (the sweep) or the map is fully resolved with one GREEN through RED; a `not-required` decision opens nothing |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Advise, never refuse: name the steps the pass has not recorded (active workflow, preflight, a contract item without its RED, an unsettled preservation item, reassessment) as context and admit the edit; silent for test-like, docs, scratch, and non-repository paths |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
 

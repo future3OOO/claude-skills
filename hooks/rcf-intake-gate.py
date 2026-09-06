@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""PreToolUse(Edit|Write|NotebookEdit): require the before-edit workflow."""
+"""PreToolUse(Edit|Write|NotebookEdit): advise on the before-edit workflow.
+
+The hook never refuses. It names what the pass has not recorded yet and lets
+the edit through; the recorder binds every later RED to the tree it ran on,
+so order of proof is evidence the reviews weigh, not a verdict on keystrokes.
+"""
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -22,20 +28,8 @@ from hooks.lib.workflow_state import (  # noqa: E402
 )
 
 
-def deny(reason: str) -> None:
-    import json
-
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
-    )
+def advise(context: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}))
 
 
 def main() -> int:
@@ -54,28 +48,14 @@ def main() -> int:
         return 0
 
     try:
-        # Base readiness and mapped-TDD policy live in separate Modules. Bracket
-        # both reads and accept only when no workflow event committed between
-        # them, so their combined decision describes one logical state version.
-        state_before = read_workflow(identity)
         ready, missing = ready_for_edit(identity, relative)
-        state_after = read_workflow(identity)
-        if state_before != state_after:
-            ready = False
-            missing = ["stable workflow state (changed during edit-readiness check; retry)"]
-        elif ready and not is_test_path(relative) and state_after is not None:
-            missing.extend(edit_blockers(identity, state_after))
-            ready = not missing
+        if ready and not is_test_path(relative):
+            missing = edit_blockers(identity, read_workflow(identity))
     except (WorkflowError, LedgerError, ValueError) as exc:
-        deny(f"BLOCKED by workflow intake: workflow evidence is unreadable: {exc}.")
+        advise(f"workflow intake: workflow evidence is unreadable: {exc}. Admitted; nothing records this edit until it is repaired.")
         return 0
-    if not ready:
-        deny(
-            "BLOCKED by workflow intake: production edits require recorded preflight, "
-            "a valid mapped RED, and post-GREEN reassessment. Missing: "
-            + ", ".join(missing)
-            + "."
-        )
+    if missing:
+        advise("workflow intake: missing before this production edit: " + ", ".join(missing) + ". Admitted; a RED taken after it is recorded as late.")
     return 0
 
 

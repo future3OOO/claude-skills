@@ -21,6 +21,7 @@ from .workflow_state import (
     NO_INSTANCE_ID,
     TDD_CLOSED,
     WorkflowError,
+    _head_oid,
     bound_state,
     commit_tdd,
     evidence_document,
@@ -275,7 +276,7 @@ def _candidate_command(
     return command, shlex.join(command), tdd_surface.identify(command)
 
 
-_BASELINE_STAMP = "baseline-passed before any production edit: "
+_BASELINE_STAMP = "baseline-passed: "
 
 
 def _baseline_proof(
@@ -311,6 +312,18 @@ def _baseline_proof(
     if executed < 1:
         return None, f"{runner} did not report an executed passing test"
     return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, ""
+
+
+def _tree_binding(identity: RepoIdentity, state: JsonObject) -> dict[str, object]:
+    """The tree a RED-phase run is launched on: production paths changed since the
+    pass began (tracked or untracked) and the commits on either side. Order of
+    proof is recorded here as evidence; nothing refuses on it."""
+    start = state.get("passStartOid")
+    return {
+        "productionChanged": production_changes(identity, start if isinstance(start, str) and start else "HEAD"),
+        "passStartOid": start,
+        "headOid": _head_oid(identity),
+    }
 
 
 def _run_tdd(values: list[str]) -> int:
@@ -406,10 +419,7 @@ def _run_tdd(values: list[str]) -> int:
         else ([], "")
     )
     matches = same_instance and not drift
-    # RED sweep: every pending item records its own RED beside an open one; the
-    # edit gate, not this recorder, keeps production edits out until no contract
-    # item is pending, and a RED that passes on a dirty tree is refused as a
-    # contract baseline after edits.
+    # RED sweep: every pending item records its own RED beside an open one.
     sweep = (
         not legacy and phase == "red" and status == "pending" and active is not None
         and active != args.behavior_id
@@ -460,6 +470,9 @@ def _run_tdd(values: list[str]) -> int:
         env = {**os.environ, "PYTEST_ADDOPTS": ""}
         sentinel = command.index("--") if "--" in command else len(command)
         command = [*command[:sentinel], "--override-ini=addopts=", *command[sentinel:]]
+    # Measured before the command runs: the binding describes the tree the RED
+    # was launched on, whatever the command rewrites or commits before returning.
+    binding = _tree_binding(identity, state) if phase == "red" else {}
     raw, exit_code, timed_out = _run(command, identity, args.timeout, env=env)
     output = raw.decode("utf-8", errors="replace")
     prior_runs = (
@@ -484,26 +497,10 @@ def _run_tdd(values: list[str]) -> int:
             proof, proof_error = tdd_surface.evaluate_red(surface, output, expected)
             red_ok = proof is not None
     elif phase == "red" and not legacy and not timed_out and status == "pending":
-        # Producer-backed baseline: a pending surface passing pre-edit is already
-        # satisfied, opens nothing, counts no cycle. A declared contract surface
-        # passing after this pass's edits (HEAD..worktree; a pass commits only
-        # after complete) is the edits' work and is refused; a contract item the
-        # map gained later, by tdd-map, names what those edits already produced
-        # and baselines like a preservation item. Membership in the recorded
-        # preflight decides, so items an earlier recorder added qualify too.
+        # Producer-backed baseline: a pending surface passing is already
+        # satisfied, opens nothing, counts no cycle. A dirty tree does not refuse
+        # it; the run entry records what had changed, and the reviews weigh it.
         proof, proof_error = _baseline_proof(surface, output)
-        declared = behavior_map.recorded_map(None, _evidence_pair(identity, state)[1]) or []
-        edited = (
-            production_changes(identity, "HEAD")
-            if proof is not None and mapped.get("kind") == "contract"
-            and any(entry.get("id") == args.behavior_id for entry in declared)
-            else []
-        )
-        if edited:
-            proof, proof_error = None, (
-                "a contract baseline must run before any production edit; "
-                "changed: " + ", ".join(edited)
-            )
         baseline = proof is not None
     elif phase == "green" and not legacy and not timed_out and exit_code == 0:
         # A GREEN is the surface passing, not the command exiting 0: a skipped or
@@ -515,10 +512,13 @@ def _run_tdd(values: list[str]) -> int:
         else not timed_out and exit_code == 0 and prior_red and (legacy or proof is not None)
     )
 
+    if proof is not None and binding.get("productionChanged"):
+        proof = {**proof, "productionChanged": binding["productionChanged"]}
     fields: dict[str, object] = {
         "phase": phase,
         "command": command_text,
         "valid": valid,
+        **binding,
     }
     if legacy:
         fields["expectedFailure"] = expected or None
@@ -585,25 +585,6 @@ def _run_tdd(values: list[str]) -> int:
                 updated_item["status"] = "red"
                 updated_item["redCommand"] = command_text
                 updated_item["redProof"] = proof
-                refusal = behavior_map.edit_blocker(updated)
-                if mapped.get("kind") != "contract" and not any(
-                    behavior_map.green_through_red(entry) for entry in updated
-                    if entry.get("kind") == "contract"
-                ):
-                    # A preservation surface failing before any contract GREEN is
-                    # not a regression this pass caused.
-                    refusal = (
-                        "a preservation RED cannot open the first edit; a contract item must reach GREEN first: "
-                        + ", ".join(str(entry["id"]) for entry in updated if entry.get("kind") == "contract")
-                    )
-                elif mapped.get("kind") == "contract" and refusal and refusal.startswith("RED sweep"):
-                    refusal = None
-                if refusal and not matches:
-                    # An unhonored RED would strand the pass in a cycle it can
-                    # neither edit nor leave.
-                    _print_output(raw)
-                    print("RED refused before opening a cycle: " + refusal, file=sys.stderr)
-                    return 2
                 next_active = args.behavior_id
                 reassessment_pending = None
                 action = "in-progress" if matches else "reopen"

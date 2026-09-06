@@ -1374,6 +1374,33 @@ def completion_missing(state: JsonObject) -> list[str]:
 CHECKPOINT_PHASES = {"preflight-advice", "final-review"}
 
 
+def _recorded_items(identity: RepoIdentity, state: JsonObject) -> list[JsonObject]:
+    """The recorded Behavior Map, or nothing when the evidence is unreadable."""
+    tdd_id, preflight_id = state.get("tddEvidence"), state.get("preflightEvidence")
+    try:
+        return behavior_map.recorded_map(
+            evidence_document(identity, tdd_id if isinstance(tdd_id, str) else None),
+            evidence_document(identity, preflight_id if isinstance(preflight_id, str) else None),
+        ) or []
+    except ValueError:
+        return []
+
+
+def _late_contract_items(items: list[JsonObject]) -> list[JsonObject]:
+    """Contract items whose RED or baseline ran with production already changed:
+    the order of proof the recorder recorded instead of refusing."""
+    late: list[JsonObject] = []
+    for entry in items:
+        if entry.get("kind") != "contract":
+            continue
+        proofs = (entry.get("redProof"), entry.get("baselineProof"))
+        changed = next((proof["productionChanged"] for proof in proofs
+                        if isinstance(proof, dict) and proof.get("productionChanged")), None)
+        if changed:
+            late.append({"id": entry.get("id"), "productionChanged": changed})
+    return late
+
+
 def _finding_ledger(identity: RepoIdentity, state: JsonObject) -> list[JsonObject]:
     """Every recorded finding's immutable claim and its owning attack items.
 
@@ -1381,14 +1408,7 @@ def _finding_ledger(identity: RepoIdentity, state: JsonObject) -> list[JsonObjec
     the verbatim claim beside the seams and statuses of the attacks that closed
     it, so a broad finding narrowed to one convenient attack is visible.
     """
-    tdd_id, preflight_id = state.get("tddEvidence"), state.get("preflightEvidence")
-    try:
-        items = behavior_map.recorded_map(
-            evidence_document(identity, tdd_id if isinstance(tdd_id, str) else None),
-            evidence_document(identity, preflight_id if isinstance(preflight_id, str) else None),
-        ) or []
-    except ValueError:
-        items = []
+    items = _recorded_items(identity, state)
     owners: dict[tuple[str, str], list[JsonObject]] = {}
     for entry in items:
         for ref in entry.get("sourceRefs", []):
@@ -1527,6 +1547,7 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         "governedDesignEvidence": design_evidence_id,
         "governedDesign": design,
         "findingLedger": _finding_ledger(identity, state),
+        "lateRed": _late_contract_items(_recorded_items(identity, state)),
         "tdd": state.get("tdd"),
         "codeReviewStatus": review.get("status"),
     }
@@ -1620,7 +1641,7 @@ def ready_for_edit(identity: RepoIdentity, path: str) -> tuple[bool, list[str]]:
     if state is None:
         return False, ["active workflow"]
     if state.get("phase") == "complete" or state.get("revalidation"):
-        return False, ["new active workflow (governance revalidation keeps production editing closed)"]
+        return False, ["new active workflow (this one is complete; begin the next pass)"]
     missing = [
         name for name, ready in (
             *_context_steps(state),
@@ -1681,7 +1702,8 @@ def _earned_split(identity: RepoIdentity, state: JsonObject) -> str:
     if not contract:
         return ""
     earned = sum(1 for entry in contract if behavior_map.green_through_red(entry))
-    return f" Contract green={earned}/{len(contract)}."
+    late = ", ".join(str(entry["id"]) for entry in _late_contract_items(contract))
+    return f" Contract green={earned}/{len(contract)}." + (f" Late RED: {late}." if late else "")
 
 
 def summary(identity: RepoIdentity, limit: int = 1200) -> str:
