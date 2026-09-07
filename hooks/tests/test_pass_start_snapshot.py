@@ -302,6 +302,18 @@ class ExecutedSelectionsTests(unittest.TestCase):
             "GIT_CONFIG_SYSTEM": os.devnull,
             "PYTHONDONTWRITEBYTECODE": "1",
         })
+        previous = os.environ.get("CLAUDE_WORKFLOW_STATE_ROOT")
+
+        def restore_state_root() -> None:
+            if previous is None:
+                os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
+            else:
+                os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = previous
+
+        # Registered before the variable is set and before anything else can
+        # fail, so a setUp that raises still restores what the caller had.
+        self.addCleanup(restore_state_root)
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         os.environ["CLAUDE_WORKFLOW_STATE_ROOT"] = str(self.tmp / "state")
         self.git("init", "-q")
         self.git("config", "user.email", "test@example.invalid")
@@ -313,10 +325,6 @@ class ExecutedSelectionsTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         self.workflow_id = json.loads(begun.stdout)["workflowId"]
         record_context_forge(self.repo, self.tmp)
-
-    def tearDown(self) -> None:
-        os.environ.pop("CLAUDE_WORKFLOW_STATE_ROOT", None)
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def git(self, *args: str) -> None:
         result = subprocess.run(
@@ -367,11 +375,192 @@ class ExecutedSelectionsTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
+    def two_tests(self, name: str) -> None:
+        """One file holding a selected test and an unrelated one beside it."""
+        (self.repo / f"{name}.py").write_text(
+            "import unittest\n\n\nclass Probe(unittest.TestCase):\n"
+            "    def test_selected(self):\n        pass\n\n"
+            "    def test_unrelated(self):\n        pass\n",
+            encoding="utf-8",
+        )
+
+    # Command forms whose real-runner behaviour was measured separately; here
+    # they are read through the projection owner directly, because driving each
+    # one would need a primed pytest cache or a second fixture tree to make the
+    # exclusion real, and a run that excludes nothing proves nothing.
+    UNRESOLVED_FORMS = (
+        "-m pytest -q suite/test_x.py -kselected",
+        "-m pytest -q suite/test_x.py --deselect suite/test_x.py::Probe::test_unrelated",
+        "-m pytest -q suite --ignore=suite/test_x.py",
+        "-m pytest -q suite --ignore-glob=*_x.py",
+        "-m pytest -q suite/test_x.py --lf",
+        "-m pytest -q suite/test_x.py --sw",
+        "-m pytest -q -m smoke suite",
+        "-m unittest suite.test_x.Probe -kselected",
+        "-m unittest discover suite test_x.py",
+        "-m unittest discover -s suite -k test_one",
+        "-m unittest discover -s suite -p test_x.py",
+        "-m unittest discover -s suite --pattern test_x.py",
+        "-m unittest discover -s suite -ptest_x.py",
+        "-m pytest -q",
+        "-m unittest",
+        # A known-arity cluster is not enough: -h prints help and runs nothing.
+        "-m pytest -xqh suite/test_x.py",
+        # An exempt cluster does not carry the option beside it: the first still
+        # prints a version and the second is not pytest's option at all.
+        "-m pytest -xq --version suite/test_x.py",
+        "-m pytest -xq --not-a-pytest-option suite/test_x.py",
+    )
+    RESOLVED_FORMS = (
+        ("-m pytest -q suite/test_x.py", ["suite/test_x.py"]),
+        ("-m pytest -x suite/test_x.py::Probe::test_selected", ["suite/test_x.py::Probe::test_selected"]),
+        ("-m unittest -v suite.test_x.Probe.test_selected", ["suite.test_x.Probe.test_selected"]),
+        ("-m unittest suite.test_x.Probe", ["suite.test_x.Probe"]),
+        # Every letter is an option identify already treats as irrelevant.
+        ("-m pytest -xq suite/test_x.py", ["suite/test_x.py"]),
+        ("-m unittest discover -s suite", ["suite"]),
+        ("-m unittest discover suite", ["suite"]),
+    )
+
+    @unittest.skipUnless(PYTEST, "the real pytest runner is unavailable")
+    def test_a_filtered_path_selection_reports_unknown(self) -> None:
+        """A filter decides which of a path's tests run, so the path stops saying.
+
+        The recorded run really excludes: the file holds two tests and `-k`
+        selects one. Publishing the path would claim both, which is how an
+        advisory comes to suppress a notice for a test nothing exercised. The
+        other forms carry the same claim and are checked through the projection
+        owner below, since their exclusion needs runner state this fixture has
+        no reason to build.
+        """
+        marker = "FILTERED_PATH_PUBLISHED_AS_WHOLE_PATH"
+        self.record_map(pending_behavior("BM_FILTERED", red_failure="FILTERED_MARKER"))
+        self.two_tests("test_filtered")
+        recorded = self.tdd(
+            "red", "BM_FILTERED", sys.executable, "-m", "pytest", "-q",
+            "test_filtered.py", "-k", "selected",
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+
+        record = self.selections(marker)["BM_FILTERED"]["baseline"]
+
+        self.assertIsNone(record["targets"], marker)
+        self.assertIn("-k", str(record.get("unknown") or ""), marker)
+
+    def test_every_captured_form_resolves_or_reports_unknown(self) -> None:
+        """The whole captured corpus, through the owner that publishes selections."""
+        marker = "FILTERED_PATH_PUBLISHED_AS_WHOLE_PATH"
+        from hooks.lib.workflow_state import _selection
+
+        (self.repo / "suite").mkdir(exist_ok=True)
+        (self.repo / "suite" / "test_x.py").write_text("", encoding="utf-8")
+        for form in self.UNRESOLVED_FORMS:
+            record = _selection(f"{sys.executable} {form}", self.repo)
+            self.assertIsNone(record["targets"], f"{marker}: {form}")
+            self.assertTrue(str(record.get("unknown") or "").strip(), f"{marker}: {form}")
+        for form, expected in self.RESOLVED_FORMS:
+            record = _selection(f"{sys.executable} {form}", self.repo)
+            self.assertEqual(record["targets"], expected, f"{marker}: {form}")
+            self.assertNotIn("unknown", record, f"{marker}: {form}")
+
+    def test_a_cluster_of_only_irrelevant_options_still_resolves(self) -> None:
+        """`-xq` is fail-fast plus quiet, so the path still says which tests ran."""
+        from hooks.lib.workflow_state import _selection
+
+        (self.repo / "suite").mkdir(exist_ok=True)
+        (self.repo / "suite" / "test_x.py").write_text("", encoding="utf-8")
+        record = _selection(f"{sys.executable} -m pytest -xq suite/test_x.py", self.repo)
+
+        self.assertEqual(record["targets"], ["suite/test_x.py"], "ALL_IGNORED_CLUSTER_REPORTED_UNRESOLVED")
+
+    def test_a_cluster_carrying_help_stays_unresolved(self) -> None:
+        """`-xqh` prints help and runs nothing, so it owns nothing."""
+        from hooks.lib.workflow_state import _selection
+
+        (self.repo / "suite").mkdir(exist_ok=True)
+        (self.repo / "suite" / "test_x.py").write_text("", encoding="utf-8")
+        record = _selection(f"{sys.executable} -m pytest -xqh suite/test_x.py", self.repo)
+
+        self.assertIsNone(record["targets"], "HELP_CLUSTER_PUBLISHED_AS_OWNERSHIP")
+
+    def test_a_filtered_discovery_reports_unknown(self) -> None:
+        """A discovery pattern decides which files are collected, so `.` stops saying.
+
+        The exclusion is real at file scope: a second `test_*.py` holds a failing
+        test the pattern leaves out. The run passing is the proof it was excluded,
+        since discovery over the directory would have collected and failed it.
+        """
+        marker = "FILTERED_DISCOVERY_PUBLISHED_AS_WHOLE_DIRECTORY"
+        self.record_map(pending_behavior("BM_DISCOVERED", red_failure="DISCOVERED_MARKER"))
+        self.two_tests("test_discovered")
+        self.probe("test_excluded", "EXCLUDED_MARKER", passing=False)
+        recorded = self.tdd(
+            "red", "BM_DISCOVERED", sys.executable, "-m", "unittest", "discover",
+            "-s", ".", "-p", "test_discovered.py",
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+
+        record = self.selections(marker)["BM_DISCOVERED"]["baseline"]
+
+        self.assertIsNone(record["targets"], marker)
+        self.assertIn("-p", str(record.get("unknown") or ""), marker)
+
     def selections(self, marker: str) -> dict[str, object]:
         """The marker travels in: absence of the projection is the mapped failure."""
         value = self.status().get("mapSelections")
         self.assertIsInstance(value, dict, marker)
         return value
+
+    def authored_selection(self, marker: str, **overrides: object) -> object:
+        """What status reports for an authored item that never ran.
+
+        The status read is part of the attack: a projection that refuses is as
+        much a failure as one that invents a selection.
+        """
+        item = pending_behavior("BM_AUTHORED", red_failure="AUTHORED_MARKER")
+        item.update(overrides)
+        self.record_map(pending_behavior("BM_REAL", red_failure="REAL_MARKER"), item)
+        result = self.workflow("status")
+        self.assertEqual(result.returncode, 0, f"{marker}: status refused: {result.stderr.strip()}")
+        return (json.loads(result.stdout).get("mapSelections") or {}).get("BM_AUTHORED")
+
+    def test_authored_baseline_text_is_not_an_executed_selection(self) -> None:
+        """A selection claims a test ran; authored prose makes no such claim.
+
+        `evidence` is author-written on a disposed preservation item, and the
+        producer happens to stamp its baseline command into that same field, so
+        a supported runner in authored text parses into real-looking targets.
+        """
+        marker = "AUTHORED_BASELINE_REPORTED_AS_A_SELECTION"
+        selection = self.authored_selection(
+            marker,
+            kind="preservation",
+            status="already-satisfied",
+            evidence="baseline-passed: python3 -m unittest test_authored.Probe.test_behavior",
+        )
+
+        self.assertIsNone(selection, marker)
+
+    def test_authored_proof_command_on_a_pending_item_is_not_green(self) -> None:
+        """proofCommand is not refused in authored documents; status must be."""
+        marker = "AUTHORED_GREEN_REPORTED_AS_A_SELECTION"
+        selection = self.authored_selection(
+            marker, proofCommand="python3 -m unittest tests.test_never_executed",
+        )
+
+        self.assertIsNone(selection, marker)
+
+    def test_malformed_authored_text_leaves_status_readable(self) -> None:
+        """Authored prose is never parsed, so its quoting cannot break the projection."""
+        marker = "MALFORMED_AUTHORED_TEXT_BROKE_STATUS"
+        selection = self.authored_selection(
+            marker,
+            kind="preservation",
+            status="already-satisfied",
+            evidence='baseline-passed: python3 -m unittest "unclosed',
+        )
+
+        self.assertIsNone(selection, marker)
 
     def test_status_exposes_red_green_and_baseline_selections(self) -> None:
         marker = "EXECUTED_SELECTIONS_ABSENT"
@@ -472,30 +661,9 @@ class ExecutedSelectionsTests(unittest.TestCase):
         self.assertIn("BM_READONLY", json.dumps(self.selections(marker)), marker)
         self.assertEqual(history(), before, marker)
 
-    def test_an_authored_baseline_evidence_line_cannot_pass_as_a_selection(self) -> None:
-        """Authored prose is not a producer-recorded proof, so it decides nothing.
-
-        `evidence` is an authored field on a disposed preservation item, and the
-        producer writes its baseline command into that same field. Text shaped
-        like the stamp therefore reaches the reader, and it must resolve to
-        unknown rather than to an empty selection that would read as ownership.
-        """
-        marker = "UNKNOWN_SELECTION_REPORTED_AS_EMPTY"
-        disposed = pending_behavior("BM_AUTHORED", red_failure="AUTHORED_MARKER")
-        disposed.update({
-            "kind": "preservation",
-            "status": "already-satisfied",
-            "evidence": "baseline-passed: ./run-the-suite.sh --everything",
-        })
-        self.record_map(pending_behavior("BM_REAL", red_failure="REAL_MARKER"), disposed)
-
-        record = self.selections(marker)["BM_AUTHORED"]["baseline"]
-
-        self.assertIsNone(record["targets"], marker)
-        self.assertTrue(str(record.get("unknown") or "").strip(), marker)
 
     @unittest.skipUnless(PYTEST, "the real pytest runner is unavailable")
-    def test_an_ambiguous_selection_stays_unknown_while_an_empty_one_is_empty(self) -> None:
+    def test_ambiguous_and_implicit_selections_both_report_unknown(self) -> None:
         """Unknown ownership and owning nothing are different answers.
 
         The ambiguity is real rather than contrived: a conftest declares a real
@@ -527,9 +695,11 @@ class ExecutedSelectionsTests(unittest.TestCase):
         undecidable = selections["BM_AMBIGUOUS"]["baseline"]
         self.assertIsNone(undecidable["targets"], marker)
         self.assertTrue(str(undecidable.get("unknown") or "").strip(), marker)
-        # A run that names no target selects the whole suite; that is known, not unknown.
-        self.assertEqual(selections["BM_WHOLE_SUITE"]["baseline"]["targets"], [], marker)
-        self.assertNotIn("unknown", selections["BM_WHOLE_SUITE"]["baseline"], marker)
+        # Naming no target selects implicitly from pytest's own rootdir and
+        # configuration, so no scope is named and [] would read as owning nothing.
+        whole_suite = selections["BM_WHOLE_SUITE"]["baseline"]
+        self.assertIsNone(whole_suite["targets"], marker)
+        self.assertIn("implicit", str(whole_suite.get("unknown") or ""), marker)
 
 
 if __name__ == "__main__":

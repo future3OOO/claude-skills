@@ -31,16 +31,24 @@ BASELINE_STAMP = "baseline-passed: "
 
 
 def executed_commands(entry: JsonObject) -> dict[str, str]:
-    """The commands this item actually ran, by the phase that recorded each."""
+    """The commands this item actually ran, by the phase that recorded each.
+
+    An authored document may carry `proofCommand` and `evidence`, so each is read
+    only beside the producer's own mark for that phase: `baselineProof` for the
+    baseline command stamped into `evidence`, and a GREEN the producer recorded
+    for `proofCommand`. `redCommand` the loader already refuses when authored.
+    """
     evidence = entry.get("evidence")
     baseline = (
         str(evidence)[len(BASELINE_STAMP):].strip()
-        if isinstance(evidence, str) and evidence.startswith(BASELINE_STAMP)
+        if isinstance(evidence, str)
+        and evidence.startswith(BASELINE_STAMP)
+        and isinstance(entry.get("baselineProof"), dict)
         else ""
     )
     recorded = {
         "red": entry.get("redCommand"),
-        "green": entry.get("proofCommand"),
+        "green": entry.get("proofCommand") if green_through_red(entry) else None,
         "baseline": baseline,
     }
     return {
