@@ -629,9 +629,8 @@ def _run_tdd(values: list[str]) -> int:
                 surface=surface,
                 runs=[*prior_runs, run] if matches else [run],
             )
-    committed_state: JsonObject | None = None
     if document is not None:
-        committed_state, evidence_id = commit_tdd(
+        _, evidence_id = commit_tdd(
             identity,
             slug,
             workflow_id,
@@ -653,8 +652,6 @@ def _run_tdd(values: list[str]) -> int:
     if baseline:
         payload["status"] = "already-satisfied"
     _emit_json(payload)
-    if not legacy and phase == "green" and valid and committed_state is not None:
-        _map_advisory(identity, committed_state)
     if valid or baseline:
         return 0
     if legacy:
@@ -688,11 +685,12 @@ _ADVISORY_TIMEOUT = 10
 _ADVISORY_CONTROL_ESCAPES = {c: f"\\x{c:02x}" for c in range(0x20)} | {0x7f: "\\x7f"}
 
 
-def _map_advisory(identity: RepoIdentity, state: JsonObject) -> None:
-    """After a producer-accepted mapped GREEN, name the impacted tests the map
-    does not own, or a short gap when that cannot be decided against this pass's
-    index. Advisory only: it prints at most one stderr line and writes one
-    disposable file, and never raises into the GREEN it follows."""
+def map_advisory(identity: RepoIdentity, state: JsonObject) -> str | None:
+    """After a successful production edit, name the impacted tests the map does
+    not own, or a short gap when that cannot be decided against this pass's
+    index. Advisory only: it returns at most one notice line for the caller to
+    deliver and writes one disposable file, and never raises into the edit it
+    follows."""
     workflow_id = str(state.get("workflowId") or "")
     try:
         snapshot = state.get("passStartSnapshot")
@@ -707,9 +705,9 @@ def _map_advisory(identity: RepoIdentity, state: JsonObject) -> None:
             node = (str(entry.get("id") or "").split(":", 2)[2:] or [""])[0]
             if path and not _is_owned(path, node, owned):
                 unowned[path] = unowned.get(path, 0) + 1
-        _advisory_publish(identity, workflow_id, gap, unowned)
+        return _advisory_publish(identity, workflow_id, gap, unowned)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError, subprocess.SubprocessError):
-        _advisory_publish(identity, workflow_id, "the advisory could not complete", {})
+        return _advisory_publish(identity, workflow_id, "the advisory could not complete", {})
 
 
 def _impacted_tests(snapshot: JsonObject, root: Path) -> tuple[list[JsonObject], str | None]:
@@ -810,41 +808,28 @@ def _is_owned(path: str, node: str, scopes: list[tuple[str, str, bool]]) -> bool
     return False
 
 
-def _advise(line: str) -> None:
-    """Emit one advisory line to stderr, tolerating a broken or closed stream.
-
-    The advisory is best-effort: write the line directly to the stderr file
-    descriptor, bypassing the buffer, so a broken stream fails here and leaves no
-    pending data to re-raise at interpreter-shutdown flush. Reuse the stream's own
-    encoding and error policy so a configured non-UTF-8 stderr is unchanged."""
-    try:
-        os.write(sys.stderr.fileno(), (line + "\n").encode(sys.stderr.encoding, sys.stderr.errors))
-    except (OSError, ValueError):
-        pass
-
-
 def _advisory_publish(
     identity: RepoIdentity, workflow_id: str, gap: str | None, unowned: dict[str, int]
-) -> None:
-    """Write the canonical result and print one line only when it changed and has
-    something to report; an identical result is silent and writes nothing."""
+) -> str | None:
+    """Write the canonical result and return one notice line only when it changed
+    and has something to report; an identical result is silent (returns None) and
+    writes nothing."""
     paths = {name: unowned[name] for name in sorted(unowned)}
     canonical = {"workflowId": workflow_id, "gap": gap, "paths": paths}
     try:
         store = repo_state_dir(identity) / _ADVISORY_FILE
         prior = read_json(store)
         if prior == canonical:
-            return
+            return None
         atomic_write_json(store, canonical)
     except OSError:
         # The disposable dedup cache could not be resolved or written. Report
-        # that as a gap through the one-line notice rather than failing the GREEN
-        # or retrying the same writer, so the GREEN's exit, payload, and state
-        # are untouched.
-        _advise("map advisory: gap, the advisory cache could not be written")
-        return
+        # that as a gap through the one-line notice rather than failing the edit
+        # or retrying the same writer, so the edit's outcome and state are
+        # untouched.
+        return "map advisory: gap, the advisory cache could not be written"
     if not gap and not paths:
-        return
+        return None
     sort = sorted(paths)
     shown = ", ".join(p.translate(_ADVISORY_CONTROL_ESCAPES) for p in sort[:10])
     remaining = len(sort) - 10
@@ -857,7 +842,7 @@ def _advisory_publish(
         report = ""
     if gap:
         report = f"gap, {gap}" + (f"; {report}" if report else "")
-    _advise(f"map advisory: {report}")
+    return f"map advisory: {report}"
 
 
 def _map_update(values: list[str]) -> int:
