@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -23,6 +24,60 @@ from hooks.lib.workflow_state import (
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
+BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
+
+
+def fixture_env(state_root: Path) -> dict[str, str]:
+    """The environment a real-index fixture pass runs under: an isolated state
+    root and no ambient git or bytecode side effects."""
+    env = os.environ.copy()
+    env.update({
+        "CLAUDE_WORKFLOW_STATE_ROOT": str(state_root),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    return env
+
+
+def run_git(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    """One git command in the fixture repository; the caller asserts the result."""
+    return subprocess.run(
+        ["git", *args], cwd=repo, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+
+
+def run_workflow(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    """The real workflow CLI against the fixture repository."""
+    return subprocess.run(
+        [sys.executable, str(WORKFLOW), *args, "--repo", str(repo)],
+        cwd=repo, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+
+
+def run_intake(
+    repo: Path, env: dict[str, str], slug: str, intent: str, *extra: str, timeout: int = 900
+) -> subprocess.CompletedProcess[str]:
+    """One real governed intake against a dirty dependent, so the index is real.
+
+    Local mode needs a dirty dependent; the overlay becomes part of the indexed
+    baseline, so it never touches the fixture's own changed symbol.
+    """
+    (repo / "caller.py").write_text(
+        "from app import compute\n\n\ndef run():\n    return compute(2)\n", encoding="utf-8"
+    )
+    return subprocess.run(
+        [
+            sys.executable, str(BOOTSTRAP), "--repo", str(repo),
+            "--workflow-slug", slug, "--mode", "local", "--intent", intent,
+            "--map-build", "never", "--gitnexus-mode", "auto", "--top", "5",
+            "--out", os.devnull, *extra,
+        ],
+        cwd=repo, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout,
+    )
 
 
 def wait_for_trace_writes(path: Path, count: int = 2) -> int:

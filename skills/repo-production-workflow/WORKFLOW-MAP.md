@@ -106,6 +106,16 @@ changed since the pass began, so a late RED or baseline is labelled in
 update is needed only when a GREEN exposes a new obligation. A normally
 completed workflow is terminal: every mutation except `begin` is rejected.
 
+After a producer-accepted mapped GREEN, the recorder runs one GitNexus
+`detect-changes` against the pass-start index and names on stderr the impacted
+tests the current map's recorded selections do not own, or a short gap when
+that cannot be decided against this pass's index. Complete ownership is silent,
+an identical result repeats neither line nor write, and the advisory never
+changes the GREEN's exit, payload, or state. It is advisory and incomplete by
+nature, and full-map reconciliation stays the completeness authority. Once this
+trigger is installed and proved live in the estate, it supersedes the manual
+pre-commit detect-changes step, which is retired then rather than here.
+
 A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
 which only verification, code review, the final advisor review, and completion
 are accepted, production editing stays closed, and completing again restores
