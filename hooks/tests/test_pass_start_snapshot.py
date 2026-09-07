@@ -404,12 +404,16 @@ class ExecutedSelectionsTests(unittest.TestCase):
         "-m unittest discover -s suite -ptest_x.py",
         "-m pytest -q",
         "-m unittest",
+        # A known-arity cluster is not enough: -h prints help and runs nothing.
+        "-m pytest -xqh suite/test_x.py",
     )
     RESOLVED_FORMS = (
         ("-m pytest -q suite/test_x.py", ["suite/test_x.py"]),
         ("-m pytest -x suite/test_x.py::Probe::test_selected", ["suite/test_x.py::Probe::test_selected"]),
         ("-m unittest -v suite.test_x.Probe.test_selected", ["suite.test_x.Probe.test_selected"]),
         ("-m unittest suite.test_x.Probe", ["suite.test_x.Probe"]),
+        # Every letter is an option identify already treats as irrelevant.
+        ("-m pytest -xq suite/test_x.py", ["suite/test_x.py"]),
         ("-m unittest discover -s suite", ["suite"]),
         ("-m unittest discover suite", ["suite"]),
     )
@@ -454,6 +458,26 @@ class ExecutedSelectionsTests(unittest.TestCase):
             record = _selection(f"{sys.executable} {form}", self.repo)
             self.assertEqual(record["targets"], expected, f"{marker}: {form}")
             self.assertNotIn("unknown", record, f"{marker}: {form}")
+
+    def test_a_cluster_of_only_irrelevant_options_still_resolves(self) -> None:
+        """`-xq` is fail-fast plus quiet, so the path still says which tests ran."""
+        from hooks.lib.workflow_state import _selection
+
+        (self.repo / "suite").mkdir(exist_ok=True)
+        (self.repo / "suite" / "test_x.py").write_text("", encoding="utf-8")
+        record = _selection(f"{sys.executable} -m pytest -xq suite/test_x.py", self.repo)
+
+        self.assertEqual(record["targets"], ["suite/test_x.py"], "ALL_IGNORED_CLUSTER_REPORTED_UNRESOLVED")
+
+    def test_a_cluster_carrying_help_stays_unresolved(self) -> None:
+        """`-xqh` prints help and runs nothing, so it owns nothing."""
+        from hooks.lib.workflow_state import _selection
+
+        (self.repo / "suite").mkdir(exist_ok=True)
+        (self.repo / "suite" / "test_x.py").write_text("", encoding="utf-8")
+        record = _selection(f"{sys.executable} -m pytest -xqh suite/test_x.py", self.repo)
+
+        self.assertIsNone(record["targets"], "HELP_CLUSTER_PUBLISHED_AS_OWNERSHIP")
 
     def test_a_filtered_discovery_reports_unknown(self) -> None:
         """A discovery pattern decides which files are collected, so `.` stops saying.

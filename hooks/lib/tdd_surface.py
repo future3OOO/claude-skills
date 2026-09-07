@@ -164,6 +164,7 @@ def proof_targets(
             # -k= carries an empty value and does not take the next token.
             has_value = bool(separator)
             known_cluster = False
+            all_ignored = False
             if runner == "pytest" and name[1:2] != "-" and len(name) > 2:
                 # A short cluster reads left to right: no-value flags, then at
                 # most one value option whose value is the rest of the token or
@@ -174,6 +175,10 @@ def proof_targets(
                     head += 1
                 if head == len(letters) and not separator:
                     known_cluster = True
+                    # Only when every letter is one identify already treats as
+                    # irrelevant: `-xq` changes nothing about which tests run,
+                    # while `-xqh` is the same arity and runs none of them.
+                    all_ignored = all(_ignored_class(runner, f"-{letter}") for letter in letters)
                 elif head < len(letters) and f"-{letters[head]}" in value_options:
                     rest = token[2 + head:]
                     name, has_value = f"-{letters[head]}", bool(rest)
@@ -188,7 +193,7 @@ def proof_targets(
             )
             # After cluster normalization, so `-kfast` reports as `-k`. Discovery
             # routing is the only option this parse turns into a target.
-            if not (discover and name in UNITTEST_START_OPTIONS) and not REPEATED_VERBOSITY.match(name):
+            if not (discover and name in UNITTEST_START_OPTIONS) and not REPEATED_VERBOSITY.match(name) and not all_ignored:
                 unresolved = unresolved or f"the option {name}"
             if name in value_options:
                 if has_value:
