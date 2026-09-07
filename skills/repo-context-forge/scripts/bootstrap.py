@@ -445,6 +445,10 @@ def main(argv: list[str]) -> int:
     except (WorkflowError, RepoIdentityError, ValueError) as exc:
         sys.stderr.write(f"<blocker>cannot bind Repo Context Forge to the active workflow: {exc}</blocker>\n")
         return 2
+    if state.get("passStartSnapshot"):
+        # The pass already indexed a checkout and recorded it as its baseline;
+        # the producer's candidate slot keeps this intake off that one.
+        args.append("--candidate-slot")
     # The machine packet is asked of the same packet-generation pass that renders the
     # prompt, into a private directory this process owns: one graph execution, and
     # nothing written to the user's checkout or the state root.
