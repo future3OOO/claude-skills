@@ -944,6 +944,7 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(found, f"no GitNexus repo in the intake:\n{output}")
         return found.group(1)
 
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_reruns_of_an_indexed_pass_leave_its_pass_start_index_alone(self) -> None:
         """One retained pass, four intakes. The branch delta is committed before
         the first intake, so the pass starts clean in pr mode; the reruns then
