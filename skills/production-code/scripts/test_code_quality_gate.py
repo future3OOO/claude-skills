@@ -2782,6 +2782,52 @@ def test_detectors_cannot_read_git_or_the_filesystem_after_the_freeze() -> None:
     assert "repo" not in fields, "EvaluationSnapshot must hold no repository handle after the freeze"
 
 
+def test_dependency_manifests_classify_as_production() -> None:
+    # Dependency pins are configuration, not prose, whatever their spelling: the
+    # gate and the CI lane read one answer, and this is where it lives.
+    marker = "GATE_CALLED_A_MANIFEST_DOCUMENTATION"
+    module = _load_path_policy(SCRIPT_DIR / "_quality_gate" / "path_policy.py")
+    for path in ("requirements.txt", "requirements-dev.txt", "dev-requirements.txt",
+                 "requirements.dev.txt", "requirements/dev.txt", "constraints/base.txt"):
+        found = module.classify_path(path)
+        assert found.role == module.ROLE_PRODUCTION, f"{marker}: {path} is {found.role}"
+        assert found.human_authored is True, f"{marker}: {path} is not human-authored"
+    for path in ("docs/notes.md", "skills/guide.txt", "README.md"):
+        assert module.classify_path(path).role == module.ROLE_DOCS, f"{marker}: {path}"
+    # A name is a manifest by its literal bytes, not by what stripping it would
+    # produce; Git persists and enumerates the whitespace, so the gate sees it.
+    for path in (" requirements.txt", "requirements.txt ", "requirements.txt\t",
+                 "requirements /dev.txt"):
+        found = module.classify_path(path)
+        assert found.role != module.ROLE_PRODUCTION, (
+            f"WHITESPACE_NAME_READ_AS_MANIFEST: {path!r} is {found.role}"
+        )
+
+
+@with_repo
+def test_a_manifest_change_counts_as_production(repo: Path) -> None:
+    marker = "MANIFEST_CHANGE_NOT_COUNTED_AS_PRODUCTION"
+    write(repo / "requirements.txt", "ruff==0.16.2\n")
+    _, payload, _ = run_gate(repo)
+    growth = payload["evaluation"]["growth"]
+    assert growth["production"]["added"] >= 1, f"{marker}: {growth}"
+    assert growth["humanAuthored"]["added"] >= 1, f"{marker}: {growth}"
+    # The same question at the Seam Git actually presents: a committed name
+    # carrying trailing whitespace, read back from the index, is not a manifest.
+    module = _load_path_policy(SCRIPT_DIR / "_quality_gate" / "path_policy.py")
+    write(repo / "requirements.txt ", "ruff==0.16.2\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    listed = subprocess.run(["git", "-C", str(repo), "ls-files", "-z"],
+                            check=True, capture_output=True).stdout
+    tracked = [os.fsdecode(name) for name in listed.split(b"\0") if name]
+    spaced = [name for name in tracked if name != name.strip()]
+    assert spaced, f"{marker}: git did not keep the whitespace name"
+    for name in spaced:
+        assert module.classify_path(name).role != module.ROLE_PRODUCTION, (
+            f"WHITESPACE_NAME_READ_AS_MANIFEST: {name!r} counted as a manifest"
+        )
+
+
 def test_full_history_test_like_classification_is_unchanged() -> None:
     # The standalone predicate workflow state loads must keep the exact
     # pre-snapshot truth table over every path that ever existed here. The
