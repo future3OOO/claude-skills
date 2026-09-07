@@ -1811,11 +1811,16 @@ def _selection(command: str, root: object) -> JsonObject:
     surface = tdd_surface.identify(shlex.split(command))
     if surface.get("runner") not in {"unittest", "pytest"}:
         return {"command": command, "targets": None, "unknown": "the runner is not a supported test surface"}
-    targets, discover, ambiguous = tdd_surface.proof_targets(surface, root)
+    targets, discover, ambiguous, unresolved = tdd_surface.proof_targets(surface, root)
     if ambiguous:
         return {
             "command": command, "targets": None,
             "unknown": "an unrecognized option may own these tokens: " + ", ".join(sorted(ambiguous)),
+        }
+    if unresolved:
+        return {
+            "command": command, "targets": None,
+            "unknown": f"{unresolved} is not resolved by the recorded surface, so the selected tests are unknown",
         }
     return {"command": command, "targets": sorted(targets), **({"discover": True} if discover else {})}
 

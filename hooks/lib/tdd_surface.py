@@ -117,9 +117,9 @@ PYTEST_VALUE_OPTIONS = frozenset({
 
 def proof_targets(
     surface: Mapping[str, object], root: object
-) -> tuple[list[str], bool, list[str]]:
+) -> tuple[list[str], bool, list[str], str | None]:
     """The test targets a unittest or pytest surface names, whether it is a
-    discover run, and the ambiguous path tokens.
+    discover run, the ambiguous path tokens, and what this parse cannot resolve.
 
     Option values are skipped by each runner's value-taking option table; a
     pytest bare word or number that names nothing under ``root`` is an unknown
@@ -127,6 +127,13 @@ def proof_targets(
     unknown option (a plugin's) may be one of its values, so they are returned as
     ambiguous: resolved fail-closed by callers, never a named target. A discover
     run with no start directory targets ``.``.
+
+    The fourth value describes what this parse cannot resolve into named scope,
+    or None: an option beyond the discovery routing and the verbosity and
+    fail-fast ones `identify` removes, a discovery pattern after the start
+    directory, or a command naming no target, which selects implicitly from the
+    runner's own working directory or configuration. Callers publish named
+    ownership only when it is None.
     """
     runner = surface.get("runner")
     top = Path(str(root)).resolve()
@@ -139,6 +146,7 @@ def proof_targets(
     )
     targets: list[str] = []
     ambiguous: list[str] = []
+    unresolved: str | None = None
     pending_start = False
     pending_value = False
     after_unknown_option = False
@@ -178,6 +186,10 @@ def proof_targets(
                 and name not in PYTEST_FLAG_OPTIONS and not known_cluster
                 and not REPEATED_VERBOSITY.match(name)
             )
+            # After cluster normalization, so `-kfast` reports as `-k`. Discovery
+            # routing is the only option this parse turns into a target.
+            if not (discover and name in UNITTEST_START_OPTIONS) and not REPEATED_VERBOSITY.match(name):
+                unresolved = unresolved or f"the option {name}"
             if name in value_options:
                 if has_value:
                     if discover and name in UNITTEST_START_OPTIONS:
@@ -191,10 +203,17 @@ def proof_targets(
             or token.endswith(".py") or (top / token).exists()
         ):
             continue
+        if discover and targets:
+            # `discover <start> <pattern>`: only the start is routing.
+            unresolved = unresolved or f"the discovery pattern {token}"
         (ambiguous if after_unknown_option else targets).append(token)
-    if discover and not targets:
-        targets.append(".")
-    return targets, discover, ambiguous
+    if not targets:
+        # Nothing named: both runners then select implicitly, discovery from the
+        # working directory and pytest from its own rootdir and configuration.
+        unresolved = unresolved or "an implicit whole-suite selection"
+        if discover:
+            targets.append(".")
+    return targets, discover, ambiguous, unresolved
 
 
 def repository_resolution(surface: Mapping[str, object], root: object) -> str | None:
@@ -215,7 +234,7 @@ def repository_resolution(surface: Mapping[str, object], root: object) -> str | 
     tokens = [token for token in raw if isinstance(token, str)] if isinstance(raw, list) else []
     if runner == "pytest" and "--pyargs" in tokens:
         return "--pyargs selects import targets whose location the repository root cannot establish; use repository path targets"
-    targets, discover, ambiguous = proof_targets(surface, root)
+    targets, discover, ambiguous, _ = proof_targets(surface, root)
     unresolved: list[str] = []
     for target in targets + ambiguous:
         selector = target.split("::", 1)[0] if runner == "pytest" else target
