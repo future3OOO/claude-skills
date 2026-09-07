@@ -406,6 +406,10 @@ class ExecutedSelectionsTests(unittest.TestCase):
         "-m unittest",
         # A known-arity cluster is not enough: -h prints help and runs nothing.
         "-m pytest -xqh suite/test_x.py",
+        # An exempt cluster does not carry the option beside it: the first still
+        # prints a version and the second is not pytest's option at all.
+        "-m pytest -xq --version suite/test_x.py",
+        "-m pytest -xq --not-a-pytest-option suite/test_x.py",
     )
     RESOLVED_FORMS = (
         ("-m pytest -q suite/test_x.py", ["suite/test_x.py"]),
