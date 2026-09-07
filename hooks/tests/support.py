@@ -31,6 +31,10 @@ def fixture_env(state_root: Path) -> dict[str, str]:
     """The environment a real-index fixture pass runs under: an isolated state
     root and no ambient git or bytecode side effects."""
     env = os.environ.copy()
+    # A parent Git routing variable would redirect the fixture's own git and the
+    # producer it drives away from the fixture repository, so drop them.
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+        env.pop(name, None)
     env.update({
         "CLAUDE_WORKFLOW_STATE_ROOT": str(state_root),
         "GIT_CONFIG_GLOBAL": os.devnull,

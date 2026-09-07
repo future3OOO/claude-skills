@@ -807,6 +807,19 @@ def _is_owned(path: str, node: str, scopes: list[tuple[str, str, bool]]) -> bool
     return False
 
 
+def _advise(line: str) -> None:
+    """Emit one advisory line to stderr, tolerating a broken or closed stream.
+
+    The advisory is best-effort: write the line directly to the stderr file
+    descriptor, bypassing the buffer, so a broken stream fails here and leaves no
+    pending data to re-raise at interpreter-shutdown flush. Reuse the stream's own
+    encoding and error policy so a configured non-UTF-8 stderr is unchanged."""
+    try:
+        os.write(sys.stderr.fileno(), (line + "\n").encode(sys.stderr.encoding, sys.stderr.errors))
+    except (OSError, ValueError):
+        pass
+
+
 def _advisory_publish(
     identity: RepoIdentity, workflow_id: str, gap: str | None, unowned: dict[str, int]
 ) -> None:
@@ -814,20 +827,18 @@ def _advisory_publish(
     something to report; an identical result is silent and writes nothing."""
     paths = {name: unowned[name] for name in sorted(unowned)}
     canonical = {"workflowId": workflow_id, "gap": gap, "paths": paths}
-    store = repo_state_dir(identity) / _ADVISORY_FILE
     try:
+        store = repo_state_dir(identity) / _ADVISORY_FILE
         prior = read_json(store)
-    except OSError:
-        prior = None
-    if prior == canonical:
-        return
-    try:
+        if prior == canonical:
+            return
         atomic_write_json(store, canonical)
     except OSError:
-        # The disposable dedup cache could not be written. Report that as a gap
-        # through the one-line notice rather than failing the GREEN or retrying
-        # the same writer, so the GREEN's exit, payload, and state are untouched.
-        print("map advisory: gap, the advisory cache could not be written", file=sys.stderr)
+        # The disposable dedup cache could not be resolved or written. Report
+        # that as a gap through the one-line notice rather than failing the GREEN
+        # or retrying the same writer, so the GREEN's exit, payload, and state
+        # are untouched.
+        _advise("map advisory: gap, the advisory cache could not be written")
         return
     if not gap and not paths:
         return
@@ -843,7 +854,7 @@ def _advisory_publish(
         report = ""
     if gap:
         report = f"gap, {gap}" + (f"; {report}" if report else "")
-    print(f"map advisory: {report}", file=sys.stderr)
+    _advise(f"map advisory: {report}")
 
 
 def _map_update(values: list[str]) -> int:

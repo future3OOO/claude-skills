@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import resource
 import shutil
 import subprocess
 import sys
@@ -38,7 +39,7 @@ from hooks.tests.support import (  # noqa: E402
     run_workflow,
 )
 
-CANONICAL_BOOTSTRAP = Path("/home/prop_/.local/share/repo-context-forge/current/scripts/codex_context_bootstrap.py")
+CANONICAL_BOOTSTRAP = Path.home() / ".local/share/repo-context-forge/current/scripts/codex_context_bootstrap.py"
 GITNEXUS = shutil.which("gitnexus")
 ADVISORY = "map advisory:"
 
@@ -408,6 +409,155 @@ class MapAdvisoryTests(unittest.TestCase):
         green = self.tdd_runner("green", "BM_FIXTURE", *runner)
 
         self.assertEqual(self.advisory_lines(green), [], f"{marker}: {green.stderr!r}")
+
+    ROUTING = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+
+    def test_fixture_env_clears_parent_git_routing(self) -> None:
+        marker = "FIXTURE_ENV_LEAKS_GIT_ROUTING"
+        # Every parent Git routing variable must be cleared, or the fixture's git
+        # and the producer it drives route to the parent. Set all four so the
+        # assertion exercises each clear rather than a trivially-absent variable.
+        saved = {k: os.environ.get(k) for k in self.ROUTING}
+        try:
+            for name in self.ROUTING:
+                os.environ[name] = f"/nonexistent/parent-{name.lower()}"
+            env = fixture_env(self.tmp / "state")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        for name in self.ROUTING:
+            self.assertNotIn(name, env, f"{marker}: {name}")
+
+    def test_canonical_bootstrap_follows_the_running_home(self) -> None:
+        marker = "BOOTSTRAP_PATH_HARDCODED_TO_ONE_HOME"
+        # Import the ACTUAL test module in a child process under a different HOME
+        # and read its exported CANONICAL_BOOTSTRAP, so a revert to a hardcoded
+        # path is caught rather than a copy of the expression.
+        fake_home = self.tmp / "fakehome"
+        fake_home.mkdir()
+        result = subprocess.run(
+            [sys.executable, "-c", "import hooks.tests.test_map_advisory as m; print(m.CANONICAL_BOOTSTRAP)"],
+            cwd=ROOT, env=dict(os.environ, HOME=str(fake_home)), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resolved = result.stdout.strip()
+        self.assertTrue(resolved.startswith(str(fake_home)), f"{marker}: {resolved}")
+        self.assertNotIn("/home/prop_", resolved, marker)
+
+    def _assert_closed_stderr_keeps_green(
+        self, *, unbuffered: bool, break_cache: bool = False, fd_pressure: bool = False
+    ) -> None:
+        marker = "STDERR_FAILURE_ESCAPED_THE_GREEN"
+        self.begin_pass([self.item("BM_FIXTURE")])
+        self.tdd("red", "BM_FIXTURE", "tests.test_app.AppTests.test_compute")
+        self.edit_compute()
+        if break_cache:
+            # Force the cache-gap notice site (the OSError branch of
+            # _advisory_publish): an atomic write cannot replace a directory and
+            # reading one raises, so the advisory emits the cache-gap notice
+            # through _advise while stderr is closed.
+            (repo_state_dir(resolve_repo_identity(self.repo)) / "map-advisory.json").mkdir()
+        cmd = [sys.executable]
+        if unbuffered:
+            cmd.append("-u")
+        cmd += [
+            str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", self.slug,
+            "--phase", "green", "--behavior-id", "BM_FIXTURE",
+            "--", sys.executable, "-m", "unittest", "tests.test_app.AppTests.test_compute",
+        ]
+        # Read stdout until the emitted valid payload, then close our stderr read
+        # end so the advisory's stderr write fails during the detect-changes
+        # window. The context manager closes the remaining pipes on exit.
+        with subprocess.Popen(cmd, cwd=self.repo, env=self.env, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+            payload = None
+            for line in proc.stdout:
+                if line.startswith("{") and '"valid"' in line:
+                    payload = json.loads(line)
+                    if fd_pressure:
+                        # Real OS descriptor pressure on our own child: NOFILE=3
+                        # leaves only fds 0,1,2, so the advisory's recovery
+                        # os.open(os.devnull) cannot obtain a descriptor (real
+                        # EMFILE, not a substituted call).
+                        resource.prlimit(proc.pid, resource.RLIMIT_NOFILE, (3, 3))
+                    proc.stderr.close()
+                    break
+            proc.wait(timeout=120)
+        self.assertIsNotNone(payload, f"{marker}: no GREEN payload emitted")
+        self.assertEqual(payload["valid"], True, marker)
+        self.assertEqual(proc.returncode, 0, f"{marker}: exit={proc.returncode} unbuffered={unbuffered}")
+        self.assertEqual(self.status()["tdd"], "passed", marker)
+
+    def test_a_closed_stderr_never_fails_the_green_unbuffered(self) -> None:
+        self._assert_closed_stderr_keeps_green(unbuffered=True)
+
+    def test_a_closed_stderr_never_fails_the_green_buffered(self) -> None:
+        # Buffered defers the pipe error to a flush; a naive guard would only
+        # postpone the failure to interpreter shutdown (exit 120).
+        self._assert_closed_stderr_keeps_green(unbuffered=False)
+
+    def test_a_closed_stderr_never_fails_the_cache_gap_notice_unbuffered(self) -> None:
+        # The cache-gap notice is the second promised notice site; prove it too
+        # survives a closed stderr, not only the unowned/gap site.
+        self._assert_closed_stderr_keeps_green(unbuffered=True, break_cache=True)
+
+    def test_a_closed_stderr_never_fails_the_cache_gap_notice_buffered(self) -> None:
+        self._assert_closed_stderr_keeps_green(unbuffered=False, break_cache=True)
+
+    def test_a_closed_stderr_under_descriptor_pressure_never_fails_the_green(self) -> None:
+        # Real EMFILE at the advisory's recovery open must not let the buffered
+        # advisory escape at interpreter-shutdown flush after a committed GREEN
+        # (RECOVERY_COVERAGE). Buffered is the escape mode; unbuffered has no
+        # deferred flush.
+        self._assert_closed_stderr_keeps_green(unbuffered=False, fd_pressure=True)
+
+    def test_a_state_directory_failure_after_commit_never_fails_the_green(self) -> None:
+        marker = "STATE_DIR_FAILURE_ESCAPED_THE_GREEN"
+        self.begin_pass([self.item("BM_FIXTURE")])
+        self.tdd("red", "BM_FIXTURE", "tests.test_app.AppTests.test_compute")
+        self.edit_compute()
+        state_dir = repo_state_dir(resolve_repo_identity(self.repo))
+        aside = state_dir.parent / (state_dir.name + ".aside")
+
+        # The recorder commits and emits the GREEN, then runs the advisory's
+        # external graph command before resolving the state directory. Read the
+        # emitted GREEN payload, then replace the state directory with a regular
+        # file so the advisory's later repo_state_dir() fails — no sleep, the
+        # detect-changes call is the window.
+        proc = subprocess.Popen(
+            [
+                sys.executable, "-u", str(WORKFLOW), "tdd", "--repo", str(self.repo),
+                "--slug", self.slug, "--phase", "green", "--behavior-id", "BM_FIXTURE",
+                "--", sys.executable, "-m", "unittest", "tests.test_app.AppTests.test_compute",
+            ],
+            cwd=self.repo, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        payload = None
+        for line in proc.stdout:
+            if line.startswith("{") and '"valid"' in line:
+                payload = json.loads(line)
+                state_dir.rename(aside)
+                (state_dir).write_text("not a directory\n", encoding="utf-8")
+                break
+        out, err = proc.communicate(timeout=120)
+
+        # Restore the real state directory before reading committed state.
+        state_dir.unlink()
+        aside.rename(state_dir)
+
+        self.assertIsNotNone(payload, f"{marker}: no GREEN payload emitted")
+        self.assertEqual(payload["valid"], True, marker)
+        self.assertEqual(proc.returncode, 0, f"{marker}: exit={proc.returncode} err={err[-300:]!r}")
+        self.assertEqual(self.status()["tdd"], "passed", marker)
+        self.assertTrue(
+            any(line.startswith(ADVISORY) and "gap" in line for line in err.splitlines()),
+            f"{marker}: no cache gap reported; err={err[-300:]!r}",
+        )
 
     def test_a_unittest_package_selection_does_not_own_the_subtree(self) -> None:
         marker = "PACKAGE_SELECTION_OVER_OWNED_THE_SUBTREE"
