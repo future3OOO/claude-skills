@@ -683,6 +683,9 @@ def _run_tdd(values: list[str]) -> int:
 
 _ADVISORY_FILE = "map-advisory.json"
 _ADVISORY_TIMEOUT = 10
+# Git permits control bytes in a path and the graph can surface one verbatim, so
+# escape them before the path reaches the one-line notice.
+_ADVISORY_CONTROL_ESCAPES = {c: f"\\x{c:02x}" for c in range(0x20)} | {0x7f: "\\x7f"}
 
 
 def _map_advisory(identity: RepoIdentity, state: JsonObject) -> None:
@@ -843,7 +846,7 @@ def _advisory_publish(
     if not gap and not paths:
         return
     sort = sorted(paths)
-    shown = ", ".join(sort[:10])
+    shown = ", ".join(p.translate(_ADVISORY_CONTROL_ESCAPES) for p in sort[:10])
     remaining = len(sort) - 10
     if paths:
         total = sum(paths.values())

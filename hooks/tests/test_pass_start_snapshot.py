@@ -401,6 +401,24 @@ class ExecutedSelectionsTests(unittest.TestCase):
             self.assertEqual(record["targets"], expected, f"{marker}: {form}")
             self.assertNotIn("unknown", record, f"{marker}: {form}")
 
+        # A few regression checks of the advisory matcher over the scopes these
+        # selections resolve to, so the per-selector advisory fixtures can go: ./
+        # normalizes to the file; a class scope owns its own method but not a
+        # different class; a non-recursive package owns no subtree; a recursive
+        # directory owns its subtree but not a sibling. Unknown handling stays
+        # with the advisory recorder case (it exercises _owned_scopes itself).
+        from hooks.lib.tdd_workflow import _target_scope, _is_owned
+
+        dot = _target_scope("./suite/test_x.py", self.repo, False)
+        self.assertTrue(dot and _is_owned("suite/test_x.py", "T.t", [dot]), f"{marker}: ./-prefix not normalized")
+        cls = _target_scope("suite.test_x.Probe", self.repo, False)
+        self.assertTrue(_is_owned("suite/test_x.py", "Probe.test_it", [cls]), f"{marker}: class lost its method")
+        self.assertFalse(_is_owned("suite/test_x.py", "Rogue.test_it", [cls]), f"{marker}: class owned another class")
+        self.assertIsNone(_target_scope("suite", self.repo, False), f"{marker}: non-recursive package owned a subtree")
+        rec = _target_scope("suite", self.repo, True)
+        self.assertTrue(_is_owned("suite/sub/test_y.py", "", [rec]), f"{marker}: recursive directory lost its subtree")
+        self.assertFalse(_is_owned("other/test_z.py", "", [rec]), f"{marker}: recursive directory owned a sibling")
+
     def test_a_cluster_of_only_irrelevant_options_still_resolves(self) -> None:
         """`-xq` is fail-fast plus quiet, so the path still says which tests ran."""
         from hooks.lib.workflow_state import _selection
