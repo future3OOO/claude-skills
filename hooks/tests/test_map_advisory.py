@@ -2,9 +2,10 @@
 
 Every test drives the real workflow CLI against a real pass-start index: a
 governed intake through the bootstrap Adapter indexes a fixture repository, the
-recorder takes a RED and a GREEN, and then the real PostToolUse edit-success
-adapter (code-quality-gate.py) runs and the assertion reads the advisory notice
-it emitted through hookSpecificOutput.additionalContext. Nothing substitutes the
+recorder takes a RED, the production edit lands, and then the real PostToolUse
+edit-success adapter (code-quality-gate.py) runs; the assertion reads the
+advisory notice it emitted through hookSpecificOutput.additionalContext (a
+mapped GREEN, where one is taken, must emit nothing). Nothing substitutes the
 producer, the hook, the index, or the map.
 """
 from __future__ import annotations
@@ -15,7 +16,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -227,19 +227,6 @@ class MapAdvisoryTests(unittest.TestCase):
 
     # --- attacks -------------------------------------------------------------
 
-    def test_a_production_edit_emits_the_advisory_via_additional_context(self) -> None:
-        # BM_POSTEDIT_EMITS: after a production edit in an active pass, the
-        # PostToolUse edit-success adapter emits the unowned-tests notice via
-        # additionalContext.
-        marker = "POSTEDIT_ADVISORY_NOT_EMITTED"
-        self.begin_pass([self.item("BM_FIXTURE")])
-        self.tdd("red", "BM_FIXTURE", "tests.test_app.AppTests.test_compute")
-        self.edit_compute()
-        lines = self.hook_advisory_lines(self.run_edit_hook())
-        self.assertEqual(len(lines), 1, f"{marker}: no advisory in additionalContext")
-        self.assertIn("tests/test_app.py", lines[0], marker)
-        self.assertIn("not owned by the map", lines[0], marker)
-
     def test_a_mapped_green_emits_no_advisory(self) -> None:
         # BM_GREEN_NO_SECOND_SCAN: the trigger moved to the edit; a mapped GREEN
         # emits no advisory AND makes no detect-changes call (exactly one
@@ -255,19 +242,6 @@ class MapAdvisoryTests(unittest.TestCase):
         self.assertEqual(self.advisory_lines(green), [], f"{marker}: {green.stderr!r}")
         count = counter.read_text().count("x") if counter.is_file() else 0
         self.assertEqual(count, 0, f"{marker}: GREEN made {count} detect-changes calls")
-
-    def test_one_edit_trigger_makes_one_detect_changes(self) -> None:
-        # BM_ONE_DETECT_CHANGES: one PostToolUse advisory trigger makes exactly
-        # one gitnexus detect-changes invocation, counted at the real CLI boundary.
-        marker = "MORE_THAN_ONE_DETECT_CHANGES"
-        self.begin_pass([self.item("BM_FIXTURE")])
-        self.tdd("red", "BM_FIXTURE", "tests.test_app.AppTests.test_compute")
-        self.edit_compute()
-        counter = self.tmp / "detect-changes.count"
-        lines = self.hook_advisory_lines(self.run_edit_hook(env=self._gitnexus_counting_env(counter)))
-        self.assertEqual(len(lines), 1, f"{marker}: advisory did not run: {lines}")
-        count = counter.read_text().count("x") if counter.is_file() else 0
-        self.assertEqual(count, 1, f"{marker}: {count} detect-changes invocations")
 
     def test_the_advisory_writes_only_its_cache_and_stays_silent_without_a_workflow(self) -> None:
         # BM_SILENCE_AND_STATE: with no active workflow the adapter emits no
@@ -294,16 +268,16 @@ class MapAdvisoryTests(unittest.TestCase):
         self.assertEqual(after["tdd"], before["tdd"], marker)
         self.assertEqual(after["passStartSnapshot"], before["passStartSnapshot"], marker)
 
-    def test_the_hook_delivers_warm_under_a_live_mcp_holder(self) -> None:
-        # BM_ADAPTER_DELIVERS: the relocated whole-hook path delivers the notice
-        # warm, including while a live gitnexus MCP server holds the same
-        # pass-start index open, without hanging or exceeding one second.
+    def test_the_hook_delivers_under_a_live_mcp_holder(self) -> None:
+        # The hook path delivers the notice while a live gitnexus MCP server
+        # holds the same pass-start index open: no DB-lock hang and no silent
+        # non-delivery. Latency is not measured here; the direct whole-advisory
+        # acceptance receipts own that.
         marker = "ADAPTER_PATH_DID_NOT_DELIVER"
         self.begin_pass([self.item("BM_FIXTURE")])
         self.tdd("red", "BM_FIXTURE", "tests.test_app.AppTests.test_compute")
         self.edit_compute()
         index_repo = str(self.status()["passStartSnapshot"]["indexRepo"])
-        self.assertEqual(len(self.hook_advisory_lines(self.run_edit_hook())), 1, f"{marker}: warm-up")
 
         srv = subprocess.Popen(
             ["gitnexus", "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -326,22 +300,13 @@ class MapAdvisoryTests(unittest.TestCase):
             self.assertIn("app.py", ctx_text, marker)
             self.assertIsNone(srv.poll(), f"{marker}: MCP holder died before timing")
 
-            # Clear the dedup cache so the timed run is a fresh publish, then
-            # measure the advisory's added overhead: the whole hook minus a hook
-            # on a non-reviewable path (same interpreter start + invalidate, no
-            # advisory), isolating the #212 sub-second delivery budget.
+            # Clear the dedup cache so this run is a fresh publish, then drive
+            # the hook while the server still holds the index open.
             cache = repo_state_dir(resolve_repo_identity(self.repo)) / "map-advisory.json"
             cache.unlink(missing_ok=True)
-            (self.repo / "notes.md").write_text("x\n", encoding="utf-8")
-            base = time.monotonic()
-            self.run_edit_hook("notes.md")
-            baseline = time.monotonic() - base
-            start = time.monotonic()
             lines = self.hook_advisory_lines(self.run_edit_hook())
-            added = time.monotonic() - start - baseline
             self.assertIsNone(srv.poll(), f"{marker}: MCP holder died during the hook")
             self.assertEqual(len(lines), 1, f"{marker}: no notice under the MCP holder")
-            self.assertLess(added, 1.0, f"{marker}: advisory added overhead {added:.3f}s")
         finally:
             for stream in (srv.stdin, srv.stdout):
                 if stream is not None:
@@ -377,14 +342,29 @@ class MapAdvisoryTests(unittest.TestCase):
 
     def test_unowned_impacted_tests_are_named_once(self) -> None:
         # Owning test_compute leaves test_second and test_other impacted in the
-        # one file, so the advisory names tests/test_app.py exactly once, counts
-        # two impacted tests, and reports no gap.
+        # one file, so one production edit makes the hook emit exactly one
+        # notice naming tests/test_app.py once, counting two unowned impacted
+        # tests with no gap, from exactly one detect-changes call counted at the
+        # real gitnexus CLI boundary.
         marker = "UNOWNED_IMPACTED_TESTS_MISADVISED"
-        lines = self.hook_advisory_lines(self.one_pass("tests.test_app.AppTests.test_compute"))
+        self.begin_pass([self.item("BM_FIXTURE")])
+        self.tdd("red", "BM_FIXTURE", "tests.test_app.AppTests.test_compute")
+        self.edit_compute()
+        counter = self.tmp / "detect-changes.count"
+        lines = self.hook_advisory_lines(self.run_edit_hook(env=self._gitnexus_counting_env(counter)))
         self.assertEqual(len(lines), 1, marker)
         self.assertEqual(lines[0].count("tests/test_app.py"), 1, f"{marker}: {lines[0]}")
-        self.assertIn("2 impacted", lines[0], marker)
+        self.assertIn("2 impacted tests not owned by the map", lines[0], marker)
         self.assertNotIn("gap", lines[0], marker)
+        count = counter.read_text().count("x") if counter.is_file() else 0
+        self.assertEqual(count, 1, f"{marker}: {count} detect-changes invocations")
+        # A test-file edit is reviewable but not a production edit (the same
+        # exclusion production_changes applies), so it neither advises nor scans.
+        (self.repo / "tests" / "test_app.py").write_text(TESTS + "\n# touched\n", encoding="utf-8")
+        lines = self.hook_advisory_lines(
+            self.run_edit_hook("tests/test_app.py", env=self._gitnexus_counting_env(counter)))
+        self.assertEqual(lines, [], f"{marker}: a test edit advised: {lines}")
+        self.assertEqual(counter.read_text().count("x"), 1, f"{marker}: a test edit scanned")
 
     def test_complete_ownership_is_silent(self) -> None:
         # A pytest directory selection is recursive, so `pytest tests/` owns every

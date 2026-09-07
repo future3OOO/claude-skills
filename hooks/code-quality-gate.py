@@ -26,6 +26,7 @@ from hooks.lib.hook_input import edited_path, read_hook_payload, session_key  # 
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import (  # noqa: E402
     is_reviewable_path,
+    is_test_path,
     record_session_association,
 )
 from hooks.lib.workflow_state import invalidate_after_edit  # noqa: E402
@@ -92,9 +93,13 @@ def main() -> int:
         pieces.append("python lint findings for %s:\n%s" % (path, "\n".join(f"- {line}" for line in lint)))
     # Issue #212's single automatic trigger: after a successful production edit
     # in an active pass, the map-ownership advisory runs once here and its
-    # bounded notice rides this same PostToolUse additionalContext. map_advisory
-    # never raises and never changes the edit outcome or the workflow state.
-    if state is not None and is_reviewable_path(relative):
+    # bounded notice rides this same PostToolUse additionalContext. Eligibility
+    # follows ready_for_edit's complete/revalidation exclusions and
+    # production_changes' test exclusion. map_advisory never raises and never
+    # changes the edit outcome or the workflow state.
+    if (state is not None and state.get("phase") != "complete"
+            and not state.get("revalidation")
+            and is_reviewable_path(relative) and not is_test_path(relative)):
         from hooks.lib.tdd_workflow import map_advisory
         notice = map_advisory(identity, state)
         if notice:
