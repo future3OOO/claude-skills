@@ -228,12 +228,13 @@ adjudicates match, stale, or absent. Without the post-edit re-run — or after a
 further edit — the `QG54-OWNER-COMPETITION-*` rules honestly report the stale or
 absent gap instead of evaluating.
 
-### 10. Lead structured code review
+### 10. Delegate code review
 
-Invoke `code-review` for non-trivial changes. The implementation agent may
-perform it itself in the current session: it is the lead's structured
-Standards/Spec self-check, not an independent review. Review Standards and Spec
-separately, verify every finding, and disposition each one. A disposition is invalid
+For a non-trivial change invoke `code-review`: the skill forks a fresh
+general-purpose delegate pinned to `claude-fable-5-1` in this checkout as a
+background task; wait for its result and do not edit the candidate meanwhile. It returns a
+Standards/Spec review and a findings intake. Verify every finding and
+disposition each one. A disposition is invalid
 without its measurement; advisor agreement is not authorization; historical behavior
 is contextual evidence only — a current Interface claim needs current documentation,
 callers, tests, or another active authority. In this governed workflow `workflow.py record-review` is the required producer for non-trivial review state (`set-phase` cannot record a passed review); outside the governed
@@ -241,24 +242,33 @@ workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
 Record immutable intake first as `{"findings":[...]}` through the unified
-Interface. If it contains findings, capture the returned `summaryId`, then call
+Interface, naming the delegate's harness-recorded model and agent id: the
+session's `subagents/agent-<id>.jsonl` transcript under `~/.claude/projects`
+carries both; never infer the model from the parent. A recorded model other
+than `claude-fable-5-1` is a blocker: report it and do not record the review. If it contains findings,
+capture the returned `summaryId`, then call
 the same command with `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;
 each disposition carries `kind`, `premise`, `occurrence`, and
-`materialConsequence`. A document carrying both forms refuses.
+`materialConsequence`. A document carrying both forms refuses. Print the
+canonical disposition shape table, generated from its installed validator
+declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   record-review --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" \
-  --resolved-model "<model>" --review-context-id "<context-id>" --input <review.json>
+  --resolved-model "<model>" --review-context-id "<agent-id>" --input <review.json>
 ```
 
 A no-finding intake binds the reviewed tree and passes immediately. A finding
 intake stays pending until its appended dispositions resolve every material
 finding. Dispositions may cover any subset of an intake; every material finding still
-needs a terminal disposition before completion; a `material:false` note needs none. Verification, the typed gate, and a new lead review all run while findings
+needs a terminal disposition before completion; a `material:false` note needs none. Verification, the typed gate, and a new review all run while findings
 are open; open findings block completion only. A false premise records normalized `result`
 exactly `false`; otherwise
-rejection requires zero occurrence on a complete domain. `report-only` resolves
+rejection requires zero occurrence on a complete domain, a disposition linking
+Behavior Map items may claim no domain wider than the union of those items'
+executed attacks, and three or more rejections of material findings in one
+document draw a recorded bulk-rejection warning. `report-only` resolves
 completion without authorizing an edit and cannot later become `fixed`. A
 behavioral finding is fixed by owning it: add the attack item with its finding
 `sourceRefs` through `tdd-map`, drive RED/GREEN, then record
@@ -266,18 +276,17 @@ behavioral finding is fixed by owning it: add the attack item with its finding
 corrections record their current-tree evidence directly. A later map update
 that would leave a fixed finding without its owning attack refuses.
 
-### 11. Independent final Codex Advisor review
+### 11. Final Codex Advisor review
 
-The final Codex Advisor review is the workflow's sole independent reviewer; do
-not spawn a second review agent. Invoke it against the live diff with wrapper
+The final Codex Advisor review judges the candidate, the delegate review, and
+the lead's dispositions. Invoke it against the live diff with wrapper
 phase `final-review`, the same slug, and the base ref. It re-derives the attack
 surface before checking declared evidence: what the recorded original request
 and public Interface promise, which operations can falsify each promise, which
 of those are unattacked through the real Seam, and whether any disposition
 narrowed its finding's domain — only then implementation detail and declared-map
 closure. A promised load-bearing surface with no attack forbids `commit-ready`
-even when every declared item is green. It challenges the lead's
-review rather than trusting it. Address and disposition material findings. The
+even when every declared item is green. Address and disposition material findings. The
 wrapper leaves final findings pending; the lead explicitly records `none` or
 `addressed` only after validating the output. Any production edit repeats
 verification, code review where required, and final review.

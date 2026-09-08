@@ -309,7 +309,9 @@ class ReviewSummaryTests(ReviewSummaryHarness):
             self.assertIn(f"| `{name}` | {shape} |", table, marker)
             self.assertEqual(f"| `{name}` | {shape} |".count("|"), 3, "DOCUMENT_SHAPE_TABLE_HAS_EXTRA_COLUMN")
         command = 'python3 -I -c \'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)\''
-        for relative in ("skills/codex-advisor/SKILL.md", "skills/code-review/SKILL.md"):
+        delegate_prompt = (ROOT / "skills/code-review/SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn(command, delegate_prompt, "DELEGATE_PROMPT_CARRIES_LEAD_RECORDING")
+        for relative in ("skills/codex-advisor/SKILL.md", "skills/repo-production-workflow/SKILL.md"):
             text = (ROOT / relative).read_text(encoding="utf-8")
             self.assertIn(command, text, "AUTHOR_TABLE_COMMAND_USED_CALLER_PATH")
             self.assertNotIn("| `fixed` |", text, marker)
