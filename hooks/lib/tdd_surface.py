@@ -1,9 +1,10 @@
 """TDD surface identity and structured RED proof.
 
 RED and GREEN must select the same tests, not use byte-identical command text.
-Direct pytest and unittest commands can prove an executed product assertion.
-Other commands remain exact-surface bound but cannot open a
-mapped RED: the workflow ledger is continuity, not an attestation system.
+Direct pytest and unittest commands can prove an executed test's failure; any
+other command is an exact-bound operation whose observed failure is recorded
+with its reach unresolved: the workflow ledger is continuity, not an
+attestation system.
 """
 from __future__ import annotations
 
@@ -39,7 +40,9 @@ UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 # pytest's terminal summary line, framed with = at normal verbosity and bare
 # under -q; the only place a pass count describes the run.
 PYTEST_SUMMARY = re.compile(r"(?m)^(?:=+ )?(.+?) in \d+\.\d+s(?: \([^)]*\))?(?: =+)?$")
-PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
+# The exception line of a failed test's report: an assertion, pytest.fail, or
+# the production exception the test let escape.
+PYTEST_FAILURE_LINE = re.compile(r"^E\s+[A-Za-z_][\w.]*(?:: |$)")
 PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
 PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
 PYTEST_SUMMARY_RECORDS = (
@@ -52,6 +55,17 @@ PYTEST_SUMMARY_RECORDS = (
     "RERUN ",
 )
 PYTEST_TB_SUPPRESSED = ("--tb=no", "--tb=line")
+UNITTEST_BLOCK_HEADER = ("FAIL: ", "ERROR: ")
+UNITTEST_SETUP_FRAME = re.compile(r'^  File ".*", line \d+, in (?:setUp(?:Class|Module)?|asyncSetUp)$')
+# The interpreter's and shell's own diagnostics for an operation that failed
+# before it could reach the production Interface.
+PRE_INTERFACE_FAILURE = re.compile(
+    r"(?m)^(?:ModuleNotFoundError|ImportError|SyntaxError|IndentationError)\b.*$"
+    r"|^.*: No module named .*$"
+    r"|^.*can't open file .*$"
+    r"|^.*: command not found$"
+    r"|^\S*sh: \d+: .*: not found$"
+)
 
 
 def identify(command: Sequence[str]) -> dict[str, object]:
@@ -286,20 +300,37 @@ def differences(
 def evaluate_red(
     surface: Mapping[str, object], output: str, marker: str
 ) -> tuple[dict[str, object] | None, str]:
-    """Return evidence that RED reached the mapped assertion."""
+    """Return evidence of what RED's output establishes about the mapped failure.
+
+    A directly invoked pytest or unittest run establishes that an executed test
+    failed at the marker. Any other command is an attack operation on the real
+    production Interface: its failure is observed and bound, with reach left
+    unresolved for review to judge.
+    """
     runner = surface.get("runner")
-    if runner not in {"unittest", "pytest"}:
-        return None, (
-            "mapped RED proof requires a directly invoked pytest or unittest "
-            "surface; this exact-bound command cannot establish Seam reach"
-        )
     output = ANSI_ESCAPE.sub("", output)
+    if runner not in {"unittest", "pytest"}:
+        return _direct_red(output, marker, str(runner))
     if marker not in output:
         return None, f"output did not contain the mapped redFailure marker {marker!r}"
     if runner == "unittest":
         return _unittest_red(output, marker)
     arguments = surface.get("arguments")
     return _pytest_red(output, marker, arguments if isinstance(arguments, list) else ())
+
+
+def _direct_red(
+    output: str, marker: str, runner: str
+) -> tuple[dict[str, object] | None, str]:
+    failure = PRE_INTERFACE_FAILURE.search(output)
+    if failure:
+        return None, (
+            "the operation failed before reaching the production Interface: "
+            + failure.group(0).strip()
+        )
+    if marker not in output:
+        return None, f"output did not contain the mapped redFailure marker {marker!r}"
+    return {"quality": "failure-observed", "runner": runner, "reach": "unresolved"}, ""
 
 
 def _unittest_red(
@@ -333,10 +364,20 @@ def _unittest_red(
             f"unittest report blocks failures={report_counts[0]}, errors={report_counts[1]} "
             f"did not match summary failures={expected_counts[0]}, errors={expected_counts[1]}"
         )
-    if summary_counts.get("errors", 0) or summary_counts.get("failures", 0) < 1:
-        return None, "unittest ended in loader/setup error rather than assertion failure"
-    if not _unittest_marker_in_failure(output, marker):
-        return None, "mapped marker was not emitted by an executed unittest assertion"
+    if sum(expected_counts) < 1:
+        return None, "unittest did not report a failed test"
+    blocks = _unittest_report_blocks(output)
+    setup = next(
+        (
+            header for header, lines in blocks
+            if "_FailedTest" in header or any(UNITTEST_SETUP_FRAME.match(line) for line in lines)
+        ),
+        None,
+    )
+    if setup is not None:
+        return None, "unittest ended in loader/setup error rather than a test failure: " + setup
+    if not any(_unittest_marker_in_block(lines, marker) for _, lines in blocks):
+        return None, "mapped marker was not emitted by an executed unittest test's failure"
     return {
         "quality": "assertion-reached",
         "runner": "unittest",
@@ -344,36 +385,38 @@ def _unittest_red(
     }, ""
 
 
-def _unittest_marker_in_failure(output: str, marker: str) -> bool:
-    for block in _unittest_failure_blocks(output):
-        in_traceback = False
-        in_message = False
-        for line in block:
-            stripped = line.strip()
-            if stripped == "Traceback (most recent call last):":
-                in_traceback = True
-                in_message = False
-                continue
-            if stripped in {"Stdout:", "Stderr:"}:
-                break
-            if line.startswith(('  File "', "During handling of the above exception")):
-                in_message = False
-                continue
-            if in_traceback and stripped.startswith("AssertionError:"):
-                in_message = True
-            if in_message and marker in line:
-                return True
+def _unittest_marker_in_block(block: list[str], marker: str) -> bool:
+    """The marker is in the block's exception line or its message continuation:
+    frames and source lines are indented, the raised exception is not."""
+    in_traceback = False
+    in_message = False
+    for line in block:
+        stripped = line.strip()
+        if stripped == "Traceback (most recent call last):":
+            in_traceback = True
+            in_message = False
+            continue
+        if stripped in {"Stdout:", "Stderr:"}:
+            break
+        if line.startswith(('  File "', "During handling of the above exception", "The above exception was")):
+            in_message = False
+            continue
+        if in_traceback and line and not line[0].isspace():
+            in_message = True
+        if in_message and marker in line:
+            return True
     return False
 
 
-def _unittest_failure_blocks(output: str) -> list[list[str]]:
+def _unittest_report_blocks(output: str) -> list[tuple[str, list[str]]]:
     lines = output.splitlines()
-    blocks: list[list[str]] = []
+    blocks: list[tuple[str, list[str]]] = []
     index = 0
     while index < len(lines):
-        if not lines[index].startswith("FAIL: "):
+        if not lines[index].startswith(UNITTEST_BLOCK_HEADER):
             index += 1
             continue
+        header = lines[index]
         start = index + 1
         while start < len(lines) and not _rule(lines[start], "-"):
             start += 1
@@ -383,12 +426,12 @@ def _unittest_failure_blocks(output: str) -> list[list[str]]:
         end = start
         while end < len(lines):
             next_line = lines[end + 1] if end + 1 < len(lines) else ""
-            if _rule(lines[end], "=") and next_line.startswith(("FAIL: ", "ERROR: ")):
+            if _rule(lines[end], "=") and next_line.startswith(UNITTEST_BLOCK_HEADER):
                 break
             if _rule(lines[end], "-") and next_line.startswith("Ran "):
                 break
             end += 1
-        blocks.append(lines[start:end])
+        blocks.append((header, lines[start:end]))
         index = end
     return blocks
 
@@ -428,7 +471,7 @@ def _pytest_red(
             "cannot be attributed to a test - remove it or narrow the command"
         )
     if not _pytest_marker_in_failure(failures, marker):
-        return None, "mapped marker was not emitted by an executed pytest assertion"
+        return None, "mapped marker was not emitted by an executed pytest test's failure"
     return {
         "quality": "assertion-reached",
         "runner": "pytest",
@@ -485,7 +528,7 @@ def _pytest_marker_in_failure(lines: list[str], marker: str) -> bool:
             continue
         if not in_failure or in_captured_output:
             continue
-        if PYTEST_ASSERTION.match(line):
+        if PYTEST_FAILURE_LINE.match(line):
             in_assertion_message = True
         elif not line.startswith("E "):
             in_assertion_message = False

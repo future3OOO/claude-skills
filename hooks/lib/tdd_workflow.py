@@ -33,6 +33,7 @@ from .workflow_state import (
     WorkflowError,
     _executed_selections,
     _head_oid,
+    annotate_tdd_evidence,
     bound_state,
     commit_tdd,
     evidence_document,
@@ -290,16 +291,24 @@ def _candidate_command(
 _BASELINE_STAMP = behavior_map.BASELINE_STAMP
 
 
-def _baseline_proof(
-    surface: JsonObject, output: str
+def _pass_proof(
+    surface: JsonObject, output: str, *, baseline: bool
 ) -> tuple[dict[str, object] | None, str]:
-    """A baseline is the surface passing, not the command exiting 0."""
+    """A pass is the surface passing, not the command exiting 0.
+
+    A directly invoked pytest or unittest run reports its executed passing
+    tests. Any other command exiting 0 is the operation succeeding: GREEN
+    records that against the item's own RED, a baseline cannot claim it.
+    """
     runner = surface.get("runner")
     if runner not in {"unittest", "pytest"}:
-        return None, (
-            "baseline proof requires a directly invoked pytest or unittest surface; "
-            "this exact-bound command cannot establish Seam reach"
-        )
+        if baseline:
+            return None, (
+                "a baseline needs a directly invoked pytest or unittest surface reporting "
+                "an executed passing test; a non-runner exit 0 records the operation "
+                "succeeding, not assertion execution"
+            )
+        return {"quality": "operation-succeeded", "runner": str(runner), "reach": "unresolved"}, ""
     output = tdd_surface.ANSI_ESCAPE.sub("", output)
     if runner == "unittest":
         # unittest exits 0 with skipped and expected-failure tests inside its
@@ -511,12 +520,12 @@ def _run_tdd(values: list[str]) -> int:
         # Producer-backed baseline: a pending surface passing is already
         # satisfied, opens nothing, counts no cycle. A dirty tree does not refuse
         # it; the run entry records what had changed, and the reviews weigh it.
-        proof, proof_error = _baseline_proof(surface, output)
+        proof, proof_error = _pass_proof(surface, output, baseline=True)
         baseline = proof is not None
     elif phase == "green" and not legacy and not timed_out and exit_code == 0:
         # A GREEN is the surface passing, not the command exiting 0: a skipped or
         # incomplete run reports no passing test and proves nothing.
-        proof, proof_error = _baseline_proof(surface, output)
+        proof, proof_error = _pass_proof(surface, output, baseline=False)
     valid = (
         red_ok
         if phase == "red"
@@ -535,6 +544,7 @@ def _run_tdd(values: list[str]) -> int:
         fields["expectedFailure"] = expected or None
     else:
         fields["expectedFailure"] = expected if phase == "red" else None
+        fields["behaviorId"] = args.behavior_id
         if proof is not None:
             fields["passProof" if phase == "green" else "redProof"] = proof
         elif proof_error:
@@ -638,6 +648,18 @@ def _run_tdd(values: list[str]) -> int:
             action,
             expected_evidence_id=evidence_id,
             opens_cycle=opens_cycle,
+        )
+    elif not legacy:
+        # An executed run the map does not advance is still evidence: the run and
+        # its refusal reason join the current document, and only the evidence
+        # pointer moves - no status, cycle, or phase changes.
+        retained = (
+            {**current, "runs": [*(current.get("runs") or []), run], "updatedAt": utc_timestamp()}
+            if isinstance(current, dict) and current.get("workflowId") == workflow_id
+            else _map_doc(slug=slug, workflow_id=workflow_id, items=items, status="pending", kind="map", runs=[run])
+        )
+        _, evidence_id = annotate_tdd_evidence(
+            identity, slug, workflow_id, retained, expected_evidence_id=evidence_id
         )
 
     _print_output(raw)

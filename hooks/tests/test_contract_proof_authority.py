@@ -20,6 +20,7 @@ from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowIncomplete,
     advisor_disposition,
     complete,
+    evidence_document,
     read_workflow,
     record_advisor_result,
     record_base_oid,
@@ -266,7 +267,16 @@ class ContractProofAuthorityTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, f"{marker}: {' '.join(command)}")
             state = read_workflow(self.identity)
             self.assertEqual(state["tdd"], "pending", marker)
-            self.assertIsNone(state.get("tddEvidence"), marker)
+            # The refusal is retained, not discarded, and opens nothing.
+            retained = "DIRECT_EXIT_ZERO_TREATED_AS_BASELINE"
+            self.assertIsInstance(state.get("tddEvidence"), str, retained)
+            document = evidence_document(self.identity, str(state["tddEvidence"]))
+            run = document["runs"][-1]
+            self.assertEqual((run["behaviorId"], run["valid"]), ("BM_PRESENT", False), retained)
+            self.assertIn("redProofFailure", run, retained)
+            self.assertNotIn("tddCycleCount", state, retained)
+            item = next(entry for entry in document["behaviorMap"] if entry["id"] == "BM_PRESENT")
+            self.assertEqual(item["status"], "pending", retained)
 
     def test_baseline_counts_only_genuinely_passing_tests(self) -> None:
         # unittest exits 0 and counts skipped and expected-failure tests in
@@ -290,7 +300,12 @@ class ContractProofAuthorityTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 2, f"{marker}: {(refused.stderr.strip().splitlines() or [''])[-1]}")
             state = read_workflow(self.identity)
             self.assertEqual(state["tdd"], "pending", marker)
-            self.assertIsNone(state.get("tddEvidence"), marker)
+            # The refused run is retained with its reason; the item stays pending.
+            retained = evidence_document(self.identity, str(state["tddEvidence"]))
+            self.assertIn("did not report an executed passing test", retained["runs"][-1]["redProofFailure"], marker)
+            self.assertEqual(
+                next(entry["status"] for entry in retained["behaviorMap"] if entry["id"] == "BM_PRESENT"), "pending", marker
+            )
         probe.write_text(header + passing + skip + xfail, encoding="utf-8")
         mixed = subprocess.run(
             [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,

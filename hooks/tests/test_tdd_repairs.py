@@ -181,6 +181,9 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertIsInstance(document, dict)
         return document
 
+    def map_item(self, identifier: str) -> dict[str, object]:
+        return next(item for item in self.evidence()["behaviorMap"] if item["id"] == identifier)
+
     def write_unittest(self, expected: int, marker: str) -> tuple[str, ...]:
         (self.repo / "test_app.py").write_text(
             "import unittest\n"
@@ -328,10 +331,11 @@ class MappedTddRepairTests(unittest.TestCase):
             "EXPECTED_FAILURE_RED_REJECTED\n" + result.stdout + result.stderr,
         )
 
-    def test_forged_python_traceback_cannot_open_mapped_red(self) -> None:
-        marker = "FORGED_PYTHON_OUTPUT_ACCEPTED"
+    def test_forged_runner_shaped_output_never_earns_runner_reach(self) -> None:
+        marker = "FORGED_RUNNER_SHAPE_GRANTED_REACH"
+        declared = "PRODUCT_MARKER_PRINTED"
         slug, _ = self.begin_with_map(
-            [pending_behavior("BM_PYTHON", red_failure=marker)], "python-red"
+            [pending_behavior("BM_PYTHON", red_failure=declared)], "python-red"
         )
         result = self.tdd(
             slug,
@@ -341,18 +345,17 @@ class MappedTddRepairTests(unittest.TestCase):
                 sys.executable,
                 "-c",
                 "print('Traceback (most recent call last):'); "
-                f"print('AssertionError: {marker}'); "
+                f"print('AssertionError: {declared}'); "
+                "print('Ran 1 test in 0.001s'); print('FAILED (failures=1)'); "
                 "int('different failure')",
             ),
         )
+        # A non-runner command is an exact-bound observation whatever it prints:
+        # the recorder binds it and leaves reach unresolved for review to judge.
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stdout + result.stderr)
+        proof = self.evidence()["runs"][-1]["redProof"]
         self.assertEqual(
-            result.returncode,
-            2,
-            "FORGED_PYTHON_OUTPUT_ACCEPTED\n" + result.stdout + result.stderr,
-        )
-        self.assertIn("cannot establish Seam reach", result.stderr)
-        self.assertNotIn(
-            "tddCycleCount", read_workflow(resolve_repo_identity(self.repo))
+            proof, {"quality": "failure-observed", "runner": "exact", "reach": "unresolved"}, marker
         )
 
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
@@ -418,20 +421,175 @@ class MappedTddRepairTests(unittest.TestCase):
             "tddCycleCount", read_workflow(resolve_repo_identity(self.repo))
         )
 
-    def test_unknown_runner_cannot_open_a_mapped_red(self) -> None:
-        marker = "OPAQUE_PRODUCT_ASSERTION"
+    def test_pre_interface_failure_is_refused_and_its_refusal_retained(self) -> None:
+        marker = "PRE_INTERFACE_FAILURE_ACCEPTED_OR_DROPPED"
         slug, _ = self.begin_with_map(
-            [pending_behavior("BM_OPAQUE", red_failure=marker)], "opaque-red"
+            [
+                pending_behavior("BM_OPEN"),
+                pending_behavior("BM_OPAQUE", red_failure="OPAQUE_PRODUCT_ASSERTION"),
+            ],
+            "opaque-red",
         )
-        result = self.tdd(
-            slug,
-            "red",
-            "BM_OPAQUE",
-            (sys.executable, "-m", "module_that_does_not_exist_for_tdd"),
+        missing = (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+        result = self.tdd(slug, "red", "BM_OPAQUE", missing)
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stdout + result.stderr)
+        self.assertIn("before reaching the production Interface", result.stderr, marker)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, marker)
+        self.assertEqual(state["tdd"], "pending", marker)
+        self.assertIsInstance(state.get("tddEvidence"), str, marker)
+        run = self.evidence()["runs"][-1]
+        self.assertEqual((run["behaviorId"], run["phase"], run["valid"]), ("BM_OPAQUE", "red", False), marker)
+        self.assertIn("before reaching the production Interface", run["redProofFailure"], marker)
+        self.assertIn("No module named", run["outputTail"], marker)
+        self.assertEqual(self.map_item("BM_OPAQUE")["status"], "pending", marker)
+        # Beside another item's open cycle the refusal is retained in that cycle
+        # without disturbing it: the open item still reaches GREEN.
+        command = self.write_unittest(2, "VALUE_NOT_TWO")
+        red = self.tdd(slug, "red", "BM_OPEN", command)
+        self.assertEqual(red.returncode, 0, marker + "\n" + red.stdout + red.stderr)
+        again = self.tdd(slug, "red", "BM_OPAQUE", missing)
+        self.assertEqual(again.returncode, 2, marker + "\n" + again.stdout + again.stderr)
+        document = self.evidence()
+        self.assertEqual(document["activeBehaviorId"], "BM_OPEN", marker)
+        self.assertEqual([run["behaviorId"] for run in document["runs"]], ["BM_OPEN", "BM_OPAQUE"], marker)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_OPEN", command)
+        self.assertEqual(green.returncode, 0, marker + "\n" + green.stdout + green.stderr)
+        self.assertEqual(self.map_item("BM_OPEN")["status"], "green", marker)
+
+    def test_direct_operation_opens_red_and_its_success_records_green(self) -> None:
+        marker = "DIRECT_OPERATION_PROOF_REFUSED"
+        declared = "VALUE_NOT_TWO"
+        slug, _ = self.begin_with_map(
+            [pending_behavior("BM_DIRECT", red_failure=declared)], "direct-act"
         )
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("cannot establish Seam reach", result.stderr)
-        self.assertNotIn("tddCycleCount", read_workflow(resolve_repo_identity(self.repo)))
+        # An untracked production path makes the RED late; the label must survive.
+        (self.repo / "extra.py").write_text("touched = True\n", encoding="utf-8")
+        operation = (sys.executable, "-c", f"import app; assert app.value == 2, {declared!r}")
+        red = self.tdd(slug, "red", "BM_DIRECT", operation)
+        self.assertEqual(red.returncode, 0, marker + "\n" + red.stdout + red.stderr)
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(
+            run["redProof"],
+            {"quality": "failure-observed", "runner": "exact", "reach": "unresolved", "productionChanged": ["extra.py"]},
+            marker,
+        )
+        self.assertEqual((run["behaviorId"], run["exitCode"]), ("BM_DIRECT", 1), marker)
+        self.assertIn(declared, run["outputTail"], marker)
+        self.assertEqual(self.map_item("BM_DIRECT")["status"], "red", marker)
+        summary = self.cli("summary", "--repo", str(self.repo))
+        self.assertIn("Late RED: BM_DIRECT", summary.stdout, marker + "\n" + summary.stdout + summary.stderr)
+        other = self.tdd(slug, "green", "BM_DIRECT", (sys.executable, "-c", "pass"))
+        self.assertNotEqual(other.returncode, 0, marker)
+        self.assertIn("recorded RED surface", other.stderr, marker)
+        early = self.tdd(slug, "green", "BM_DIRECT", operation)
+        self.assertEqual(early.returncode, 2, marker + "\n" + early.stdout + early.stderr)
+        retained = self.evidence()["runs"][-1]
+        self.assertEqual((retained["phase"], retained["valid"], retained["exitCode"]), ("green", False, 1), marker)
+        self.assertEqual(self.map_item("BM_DIRECT")["status"], "red", marker)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_DIRECT", operation)
+        self.assertEqual(green.returncode, 0, marker + "\n" + green.stdout + green.stderr)
+        run = self.evidence()["runs"][-1]
+        self.assertEqual(
+            run["passProof"], {"quality": "operation-succeeded", "runner": "exact", "reach": "unresolved"}, marker
+        )
+        self.assertEqual(self.map_item("BM_DIRECT")["status"], "green", marker)
+
+    def test_product_exception_named_by_the_declared_failure_is_red(self) -> None:
+        marker = "RUNNER_PRODUCT_EXCEPTION_REFUSED"
+        declared = "ValueError: value must be two"
+        slug, _ = self.begin_with_map(
+            [
+                pending_behavior("BM_UNIT_EXC", red_failure=declared),
+                pending_behavior("BM_PY_EXC", red_failure=declared),
+            ],
+            "product-exception",
+        )
+        (self.repo / "app.py").write_text(
+            "value = 1\ndef require_two():\n    if value != 2:\n        raise ValueError('value must be two')\n",
+            encoding="utf-8",
+        )
+        (self.repo / "test_exc.py").write_text(
+            "import unittest\nimport app\nclass T(unittest.TestCase):\n"
+            "    def test_two(self):\n        app.require_two()\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_UNIT_EXC", (sys.executable, "-m", "unittest", "test_exc"))
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        proof = self.evidence()["runs"][-1]["redProof"]
+        self.assertEqual(
+            (proof["quality"], proof["runner"], proof["testsExecuted"]), ("assertion-reached", "unittest", 1), marker
+        )
+        if PYTEST_AVAILABLE:
+            (self.repo / "test_exc_pytest.py").write_text(
+                "import app\ndef test_two():\n    app.require_two()\n", encoding="utf-8"
+            )
+            result = self.tdd(
+                slug, "red", "BM_PY_EXC", (sys.executable, "-m", "pytest", "-q", "test_exc_pytest.py")
+            )
+            self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+            proof = self.evidence()["runs"][-1]["redProof"]
+            self.assertEqual(
+                (proof["quality"], proof["runner"], proof["testsExecuted"]), ("assertion-reached", "pytest", 1), marker
+            )
+
+    def test_unittest_setup_raise_carrying_the_marker_is_not_red(self) -> None:
+        marker = "UNITTEST_SETUP_RAISE_ADMITTED_AS_RED"
+        slug, _ = self.begin_with_map([pending_behavior("BM_SETUP")], "unittest-setup")
+        (self.repo / "test_setup.py").write_text(
+            "import unittest\nclass T(unittest.TestCase):\n"
+            "    def setUp(self):\n        raise RuntimeError('VALUE_NOT_TWO')\n"
+            "    def test_value(self):\n        self.fail('never runs')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_SETUP", (sys.executable, "-m", "unittest", "test_setup"))
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
+        self.assertIn("setup", result.stderr.lower(), marker)
+        self.assertNotIn("tddCycleCount", read_workflow(resolve_repo_identity(self.repo)), marker)
+
+    def test_async_setup_raise_carrying_the_marker_is_not_red(self) -> None:
+        marker = "ASYNC_SETUP_RAISE_ADMITTED_AS_RED"
+        slug, _ = self.begin_with_map([pending_behavior("BM_ASYNC_SETUP")], "async-setup")
+        (self.repo / "test_async_setup.py").write_text(
+            "import unittest\nclass T(unittest.IsolatedAsyncioTestCase):\n"
+            "    async def asyncSetUp(self):\n        raise RuntimeError('VALUE_NOT_TWO')\n"
+            "    async def test_value(self):\n        self.fail('never runs')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_ASYNC_SETUP", (sys.executable, "-m", "unittest", "test_async_setup"))
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
+        self.assertIn("setup", result.stderr.lower(), marker)
+        self.assertNotIn("tddCycleCount", read_workflow(resolve_repo_identity(self.repo)), marker)
+
+    def test_message_less_production_exception_named_by_type_is_red(self) -> None:
+        marker = "BARE_EXCEPTION_LINE_REFUSED"
+        slug, _ = self.begin_with_map(
+            [
+                pending_behavior("BM_UNIT_BARE", red_failure="ValueError"),
+                pending_behavior("BM_PY_BARE", red_failure="ValueError"),
+            ],
+            "bare-exception",
+        )
+        (self.repo / "app.py").write_text("value = 1\ndef require_two():\n    raise ValueError()\n", encoding="utf-8")
+        (self.repo / "test_bare.py").write_text(
+            "import unittest\nimport app\nclass T(unittest.TestCase):\n"
+            "    def test_two(self):\n        app.require_two()\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_UNIT_BARE", (sys.executable, "-m", "unittest", "test_bare"))
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        self.assertEqual(self.evidence()["runs"][-1]["redProof"]["runner"], "unittest", marker)
+        if PYTEST_AVAILABLE:
+            (self.repo / "test_bare_pytest.py").write_text(
+                "import app\ndef test_two():\n    app.require_two()\n", encoding="utf-8"
+            )
+            result = self.tdd(
+                slug, "red", "BM_PY_BARE", (sys.executable, "-m", "pytest", "-q", "test_bare_pytest.py")
+            )
+            self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+            self.assertEqual(self.evidence()["runs"][-1]["redProof"]["runner"], "pytest", marker)
 
     def test_runner_tokens_after_sentinel_are_runner_owned(self) -> None:
         marker = "RUNNER_HELP_MARKER"
