@@ -47,7 +47,7 @@ PYTEST_SUMMARY = re.compile(r"(?m)^(?:=+ )?(.+?) in \d+\.\d+s(?: \([^)]*\))?(?: 
 PRE_INTERFACE_FAILURE = re.compile(
     r"^(?:\[Errno \d+\] |\S+: (?:No module named |can't open file )"
     r"|Error(?: \[\w+\])?: Cannot find (?:module|package) "
-    r"|\w+: (?:line )?\d+: \S+: (?:command )?not found$"
+    r"|\S+: (?:line )?\d+: \S+: (?:command )?not found$"
     r"|(?:\w+\.)*(?:ModuleNotFoundError|ImportError|SyntaxError|IndentationError)\b)"
 )
 UNITTEST_FIXTURES = frozenset({

@@ -546,6 +546,7 @@ def _run_tdd(values: list[str]) -> int:
     if legacy:
         fields["expectedFailure"] = expected or None
     else:
+        fields["behaviorId"] = args.behavior_id
         fields["expectedFailure"] = expected if phase == "red" else None
         if proof is not None:
             fields["passProof" if phase == "green" else "redProof"] = proof

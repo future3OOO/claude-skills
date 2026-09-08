@@ -877,16 +877,25 @@ class MappedTddRepairTests(unittest.TestCase):
             [
                 pending_behavior("BM_A", red_failure="ACT_VALUE_NOT_TWO"),
                 pending_behavior("BM_B", red_failure="MISSING_B"),
+                pending_behavior("BM_C", red_failure="MISSING_B"),
             ],
             "interleaved-green",
         )
         command = self.write_unittest(2, "ACT_VALUE_NOT_TWO")
         self.assertEqual(self.tdd(slug, "red", "BM_A", command).returncode, 0, marker)
         before = read_workflow(resolve_repo_identity(self.repo))
-        refused = self.tdd(
-            slug, "red", "BM_B", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+        # B and C share a command and a redFailure: each refused run must still
+        # carry its own item, under A's document.
+        for item in ("BM_B", "BM_C"):
+            refused = self.tdd(
+                slug, "red", item, (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+            )
+            self.assertEqual(refused.returncode, 2, marker + "\n" + refused.stderr)
+        self.assertEqual(
+            [(run.get("behaviorId"), run["valid"]) for run in self.evidence()["runs"]],
+            [("BM_A", True), ("BM_B", False), ("BM_C", False)],
+            "MAPPED_RUN_OWNER_MISSING",
         )
-        self.assertEqual(refused.returncode, 2, marker + "\n" + refused.stderr)
         after = read_workflow(resolve_repo_identity(self.repo))
         lifecycle = ("phase", "tdd", "implementation", "tddCycleCount", "nextAction")
         self.assertEqual(
@@ -906,7 +915,7 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(
             (document.get("activeBehaviorId"), document.get("behaviorId"), self.mapped_item("BM_A")["redCommand"],
              [run["expectedFailure"] for run in document["runs"] if not run["valid"]]),
-            ("BM_A", "BM_A", shlex.join(command), ["MISSING_B"]),
+            ("BM_A", "BM_A", shlex.join(command), ["MISSING_B", "MISSING_B"]),
             "REFUSAL_LOST_ACTIVE_BINDING",
         )
         self.assertEqual(self.tdd(slug, "red", "BM_A", command).returncode, 0, "REFUSAL_LOST_ACTIVE_BINDING")
@@ -983,6 +992,12 @@ class MappedTddRepairTests(unittest.TestCase):
          ("bash", "-c", "PROD_REFUSED_OPERATION_missing"), False, "not found"),
         ("sh-missing-command", "SHELL_MISSING_COMMAND_ACCEPTED_AS_RED", None,
          ("sh", "-c", "PROD_REFUSED_OPERATION_missing"), False, "not found"),
+        ("path-bash-missing", "SHELL_PATH_PREFIX_ACCEPTED_AS_RED", None,
+         ("/bin/bash", "-c", "PROD_REFUSED_OPERATION_missing"), False, "not found"),
+        ("path-sh-missing", "SHELL_PATH_PREFIX_ACCEPTED_AS_RED", None,
+         ("/bin/sh", "-c", "PROD_REFUSED_OPERATION_missing"), False, "not found"),
+        ("script-missing", "SHELL_PATH_PREFIX_ACCEPTED_AS_RED", {"probe.sh": "PROD_REFUSED_OPERATION_missing\n"},
+         ("bash", "probe.sh"), False, "not found"),
         ("inherited-setup", "FIXTURE_ENTRY_FAILURE_ACCEPTED_AS_RED",
          {"support.py": "import unittest, prod\nclass Base(unittest.TestCase):\n    def setUp(self):\n        prod.op()\n",
           "test_probe.py": "import unittest\nfrom support import Base\nclass T(Base):\n    def test_op(self):\n        pass\n"},
