@@ -762,17 +762,9 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertIn("No module named module_that_does_not_exist_for_tdd", run["outputTail"], marker)
         self.assertIn("No module named module_that_does_not_exist_for_tdd", run["redProofFailure"], marker)
         self.assertEqual(self.mapped_item("BM_ACT")["status"], "pending", marker)
-
-    def test_refusal_text_names_the_reason_not_a_supported_runner(self) -> None:
-        marker = "REFUSAL_TEXT_PRESCRIBES_RUNNER"
-        slug, _ = self.begin_with_act("refusal-text")
-        result = self.tdd(
-            slug, "red", "BM_ACT", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
-        )
-        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
-        self.assertNotIn("requires a directly invoked pytest or unittest", result.stderr, marker)
-        self.assertNotIn("cannot establish Seam reach", result.stderr, marker)
-        self.assertIn("No module named module_that_does_not_exist_for_tdd", result.stderr, marker)
+        self.assertIn("No module named module_that_does_not_exist_for_tdd", result.stderr, "REFUSAL_TEXT_PRESCRIBES_RUNNER")
+        for retired in ("requires a directly invoked pytest or unittest", "cannot establish Seam reach"):
+            self.assertNotIn(retired, result.stderr, "REFUSAL_TEXT_PRESCRIBES_RUNNER")
 
     def test_unstartable_command_is_refused_and_the_attempt_is_retained(self) -> None:
         marker = "UNSTARTABLE_COMMAND_DISCARDED"
@@ -785,23 +777,6 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(run["exitCode"], 127, marker)
         self.assertIn("no-such-act-binary", run["redProofFailure"], marker)
         self.assertEqual(self.mapped_item("BM_ACT")["status"], "pending", marker)
-
-    def test_nonrunner_failure_without_the_marker_is_refused(self) -> None:
-        marker = "NONRUNNER_UNRELATED_FAILURE_OPENED_RED"
-        slug, _ = self.begin_with_act("nonrunner-unrelated")
-        result = self.tdd(
-            slug, "red", "BM_ACT", (sys.executable, "-c", "raise SystemExit('unrelated diagnostic')")
-        )
-        self.assert_refused(result, marker, "did not contain")
-
-    def test_nonrunner_exit_zero_is_never_a_baseline(self) -> None:
-        marker = "NONRUNNER_EXIT0_BASELINED"
-        slug, _ = self.begin_with_act("nonrunner-baseline")
-        result = self.tdd(
-            slug, "red", "BM_ACT", (sys.executable, "-c", "print('PROD_REFUSED_OPERATION')")
-        )
-        self.assert_refused(result, marker, "baseline")
-        self.assertNotIn("baselineProof", self.mapped_item("BM_ACT"), marker)
 
     def test_refused_attempt_does_not_bind_the_item_to_its_command(self) -> None:
         marker = "REFUSED_ATTEMPT_BOUND_SURFACE"
@@ -994,6 +969,13 @@ class MappedTddRepairTests(unittest.TestCase):
          {"support.py": GUARD + "class Base(unittest.TestCase):\n    @guard\n    def setUp(self):\n        prod.op()\n",
           "test_probe.py": "import unittest\nfrom support import Base\nclass T(Base):\n    def test_op(self):\n        pass\n"},
          UNIT, False, "before reaching the production Interface"),
+        ("buffered-marker-after-report", "BUFFERED_MARKER_ACCEPTED_AS_RED",
+         "import unittest\nclass T(unittest.TestCase):\n    def test_op(self):\n        print('PROD_REFUSED_OPERATION')\n        raise RuntimeError('unrelated')\n",
+         UNIT, False, "not carried by the failure that ended"),
+        ("marker-absent", "NONRUNNER_UNRELATED_FAILURE_OPENED_RED", None,
+         (PY, "-c", "raise SystemExit('unrelated diagnostic')"), False, "did not contain"),
+        ("exit-zero", "NONRUNNER_EXIT0_BASELINED", None,
+         (PY, "-c", "print('PROD_REFUSED_OPERATION')"), False, "baseline"),
         ("bash-missing-command", "SHELL_MISSING_COMMAND_ACCEPTED_AS_RED", None,
          ("bash", "-c", "PROD_REFUSED_OPERATION_missing"), False, "not found"),
         ("sh-missing-command", "SHELL_MISSING_COMMAND_ACCEPTED_AS_RED", None,

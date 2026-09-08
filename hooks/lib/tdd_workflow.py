@@ -294,12 +294,8 @@ _BASELINE_STAMP = behavior_map.BASELINE_STAMP
 def _pass_proof(
     surface: JsonObject, output: str, *, baseline: bool
 ) -> tuple[dict[str, object] | None, str]:
-    """A pass is the surface passing, not the command exiting 0.
-
-    A runner's own report of an executed passing test proves a baseline or a
-    GREEN. A non-runner operation exiting 0 is recorded as the operation
-    succeeding, which closes its own recorded RED but never baselines an item.
-    """
+    """A pass is the surface passing, not the command exiting 0: a runner's report of
+    an executed passing test; a non-runner exit 0 closes its own RED, never a baseline."""
     runner = surface.get("runner")
     if runner not in {"unittest", "pytest"}:
         if baseline:
@@ -437,9 +433,8 @@ def _run_tdd(values: list[str]) -> int:
         if same_instance
         else ([], "")
     )
-    # A retained refused attempt binds nothing: only an open cycle (status red)
-    # holds the item to its surface. Before that, a differing command is the
-    # corrected attempt, and its runs accumulate beside the refused ones.
+    # Only an open cycle (status red) binds the item to its surface; before that a
+    # differing command is the corrected attempt, accumulating beside refused ones.
     if not legacy and same_instance and status != "red":
         drift, guidance = [], ""
     matches = same_instance and not drift
@@ -500,8 +495,7 @@ def _run_tdd(values: list[str]) -> int:
     try:
         raw, exit_code, timed_out = _run(command, identity, args.timeout, env=env)
     except OSError as exc:
-        # The command never started: retained as a refused attempt whose
-        # diagnostic is the OS error, under the shell's not-found status.
+        # Never started: retained under the shell's not-found status with the OS error.
         raw, exit_code, timed_out = str(exc).encode(), 127, False
     output = raw.decode("utf-8", errors="replace")
     prior_runs = (
@@ -597,8 +591,7 @@ def _run_tdd(values: list[str]) -> int:
                 "updatedAt": utc_timestamp(),
             }
     else:
-        # Every mapped run is retained: a refused attempt keeps its command,
-        # exit status, output tail, tree binding, and the reason it was refused.
+        # Every mapped run is retained, a refused attempt with its reason.
         updated = behavior_map.clone(items)
         updated_item = behavior_map.item(updated, args.behavior_id)
         doc_kind = "cycle"
@@ -629,15 +622,13 @@ def _run_tdd(values: list[str]) -> int:
             reassessment_pending = None
             action = "in-progress" if behavior_map.unresolved(updated) else "passed"
         else:
-            # A refused attempt is evidence, not progress: it is annotated onto
-            # the map without a transition, so phase, tdd, implementation and
-            # cycle count stay where they were. A failed GREEN is a regression.
+            # A refused attempt is evidence, not progress: annotated without a
+            # transition (action None). A failed GREEN is a regression.
             next_active = args.behavior_id if status == "red" else None
             reassessment_pending = None
             action = "reopen" if phase == "green" else None
         if action is None and sweep:
-            # A refused attempt beside another item's open cycle is kept in that
-            # cycle's document, so the open item's binding survives it.
+            # Beside another item's open cycle, keep that cycle's document and binding.
             document = {**current, "runs": [*current["runs"], run], "updatedAt": utc_timestamp()}
         else:
             document = _map_doc(

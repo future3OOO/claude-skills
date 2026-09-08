@@ -41,12 +41,9 @@ UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 # pytest's terminal summary line, framed with = at normal verbosity and bare
 # under -q; the only place a pass count describes the run.
 PYTEST_SUMMARY = re.compile(r"(?m)^(?:=+ )?(.+?) in \d+\.\d+s(?: \([^)]*\))?(?: =+)?$")
-# The identifiable failures that happen before the production Interface is
-# reached: a command that could not start, the Python and Node loaders' own
-# missing-target reports, and the import and syntax exception classes. A final
-# diagnostic or a marker-carrying exception line of this shape refuses a RED
-# with its reason retained; nothing else about an arbitrary command's failure
-# is classified.
+# Failures identifiable as happening before the production Interface: a command
+# that could not start, the Python, Node and shell loaders' missing-target
+# reports, and the import and syntax exception classes. Nothing else is classified.
 PRE_INTERFACE_FAILURE = re.compile(
     r"^(?:\[Errno \d+\] |\S+: (?:No module named |can't open file )"
     r"|Error(?: \[\w+\])?: Cannot find (?:module|package) "
@@ -303,21 +300,15 @@ def differences(
 def evaluate_red(
     surface: Mapping[str, object], output: str, marker: str
 ) -> tuple[dict[str, object] | None, str]:
-    """Return evidence that RED reached the mapped failure, or why it did not.
-
-    A runner has to report an executed test whose own failure exception - an
-    assertion or the product's - carries the marker, and its report decides the
-    pre-Interface classes (loader, fixture, collection, import or syntax
-    exception). A non-runner operation is classified by its own final
-    diagnostic and records the marker-carrying line with reach unresolved.
-    """
+    """Evidence that RED reached the mapped failure, or why it did not: a runner's
+    report decides for runner surfaces; a non-runner operation is classified by
+    its final diagnostic and keeps its marker line with reach unresolved."""
     runner = surface.get("runner")
     output = ANSI_ESCAPE.sub("", output)
     lines = [line for line in output.splitlines() if line.strip()]
-    if runner not in {"unittest", "pytest"}:
-        refusal = _pre_interface_refusal(_final_diagnostic(lines))
-        if refusal is not None:
-            return None, refusal
+    diagnostic = _final_diagnostic(lines)
+    if runner not in {"unittest", "pytest"} and (refusal := _pre_interface_refusal(diagnostic)):
+        return None, refusal
     if marker not in output:
         return None, f"output did not contain the mapped redFailure marker {marker!r}"
     if runner == "unittest":
@@ -325,23 +316,14 @@ def evaluate_red(
     if runner == "pytest":
         arguments = surface.get("arguments")
         return _pytest_red(output, marker, arguments if isinstance(arguments, list) else ())
-    diagnostic = _final_diagnostic(lines)
-    return {
-        "quality": "failure-observed",
-        "reach": "unresolved",
-        "runner": str(runner),
-        "observedFailure": diagnostic if marker in diagnostic else next(
-            line.strip() for line in lines if marker in line
-        ),
-    }, ""
+    observed = diagnostic if marker in diagnostic else next(line.strip() for line in lines if marker in line)
+    return {"quality": "failure-observed", "reach": "unresolved", "runner": str(runner), "observedFailure": observed}, ""
 
 
 def _final_diagnostic(lines: list[str]) -> str:
-    """The failure that ended a non-runner operation: the exception line of the
-    last Python traceback, the last ``Error:`` line of a Node uncaught-error
-    report (its last line names the runtime), else the last line - a program's
-    buffered stdout flushes after its uncaught traceback, so the last line alone
-    does not name the failure."""
+    """The exception line of the last Python traceback, the last ``Error:`` line of
+    a Node uncaught-error report, else the last line: buffered stdout flushes after
+    an uncaught traceback, so the last line alone does not name the failure."""
     last = lines[-1].strip() if lines else ""
     if last.startswith("Node.js v"):
         return next((line.strip() for line in reversed(lines) if re.match(r"\w*Error(?: \[\w+\])?: ", line.strip())), last)
@@ -352,14 +334,14 @@ def _final_diagnostic(lines: list[str]) -> str:
 
 
 def _not_terminal(runner: str, terminal: list[str]) -> str:
-    reason = f"mapped marker was not carried by the failure that ended an executed {runner} test"
-    return reason + (": " + terminal[-1] if terminal else "")
+    return f"mapped marker was not carried by the failure that ended an executed {runner} test" + (
+        ": " + terminal[-1] if terminal else ""
+    )
 
 
 def _pre_interface_refusal(diagnostic: str) -> str | None:
-    if PRE_INTERFACE_FAILURE.match(diagnostic):
-        return "the operation failed before reaching the production Interface: " + diagnostic
-    return None
+    prefix = "the operation failed before reaching the production Interface: "
+    return prefix + diagnostic if PRE_INTERFACE_FAILURE.match(diagnostic) else None
 
 
 def _unittest_red(
@@ -415,12 +397,9 @@ def _unittest_red(
 
 
 def _unittest_unreached(header: str, frames: list[str]) -> str | None:
-    """Why a block's test body never ran, when unittest's report shows it: the
-    loader failed (its `_FailedTest` stand-in), the header names a class or
-    module fixture, or no frame carries the header's test while some frame
-    carries a fixture name. The test's name is only ever positive evidence that
-    its body ran, so a test bound under another name keeps its RED unless the
-    failure passed through a fixture-named frame."""
+    """Why the block's test body never ran, when the report shows it: loader stand-in,
+    a class/module fixture named in the header, or a fixture-named frame with no frame
+    named after the test. The test's name is only ever positive evidence it ran."""
     name = header.split()[1]
     if "unittest.loader._FailedTest" in header:
         return f"unittest could not load {name}"
@@ -432,54 +411,31 @@ def _unittest_unreached(header: str, frames: list[str]) -> str | None:
 
 def _unittest_terminal_failures(output: str) -> list[tuple[str, list[str], list[str]]]:
     """Per FAIL or ERROR block: its header, the frame functions of the terminal
-    traceback unittest itself reported, and that traceback's rendering (the
-    exception line, then its message continuation lines). Earlier chained
-    segments and captured output after Stdout:/Stderr: never count: the failure
-    that ended the test governs."""
+    traceback unittest itself reported, and that traceback's rendering (exception
+    line first). Earlier chained segments and captured output after Stdout:/Stderr:
+    never count: the failure that ended the test governs."""
     failures: list[tuple[str, list[str], list[str]]] = []
-    for header, block in _unittest_failure_blocks(output):
-        frames: list[str] = []
-        rendering: list[str] = []
-        for line in block:
-            stripped = line.strip()
-            if stripped in {"Stdout:", "Stderr:"}:
-                break
-            if stripped == "Traceback (most recent call last):":
-                frames, rendering = [], []
-            elif line.startswith('  File "'):
-                frames.append(line.rsplit(", in ", 1)[-1])
-            elif frames and (rendering or (line and not line[0].isspace())):
-                rendering.append(stripped)
-        failures.append((header, frames, rendering))
+    reading = False
+    previous = ""
+    for line in output.splitlines():
+        stripped = line.strip()
+        if line.startswith(("FAIL: ", "ERROR: ")):
+            failures.append((line, [], []))
+            reading = True
+        elif _rule(previous, "-") and line.startswith("Ran "):
+            break  # the report's footer: anything after it is the process's own output
+        elif not reading or _rule(line, "=") or _rule(line, "-"):
+            pass
+        elif stripped in {"Stdout:", "Stderr:"}:
+            reading = False
+        elif stripped == "Traceback (most recent call last):":
+            failures[-1] = (failures[-1][0], [], [])
+        elif line.startswith('  File "'):
+            failures[-1][1].append(line.rsplit(", in ", 1)[-1])
+        elif failures[-1][1] and (failures[-1][2] or (line and not line[0].isspace())):
+            failures[-1][2].append(stripped)
+        previous = line
     return failures
-
-
-def _unittest_failure_blocks(output: str) -> list[tuple[str, list[str]]]:
-    lines = output.splitlines()
-    blocks: list[tuple[str, list[str]]] = []
-    index = 0
-    while index < len(lines):
-        if not lines[index].startswith(("FAIL: ", "ERROR: ")):
-            index += 1
-            continue
-        header = lines[index]
-        start = index + 1
-        while start < len(lines) and not _rule(lines[start], "-"):
-            start += 1
-        if start == len(lines):
-            break
-        start += 1
-        end = start
-        while end < len(lines):
-            next_line = lines[end + 1] if end + 1 < len(lines) else ""
-            if _rule(lines[end], "=") and next_line.startswith(("FAIL: ", "ERROR: ")):
-                break
-            if _rule(lines[end], "-") and next_line.startswith("Ran "):
-                break
-            end += 1
-        blocks.append((header, lines[start:end]))
-        index = end
-    return blocks
 
 
 def _pytest_red(
@@ -566,13 +522,11 @@ def _pytest_summary(lines: list[str]) -> tuple[dict[str, int | bool] | None, int
 
 def _pytest_terminal_renderings(lines: list[str]) -> list[list[str]]:
     """Per failed test's block, the E-prefixed rendering of its terminal chain
-    segment - the exception or assertion that ended the test, first line first.
-    Earlier chained segments and captured output never count."""
+    segment, first line first; earlier segments and captured output never count."""
     blocks: list[list[str]] = []
     captured = False
     for line in lines:
-        # Every header is a genuine block start here: _pytest_red has already
-        # matched the header count against the failed count.
+        # Every header is genuine here: _pytest_red matched the header count already.
         if PYTEST_FAILURE_HEADER.match(line):
             blocks.append([])
             captured = False
