@@ -21,6 +21,7 @@ from hooks.lib.tdd_workflow import edit_blockers  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     advisor_disposition,
     read_workflow,
+    ready_for_edit,
     record_advisor_result,
 )
 from hooks.tests.support import build_document, pending_behavior, record_context_forge  # noqa: E402
@@ -200,9 +201,12 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         self.assertIn("AttributeError", missing_api.stdout)
         self.assertIn("RED must fail for the expected reason", missing_api.stderr)
         state = read_workflow(resolve_repo_identity(self.repo))
-        self.assertEqual(state["tdd"], "pending")
+        self.assertEqual(state["tdd"], "pending", "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
         self.assertNotIn("tddCycleCount", state)
         self.assertTrue(edit_blockers(resolve_repo_identity(self.repo), state))
+        ready, missing = ready_for_edit(resolve_repo_identity(self.repo), "app.py")
+        self.assertFalse(ready, "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
+        self.assertTrue(any("TDD RED" in item for item in missing), "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
 
         red = self.tdd(
             slug,

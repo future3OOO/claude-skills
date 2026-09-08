@@ -1,9 +1,11 @@
 """TDD surface identity and structured RED proof.
 
 RED and GREEN must select the same tests, not use byte-identical command text.
-Direct pytest and unittest commands can prove an executed product assertion.
-Other commands remain exact-surface bound but cannot open a
-mapped RED: the workflow ledger is continuity, not an attestation system.
+Direct pytest and unittest commands establish reach: the runner reports an
+executed test whose own failure carries the mapped marker. Any other command is
+an operation at the production Interface: its failure is recorded with reach
+unresolved and review establishes that the observed failure is the mapped
+promise. The workflow ledger is continuity, not an attestation system.
 """
 from __future__ import annotations
 
@@ -39,7 +41,19 @@ UNITTEST_FAILED = re.compile(r"(?m)^FAILED \(([^)]*)\)")
 # pytest's terminal summary line, framed with = at normal verbosity and bare
 # under -q; the only place a pass count describes the run.
 PYTEST_SUMMARY = re.compile(r"(?m)^(?:=+ )?(.+?) in \d+\.\d+s(?: \([^)]*\))?(?: =+)?$")
-PYTEST_ASSERTION = re.compile(r"^E\s+(?:AssertionError|Failed):")
+# Failures identifiable as happening before the production Interface: a command
+# that could not start, the Python, Node and shell loaders' missing-target
+# reports, and the import and syntax exception classes. Nothing else is classified.
+PRE_INTERFACE_FAILURE = re.compile(
+    r"^(?:\[Errno \d+\] |\S+: (?:No module named |can't open file )"
+    r"|Error(?: \[\w+\])?: Cannot find (?:module|package) "
+    r"|\S+: (?:line )?\d+: \S+: (?:command )?not found$"
+    r"|(?:\w+\.)*(?:ModuleNotFoundError|ImportError|SyntaxError|IndentationError)\b)"
+)
+UNITTEST_FIXTURES = frozenset({
+    "setUp", "asyncSetUp", "tearDown", "asyncTearDown",
+    "setUpClass", "tearDownClass", "setUpModule", "tearDownModule",
+})
 PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
 PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
 PYTEST_SUMMARY_RECORDS = (
@@ -286,20 +300,48 @@ def differences(
 def evaluate_red(
     surface: Mapping[str, object], output: str, marker: str
 ) -> tuple[dict[str, object] | None, str]:
-    """Return evidence that RED reached the mapped assertion."""
+    """Evidence that RED reached the mapped failure, or why it did not: a runner's
+    report decides for runner surfaces; a non-runner operation is classified by
+    its final diagnostic and keeps its marker line with reach unresolved."""
     runner = surface.get("runner")
-    if runner not in {"unittest", "pytest"}:
-        return None, (
-            "mapped RED proof requires a directly invoked pytest or unittest "
-            "surface; this exact-bound command cannot establish Seam reach"
-        )
     output = ANSI_ESCAPE.sub("", output)
+    lines = [line for line in output.splitlines() if line.strip()]
+    diagnostic = _final_diagnostic(lines)
+    if runner not in {"unittest", "pytest"} and (refusal := _pre_interface_refusal(diagnostic)):
+        return None, refusal
     if marker not in output:
         return None, f"output did not contain the mapped redFailure marker {marker!r}"
     if runner == "unittest":
         return _unittest_red(output, marker)
-    arguments = surface.get("arguments")
-    return _pytest_red(output, marker, arguments if isinstance(arguments, list) else ())
+    if runner == "pytest":
+        arguments = surface.get("arguments")
+        return _pytest_red(output, marker, arguments if isinstance(arguments, list) else ())
+    observed = diagnostic if marker in diagnostic else next(line.strip() for line in lines if marker in line)
+    return {"quality": "failure-observed", "reach": "unresolved", "runner": str(runner), "observedFailure": observed}, ""
+
+
+def _final_diagnostic(lines: list[str]) -> str:
+    """The exception line of the last Python traceback, the last ``Error:`` line of
+    a Node uncaught-error report, else the last line: buffered stdout flushes after
+    an uncaught traceback, so the last line alone does not name the failure."""
+    last = lines[-1].strip() if lines else ""
+    if last.startswith("Node.js v"):
+        return next((line.strip() for line in reversed(lines) if re.match(r"\w*Error(?: \[\w+\])?: ", line.strip())), last)
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].strip() == "Traceback (most recent call last):":
+            return next((line.strip() for line in lines[index + 1:] if not line[0].isspace()), last)
+    return last
+
+
+def _not_terminal(runner: str, terminal: list[str]) -> str:
+    return f"mapped marker was not carried by the failure that ended an executed {runner} test" + (
+        ": " + terminal[-1] if terminal else ""
+    )
+
+
+def _pre_interface_refusal(diagnostic: str) -> str | None:
+    prefix = "the operation failed before reaching the production Interface: "
+    return prefix + diagnostic if PRE_INTERFACE_FAILURE.match(diagnostic) else None
 
 
 def _unittest_red(
@@ -333,64 +375,68 @@ def _unittest_red(
             f"unittest report blocks failures={report_counts[0]}, errors={report_counts[1]} "
             f"did not match summary failures={expected_counts[0]}, errors={expected_counts[1]}"
         )
-    if summary_counts.get("errors", 0) or summary_counts.get("failures", 0) < 1:
-        return None, "unittest ended in loader/setup error rather than assertion failure"
-    if not _unittest_marker_in_failure(output, marker):
-        return None, "mapped marker was not emitted by an executed unittest assertion"
+    if summary_counts.get("failures", 0) + summary_counts.get("errors", 0) < 1:
+        return None, "unittest did not report a failed test"
+    failures = _unittest_terminal_failures(output)
+    unreached = next((reason for reason in (_unittest_unreached(*block[:2]) for block in failures) if reason), None)
+    if unreached is not None:
+        return None, "the operation failed before reaching the production Interface: " + unreached
+    found = next(((rendering[0], line) for _, _, rendering in failures for line in rendering if marker in line), None)
+    if found is None:
+        return None, _not_terminal("unittest", [rendering[0] for _, _, rendering in failures if rendering])
+    head, observed = found
+    refusal = _pre_interface_refusal(head)
+    if refusal is not None:
+        return None, refusal
     return {
         "quality": "assertion-reached",
         "runner": "unittest",
         "testsExecuted": int(ran.group(1)),
+        "observedFailure": observed,
     }, ""
 
 
-def _unittest_marker_in_failure(output: str, marker: str) -> bool:
-    for block in _unittest_failure_blocks(output):
-        in_traceback = False
-        in_message = False
-        for line in block:
-            stripped = line.strip()
-            if stripped == "Traceback (most recent call last):":
-                in_traceback = True
-                in_message = False
-                continue
-            if stripped in {"Stdout:", "Stderr:"}:
-                break
-            if line.startswith(('  File "', "During handling of the above exception")):
-                in_message = False
-                continue
-            if in_traceback and stripped.startswith("AssertionError:"):
-                in_message = True
-            if in_message and marker in line:
-                return True
-    return False
+def _unittest_unreached(header: str, frames: list[str]) -> str | None:
+    """Why the block's test body never ran, when the report shows it: loader stand-in,
+    a class/module fixture named in the header, or a fixture-named frame before any
+    frame named after the test. The test's name is only ever positive evidence it ran."""
+    name = header.split()[1]
+    if "unittest.loader._FailedTest" in header:
+        return f"unittest could not load {name}"
+    entered = frames.index(name) if name in frames else len(frames)
+    fixture = name if name in UNITTEST_FIXTURES else next(
+        (frame for frame in frames[:entered] if frame in UNITTEST_FIXTURES), None
+    )
+    return f"unittest failed in {fixture} before the test body" if fixture else None
 
 
-def _unittest_failure_blocks(output: str) -> list[list[str]]:
-    lines = output.splitlines()
-    blocks: list[list[str]] = []
-    index = 0
-    while index < len(lines):
-        if not lines[index].startswith("FAIL: "):
-            index += 1
-            continue
-        start = index + 1
-        while start < len(lines) and not _rule(lines[start], "-"):
-            start += 1
-        if start == len(lines):
-            break
-        start += 1
-        end = start
-        while end < len(lines):
-            next_line = lines[end + 1] if end + 1 < len(lines) else ""
-            if _rule(lines[end], "=") and next_line.startswith(("FAIL: ", "ERROR: ")):
-                break
-            if _rule(lines[end], "-") and next_line.startswith("Ran "):
-                break
-            end += 1
-        blocks.append(lines[start:end])
-        index = end
-    return blocks
+def _unittest_terminal_failures(output: str) -> list[tuple[str, list[str], list[str]]]:
+    """Per FAIL or ERROR block: its header, the frame functions of the terminal
+    traceback unittest itself reported, and that traceback's rendering (exception
+    line first). Earlier chained segments and captured output after Stdout:/Stderr:
+    never count: the failure that ended the test governs."""
+    failures: list[tuple[str, list[str], list[str]]] = []
+    reading = False
+    previous = ""
+    for line in output.splitlines():
+        stripped = line.strip()
+        if line.startswith(("FAIL: ", "ERROR: ")):
+            failures.append((line, [], []))
+            reading = True
+        elif _rule(previous, "-") and line.startswith("Ran "):
+            break  # the report's footer: anything after it is the process's own output
+        elif not reading or _rule(line, "=") or _rule(line, "-"):
+            pass
+        elif stripped in {"Stdout:", "Stderr:"}:
+            reading = False
+        elif stripped == "Traceback (most recent call last):":
+            failures[-1] = (failures[-1][0], [], [])
+        elif line.startswith('  File "'):
+            failures[-1][1].append(line.rsplit(", in ", 1)[-1])
+        elif failures[-1][1] and (failures[-1][2] or (line and not line[0].isspace())):
+            failures[-1][2].append(stripped)
+        previous = line
+    return failures
 
 
 def _pytest_red(
@@ -427,12 +473,19 @@ def _pytest_red(
             f"holds {headers} header-shaped lines; printed header-shaped text "
             "cannot be attributed to a test - remove it or narrow the command"
         )
-    if not _pytest_marker_in_failure(failures, marker):
-        return None, "mapped marker was not emitted by an executed pytest assertion"
+    renderings = _pytest_terminal_renderings(failures)
+    found = next(((block[0], line) for block in renderings for line in block if marker in line), None)
+    if found is None:
+        return None, _not_terminal("pytest", [block[0] for block in renderings if block])
+    head, observed = found
+    refusal = _pre_interface_refusal(head)
+    if refusal is not None:
+        return None, refusal
     return {
         "quality": "assertion-reached",
         "runner": "pytest",
         "testsExecuted": counts["failed"] + counts["passed"],
+        "observedFailure": observed,
     }, ""
 
 
@@ -468,30 +521,27 @@ def _pytest_summary(lines: list[str]) -> tuple[dict[str, int | bool] | None, int
     return None, start
 
 
-def _pytest_marker_in_failure(lines: list[str], marker: str) -> bool:
-    in_failure = False
-    in_captured_output = False
-    in_assertion_message = False
+def _pytest_terminal_renderings(lines: list[str]) -> list[list[str]]:
+    """Per failed test's block, the E-prefixed rendering of its terminal chain
+    segment, first line first; earlier segments and captured output never count."""
+    blocks: list[list[str]] = []
+    captured = False
     for line in lines:
-        # Every header is a genuine block start here: _pytest_red has already
-        # matched the header count against the failed count.
+        # Every header is genuine here: _pytest_red matched the header count already.
         if PYTEST_FAILURE_HEADER.match(line):
-            in_failure = True
-            in_captured_output = False
-            in_assertion_message = False
+            blocks.append([])
+            captured = False
+        elif not blocks:
             continue
-        if in_failure and PYTEST_CAPTURED_HEADER.match(line):
-            in_captured_output = True
+        elif PYTEST_CAPTURED_HEADER.match(line):
+            captured = True
+        elif captured:
             continue
-        if not in_failure or in_captured_output:
-            continue
-        if PYTEST_ASSERTION.match(line):
-            in_assertion_message = True
-        elif not line.startswith("E "):
-            in_assertion_message = False
-        if in_assertion_message and line.startswith("E") and marker in line:
-            return True
-    return False
+        elif line.startswith(("During handling of the above exception", "The above exception was")):
+            blocks[-1] = []
+        elif line.startswith("E "):
+            blocks[-1].append(line[1:].strip())
+    return blocks
 
 
 def _rule(line: str, character: str) -> bool:

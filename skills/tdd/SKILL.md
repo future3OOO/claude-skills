@@ -9,9 +9,9 @@ description: TDD for production behavior changes through real Seams. Use when ch
 
 Production behavior changes require one **behavior-specific RED** before production code changes.
 
-A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`). Contract before preservation: the requested behavior's RED comes first.
+A RED is valid only when the failure is the mapped product failure - the declared `redFailure`, which may be an assertion marker or the product's own exception or diagnostic; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`). Contract before preservation: the requested behavior's RED comes first.
 
-The recorder can establish assertion reach for directly invoked pytest and unittest; its verdict is a bounded reading of the runner's report text - evidence the lead verifies, not an attestation, because the ledger is continuity. Other exact-bound commands remain useful for surface identity but cannot satisfy a mapped RED because their output cannot establish Seam reach. Use a supported real assertion surface or leave the proof gap pending; do not manufacture a second test path.
+An **attack vector test (ACT)** is the production test: drive the real production Interface, state the expected result, and compare it with the observed one; for a bug, reproduce and trace it before editing. Reuse an existing check when it reaches the behavior; add one only for distinct coverage the ACT does not establish. A runner-backed ACT (directly invoked pytest or unittest) lets the recorder establish reach from the runner's own report of the executed test's failure. A non-runner ACT - the product's CLI, a script, an end-to-end operation - opens its item's RED when it fails carrying the declared failure, and the recorder records its reach as unresolved: review establishes that the observed failure is the mapped promise. Matching output alone never establishes behavior. Either verdict is a bounded reading of the output - evidence the lead verifies, not an attestation, because the ledger is continuity. Do not manufacture a second test path or rewrite a real production failure into a marker assertion.
 
 The canonical mock ban in `~/.claude/CLAUDE.md` applies without exception. This skill never creates a test-only proof path.
 
@@ -42,7 +42,7 @@ Map:
 
 Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
 
-**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing RED run instead records a **baseline**, `already-satisfied`, whatever the tree state. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
+**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing runner RED instead records a **baseline**, `already-satisfied`, whatever the tree state; a non-runner operation exiting 0 on a pending item is refused. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
 
 ## 2. Drive One Mapped Vertical Slice
 
@@ -51,9 +51,9 @@ Select one pending contract ID and write its RED before the production edit that
 **RED**
 
 - Write one test for that atomic behavior through its recorded Seam.
-- Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
+- Fail with the item's declared `redFailure` only where the product outcome is absent: the assertion's behavior-specific marker, or the product's own exception or diagnostic.
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
-- A passing run baselines the item; do not manufacture a RED or edit production code for it.
+- A passing runner run baselines the item; do not manufacture a RED or edit production code for it.
 - A preservation RED records like any other RED. After implementation a preservation item goes RED only when the real Seam shows the change regressed it.
 
 **GREEN**
