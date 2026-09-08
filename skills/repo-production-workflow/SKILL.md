@@ -246,14 +246,18 @@ tree with the dispatch and `workflow.py status`, and take the delegate's model
 and agent id from the harness receipts (`subagents/agent-<id>.meta.json` and
 its forked-skill marker under `~/.claude/projects`), never from the parent or
 the delegate's own claim; missing or mismatched identity, or a model other
-than `claude-fable-5-1`, is not a valid review and is not recorded. Record
+than `claude-fable-5-1`, is not a valid review: report the blocker and do not
+record the review. Record
 immutable intake first as `{"findings":[...]}` through the unified Interface. If it contains findings,
 capture the returned `summaryId`, then call
 the same command with `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;
 each disposition carries `kind`, `premise`, `occurrence`, and
 `materialConsequence`. A document carrying both forms refuses. Print the
 canonical disposition shape table, generated from its installed validator
-declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`.
+declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`;
+the `codex-advisor` skill's disposition section owns the recorder's other
+refusals (temporary-directory paths, behavioral `report-only` without a proved
+owning attack).
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \

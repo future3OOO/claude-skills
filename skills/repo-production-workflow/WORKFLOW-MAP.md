@@ -51,7 +51,7 @@ workflow record-production-code # validates the bundled gate verdict (optional; 
 workflow tdd                   # mapped RED/GREEN or records not-required
 workflow tdd-map               # dispositions and post-GREEN map updates
 workflow verify                # generic commands or typed final-tree quality gate
-workflow record-review         # structured lead review plus tree manifest
+workflow record-review         # delegate review intake, lead dispositions, tree manifest
 workflow advisor-result|advisor-disposition
 workflow pause|checkpoint|complete|prune
 ```
@@ -137,7 +137,7 @@ readiness for the advisor phases without mutating anything.
 - implementation and verification passed;
 - preflight, production-code, and verification each carrying their producer's
   evidence reference;
-- lead code review passed/not required with material findings addressed;
+- code review recorded (delegate intake, or not required) with material findings addressed;
 - a context-matched final review from `codex-advisor` whose effective findings
   are terminal: the immutable raw verdict remains evidence, but
   `fix-before-commit` is not a veto after closure;
