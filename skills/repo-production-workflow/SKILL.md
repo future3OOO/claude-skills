@@ -271,10 +271,7 @@ finding. Dispositions may cover any subset of an intake; every material finding 
 needs a terminal disposition before completion; a `material:false` note needs none. Verification, the typed gate, and a new review all run while findings
 are open; open findings block completion only. A false premise records normalized `result`
 exactly `false`; otherwise
-rejection requires zero occurrence on a complete domain, a disposition linking
-Behavior Map items may claim no domain wider than the union of those items'
-executed attacks, and three or more rejections of material findings in one
-document draw a recorded bulk-rejection warning. `report-only` resolves
+rejection requires zero occurrence on a complete domain. `report-only` resolves
 completion without authorizing an edit and cannot later become `fixed`. A
 behavioral finding is fixed by owning it: add the attack item with its finding
 `sourceRefs` through `tdd-map`, drive RED/GREEN, then record

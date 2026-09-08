@@ -163,7 +163,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--timeout", type=int, default=900)
     command.add_argument("runner_command", nargs=argparse.REMAINDER)
 
-    command = _document_command(_instance_command(commands, "record-review", "validate and record the lead code review"))
+    command = _document_command(_instance_command(commands, "record-review", "validate and record the code review"))
     command.add_argument("--resolved-model", required=True)
     command.add_argument("--review-context-id", required=True)
 
