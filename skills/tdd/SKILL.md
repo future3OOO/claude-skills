@@ -42,7 +42,7 @@ Map:
 
 Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
 
-**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing RED run instead records a **baseline**, `already-satisfied`, whatever the tree state. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
+**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing runner RED instead records a **baseline**, `already-satisfied`, whatever the tree state; a non-runner operation exiting 0 on a pending item is refused. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
 
 ## 2. Drive One Mapped Vertical Slice
 
@@ -51,9 +51,9 @@ Select one pending contract ID and write its RED before the production edit that
 **RED**
 
 - Write one test for that atomic behavior through its recorded Seam.
-- Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
+- Fail with the item's declared `redFailure` only where the product outcome is absent: the assertion's behavior-specific marker, or the product's own exception or diagnostic.
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
-- A passing run baselines the item; do not manufacture a RED or edit production code for it.
+- A passing runner run baselines the item; do not manufacture a RED or edit production code for it.
 - A preservation RED records like any other RED. After implementation a preservation item goes RED only when the real Seam shows the change regressed it.
 
 **GREEN**

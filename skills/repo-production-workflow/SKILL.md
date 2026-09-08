@@ -125,7 +125,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 For behavior changes invoke `tdd` and select one pending Behavior Map ID. The RED is an attack vector test through the item's recorded real Seam that fails with that item's declared `redFailure` - an assertion marker or the product's own exception or diagnostic. A missing API/import, setup, syntax, fixture, or collection failure is not RED for a later product behavior and does not unlock production edits.
 
-For directly invoked pytest and unittest, the recorder verifies that the mapped failure came from an executed test's own failure rather than collection, setup, loading, or printed output. Any other command opens the RED when it fails carrying the declared failure, with reach recorded as unresolved for review to establish; identifiable pre-Interface failures refuse with the reason retained, and a non-runner exit 0 is GREEN only through its own RED and never a baseline.
+The recorder's acceptance and refusal rules for runner-backed and non-runner attacks are owned by the tdd skill's [recorder.md](../tdd/recorder.md).
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \

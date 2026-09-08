@@ -649,7 +649,9 @@ class MappedTddRepairTests(unittest.TestCase):
     def write_act(self, marker: str, *, refuse: bool) -> tuple[str, ...]:
         """A production module driven by a non-runner operation script."""
         body = f"raise RuntimeError({marker!r} + ': refused')" if refuse else "return 'done'"
-        (self.repo / "prod.py").write_text(f"def op():\n    {body}\n", encoding="utf-8")
+        (self.repo / "prod.py").write_text(
+            f"def op():\n    {body}\ndef setUp():\n    raise RuntimeError({marker!r} + ': app')\n", encoding="utf-8"
+        )
         (self.repo / "act.py").write_text("import prod\nprint(prod.op())\n", encoding="utf-8")
         return (sys.executable, "act.py")
 
@@ -745,35 +747,6 @@ class MappedTddRepairTests(unittest.TestCase):
         summary = self.cli("summary", "--repo", str(self.repo))
         self.assertIn("Late RED: BM_ACT", summary.stdout, marker + "\n" + summary.stderr)
 
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
-    def test_pytest_product_exception_carrying_the_marker_is_red(self) -> None:
-        marker = "PYTEST_PRODUCT_EXCEPTION_REFUSED"
-        slug, _ = self.begin_with_act("pytest-product-exception")
-        (self.repo / "test_act_pytest.py").write_text(
-            "import prod\ndef test_op():\n    prod.op()\n", encoding="utf-8"
-        )
-        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_act_pytest.py"))
-        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
-        proof = self.mapped_item("BM_ACT")["redProof"]
-        self.assertEqual(proof["quality"], "assertion-reached", marker)
-        self.assertEqual(proof["testsExecuted"], 1, marker)
-        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
-
-    def test_unittest_product_exception_carrying_the_marker_is_red(self) -> None:
-        marker = "UNITTEST_PRODUCT_EXCEPTION_REFUSED"
-        slug, _ = self.begin_with_act("unittest-product-exception")
-        (self.repo / "test_act_unit.py").write_text(
-            "import unittest\nimport prod\n"
-            "class T(unittest.TestCase):\n    def test_op(self):\n        prod.op()\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_act_unit"))
-        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
-        proof = self.mapped_item("BM_ACT")["redProof"]
-        self.assertEqual(proof["quality"], "assertion-reached", marker)
-        self.assertEqual(proof["testsExecuted"], 1, marker)
-        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
-
     def test_missing_target_is_refused_and_the_attempt_is_retained(self) -> None:
         marker = "MISSING_TARGET_REFUSAL_DISCARDED"
         slug, _ = self.begin_with_act("missing-target")
@@ -812,40 +785,6 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual(run["exitCode"], 127, marker)
         self.assertIn("no-such-act-binary", run["redProofFailure"], marker)
         self.assertEqual(self.mapped_item("BM_ACT")["status"], "pending", marker)
-
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
-    def test_pytest_import_failure_carrying_the_marker_is_refused(self) -> None:
-        marker = "PYTEST_IMPORT_FAILURE_ACCEPTED_AS_RED"
-        slug, _ = self.begin_with_act("pytest-import", "No module named 'prodfeature'")
-        (self.repo / "test_feature_pytest.py").write_text(
-            "def test_feature():\n    import prodfeature\n", encoding="utf-8"
-        )
-        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_feature_pytest.py"))
-        self.assert_refused(result, marker, "ModuleNotFoundError")
-
-    def test_unittest_import_failure_carrying_the_marker_is_refused(self) -> None:
-        marker = "UNITTEST_IMPORT_FAILURE_ACCEPTED_AS_RED"
-        slug, _ = self.begin_with_act("unittest-import", "No module named 'prodfeature'")
-        (self.repo / "test_feature_unit.py").write_text(
-            "import unittest\n"
-            "class T(unittest.TestCase):\n    def test_feature(self):\n        import prodfeature\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(
-            slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_feature_unit")
-        )
-        self.assert_refused(result, marker, "ModuleNotFoundError")
-
-    def test_nonrunner_marker_before_an_import_failure_is_refused(self) -> None:
-        marker = "NONRUNNER_IMPORT_FAILURE_OPENED_RED"
-        slug, _ = self.begin_with_act("nonrunner-import")
-        result = self.tdd(
-            slug,
-            "red",
-            "BM_ACT",
-            (sys.executable, "-c", "print('PROD_REFUSED_OPERATION'); import prodfeature"),
-        )
-        self.assert_refused(result, marker, "ModuleNotFoundError")
 
     def test_nonrunner_failure_without_the_marker_is_refused(self) -> None:
         marker = "NONRUNNER_UNRELATED_FAILURE_OPENED_RED"
@@ -945,76 +884,6 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertIn("did not report an executed passing test", green.stderr, marker)
         self.assertEqual(self.mapped_item("BM_ACT")["status"], "red", marker)
 
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
-    def test_pytest_marker_in_captured_output_is_still_refused(self) -> None:
-        marker = "CAPTURED_MARKER_OPENED_RED"
-        slug, _ = self.begin_with_act("pytest-captured")
-        (self.repo / "test_captured_pytest.py").write_text(
-            "def test_value():\n"
-            "    print('E   RuntimeError: PROD_REFUSED_OPERATION')\n"
-            "    assert False, 'UNRELATED_FAILURE'\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_captured_pytest.py"))
-        self.assert_refused(result, marker, "not emitted by an executed pytest failure")
-
-    def test_unittest_setup_failure_carrying_the_marker_is_refused(self) -> None:
-        marker = "UNITTEST_SETUP_FAILURE_ACCEPTED_AS_RED"
-        slug, _ = self.begin_with_act("unittest-setup")
-        (self.repo / "test_setup_unit.py").write_text(
-            "import unittest\nimport prod\n"
-            "class T(unittest.TestCase):\n"
-            "    def setUp(self):\n        prod.op()\n"
-            "    def test_op(self):\n        pass\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_setup_unit"))
-        self.assert_refused(result, marker, "setUp")
-
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
-    def test_pytest_mapped_failure_beside_a_captured_traceback_is_red(self) -> None:
-        marker = "CAPTURED_TRACEBACK_REFUSED_MAPPED_FAILURE"
-        slug, _ = self.begin_with_act("pytest-captured-traceback")
-        (self.repo / "test_optional_pytest.py").write_text(
-            "import traceback\nimport prod\n"
-            "def test_op():\n"
-            "    try:\n        import optional_extra_module\n"
-            "    except ImportError:\n        traceback.print_exc()\n"
-            "    prod.op()\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_optional_pytest.py"))
-        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
-        proof = self.mapped_item("BM_ACT")["redProof"]
-        self.assertEqual(proof["quality"], "assertion-reached", marker)
-        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
-
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
-    def test_pytest_multiline_import_failure_carrying_the_marker_is_refused(self) -> None:
-        marker = "PYTEST_MULTILINE_IMPORT_FAILURE_ACCEPTED_AS_RED"
-        slug, _ = self.begin_with_act("pytest-multiline-import")
-        (self.repo / "test_multiline_pytest.py").write_text(
-            "def test_feature():\n"
-            "    raise ImportError('optional dependency missing\\nPROD_REFUSED_OPERATION: not reached')\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_multiline_pytest.py"))
-        self.assert_refused(result, marker, "ImportError")
-
-    def test_unittest_multiline_import_failure_carrying_the_marker_is_refused(self) -> None:
-        marker = "UNITTEST_MULTILINE_IMPORT_FAILURE_ACCEPTED_AS_RED"
-        slug, _ = self.begin_with_act("unittest-multiline-import")
-        (self.repo / "test_multiline_unit.py").write_text(
-            "import unittest\n"
-            "class T(unittest.TestCase):\n    def test_feature(self):\n"
-            "        raise ImportError('optional dependency missing\\nPROD_REFUSED_OPERATION: not reached')\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(
-            slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_multiline_unit")
-        )
-        self.assert_refused(result, marker, "ImportError")
-
     def test_green_item_refuses_a_second_red(self) -> None:
         marker = "GREEN_ITEM_REENTERED"
         slug, command = self.begin_with_act("green-reentry")
@@ -1038,10 +907,17 @@ class MappedTddRepairTests(unittest.TestCase):
         )
         command = self.write_unittest(2, "ACT_VALUE_NOT_TWO")
         self.assertEqual(self.tdd(slug, "red", "BM_A", command).returncode, 0, marker)
+        before = read_workflow(resolve_repo_identity(self.repo))
         refused = self.tdd(
             slug, "red", "BM_B", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
         )
         self.assertEqual(refused.returncode, 2, marker + "\n" + refused.stderr)
+        after = read_workflow(resolve_repo_identity(self.repo))
+        lifecycle = ("phase", "tdd", "implementation", "tddCycleCount", "nextAction")
+        self.assertEqual(
+            {k: after.get(k) for k in lifecycle}, {k: before.get(k) for k in lifecycle},
+            "REFUSAL_MUTATED_LIFECYCLE",
+        )
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
         green = self.tdd(slug, "green", "BM_A", command)
         self.assertEqual(green.returncode, 0, marker + "\n" + green.stderr)
@@ -1051,41 +927,120 @@ class MappedTddRepairTests(unittest.TestCase):
             read_workflow(resolve_repo_identity(self.repo)).get("tddCycleCount"), 1, marker
         )
 
-    def test_unittest_mapped_failure_beside_a_captured_setup_traceback_is_red(self) -> None:
-        marker = "CAPTURED_SETUP_TRACEBACK_REFUSED_MAPPED_FAILURE"
-        slug, _ = self.begin_with_act("unittest-captured-setup")
-        (self.repo / "test_optional_unit.py").write_text(
-            "import traceback\nimport unittest\nimport prod\n"
-            "class T(unittest.TestCase):\n"
-            "    def setUp(self):\n"
-            "        try:\n            import optional_extra_module\n"
-            "        except ImportError:\n            traceback.print_exc()\n"
-            "    def test_op(self):\n        prod.op()\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(
-            slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "-b", "test_optional_unit")
-        )
-        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
-        proof = self.mapped_item("BM_ACT")["redProof"]
-        self.assertEqual(proof["quality"], "assertion-reached", marker)
-        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
+    UNIT = (sys.executable, "-m", "unittest", "test_probe")
+    PYTEST = ("pytest", "-q", "test_probe.py")
+    PY = sys.executable
+    # (case, marker, test_probe.py source | {file: source} | None, command, accepted, reason or observedFailure)
+    ACT_SCENARIOS = (
+        ("unittest-product-exception", "UNITTEST_PRODUCT_EXCEPTION_REFUSED",
+         "import unittest, prod\nclass T(unittest.TestCase):\n    def test_op(self):\n        prod.op()\n",
+         UNIT, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("pytest-product-exception", "PYTEST_PRODUCT_EXCEPTION_REFUSED",
+         "import prod\ndef test_op():\n    prod.op()\n", PYTEST, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("application-setup-name", "EXECUTED_TEST_SHAPE_REFUSED",
+         "import unittest, prod\nclass T(unittest.TestCase):\n    def test_op(self):\n        prod.setUp()\n",
+         UNIT, True, "PROD_REFUSED_OPERATION: app"),
+        ("factory-assigned-test", "ASSIGNED_TEST_REFUSED",
+         "import unittest, prod\ndef exercise(self):\n    prod.op()\nclass T(unittest.TestCase):\n    test_op = exercise\n",
+         UNIT, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("decorated-test", "EXECUTED_TEST_SHAPE_REFUSED",
+         "import functools, unittest, prod\ndef guard(fn):\n    @functools.wraps(fn)\n    def wrapper(self):\n        return fn(self)\n    return wrapper\n"
+         "class T(unittest.TestCase):\n    @guard\n    def test_op(self):\n        prod.op()\n", UNIT, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("recovered-import-nonrunner", "EXECUTED_TEST_SHAPE_REFUSED",
+         "import traceback, prod\ntry:\n    import optional_extra_module\nexcept ImportError:\n    traceback.print_exc()\nprod.op()\n",
+         (PY, "test_probe.py"), True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("captured-setup-traceback", "EXECUTED_TEST_SHAPE_REFUSED",
+         "import traceback, unittest, prod\nclass T(unittest.TestCase):\n    def setUp(self):\n        try:\n            import optional_extra_module\n"
+         "        except ImportError:\n            traceback.print_exc()\n    def test_op(self):\n        prod.op()\n",
+         (PY, "-m", "unittest", "-b", "test_probe"), True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("pytest-captured-traceback", "EXECUTED_TEST_SHAPE_REFUSED",
+         "import traceback, prod\ndef test_op():\n    try:\n        import optional_extra_module\n    except ImportError:\n        traceback.print_exc()\n    prod.op()\n",
+         PYTEST, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("pytest-captured-chain", "CAPTURED_CHAIN_REFUSED_MAPPED_FAILURE",
+         "import traceback, prod\ndef test_op():\n    try:\n        try:\n            int('bad')\n        except ValueError:\n            import optional_extra_module\n"
+         "    except ImportError:\n        traceback.print_exc()\n    prod.op()\n", PYTEST, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("node-missing", "NODE_LOADER_FAILURE_ACCEPTED_AS_RED", None,
+         ("node", "-e", "require('PROD_REFUSED_OPERATION')"), False, "Cannot find module"),
+        ("async-setup", "FIXTURE_ENTRY_FAILURE_ACCEPTED_AS_RED",
+         "import unittest, prod\nclass T(unittest.IsolatedAsyncioTestCase):\n    async def asyncSetUp(self):\n        prod.op()\n"
+         "    async def test_op(self):\n        self.fail('never runs')\n", UNIT, False, "before reaching the production Interface"),
+        ("decorated-setup", "FIXTURE_ENTRY_FAILURE_ACCEPTED_AS_RED",
+         "import functools, unittest, prod\ndef guard(fn):\n    @functools.wraps(fn)\n    def wrapper(self):\n        return fn(self)\n    return wrapper\n"
+         "class T(unittest.TestCase):\n    @guard\n    def setUp(self):\n        prod.op()\n    def test_op(self):\n        self.fail('never runs')\n",
+         UNIT, False, "before reaching the production Interface"),
+        ("inherited-setup", "FIXTURE_ENTRY_FAILURE_ACCEPTED_AS_RED",
+         {"support.py": "import unittest, prod\nclass Base(unittest.TestCase):\n    def setUp(self):\n        prod.op()\n",
+          "test_probe.py": "import unittest\nfrom support import Base\nclass T(Base):\n    def test_op(self):\n        pass\n"},
+         UNIT, False, "before reaching the production Interface"),
+        ("handled-then-import-unittest", "HANDLED_EXCEPTION_ACCEPTED_AS_RED",
+         "import unittest, prod\nclass T(unittest.TestCase):\n    def test_op(self):\n        try:\n            prod.op()\n"
+         "        except RuntimeError:\n            import missing_dependency_module\n", UNIT, False, "ModuleNotFoundError"),
+        ("handled-then-import-pytest", "HANDLED_EXCEPTION_ACCEPTED_AS_RED",
+         "import prod\ndef test_op():\n    try:\n        prod.op()\n    except RuntimeError:\n        import missing_dependency_module\n",
+         PYTEST, False, "ModuleNotFoundError"),
+        ("setup", "UNITTEST_SETUP_FAILURE_ACCEPTED_AS_RED",
+         "import unittest, prod\nclass T(unittest.TestCase):\n    def setUp(self):\n        prod.op()\n    def test_op(self):\n        pass\n",
+         UNIT, False, "before reaching the production Interface"),
+        ("chained-setup", "UNITTEST_CHAINED_SETUP_FAILURE_ACCEPTED_AS_RED",
+         "import unittest, prod\ndef helper():\n    try:\n        int('bad')\n    except ValueError:\n        prod.op()\n"
+         "class T(unittest.TestCase):\n    def setUp(self):\n        helper()\n    def test_op(self):\n        pass\n", UNIT, False, "before reaching the production Interface"),
+        ("multiline-import-unittest", "UNITTEST_MULTILINE_IMPORT_FAILURE_ACCEPTED_AS_RED",
+         "import unittest\nclass T(unittest.TestCase):\n    def test_op(self):\n        raise ImportError('missing\\nPROD_REFUSED_OPERATION: not reached')\n",
+         UNIT, False, "ImportError"),
+        ("multiline-import-pytest", "PYTEST_MULTILINE_IMPORT_FAILURE_ACCEPTED_AS_RED",
+         "def test_op():\n    raise ImportError('missing\\nPROD_REFUSED_OPERATION: not reached')\n", PYTEST, False, "ImportError"),
+        ("import-unittest", "UNITTEST_IMPORT_FAILURE_ACCEPTED_AS_RED",
+         "import unittest\nclass T(unittest.TestCase):\n    def test_op(self):\n        import PROD_REFUSED_OPERATION\n", UNIT, False, "ModuleNotFoundError"),
+        ("import-pytest", "PYTEST_IMPORT_FAILURE_ACCEPTED_AS_RED",
+         "def test_op():\n    import PROD_REFUSED_OPERATION\n", PYTEST, False, "ModuleNotFoundError"),
+        ("import-nonrunner", "NONRUNNER_IMPORT_FAILURE_OPENED_RED",
+         "print('PROD_REFUSED_OPERATION')\nimport PROD_REFUSED_OPERATION\n", (PY, "test_probe.py"), False, "ModuleNotFoundError"),
+        ("captured-marker-pytest", "CAPTURED_MARKER_OPENED_RED",
+         "def test_op():\n    print('E   RuntimeError: PROD_REFUSED_OPERATION')\n    assert False, 'UNRELATED'\n",
+         PYTEST, False, "not carried by the failure that ended"),
+    )
 
-    def test_unittest_chained_setup_failure_carrying_the_marker_is_refused(self) -> None:
-        marker = "UNITTEST_CHAINED_SETUP_FAILURE_ACCEPTED_AS_RED"
-        slug, _ = self.begin_with_act("unittest-chained-setup")
-        (self.repo / "test_chained_unit.py").write_text(
-            "import unittest\nimport prod\n"
-            "def helper():\n"
-            "    try:\n        int('bad')\n"
-            "    except ValueError:\n        prod.op()\n"
-            "class T(unittest.TestCase):\n"
-            "    def setUp(self):\n        helper()\n"
-            "    def test_op(self):\n        pass\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_chained_unit"))
-        self.assert_refused(result, marker, "setUp")
+    def run_scenarios(self, accepted: bool) -> None:
+        """Drive every scenario of one kind through the real recorder CLI in its
+        own workflow; the product module and its operation script are committed
+        once so the tree binding stays clean."""
+        self.write_act("PROD_REFUSED_OPERATION", refuse=True)
+        self.git("add", "prod.py", "act.py")
+        self.git("commit", "-q", "-m", "act")
+        for case, marker, source, command, accept, expect in self.ACT_SCENARIOS:
+            if accept != accepted or (command[0] == "pytest" and not PYTEST_AVAILABLE) or (
+                command[0] == "node" and shutil.which("node") is None
+            ):
+                continue
+            with self.subTest(case=case):
+                slug, _ = self.begin_with_map(
+                    [pending_behavior("BM_ACT", red_failure="PROD_REFUSED_OPERATION")], case
+                )
+                files = {"test_probe.py": source} if isinstance(source, str) else source or {}
+                for name, text in files.items():
+                    (self.repo / name).write_text(text, encoding="utf-8")
+                result = self.tdd(slug, "red", "BM_ACT", command)
+                if accept:
+                    self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+                    proof = self.mapped_item("BM_ACT")["redProof"]
+                    self.assertIn(expect, proof["observedFailure"], marker)
+                    # A runner establishes reach with its executed-test count; a
+                    # direct operation records only the observed failure.
+                    runner = command[0] == "pytest" or "unittest" in command
+                    self.assertEqual(
+                        {key: proof.get(key) for key in ("quality", "testsExecuted", "reach")},
+                        {"quality": "assertion-reached", "testsExecuted": 1, "reach": None} if runner
+                        else {"quality": "failure-observed", "testsExecuted": None, "reach": "unresolved"},
+                        "RUNNER_PROOF_SHAPE_LOST",
+                    )
+                else:
+                    self.assert_refused(result, marker, expect)
+
+    def test_executed_test_shapes_open_red(self) -> None:
+        self.run_scenarios(accepted=True)
+
+    def test_pre_interface_shapes_are_refused_with_the_reason_retained(self) -> None:
+        self.run_scenarios(accepted=False)
 
     def test_tdd_map_non_object_input_fails_closed(self) -> None:
         slug, workflow_id = self.begin_with_map(

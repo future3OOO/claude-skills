@@ -420,7 +420,7 @@ def set_phase(
         )
 
 
-TDD_ACTIONS = {"pending", "reopen", "in-progress", "passed", "not-required"}
+TDD_ACTIONS = {"reopen", "in-progress", "passed", "not-required"}
 
 
 def _map_items(document: JsonObject | None) -> list[JsonObject] | None:

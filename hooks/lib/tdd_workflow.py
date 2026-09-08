@@ -33,6 +33,7 @@ from .workflow_state import (
     WorkflowError,
     _executed_selections,
     _head_oid,
+    annotate_tdd_evidence,
     bound_state,
     commit_tdd,
     evidence_document,
@@ -560,7 +561,7 @@ def _run_tdd(values: list[str]) -> int:
 
     document: JsonObject | None = None
     opens_cycle = False
-    action = "in-progress"
+    action: str | None = "in-progress"
     if legacy:
         preserved = phase == "red" and matches and not valid and completed_cycle
         new_cycle = (
@@ -628,11 +629,12 @@ def _run_tdd(values: list[str]) -> int:
             reassessment_pending = None
             action = "in-progress" if behavior_map.unresolved(updated) else "passed"
         else:
-            # A refused attempt is evidence, not progress: the phase stays where
-            # it was, so edit readiness still names the missing RED.
+            # A refused attempt is evidence, not progress: it is annotated onto
+            # the map without a transition, so phase, tdd, implementation and
+            # cycle count stay where they were. A failed GREEN is a regression.
             next_active = args.behavior_id if status == "red" else None
             reassessment_pending = None
-            action = "reopen" if phase == "green" else str(state["tdd"])
+            action = "reopen" if phase == "green" else None
         document = _map_doc(
             slug=slug,
             workflow_id=workflow_id,
@@ -648,7 +650,11 @@ def _run_tdd(values: list[str]) -> int:
             surface=surface,
             runs=[*prior_runs, run] if matches else [run],
         )
-    if document is not None:
+    if document is not None and action is None:
+        _, evidence_id = annotate_tdd_evidence(
+            identity, slug, workflow_id, document, expected_evidence_id=evidence_id
+        )
+    elif document is not None:
         _, evidence_id = commit_tdd(
             identity,
             slug,
