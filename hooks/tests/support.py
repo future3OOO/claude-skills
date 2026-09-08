@@ -25,6 +25,7 @@ from hooks.lib.workflow_state import (
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
+POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
 
 
 def fixture_env(state_root: Path) -> dict[str, str]:
@@ -61,6 +62,23 @@ def run_workflow(repo: Path, env: dict[str, str], *args: str) -> subprocess.Comp
     return subprocess.run(
         [sys.executable, str(WORKFLOW), *args, "--repo", str(repo)],
         cwd=repo, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+
+
+def run_post_edit(
+    repo: Path, env: dict[str, str], relative: str, *, session: str | None,
+    env_extra: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """The real PostToolUse edit-success hook on one repository file; the caller
+    asserts the result. session=None omits the field entirely rather than
+    blanking it: an anonymous payload is one that never carried the key."""
+    payload: dict[str, object] = {"tool_input": {"file_path": str(repo / relative)}}
+    if session is not None:
+        payload["session_id"] = session
+    return subprocess.run(
+        [str(POST_EDIT)], cwd=repo, env={**env, **(env_extra or {})}, text=True,
+        input=json.dumps(payload),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
 
