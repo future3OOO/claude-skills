@@ -9,9 +9,9 @@ description: TDD for production behavior changes through real Seams. Use when ch
 
 Production behavior changes require one **behavior-specific RED** before production code changes.
 
-A RED is valid only when the failure is the mapped product assertion; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`). Contract before preservation: the requested behavior's RED comes first.
+A RED is valid only when the failure is the mapped product failure; failing earlier is evidence for no item. The first RED of a new Seam asserts the Seam's existence (`assert hasattr(db, "x"), MARKER`). Contract before preservation: the requested behavior's RED comes first.
 
-An **attack vector test (ACT)** is the production test: drive the real production Interface, state the expected result, compare it with the observed one. A pytest/unittest test can be an ACT; a direct asserting operation can be one too. The recorder binds every executed RED/GREEN run - command, exit status, output tail, tree binding - to its item, refused runs with their refusal reason; review establishes that the observed failure is the mapped promise. For directly invoked pytest and unittest it also reads the runner's report: an executed test whose failure carries the marker (its assertion or the production exception it raised) establishes reach, while collection, loader, setup, and zero-test failures refuse. Any other command's failure opens RED when its output carries the declared failure, with reach recorded unresolved; identifiable pre-Interface failures (import, syntax, missing target, command not found) refuse with the reason retained. The declared `redFailure` may name the actual production exception or diagnostic; no rewritten assertion marker and no second test path is manufactured for the recorder.
+An **attack vector test (ACT)** is the production test: drive the real production Interface, state the expected result, compare it with the observed one. A pytest/unittest test can be an ACT; a direct asserting operation can be one too. Its `redFailure` names the product failure the ACT observes - an assertion marker, or the actual production exception or diagnostic. The recorder binds each executed run to its item; review judges whether the observed failure is the mapped promise. What the recorder accepts and refuses is owned by [recorder.md](recorder.md).
 
 The canonical mock ban in `~/.claude/CLAUDE.md` applies without exception. This skill never creates a test-only proof path.
 
@@ -42,7 +42,7 @@ Map:
 
 Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
 
-**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing RED run instead records a **baseline**, `already-satisfied`, whatever the tree state. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
+**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing runner-backed RED run instead records a **baseline**, `already-satisfied`, whatever the tree state; a direct operation's exit 0 records no baseline. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
 
 ## 2. Drive One Mapped Vertical Slice
 
@@ -51,9 +51,9 @@ Select one pending contract ID and write its RED before the production edit that
 **RED**
 
 - Write one test for that atomic behavior through its recorded Seam.
-- Emit the map's behavior-specific `redFailure` marker only at the assertion proving the product outcome is absent.
+- Emit the map's behavior-specific `redFailure` only where the product outcome is absent: at the proving assertion, or as the production exception or diagnostic the ACT observes.
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase red --behavior-id <ID> -- <targeted-command>`.
-- A passing run baselines the item; do not manufacture a RED or edit production code for it.
+- A passing runner-backed run baselines the item; do not manufacture a RED or edit production code for it.
 - A preservation RED records like any other RED. After implementation a preservation item goes RED only when the real Seam shows the change regressed it.
 
 **GREEN**

@@ -125,7 +125,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 
 For behavior changes invoke `tdd` and select one pending Behavior Map ID. The RED must reach its recorded real Seam and emit that item's behavior-specific `redFailure` marker. A missing API/import, setup, syntax, fixture, or collection failure is not RED for a later product behavior and does not unlock production edits.
 
-For directly invoked pytest and unittest, the recorder verifies that the mapped marker came from an executed test's failure - its assertion or the production exception it raised - rather than collection, setup, loading, or printed output. Any other command is an ACT on the real production Interface: its failure opens the mapped RED when the output carries the declared failure (reach recorded unresolved; review judges the promise), an identifiable pre-Interface failure is refused with the reason retained, and its exit 0 records GREEN through that RED but never a baseline.
+The recorder's acceptance and refusal rules - runner-backed test failures, direct ACT operations, pre-Interface refusals, baselines - are owned by the tdd skill's [recorder reference](../tdd/recorder.md).
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd \

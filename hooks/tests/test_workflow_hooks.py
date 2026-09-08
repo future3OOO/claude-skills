@@ -1101,6 +1101,17 @@ class SkillTextTests(unittest.TestCase):
         self.assertIn("never waives RED/GREEN", tdd, marker)
         self.assertNotIn(PROBE_RULE, workflow, marker)
 
+    def test_the_tdd_skill_states_the_act_route_without_contradiction(self) -> None:
+        marker = "TDD_SKILL_TEXT_CONTRADICTS_ACT_ROUTE"
+        tdd = ROOT / "skills" / "tdd"
+        for name in ("SKILL.md", "recorder.md", "tests.md"):
+            text = (tdd / name).read_text(encoding="utf-8")
+            self.assertNotIn("A passing RED baselines", text, f"{marker}: {name}")
+            self.assertNotIn("A passing RED run instead", text, f"{marker}: {name}")
+            self.assertNotIn("fail at the assertion", text, f"{marker}: {name}")
+            self.assertNotIn("for a direct operation, declare", text, f"{marker}: {name}")
+        self.assertIn("the ACT observes", (tdd / "SKILL.md").read_text(encoding="utf-8"), marker)
+
     def test_the_advisor_skill_mirrors_the_reserved_verdict_rule(self) -> None:
         marker = "SKILL_VERDICT_TEXT_STALE"
         skill = (ROOT / "skills" / "codex-advisor" / "SKILL.md").read_text(encoding="utf-8")

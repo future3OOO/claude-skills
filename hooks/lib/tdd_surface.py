@@ -56,12 +56,17 @@ PYTEST_SUMMARY_RECORDS = (
 )
 PYTEST_TB_SUPPRESSED = ("--tb=no", "--tb=line")
 UNITTEST_BLOCK_HEADER = ("FAIL: ", "ERROR: ")
-UNITTEST_SETUP_FRAME = re.compile(r'^  File ".*", line \d+, in (?:setUp(?:Class|Module)?|asyncSetUp)$')
-# The interpreter's and shell's own diagnostics for an operation that failed
-# before it could reach the production Interface.
+PYTHON_TRACEBACK = "Traceback (most recent call last):"
+UNITTEST_FRAME = re.compile(r'^  File ".*", line \d+, in (\w+)$')
+# The fixture entries unittest runs before a test body; it hides its own frames
+# for synchronous setUp and shows _callSetUp for the asynchronous entry.
+UNITTEST_FIXTURE_ENTRIES = frozenset({"setUp", "setUpClass", "setUpModule", "asyncSetUp", "_callSetUp"})
+# Loader diagnostics of the interpreters and shells this estate runs: an
+# operation that ended on one never reached the production Interface.
 PRE_INTERFACE_FAILURE = re.compile(
     r"(?m)^(?:ModuleNotFoundError|ImportError|SyntaxError|IndentationError)\b.*$"
     r"|^.*: No module named .*$"
+    r"|^Error: Cannot find module .*$"
     r"|^.*can't open file .*$"
     r"|^.*: command not found$"
     r"|^\S*sh: \d+: .*: not found$"
@@ -322,7 +327,10 @@ def evaluate_red(
 def _direct_red(
     output: str, marker: str, runner: str
 ) -> tuple[dict[str, object] | None, str]:
-    failure = PRE_INTERFACE_FAILURE.search(output)
+    # Only the failure the operation ended with is classified: a diagnostic it
+    # recovered from and printed earlier (a caught optional import) did not end it.
+    terminal = output[output.rfind(PYTHON_TRACEBACK):] if PYTHON_TRACEBACK in output else output
+    failure = PRE_INTERFACE_FAILURE.search(terminal)
     if failure:
         return None, (
             "the operation failed before reaching the production Interface: "
@@ -367,13 +375,7 @@ def _unittest_red(
     if sum(expected_counts) < 1:
         return None, "unittest did not report a failed test"
     blocks = _unittest_report_blocks(output)
-    setup = next(
-        (
-            header for header, lines in blocks
-            if "_FailedTest" in header or any(UNITTEST_SETUP_FRAME.match(line) for line in lines)
-        ),
-        None,
-    )
+    setup = next((header for header, lines in blocks if _unittest_setup_block(header, lines)), None)
     if setup is not None:
         return None, "unittest ended in loader/setup error rather than a test failure: " + setup
     if not any(_unittest_marker_in_block(lines, marker) for _, lines in blocks):
@@ -385,6 +387,26 @@ def _unittest_red(
     }, ""
 
 
+def _unittest_setup_block(header: str, block: list[str]) -> bool:
+    """A loader failure, a block whose header names a fixture, or a traceback
+    that reaches a fixture entry before the test method the header names: a
+    wrapper around setUp still fails as a fixture, a wrapper around the test
+    still reaches its body, and an application function that happens to be
+    named setUp is reached only through that body."""
+    subject = header.split(": ", 1)[-1].split(" ", 1)[0]
+    if "_FailedTest" in header or subject in UNITTEST_FIXTURE_ENTRIES:
+        return True
+    for line in block:
+        frame = UNITTEST_FRAME.match(line)
+        if frame is None:
+            continue
+        if frame.group(1) == subject:
+            return False
+        if frame.group(1) in UNITTEST_FIXTURE_ENTRIES:
+            return True
+    return False
+
+
 def _unittest_marker_in_block(block: list[str], marker: str) -> bool:
     """The marker is in the block's exception line or its message continuation:
     frames and source lines are indented, the raised exception is not."""
@@ -392,7 +414,7 @@ def _unittest_marker_in_block(block: list[str], marker: str) -> bool:
     in_message = False
     for line in block:
         stripped = line.strip()
-        if stripped == "Traceback (most recent call last):":
+        if stripped == PYTHON_TRACEBACK:
             in_traceback = True
             in_message = False
             continue

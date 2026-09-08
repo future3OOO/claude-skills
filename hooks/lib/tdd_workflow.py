@@ -684,17 +684,21 @@ def _run_tdd(values: list[str]) -> int:
             file=sys.stderr,
         )
     elif phase == "red":
-        reason = proof_error or "command did not produce a non-zero product assertion"
+        reason = proof_error or "command did not fail with the declared failure"
         print(
             "RED must fail for the expected reason after reaching the mapped Seam. "
             + reason,
             file=sys.stderr,
         )
     else:
+        route = (
+            "the run must report an executed passing test"
+            if surface.get("runner") in {"unittest", "pytest"}
+            else "the direct operation must exit 0"
+        )
         print(
-            "GREEN must pass after a valid RED for the same mapped behavior and surface, "
-            "or a post-edit pass must report an executed passing pytest or unittest test."
-            + (f" {proof_error}" if proof_error else ""),
+            "GREEN must pass after a valid RED for the same mapped behavior and surface: "
+            + route + "." + (f" {proof_error}" if proof_error else ""),
             file=sys.stderr,
         )
     return 2
