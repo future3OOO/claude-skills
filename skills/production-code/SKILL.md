@@ -56,7 +56,7 @@ The decision is complete only when one outcome is recorded:
 - Make the smallest correct change.
 - Delete lines that do not directly serve the requirement.
 - Remove dead code instead of hiding it behind flags or wrappers.
-- Use Ousterhout-style depth: a small, stable public interface hiding meaningful implementation complexity. File size is not the measure.
+- Apply [codebase-design](../codebase-design/SKILL.md) when judging Module depth and consolidation; file size is not the measure.
 - Do not add orchestration layers, control-plane hops, or indirection that the requirement does not need.
 - Prefer readable, direct code over verbose generated patterns.
 - Smallest change means the smallest final diff, not the smallest tool call: prepare coherent multi-hunk edits per file and batch independent edits in one message; consecutive single-line edits to one file are the smell this rule prevents.
@@ -133,7 +133,7 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
 ## Execution Checklist
 
 - Complete the Minimum Implementation Decision before writing code, including untracked files, scratch implementation files, generated source, or a new worktree.
-- Treat each implementation as carrying removable bloat. Every follow-up commit targets a net reduction in the cumulative PR: deepen existing owners and delete duplication before adding machinery. Justify necessary growth with a demonstrated behaviour gap. Preserve useful assertions and production behaviour; moving complexity or compressing formatting is not reduction.
+- Before each commit, challenge the changed implementation for removable bloat. Every follow-up targets a net code reduction from its starting tree, with or without a PR. Justify necessary growth by the requirement it serves. Preserve behaviour and useful assertions; moving complexity or compressing formatting does not count.
 - Scan for common quality escapes such as `TODO`, `FIXME`, `eslint-disable`, `@ts-ignore`, and broad catch/pass patterns.
 - Run the bundled production code quality gate.
 - If the gate reports errors or actionable warnings, go back to the code, remove the bloat or quality escape, and rerun the gate.
