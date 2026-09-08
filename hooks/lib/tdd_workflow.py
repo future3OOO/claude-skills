@@ -290,16 +290,23 @@ def _candidate_command(
 _BASELINE_STAMP = behavior_map.BASELINE_STAMP
 
 
-def _baseline_proof(
-    surface: JsonObject, output: str
+def _pass_proof(
+    surface: JsonObject, output: str, *, baseline: bool
 ) -> tuple[dict[str, object] | None, str]:
-    """A baseline is the surface passing, not the command exiting 0."""
+    """A pass is the surface passing, not the command exiting 0.
+
+    A runner's own report of an executed passing test proves a baseline or a
+    GREEN. A non-runner operation exiting 0 is recorded as the operation
+    succeeding, which closes its own recorded RED but never baselines an item.
+    """
     runner = surface.get("runner")
     if runner not in {"unittest", "pytest"}:
-        return None, (
-            "baseline proof requires a directly invoked pytest or unittest surface; "
-            "this exact-bound command cannot establish Seam reach"
-        )
+        if baseline:
+            return None, (
+                "a baseline needs the runner's own report of an executed passing "
+                "test; a non-runner operation exiting 0 is not one"
+            )
+        return {"quality": "operation-succeeded", "runner": str(runner)}, ""
     output = tdd_surface.ANSI_ESCAPE.sub("", output)
     if runner == "unittest":
         # unittest exits 0 with skipped and expected-failure tests inside its
@@ -429,6 +436,11 @@ def _run_tdd(values: list[str]) -> int:
         if same_instance
         else ([], "")
     )
+    # A retained refused attempt binds nothing: only an open cycle (status red)
+    # holds the item to its surface. Before that, a differing command is the
+    # corrected attempt, and its runs accumulate beside the refused ones.
+    if not legacy and same_instance and status != "red":
+        drift, guidance = [], ""
     matches = same_instance and not drift
     # RED sweep: every pending item records its own RED beside an open one.
     sweep = (
@@ -484,7 +496,12 @@ def _run_tdd(values: list[str]) -> int:
     # Measured before the command runs: the binding describes the tree the RED
     # was launched on, whatever the command rewrites or commits before returning.
     binding = _tree_binding(identity, state) if phase == "red" else {}
-    raw, exit_code, timed_out = _run(command, identity, args.timeout, env=env)
+    try:
+        raw, exit_code, timed_out = _run(command, identity, args.timeout, env=env)
+    except OSError as exc:
+        # The command never started: retained as a refused attempt whose
+        # diagnostic is the OS error, under the shell's not-found status.
+        raw, exit_code, timed_out = str(exc).encode(), 127, False
     output = raw.decode("utf-8", errors="replace")
     prior_runs = (
         candidate.get("runs")
@@ -511,12 +528,12 @@ def _run_tdd(values: list[str]) -> int:
         # Producer-backed baseline: a pending surface passing is already
         # satisfied, opens nothing, counts no cycle. A dirty tree does not refuse
         # it; the run entry records what had changed, and the reviews weigh it.
-        proof, proof_error = _baseline_proof(surface, output)
+        proof, proof_error = _pass_proof(surface, output, baseline=True)
         baseline = proof is not None
     elif phase == "green" and not legacy and not timed_out and exit_code == 0:
         # A GREEN is the surface passing, not the command exiting 0: a skipped or
         # incomplete run reports no passing test and proves nothing.
-        proof, proof_error = _baseline_proof(surface, output)
+        proof, proof_error = _pass_proof(surface, output, baseline=False)
     valid = (
         red_ok
         if phase == "red"
@@ -579,56 +596,58 @@ def _run_tdd(values: list[str]) -> int:
                 "updatedAt": utc_timestamp(),
             }
     else:
-        recorded = matches or valid or baseline
-        if recorded:
-            updated = behavior_map.clone(items)
-            updated_item = behavior_map.item(updated, args.behavior_id)
-            doc_kind = "cycle"
-            if baseline:
-                updated_item["status"] = "already-satisfied"
-                updated_item["evidence"] = _BASELINE_STAMP + command_text
-                updated_item["baselineProof"] = proof
-                next_active = None
-                reassessment_pending = None
-                action = "in-progress" if behavior_map.unresolved(updated) else "passed"
-                doc_kind = "map"
-            elif phase == "red" and valid:
-                updated_item["status"] = "red"
-                updated_item["redCommand"] = command_text
-                # Lateness is sticky: a rerun on a cleaner tree keeps every path an
-                # earlier RED for this item recorded.
-                previous = mapped.get("redProof") if isinstance(mapped.get("redProof"), dict) else {}
-                changed = sorted({*previous.get("productionChanged", []), *proof.get("productionChanged", [])})
-                updated_item["redProof"] = {**proof, "productionChanged": changed} if changed else proof
-                next_active = args.behavior_id
-                reassessment_pending = None
-                action = "in-progress" if matches else "reopen"
-                opens_cycle = not matches
-            elif phase == "green" and valid:
-                updated_item["status"] = "green"
-                updated_item["proofCommand"] = command_text
-                next_active = None
-                reassessment_pending = None
-                action = "in-progress" if behavior_map.unresolved(updated) else "passed"
-            else:
-                next_active = args.behavior_id
-                reassessment_pending = None
-                action = "reopen" if phase == "green" else "in-progress"
-            document = _map_doc(
-                slug=slug,
-                workflow_id=workflow_id,
-                items=updated,
-                status="passed" if action == "passed" or (phase == "green" and valid) else "pending",
-                kind=doc_kind,
-                active=next_active,
-                reassessment_pending=reassessment_pending,
-                behaviorId=args.behavior_id,
-                behavior=contract["behavior"],
-                seam=contract["seam"],
-                command=command_text,
-                surface=surface,
-                runs=[*prior_runs, run] if matches else [run],
-            )
+        # Every mapped run is retained: a refused attempt keeps its command,
+        # exit status, output tail, tree binding, and the reason it was refused.
+        updated = behavior_map.clone(items)
+        updated_item = behavior_map.item(updated, args.behavior_id)
+        doc_kind = "cycle"
+        if baseline:
+            updated_item["status"] = "already-satisfied"
+            updated_item["evidence"] = _BASELINE_STAMP + command_text
+            updated_item["baselineProof"] = proof
+            next_active = None
+            reassessment_pending = None
+            action = "in-progress" if behavior_map.unresolved(updated) else "passed"
+            doc_kind = "map"
+        elif phase == "red" and valid:
+            updated_item["status"] = "red"
+            updated_item["redCommand"] = command_text
+            # Lateness is sticky: a rerun on a cleaner tree keeps every path an
+            # earlier RED for this item recorded.
+            previous = mapped.get("redProof") if isinstance(mapped.get("redProof"), dict) else {}
+            changed = sorted({*previous.get("productionChanged", []), *proof.get("productionChanged", [])})
+            updated_item["redProof"] = {**proof, "productionChanged": changed} if changed else proof
+            next_active = args.behavior_id
+            reassessment_pending = None
+            action = "in-progress" if status == "red" else "reopen"
+            opens_cycle = status != "red"
+        elif phase == "green" and valid:
+            updated_item["status"] = "green"
+            updated_item["proofCommand"] = command_text
+            next_active = None
+            reassessment_pending = None
+            action = "in-progress" if behavior_map.unresolved(updated) else "passed"
+        else:
+            # A refused attempt is evidence, not progress: the phase stays where
+            # it was, so edit readiness still names the missing RED.
+            next_active = args.behavior_id if status == "red" else None
+            reassessment_pending = None
+            action = "reopen" if phase == "green" else str(state["tdd"])
+        document = _map_doc(
+            slug=slug,
+            workflow_id=workflow_id,
+            items=updated,
+            status="passed" if action == "passed" or (phase == "green" and valid) else "pending",
+            kind=doc_kind,
+            active=next_active,
+            reassessment_pending=reassessment_pending,
+            behaviorId=args.behavior_id,
+            behavior=contract["behavior"],
+            seam=contract["seam"],
+            command=command_text,
+            surface=surface,
+            runs=[*prior_runs, run] if matches else [run],
+        )
     if document is not None:
         _, evidence_id = commit_tdd(
             identity,
@@ -662,7 +681,9 @@ def _run_tdd(values: list[str]) -> int:
             file=sys.stderr,
         )
     elif phase == "red":
-        reason = proof_error or "command did not produce a non-zero product assertion"
+        reason = proof_error or (
+            "the command timed out" if timed_out else "the command exited 0 and opened no RED"
+        )
         print(
             "RED must fail for the expected reason after reaching the mapped Seam. "
             + reason,
@@ -670,8 +691,9 @@ def _run_tdd(values: list[str]) -> int:
         )
     else:
         print(
-            "GREEN must pass after a valid RED for the same mapped behavior and surface, "
-            "or a post-edit pass must report an executed passing pytest or unittest test."
+            "GREEN must pass after a valid RED for the same mapped behavior and surface: "
+            "a runner-backed pass reports an executed passing test, and a non-runner "
+            "operation exits 0."
             + (f" {proof_error}" if proof_error else ""),
             file=sys.stderr,
         )

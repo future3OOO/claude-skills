@@ -264,9 +264,9 @@ class ContractProofAuthorityTests(unittest.TestCase):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
             )
             self.assertEqual(result.returncode, 2, f"{marker}: {' '.join(command)}")
-            state = read_workflow(self.identity)
-            self.assertEqual(state["tdd"], "pending", marker)
-            self.assertIsNone(state.get("tddEvidence"), marker)
+            # The refused attempt is retained; the item it named stays pending.
+            self.assertEqual(read_workflow(self.identity)["tdd"], "pending", marker)
+            self.assertEqual(self.item_status("BM_PRESENT"), "pending", marker)
 
     def test_baseline_counts_only_genuinely_passing_tests(self) -> None:
         # unittest exits 0 and counts skipped and expected-failure tests in
@@ -288,9 +288,8 @@ class ContractProofAuthorityTests(unittest.TestCase):
                  "--phase", "red", "--behavior-id", "BM_PRESENT", "--", *command],
                 cwd=self.repo, env=self.h.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
             self.assertEqual(refused.returncode, 2, f"{marker}: {(refused.stderr.strip().splitlines() or [''])[-1]}")
-            state = read_workflow(self.identity)
-            self.assertEqual(state["tdd"], "pending", marker)
-            self.assertIsNone(state.get("tddEvidence"), marker)
+            self.assertEqual(read_workflow(self.identity)["tdd"], "pending", marker)
+            self.assertEqual(self.item_status("BM_PRESENT"), "pending", marker)
         probe.write_text(header + passing + skip + xfail, encoding="utf-8")
         mixed = subprocess.run(
             [sys.executable, str(bmw.WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug,

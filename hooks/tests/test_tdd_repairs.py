@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -19,7 +20,7 @@ if str(ROOT) not in sys.path:
 from hooks.lib import behavior_map  # noqa: E402
 from hooks.lib.command_runner import run as runner_run  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.tdd_workflow import completion_blockers  # noqa: E402
+from hooks.lib.tdd_workflow import completion_blockers, current_map  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     advisor_disposition,
     evidence_document,
@@ -328,33 +329,6 @@ class MappedTddRepairTests(unittest.TestCase):
             "EXPECTED_FAILURE_RED_REJECTED\n" + result.stdout + result.stderr,
         )
 
-    def test_forged_python_traceback_cannot_open_mapped_red(self) -> None:
-        marker = "FORGED_PYTHON_OUTPUT_ACCEPTED"
-        slug, _ = self.begin_with_map(
-            [pending_behavior("BM_PYTHON", red_failure=marker)], "python-red"
-        )
-        result = self.tdd(
-            slug,
-            "red",
-            "BM_PYTHON",
-            (
-                sys.executable,
-                "-c",
-                "print('Traceback (most recent call last):'); "
-                f"print('AssertionError: {marker}'); "
-                "int('different failure')",
-            ),
-        )
-        self.assertEqual(
-            result.returncode,
-            2,
-            "FORGED_PYTHON_OUTPUT_ACCEPTED\n" + result.stdout + result.stderr,
-        )
-        self.assertIn("cannot establish Seam reach", result.stderr)
-        self.assertNotIn(
-            "tddCycleCount", read_workflow(resolve_repo_identity(self.repo))
-        )
-
     @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
     def test_pytest_collection_failure_is_not_red(self) -> None:
         marker = "PYTEST_UNREACHED_ASSERTION"
@@ -417,21 +391,6 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertNotIn(
             "tddCycleCount", read_workflow(resolve_repo_identity(self.repo))
         )
-
-    def test_unknown_runner_cannot_open_a_mapped_red(self) -> None:
-        marker = "OPAQUE_PRODUCT_ASSERTION"
-        slug, _ = self.begin_with_map(
-            [pending_behavior("BM_OPAQUE", red_failure=marker)], "opaque-red"
-        )
-        result = self.tdd(
-            slug,
-            "red",
-            "BM_OPAQUE",
-            (sys.executable, "-m", "module_that_does_not_exist_for_tdd"),
-        )
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("cannot establish Seam reach", result.stderr)
-        self.assertNotIn("tddCycleCount", read_workflow(resolve_repo_identity(self.repo)))
 
     def test_runner_tokens_after_sentinel_are_runner_owned(self) -> None:
         marker = "RUNNER_HELP_MARKER"
@@ -686,6 +645,447 @@ class MappedTddRepairTests(unittest.TestCase):
         proof = self.evidence()["runs"][-1]["redProof"]
         self.assertEqual(proof["quality"], "assertion-reached", "MULTI_FAILURE_REFUSED")
         self.assertEqual(proof["testsExecuted"], 2, "MULTI_FAILURE_REFUSED")
+
+    def write_act(self, marker: str, *, refuse: bool) -> tuple[str, ...]:
+        """A production module driven by a non-runner operation script."""
+        body = f"raise RuntimeError({marker!r} + ': refused')" if refuse else "return 'done'"
+        (self.repo / "prod.py").write_text(f"def op():\n    {body}\n", encoding="utf-8")
+        (self.repo / "act.py").write_text("import prod\nprint(prod.op())\n", encoding="utf-8")
+        return (sys.executable, "act.py")
+
+    def begin_with_act(self, slug: str, marker: str = "PROD_REFUSED_OPERATION") -> tuple[str, tuple[str, ...]]:
+        command = self.write_act(marker, refuse=True)
+        self.git("add", "prod.py", "act.py")
+        self.git("commit", "-q", "-m", "act")
+        slug, _ = self.begin_with_map([pending_behavior("BM_ACT", red_failure=marker)], slug)
+        return slug, command
+
+    def retained_run(self, marker: str) -> dict[str, object]:
+        """The last run the ledger kept for the active item, asserted under ``marker``."""
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertIsInstance(state.get("tddEvidence"), str, marker)
+        runs = self.evidence()["runs"]
+        self.assertTrue(runs, marker)
+        return runs[-1]
+
+    def assert_refused(
+        self, result: subprocess.CompletedProcess[str], marker: str, reason: str
+    ) -> None:
+        """The attempt was refused, retained with ``reason``, and opened nothing."""
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
+        self.assertIn(reason, self.retained_run(marker)["redProofFailure"], marker)
+        self.assertEqual(self.mapped_item("BM_ACT")["status"], "pending", marker)
+
+    def mapped_item(self, identifier: str) -> dict[str, object]:
+        identity = resolve_repo_identity(self.repo)
+        items, _ = current_map(identity, read_workflow(identity))
+        return behavior_map.item(items, identifier)
+
+    def test_nonrunner_act_failure_opens_red_with_unresolved_reach(self) -> None:
+        marker = "NONRUNNER_RED_NOT_OPENED"
+        slug, command = self.begin_with_act("act-red")
+        result = self.tdd(slug, "red", "BM_ACT", command)
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        item = self.mapped_item("BM_ACT")
+        self.assertEqual(item["status"], "red", marker)
+        proof = item["redProof"]
+        self.assertEqual(proof["quality"], "failure-observed", marker)
+        self.assertEqual(proof["reach"], "unresolved", marker)
+        self.assertEqual(proof["runner"], "exact", marker)
+        self.assertIn("PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
+        run = self.retained_run(marker)
+        self.assertTrue(run["valid"], marker)
+        self.assertEqual(run["command"], shlex.join(command), marker)
+        self.assertEqual(run["exitCode"], 1, marker)
+        self.assertIn("PROD_REFUSED_OPERATION", run["outputTail"], marker)
+        for field in ("productionChanged", "passStartOid", "headOid"):
+            self.assertIn(field, run, marker)
+        self.assertEqual(
+            read_workflow(resolve_repo_identity(self.repo)).get("tddCycleCount"), 1, marker
+        )
+
+    def test_nonrunner_act_success_records_green_through_its_red(self) -> None:
+        marker = "NONRUNNER_GREEN_NOT_RECORDED"
+        slug, command = self.begin_with_act("act-green")
+        red = self.tdd(slug, "red", "BM_ACT", command)
+        self.assertEqual(red.returncode, 0, marker + "\n" + red.stderr)
+        self.write_act("PROD_REFUSED_OPERATION", refuse=False)
+        green = self.tdd(slug, "green", "BM_ACT", command)
+        self.assertEqual(green.returncode, 0, marker + "\n" + green.stderr)
+        item = self.mapped_item("BM_ACT")
+        self.assertEqual(item["status"], "green", marker)
+        self.assertEqual(item["proofCommand"], shlex.join(command), marker)
+        run = self.retained_run(marker)
+        self.assertTrue(run["valid"], marker)
+        self.assertEqual(run["passProof"], {"quality": "operation-succeeded", "runner": "exact"}, marker)
+        self.assertEqual(
+            read_workflow(resolve_repo_identity(self.repo)).get("tddCycleCount"), 1, marker
+        )
+
+    def test_nonrunner_green_must_run_the_recorded_red_command(self) -> None:
+        marker = "NONRUNNER_GREEN_WRONG_COMMAND_ADMITTED"
+        slug, command = self.begin_with_act("act-green-drift")
+        red = self.tdd(slug, "red", "BM_ACT", command)
+        self.assertEqual(red.returncode, 0, marker + "\n" + red.stderr)
+        self.write_act("PROD_REFUSED_OPERATION", refuse=False)
+        green = self.tdd(slug, "green", "BM_ACT", (*command, "--other"))
+        self.assertEqual(green.returncode, 2, marker + "\n" + green.stderr)
+        self.assertIn("GREEN must run the item's recorded RED surface", green.stderr, marker)
+        self.assertEqual(self.mapped_item("BM_ACT")["status"], "red", marker)
+
+    def test_nonrunner_late_red_stays_late(self) -> None:
+        marker = "NONRUNNER_LATE_RED_UNLABELLED"
+        slug, command = self.begin_with_act("act-late")
+        with (self.repo / "prod.py").open("a", encoding="utf-8") as handle:
+            handle.write("# changed before RED\n")
+        result = self.tdd(slug, "red", "BM_ACT", command)
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        proof = self.mapped_item("BM_ACT")["redProof"]
+        self.assertEqual(proof.get("productionChanged"), ["prod.py"], marker)
+        summary = self.cli("summary", "--repo", str(self.repo))
+        self.assertIn("Late RED: BM_ACT", summary.stdout, marker + "\n" + summary.stderr)
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_product_exception_carrying_the_marker_is_red(self) -> None:
+        marker = "PYTEST_PRODUCT_EXCEPTION_REFUSED"
+        slug, _ = self.begin_with_act("pytest-product-exception")
+        (self.repo / "test_act_pytest.py").write_text(
+            "import prod\ndef test_op():\n    prod.op()\n", encoding="utf-8"
+        )
+        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_act_pytest.py"))
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        proof = self.mapped_item("BM_ACT")["redProof"]
+        self.assertEqual(proof["quality"], "assertion-reached", marker)
+        self.assertEqual(proof["testsExecuted"], 1, marker)
+        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
+
+    def test_unittest_product_exception_carrying_the_marker_is_red(self) -> None:
+        marker = "UNITTEST_PRODUCT_EXCEPTION_REFUSED"
+        slug, _ = self.begin_with_act("unittest-product-exception")
+        (self.repo / "test_act_unit.py").write_text(
+            "import unittest\nimport prod\n"
+            "class T(unittest.TestCase):\n    def test_op(self):\n        prod.op()\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_act_unit"))
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        proof = self.mapped_item("BM_ACT")["redProof"]
+        self.assertEqual(proof["quality"], "assertion-reached", marker)
+        self.assertEqual(proof["testsExecuted"], 1, marker)
+        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
+
+    def test_missing_target_is_refused_and_the_attempt_is_retained(self) -> None:
+        marker = "MISSING_TARGET_REFUSAL_DISCARDED"
+        slug, _ = self.begin_with_act("missing-target")
+        result = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+        )
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertNotIn("tddCycleCount", state, marker)
+        run = self.retained_run(marker)
+        self.assertFalse(run["valid"], marker)
+        self.assertEqual(run["exitCode"], 1, marker)
+        self.assertIn("No module named module_that_does_not_exist_for_tdd", run["outputTail"], marker)
+        self.assertIn("No module named module_that_does_not_exist_for_tdd", run["redProofFailure"], marker)
+        self.assertEqual(self.mapped_item("BM_ACT")["status"], "pending", marker)
+
+    def test_refusal_text_names_the_reason_not_a_supported_runner(self) -> None:
+        marker = "REFUSAL_TEXT_PRESCRIBES_RUNNER"
+        slug, _ = self.begin_with_act("refusal-text")
+        result = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+        )
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
+        self.assertNotIn("requires a directly invoked pytest or unittest", result.stderr, marker)
+        self.assertNotIn("cannot establish Seam reach", result.stderr, marker)
+        self.assertIn("No module named module_that_does_not_exist_for_tdd", result.stderr, marker)
+
+    def test_unstartable_command_is_refused_and_the_attempt_is_retained(self) -> None:
+        marker = "UNSTARTABLE_COMMAND_DISCARDED"
+        slug, _ = self.begin_with_act("unstartable")
+        binary = str(self.repo / "no-such-act-binary")
+        result = self.tdd(slug, "red", "BM_ACT", (binary,))
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
+        run = self.retained_run(marker)
+        self.assertFalse(run["valid"], marker)
+        self.assertEqual(run["exitCode"], 127, marker)
+        self.assertIn("no-such-act-binary", run["redProofFailure"], marker)
+        self.assertEqual(self.mapped_item("BM_ACT")["status"], "pending", marker)
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_import_failure_carrying_the_marker_is_refused(self) -> None:
+        marker = "PYTEST_IMPORT_FAILURE_ACCEPTED_AS_RED"
+        slug, _ = self.begin_with_act("pytest-import", "No module named 'prodfeature'")
+        (self.repo / "test_feature_pytest.py").write_text(
+            "def test_feature():\n    import prodfeature\n", encoding="utf-8"
+        )
+        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_feature_pytest.py"))
+        self.assert_refused(result, marker, "ModuleNotFoundError")
+
+    def test_unittest_import_failure_carrying_the_marker_is_refused(self) -> None:
+        marker = "UNITTEST_IMPORT_FAILURE_ACCEPTED_AS_RED"
+        slug, _ = self.begin_with_act("unittest-import", "No module named 'prodfeature'")
+        (self.repo / "test_feature_unit.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n    def test_feature(self):\n        import prodfeature\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_feature_unit")
+        )
+        self.assert_refused(result, marker, "ModuleNotFoundError")
+
+    def test_nonrunner_marker_before_an_import_failure_is_refused(self) -> None:
+        marker = "NONRUNNER_IMPORT_FAILURE_OPENED_RED"
+        slug, _ = self.begin_with_act("nonrunner-import")
+        result = self.tdd(
+            slug,
+            "red",
+            "BM_ACT",
+            (sys.executable, "-c", "print('PROD_REFUSED_OPERATION'); import prodfeature"),
+        )
+        self.assert_refused(result, marker, "ModuleNotFoundError")
+
+    def test_nonrunner_failure_without_the_marker_is_refused(self) -> None:
+        marker = "NONRUNNER_UNRELATED_FAILURE_OPENED_RED"
+        slug, _ = self.begin_with_act("nonrunner-unrelated")
+        result = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-c", "raise SystemExit('unrelated diagnostic')")
+        )
+        self.assert_refused(result, marker, "did not contain")
+
+    def test_nonrunner_exit_zero_is_never_a_baseline(self) -> None:
+        marker = "NONRUNNER_EXIT0_BASELINED"
+        slug, _ = self.begin_with_act("nonrunner-baseline")
+        result = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-c", "print('PROD_REFUSED_OPERATION')")
+        )
+        self.assert_refused(result, marker, "baseline")
+        self.assertNotIn("baselineProof", self.mapped_item("BM_ACT"), marker)
+
+    def test_refused_attempt_does_not_bind_the_item_to_its_command(self) -> None:
+        marker = "REFUSED_ATTEMPT_BOUND_SURFACE"
+        slug, _ = self.begin_with_map(
+            [pending_behavior("BM_ACT", red_failure="ACT_VALUE_NOT_TWO")], "nonbinding"
+        )
+        refused = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+        )
+        self.assertEqual(refused.returncode, 2, marker + "\n" + refused.stderr)
+        corrected = self.tdd(slug, "red", "BM_ACT", self.write_unittest(2, "ACT_VALUE_NOT_TWO"))
+        self.assertEqual(corrected.returncode, 0, marker + "\n" + corrected.stderr)
+        runs = self.evidence()["runs"]
+        self.assertEqual([run["valid"] for run in runs], [False, True], marker)
+        self.assertEqual(
+            read_workflow(resolve_repo_identity(self.repo)).get("tddCycleCount"), 1, marker
+        )
+
+    def test_refused_attempt_does_not_block_another_item(self) -> None:
+        marker = "REFUSED_ATTEMPT_BLOCKED_OTHER_ITEM"
+        slug, _ = self.begin_with_map(
+            [
+                pending_behavior("BM_A", red_failure="MISSING_A"),
+                pending_behavior("BM_B", red_failure="ACT_VALUE_NOT_TWO"),
+            ],
+            "other-item",
+        )
+        refused = self.tdd(
+            slug, "red", "BM_A", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+        )
+        self.assertEqual(refused.returncode, 2, marker + "\n" + refused.stderr)
+        other = self.tdd(slug, "red", "BM_B", self.write_unittest(2, "ACT_VALUE_NOT_TWO"))
+        self.assertEqual(other.returncode, 0, marker + "\n" + other.stderr)
+        self.assertEqual(self.mapped_item("BM_B")["status"], "red", marker)
+
+    def test_open_cycle_still_refuses_a_differing_command(self) -> None:
+        marker = "OPEN_CYCLE_DRIFT_ADMITTED"
+        slug, _ = self.begin_with_map(
+            [pending_behavior("BM_ACT", red_failure="ACT_VALUE_NOT_TWO")], "open-cycle"
+        )
+        opened = self.tdd(slug, "red", "BM_ACT", self.write_unittest(2, "ACT_VALUE_NOT_TWO"))
+        self.assertEqual(opened.returncode, 0, marker + "\n" + opened.stderr)
+        drifted = self.tdd(slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_app"))
+        self.assertEqual(drifted.returncode, 2, marker + "\n" + drifted.stderr)
+        self.assertIn("does not match the active mapped cycle", drifted.stderr, marker)
+
+    def test_timed_out_attempt_is_retained_and_opens_nothing(self) -> None:
+        marker = "TIMED_OUT_ATTEMPT_DISCARDED"
+        slug, _ = self.begin_with_act("timeout")
+        result = self.cli(
+            "tdd", "--repo", str(self.repo), "--slug", slug, "--phase", "red",
+            "--behavior-id", "BM_ACT", "--timeout", "1",
+            "--", sys.executable, "-c", "import time; time.sleep(5)",
+        )
+        self.assertEqual(result.returncode, 2, marker + "\n" + result.stderr)
+        self.assertNotIn("tddCycleCount", read_workflow(resolve_repo_identity(self.repo)), marker)
+        run = self.retained_run(marker)
+        self.assertTrue(run["timedOut"], marker)
+        self.assertFalse(run["valid"], marker)
+        self.assertEqual(self.mapped_item("BM_ACT")["status"], "pending", marker)
+
+    def test_runner_green_still_needs_an_executed_passing_test(self) -> None:
+        marker = "RUNNER_GREEN_WITHOUT_EXECUTED_PASS"
+        slug, _ = self.begin_with_map(
+            [pending_behavior("BM_ACT", red_failure="ACT_VALUE_NOT_TWO")], "runner-green"
+        )
+        command = self.write_unittest(2, "ACT_VALUE_NOT_TWO")
+        opened = self.tdd(slug, "red", "BM_ACT", command)
+        self.assertEqual(opened.returncode, 0, marker + "\n" + opened.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        (self.repo / "test_app.py").write_text(
+            "import unittest\n"
+            "class ValueTests(unittest.TestCase):\n"
+            "    @unittest.skip('not executed')\n"
+            "    def test_value(self):\n        pass\n",
+            encoding="utf-8",
+        )
+        green = self.tdd(slug, "green", "BM_ACT", command)
+        self.assertEqual(green.returncode, 2, marker + "\n" + green.stderr)
+        self.assertIn("did not report an executed passing test", green.stderr, marker)
+        self.assertEqual(self.mapped_item("BM_ACT")["status"], "red", marker)
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_marker_in_captured_output_is_still_refused(self) -> None:
+        marker = "CAPTURED_MARKER_OPENED_RED"
+        slug, _ = self.begin_with_act("pytest-captured")
+        (self.repo / "test_captured_pytest.py").write_text(
+            "def test_value():\n"
+            "    print('E   RuntimeError: PROD_REFUSED_OPERATION')\n"
+            "    assert False, 'UNRELATED_FAILURE'\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_captured_pytest.py"))
+        self.assert_refused(result, marker, "not emitted by an executed pytest failure")
+
+    def test_unittest_setup_failure_carrying_the_marker_is_refused(self) -> None:
+        marker = "UNITTEST_SETUP_FAILURE_ACCEPTED_AS_RED"
+        slug, _ = self.begin_with_act("unittest-setup")
+        (self.repo / "test_setup_unit.py").write_text(
+            "import unittest\nimport prod\n"
+            "class T(unittest.TestCase):\n"
+            "    def setUp(self):\n        prod.op()\n"
+            "    def test_op(self):\n        pass\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_setup_unit"))
+        self.assert_refused(result, marker, "setUp")
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_mapped_failure_beside_a_captured_traceback_is_red(self) -> None:
+        marker = "CAPTURED_TRACEBACK_REFUSED_MAPPED_FAILURE"
+        slug, _ = self.begin_with_act("pytest-captured-traceback")
+        (self.repo / "test_optional_pytest.py").write_text(
+            "import traceback\nimport prod\n"
+            "def test_op():\n"
+            "    try:\n        import optional_extra_module\n"
+            "    except ImportError:\n        traceback.print_exc()\n"
+            "    prod.op()\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_optional_pytest.py"))
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        proof = self.mapped_item("BM_ACT")["redProof"]
+        self.assertEqual(proof["quality"], "assertion-reached", marker)
+        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest is not installed")
+    def test_pytest_multiline_import_failure_carrying_the_marker_is_refused(self) -> None:
+        marker = "PYTEST_MULTILINE_IMPORT_FAILURE_ACCEPTED_AS_RED"
+        slug, _ = self.begin_with_act("pytest-multiline-import")
+        (self.repo / "test_multiline_pytest.py").write_text(
+            "def test_feature():\n"
+            "    raise ImportError('optional dependency missing\\nPROD_REFUSED_OPERATION: not reached')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_ACT", ("pytest", "-q", "test_multiline_pytest.py"))
+        self.assert_refused(result, marker, "ImportError")
+
+    def test_unittest_multiline_import_failure_carrying_the_marker_is_refused(self) -> None:
+        marker = "UNITTEST_MULTILINE_IMPORT_FAILURE_ACCEPTED_AS_RED"
+        slug, _ = self.begin_with_act("unittest-multiline-import")
+        (self.repo / "test_multiline_unit.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n    def test_feature(self):\n"
+            "        raise ImportError('optional dependency missing\\nPROD_REFUSED_OPERATION: not reached')\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_multiline_unit")
+        )
+        self.assert_refused(result, marker, "ImportError")
+
+    def test_green_item_refuses_a_second_red(self) -> None:
+        marker = "GREEN_ITEM_REENTERED"
+        slug, command = self.begin_with_act("green-reentry")
+        self.assertEqual(self.tdd(slug, "red", "BM_ACT", command).returncode, 0, marker)
+        self.write_act("PROD_REFUSED_OPERATION", refuse=False)
+        self.assertEqual(self.tdd(slug, "green", "BM_ACT", command).returncode, 0, marker)
+        self.write_act("PROD_REFUSED_OPERATION", refuse=True)
+        again = self.tdd(slug, "red", "BM_ACT", command)
+        self.assertEqual(again.returncode, 2, marker + "\n" + again.stderr)
+        self.assertIn("is green; add a new map item", again.stderr, marker)
+        self.assertEqual(self.mapped_item("BM_ACT")["status"], "green", marker)
+
+    def test_green_resumes_after_another_items_refused_attempt(self) -> None:
+        marker = "GREEN_LOST_AFTER_OTHER_ITEMS_REFUSAL"
+        slug, _ = self.begin_with_map(
+            [
+                pending_behavior("BM_A", red_failure="ACT_VALUE_NOT_TWO"),
+                pending_behavior("BM_B", red_failure="MISSING_B"),
+            ],
+            "interleaved-green",
+        )
+        command = self.write_unittest(2, "ACT_VALUE_NOT_TWO")
+        self.assertEqual(self.tdd(slug, "red", "BM_A", command).returncode, 0, marker)
+        refused = self.tdd(
+            slug, "red", "BM_B", (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
+        )
+        self.assertEqual(refused.returncode, 2, marker + "\n" + refused.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_A", command)
+        self.assertEqual(green.returncode, 0, marker + "\n" + green.stderr)
+        self.assertEqual(self.mapped_item("BM_A")["status"], "green", marker)
+        self.assertEqual(self.mapped_item("BM_B")["status"], "pending", marker)
+        self.assertEqual(
+            read_workflow(resolve_repo_identity(self.repo)).get("tddCycleCount"), 1, marker
+        )
+
+    def test_unittest_mapped_failure_beside_a_captured_setup_traceback_is_red(self) -> None:
+        marker = "CAPTURED_SETUP_TRACEBACK_REFUSED_MAPPED_FAILURE"
+        slug, _ = self.begin_with_act("unittest-captured-setup")
+        (self.repo / "test_optional_unit.py").write_text(
+            "import traceback\nimport unittest\nimport prod\n"
+            "class T(unittest.TestCase):\n"
+            "    def setUp(self):\n"
+            "        try:\n            import optional_extra_module\n"
+            "        except ImportError:\n            traceback.print_exc()\n"
+            "    def test_op(self):\n        prod.op()\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(
+            slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "-b", "test_optional_unit")
+        )
+        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
+        proof = self.mapped_item("BM_ACT")["redProof"]
+        self.assertEqual(proof["quality"], "assertion-reached", marker)
+        self.assertIn("RuntimeError: PROD_REFUSED_OPERATION", proof["observedFailure"], marker)
+
+    def test_unittest_chained_setup_failure_carrying_the_marker_is_refused(self) -> None:
+        marker = "UNITTEST_CHAINED_SETUP_FAILURE_ACCEPTED_AS_RED"
+        slug, _ = self.begin_with_act("unittest-chained-setup")
+        (self.repo / "test_chained_unit.py").write_text(
+            "import unittest\nimport prod\n"
+            "def helper():\n"
+            "    try:\n        int('bad')\n"
+            "    except ValueError:\n        prod.op()\n"
+            "class T(unittest.TestCase):\n"
+            "    def setUp(self):\n        helper()\n"
+            "    def test_op(self):\n        pass\n",
+            encoding="utf-8",
+        )
+        result = self.tdd(slug, "red", "BM_ACT", (sys.executable, "-m", "unittest", "test_chained_unit"))
+        self.assert_refused(result, marker, "setUp")
 
     def test_tdd_map_non_object_input_fails_closed(self) -> None:
         slug, workflow_id = self.begin_with_map(
