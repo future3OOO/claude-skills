@@ -114,9 +114,8 @@ pass's index. Complete ownership is silent, an identical result repeats neither
 notice nor write, a completed or revalidating pass gets no scan, and the
 advisory never changes the edit's outcome or the workflow state; a mapped GREEN
 issues no second scan. It is advisory and incomplete by nature, and full-map
-reconciliation stays the completeness authority. Once this trigger is installed
-and proved live in the estate, it supersedes the manual pre-commit
-detect-changes step, which is retired then rather than here.
+reconciliation stays the completeness authority. The installed
+automatic advisory replaces the manual pre-commit detect-changes step.
 
 A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
 which only verification, code review, the final advisor review, and completion
