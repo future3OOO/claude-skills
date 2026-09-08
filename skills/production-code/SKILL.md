@@ -133,7 +133,7 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
 ## Execution Checklist
 
 - Complete the Minimum Implementation Decision before writing code, including untracked files, scratch implementation files, generated source, or a new worktree.
-- Inspect the delta and remove unnecessary additions.
+- Treat each implementation as carrying removable bloat. Every follow-up commit targets a net reduction in the cumulative PR: deepen existing owners and delete duplication before adding machinery. Justify necessary growth with a demonstrated behaviour gap. Preserve useful assertions and production behaviour; moving complexity or compressing formatting is not reduction.
 - Scan for common quality escapes such as `TODO`, `FIXME`, `eslint-disable`, `@ts-ignore`, and broad catch/pass patterns.
 - Run the bundled production code quality gate.
 - If the gate reports errors or actionable warnings, go back to the code, remove the bloat or quality escape, and rerun the gate.
