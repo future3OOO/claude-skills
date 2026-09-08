@@ -378,13 +378,35 @@ def _unittest_red(
     setup = next((header for header, lines in blocks if _unittest_setup_block(header, lines)), None)
     if setup is not None:
         return None, "unittest ended in loader/setup error rather than a test failure: " + setup
-    if not any(_unittest_marker_in_block(lines, marker) for _, lines in blocks):
-        return None, "mapped marker was not emitted by an executed unittest test's failure"
+    verdict, reason = _terminal_failure(
+        [_unittest_marker_in_block(lines, marker) for _, lines in blocks], "unittest"
+    )
+    if not verdict:
+        return None, reason
     return {
         "quality": "assertion-reached",
         "runner": "unittest",
         "testsExecuted": int(ran.group(1)),
     }, ""
+
+
+def _terminal_failure(blocks: list[tuple[str | None, bool, bool]], runner: str) -> tuple[bool, str]:
+    """Judge the block the marker belongs to by the exception it died with.
+
+    Each entry is (terminal exception line, marker in that exception, marker
+    anywhere in the block). A handled or chained earlier exception is not what
+    the test died with, and a terminal loader diagnostic never reached the
+    production Interface, whatever text preceded it.
+    """
+    carrying = [entry for entry in blocks if entry[2]]
+    if not carrying:
+        return False, f"mapped marker was not emitted by an executed {runner} test's failure"
+    exception, in_terminal, _ = next((entry for entry in carrying if entry[1]), carrying[0])
+    if exception is not None and PRE_INTERFACE_FAILURE.match(exception):
+        return False, "the test failed before reaching the production Interface: " + exception.strip()
+    if not in_terminal:
+        return False, f"mapped marker was not emitted by the {runner} test's terminal failure"
+    return True, ""
 
 
 def _unittest_setup_block(header: str, block: list[str]) -> bool:
@@ -407,27 +429,30 @@ def _unittest_setup_block(header: str, block: list[str]) -> bool:
     return False
 
 
-def _unittest_marker_in_block(block: list[str], marker: str) -> bool:
-    """The marker is in the block's exception line or its message continuation:
-    frames and source lines are indented, the raised exception is not."""
+def _unittest_marker_in_block(block: list[str], marker: str) -> tuple[str | None, bool, bool]:
+    """The block's terminal exception line, whether the marker is in it, and
+    whether the marker is anywhere in the block's tracebacks: frames and source
+    lines are indented, the raised exception and its continuation are not."""
     in_traceback = False
-    in_message = False
+    exception: str | None = None
+    in_terminal = False
+    anywhere = False
     for line in block:
         stripped = line.strip()
         if stripped == PYTHON_TRACEBACK:
             in_traceback = True
-            in_message = False
+            exception, in_terminal = None, False
             continue
         if stripped in {"Stdout:", "Stderr:"}:
             break
         if line.startswith(('  File "', "During handling of the above exception", "The above exception was")):
-            in_message = False
+            exception = None
             continue
-        if in_traceback and line and not line[0].isspace():
-            in_message = True
-        if in_message and marker in line:
-            return True
-    return False
+        if in_traceback and line and not line[0].isspace() and exception is None:
+            exception = line
+        if exception is not None and marker in line:
+            in_terminal = anywhere = True
+    return exception, in_terminal, anywhere
 
 
 def _unittest_report_blocks(output: str) -> list[tuple[str, list[str]]]:
@@ -492,8 +517,9 @@ def _pytest_red(
             f"holds {headers} header-shaped lines; printed header-shaped text "
             "cannot be attributed to a test - remove it or narrow the command"
         )
-    if not _pytest_marker_in_failure(failures, marker):
-        return None, "mapped marker was not emitted by an executed pytest test's failure"
+    verdict, reason = _terminal_failure(_pytest_marker_in_failure(failures, marker), "pytest")
+    if not verdict:
+        return None, reason
     return {
         "quality": "assertion-reached",
         "runner": "pytest",
@@ -533,30 +559,41 @@ def _pytest_summary(lines: list[str]) -> tuple[dict[str, int | bool] | None, int
     return None, start
 
 
-def _pytest_marker_in_failure(lines: list[str], marker: str) -> bool:
+def _pytest_marker_in_failure(lines: list[str], marker: str) -> list[tuple[str | None, bool, bool]]:
+    """Per failed test: its terminal exception text (the last E group's
+    exception line), whether the marker is in that group, and whether the
+    marker is anywhere in the test's E lines."""
+    blocks: list[tuple[str | None, bool, bool]] = []
     in_failure = False
     in_captured_output = False
-    in_assertion_message = False
+    exception: str | None = None
+    terminal: str | None = None
+    in_terminal = anywhere = False
     for line in lines:
         # Every header is a genuine block start here: _pytest_red has already
         # matched the header count against the failed count.
         if PYTEST_FAILURE_HEADER.match(line):
-            in_failure = True
-            in_captured_output = False
-            in_assertion_message = False
+            if in_failure:
+                blocks.append((terminal, in_terminal, anywhere))
+            in_failure, in_captured_output = True, False
+            exception = terminal = None
+            in_terminal = anywhere = False
             continue
         if in_failure and PYTEST_CAPTURED_HEADER.match(line):
             in_captured_output = True
             continue
         if not in_failure or in_captured_output:
             continue
-        if PYTEST_FAILURE_LINE.match(line):
-            in_assertion_message = True
+        if PYTEST_FAILURE_LINE.match(line) and exception is None:
+            exception = terminal = re.sub(r"^E\s+", "", line)
+            in_terminal = False
         elif not line.startswith("E "):
-            in_assertion_message = False
-        if in_assertion_message and line.startswith("E") and marker in line:
-            return True
-    return False
+            exception = None
+        if exception is not None and line.startswith("E") and marker in line:
+            in_terminal = anywhere = True
+    if in_failure:
+        blocks.append((terminal, in_terminal, anywhere))
+    return blocks
 
 
 def _rule(line: str, character: str) -> bool:
