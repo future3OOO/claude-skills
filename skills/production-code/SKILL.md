@@ -41,7 +41,7 @@ Resolve ownership placement before choosing the implementation mechanism:
 1. Prove whether the required behavior already exists. If a named Interface already provides it and real test-surface evidence verifies the requirement, make no production change.
 2. Choose the responsible owner. Consume production preflight's `moduleShape` decision. When the turn required no preflight, deepen the existing Module; proposing a new Module or Seam requires preflight first. Delete every surface the change supersedes.
 3. Inside that owner, reuse a capability whose Interface already owns the required semantics, invariant, or failure policy: standard library; native platform, runtime, datastore, or protocol; or an already-installed dependency. These are peers; choose by authority, not list order.
-4. Only then add the minimum custom Implementation inside the responsible owner.
+4. Treat the changed Implementation as bloated. **Reduce it first.** Delete duplication and consolidate existing owners before adding code. Every change targets fewer lines; justify necessary growth against the actual requirement. Preserve production behaviour and useful assertions. Moving complexity or compressing formatting does not count.
 
 Implementation mechanism never chooses placement: a library or native capability does not justify a new Module or Seam. Every choice must preserve required behavior, boundary validation, security, accessibility, data-loss protection, cleanup, and affected-surface proof.
 
@@ -56,7 +56,7 @@ The decision is complete only when one outcome is recorded:
 - Make the smallest correct change.
 - Delete lines that do not directly serve the requirement.
 - Remove dead code instead of hiding it behind flags or wrappers.
-- Use Ousterhout-style depth: a small, stable public interface hiding meaningful implementation complexity. File size is not the measure.
+- Apply [codebase-design](../codebase-design/SKILL.md) when judging Module depth and consolidation; file size is not the measure.
 - Do not add orchestration layers, control-plane hops, or indirection that the requirement does not need.
 - Prefer readable, direct code over verbose generated patterns.
 - Smallest change means the smallest final diff, not the smallest tool call: prepare coherent multi-hunk edits per file and batch independent edits in one message; consecutive single-line edits to one file are the smell this rule prevents.
