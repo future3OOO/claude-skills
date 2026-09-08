@@ -918,6 +918,23 @@ class MappedTddRepairTests(unittest.TestCase):
             {k: after.get(k) for k in lifecycle}, {k: before.get(k) for k in lifecycle},
             "REFUSAL_MUTATED_LIFECYCLE",
         )
+        # A's open cycle still binds A: a changed command refuses before running,
+        # B's refused run is kept in A's document, and A's original command records.
+        (self.repo / "test_changed.py").write_text(
+            "from pathlib import Path\nPath('changed-ran').write_text('x')\n", encoding="utf-8"
+        )
+        changed = self.tdd(slug, "red", "BM_A", (sys.executable, "-m", "unittest", "test_changed"))
+        self.assertEqual(changed.returncode, 2, "REFUSAL_LOST_ACTIVE_BINDING\n" + changed.stderr)
+        self.assertIn("does not match the active mapped cycle", changed.stderr, "REFUSAL_LOST_ACTIVE_BINDING")
+        self.assertFalse((self.repo / "changed-ran").exists(), "REFUSAL_LOST_ACTIVE_BINDING")
+        document = self.evidence()
+        self.assertEqual(
+            (document.get("activeBehaviorId"), document.get("behaviorId"), self.mapped_item("BM_A")["redCommand"],
+             [run["expectedFailure"] for run in document["runs"] if not run["valid"]]),
+            ("BM_A", "BM_A", shlex.join(command), ["MISSING_B"]),
+            "REFUSAL_LOST_ACTIVE_BINDING",
+        )
+        self.assertEqual(self.tdd(slug, "red", "BM_A", command).returncode, 0, "REFUSAL_LOST_ACTIVE_BINDING")
         (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
         green = self.tdd(slug, "green", "BM_A", command)
         self.assertEqual(green.returncode, 0, marker + "\n" + green.stderr)
@@ -930,6 +947,10 @@ class MappedTddRepairTests(unittest.TestCase):
     UNIT = (sys.executable, "-m", "unittest", "test_probe")
     PYTEST = ("pytest", "-q", "test_probe.py")
     PY = sys.executable
+    GUARD = (
+        "import functools, unittest, prod\ndef guard(fn):\n    @functools.wraps(fn)\n"
+        "    def wrapper(self):\n        return fn(self)\n    return wrapper\n"
+    )
     # (case, marker, test_probe.py source | {file: source} | None, command, accepted, reason or observedFailure)
     ACT_SCENARIOS = (
         ("unittest-product-exception", "UNITTEST_PRODUCT_EXCEPTION_REFUSED",
@@ -943,9 +964,11 @@ class MappedTddRepairTests(unittest.TestCase):
         ("factory-assigned-test", "ASSIGNED_TEST_REFUSED",
          "import unittest, prod\ndef exercise(self):\n    prod.op()\nclass T(unittest.TestCase):\n    test_op = exercise\n",
          UNIT, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+        ("same-module-setup-helper", "SAME_MODULE_HELPER_REFUSED",
+         "import unittest\nclass Product:\n    def setUp(self):\n        raise RuntimeError('PROD_REFUSED_OPERATION: helper')\n"
+         "class T(unittest.TestCase):\n    def test_op(self):\n        Product().setUp()\n", UNIT, True, "PROD_REFUSED_OPERATION: helper"),
         ("decorated-test", "EXECUTED_TEST_SHAPE_REFUSED",
-         "import functools, unittest, prod\ndef guard(fn):\n    @functools.wraps(fn)\n    def wrapper(self):\n        return fn(self)\n    return wrapper\n"
-         "class T(unittest.TestCase):\n    @guard\n    def test_op(self):\n        prod.op()\n", UNIT, True, "RuntimeError: PROD_REFUSED_OPERATION"),
+         GUARD + "class T(unittest.TestCase):\n    @guard\n    def test_op(self):\n        prod.op()\n", UNIT, True, "RuntimeError: PROD_REFUSED_OPERATION"),
         ("recovered-import-nonrunner", "EXECUTED_TEST_SHAPE_REFUSED",
          "import traceback, prod\ntry:\n    import optional_extra_module\nexcept ImportError:\n    traceback.print_exc()\nprod.op()\n",
          (PY, "test_probe.py"), True, "RuntimeError: PROD_REFUSED_OPERATION"),
@@ -965,9 +988,16 @@ class MappedTddRepairTests(unittest.TestCase):
          "import unittest, prod\nclass T(unittest.IsolatedAsyncioTestCase):\n    async def asyncSetUp(self):\n        prod.op()\n"
          "    async def test_op(self):\n        self.fail('never runs')\n", UNIT, False, "before reaching the production Interface"),
         ("decorated-setup", "FIXTURE_ENTRY_FAILURE_ACCEPTED_AS_RED",
-         "import functools, unittest, prod\ndef guard(fn):\n    @functools.wraps(fn)\n    def wrapper(self):\n        return fn(self)\n    return wrapper\n"
-         "class T(unittest.TestCase):\n    @guard\n    def setUp(self):\n        prod.op()\n    def test_op(self):\n        self.fail('never runs')\n",
+         GUARD + "class T(unittest.TestCase):\n    @guard\n    def setUp(self):\n        prod.op()\n    def test_op(self):\n        self.fail('never runs')\n",
          UNIT, False, "before reaching the production Interface"),
+        ("inherited-decorated-setup", "INHERITED_DECORATED_SETUP_ACCEPTED_AS_RED",
+         {"support.py": GUARD + "class Base(unittest.TestCase):\n    @guard\n    def setUp(self):\n        prod.op()\n",
+          "test_probe.py": "import unittest\nfrom support import Base\nclass T(Base):\n    def test_op(self):\n        pass\n"},
+         UNIT, False, "before reaching the production Interface"),
+        ("bash-missing-command", "SHELL_MISSING_COMMAND_ACCEPTED_AS_RED", None,
+         ("bash", "-c", "PROD_REFUSED_OPERATION_missing"), False, "not found"),
+        ("sh-missing-command", "SHELL_MISSING_COMMAND_ACCEPTED_AS_RED", None,
+         ("sh", "-c", "PROD_REFUSED_OPERATION_missing"), False, "not found"),
         ("inherited-setup", "FIXTURE_ENTRY_FAILURE_ACCEPTED_AS_RED",
          {"support.py": "import unittest, prod\nclass Base(unittest.TestCase):\n    def setUp(self):\n        prod.op()\n",
           "test_probe.py": "import unittest\nfrom support import Base\nclass T(Base):\n    def test_op(self):\n        pass\n"},

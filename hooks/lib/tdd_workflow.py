@@ -635,21 +635,26 @@ def _run_tdd(values: list[str]) -> int:
             next_active = args.behavior_id if status == "red" else None
             reassessment_pending = None
             action = "reopen" if phase == "green" else None
-        document = _map_doc(
-            slug=slug,
-            workflow_id=workflow_id,
-            items=updated,
-            status="passed" if action == "passed" or (phase == "green" and valid) else "pending",
-            kind=doc_kind,
-            active=next_active,
-            reassessment_pending=reassessment_pending,
-            behaviorId=args.behavior_id,
-            behavior=contract["behavior"],
-            seam=contract["seam"],
-            command=command_text,
-            surface=surface,
-            runs=[*prior_runs, run] if matches else [run],
-        )
+        if action is None and sweep:
+            # A refused attempt beside another item's open cycle is kept in that
+            # cycle's document, so the open item's binding survives it.
+            document = {**current, "runs": [*current["runs"], run], "updatedAt": utc_timestamp()}
+        else:
+            document = _map_doc(
+                slug=slug,
+                workflow_id=workflow_id,
+                items=updated,
+                status="passed" if action == "passed" or (phase == "green" and valid) else "pending",
+                kind=doc_kind,
+                active=next_active,
+                reassessment_pending=reassessment_pending,
+                behaviorId=args.behavior_id,
+                behavior=contract["behavior"],
+                seam=contract["seam"],
+                command=command_text,
+                surface=surface,
+                runs=[*prior_runs, run] if matches else [run],
+            )
     if document is not None and action is None:
         _, evidence_id = annotate_tdd_evidence(
             identity, slug, workflow_id, document, expected_evidence_id=evidence_id

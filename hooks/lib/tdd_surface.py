@@ -50,13 +50,13 @@ PYTEST_SUMMARY = re.compile(r"(?m)^(?:=+ )?(.+?) in \d+\.\d+s(?: \([^)]*\))?(?: 
 PRE_INTERFACE_FAILURE = re.compile(
     r"^(?:\[Errno \d+\] |\S+: (?:No module named |can't open file )"
     r"|Error(?: \[\w+\])?: Cannot find (?:module|package) "
+    r"|\w+: (?:line )?\d+: \S+: (?:command )?not found$"
     r"|(?:\w+\.)*(?:ModuleNotFoundError|ImportError|SyntaxError|IndentationError)\b)"
 )
 UNITTEST_FIXTURES = frozenset({
     "setUp", "asyncSetUp", "tearDown", "asyncTearDown",
     "setUpClass", "tearDownClass", "setUpModule", "tearDownModule",
 })
-UNITTEST_FRAME = re.compile(r'^  File "(.*)", line \d+, in (\S+)')
 PYTEST_FAILURE_HEADER = re.compile(r"^_{3,}.+_{3,}$")
 PYTEST_CAPTURED_HEADER = re.compile(r"^-+ Captured .+ -+$")
 PYTEST_SUMMARY_RECORDS = (
@@ -414,46 +414,43 @@ def _unittest_red(
     }, ""
 
 
-def _unittest_unreached(qualified: str, frames: list[tuple[str, str]]) -> str | None:
+def _unittest_unreached(header: str, frames: list[str]) -> str | None:
     """Why a block's test body never ran, when unittest's report shows it: the
-    loader failed (its `_FailedTest` stand-in), the first frame outside the
-    unittest/asyncio library is a fixture (sync, chained, inherited and async
-    fixtures), or a fixture-named frame sits in the test's own module (a
-    decorator-wrapped fixture). A product function merely named like a fixture,
-    called from the test body, is neither."""
-    if "unittest.loader._FailedTest" in qualified:
-        return f"unittest could not load {qualified}"
-    entry = next((function for path, function in frames if "/unittest/" not in path and "/asyncio/" not in path), None)
-    module = qualified.split(".")
-    fixture = entry if entry in UNITTEST_FIXTURES else next(
-        (function for path, function in frames if function in UNITTEST_FIXTURES and Path(path).stem in module), None
+    loader failed (its `_FailedTest` stand-in), the header names a class or
+    module fixture, or no frame carries the header's test while some frame
+    carries a fixture name. The test's name is only ever positive evidence that
+    its body ran, so a test bound under another name keeps its RED unless the
+    failure passed through a fixture-named frame."""
+    name = header.split()[1]
+    if "unittest.loader._FailedTest" in header:
+        return f"unittest could not load {name}"
+    fixture = name if name in UNITTEST_FIXTURES else next(
+        (frame for frame in frames if frame in UNITTEST_FIXTURES and name not in frames), None
     )
     return f"unittest failed in {fixture} before the test body" if fixture else None
 
 
-def _unittest_terminal_failures(output: str) -> list[tuple[str, list[tuple[str, str]], list[str]]]:
-    """Per FAIL or ERROR block: the qualified test its header names, the
-    (file, function) frames of the terminal traceback unittest itself reported,
-    and that traceback's rendering (the exception line, then its message
-    continuation lines). Earlier chained segments and captured output after
-    Stdout:/Stderr: never count: the failure that ended the test governs."""
-    failures: list[tuple[str, list[tuple[str, str]], list[str]]] = []
+def _unittest_terminal_failures(output: str) -> list[tuple[str, list[str], list[str]]]:
+    """Per FAIL or ERROR block: its header, the frame functions of the terminal
+    traceback unittest itself reported, and that traceback's rendering (the
+    exception line, then its message continuation lines). Earlier chained
+    segments and captured output after Stdout:/Stderr: never count: the failure
+    that ended the test governs."""
+    failures: list[tuple[str, list[str], list[str]]] = []
     for header, block in _unittest_failure_blocks(output):
-        frames: list[tuple[str, str]] = []
+        frames: list[str] = []
         rendering: list[str] = []
         for line in block:
             stripped = line.strip()
             if stripped in {"Stdout:", "Stderr:"}:
                 break
-            frame = UNITTEST_FRAME.match(line)
             if stripped == "Traceback (most recent call last):":
                 frames, rendering = [], []
-            elif frame:
-                frames.append((frame.group(1), frame.group(2)))
+            elif line.startswith('  File "'):
+                frames.append(line.rsplit(", in ", 1)[-1])
             elif frames and (rendering or (line and not line[0].isspace())):
                 rendering.append(stripped)
-        qualified = re.search(r"\(([^)]*)\)", header)
-        failures.append((qualified.group(1) if qualified else header, frames, rendering))
+        failures.append((header, frames, rendering))
     return failures
 
 
