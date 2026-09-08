@@ -54,7 +54,8 @@ PYTEST_SUMMARY_RECORDS = (
     "PASSED ",
     "RERUN ",
 )
-PYTEST_TB_SUPPRESSED = ("--tb=no", "--tb=line")
+# Traceback styles without the E-prefixed report the failure reading needs.
+PYTEST_TB_SUPPRESSED = ("--tb=no", "--tb=line", "--tb=native")
 UNITTEST_BLOCK_HEADER = ("FAIL: ", "ERROR: ")
 PYTHON_TRACEBACK = "Traceback (most recent call last):"
 UNITTEST_FRAME = re.compile(r'^  File ".*", line \d+, in (\w+)$')
@@ -488,8 +489,8 @@ def _pytest_red(
 ) -> tuple[dict[str, object] | None, str]:
     if any(argument in PYTEST_TB_SUPPRESSED for argument in arguments):
         return None, (
-            "the recorded command suppresses tracebacks; rerun without "
-            "--tb=no/--tb=line so the assertion can be observed"
+            "the recorded command's traceback style prints no E-prefixed failure report; "
+            "rerun without --tb=no/--tb=line/--tb=native so the failure can be read"
         )
     lines = output.splitlines()
     counts, summary_start = _pytest_summary(lines)

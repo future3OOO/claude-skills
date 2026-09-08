@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from pathlib import Path
@@ -184,6 +185,17 @@ class MappedTddRepairTests(unittest.TestCase):
 
     def map_item(self, identifier: str) -> dict[str, object]:
         return next(item for item in self.evidence()["behaviorMap"] if item["id"] == identifier)
+
+    def write(self, name: str, text: str) -> None:
+        (self.repo / name).write_text(text, encoding="utf-8")
+
+    def expect(
+        self, slug: str, phase: str, behavior_id: str, command: tuple[str, ...], returncode: int, note: str
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one recorder phase and assert its exit; the note names the bad outcome."""
+        result = self.tdd(slug, phase, behavior_id, command)
+        self.assertEqual(result.returncode, returncode, note + "\n" + result.stderr)
+        return result
 
     def write_unittest(self, expected: int, marker: str) -> tuple[str, ...]:
         (self.repo / "test_app.py").write_text(
@@ -432,8 +444,7 @@ class MappedTddRepairTests(unittest.TestCase):
             "opaque-red",
         )
         missing = (sys.executable, "-m", "module_that_does_not_exist_for_tdd")
-        result = self.tdd(slug, "red", "BM_OPAQUE", missing)
-        self.assertEqual(result.returncode, 2, marker + "\n" + result.stdout + result.stderr)
+        result = self.expect(slug, "red", "BM_OPAQUE", missing, 2, marker)
         self.assertIn("before reaching the production Interface", result.stderr, marker)
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertNotIn("tddCycleCount", state, marker)
@@ -447,23 +458,21 @@ class MappedTddRepairTests(unittest.TestCase):
         # Beside another item's open cycle the refusal is retained in that cycle
         # without disturbing it: the open item still reaches GREEN.
         command = self.write_unittest(2, "VALUE_NOT_TWO")
-        red = self.tdd(slug, "red", "BM_OPEN", command)
-        self.assertEqual(red.returncode, 0, marker + "\n" + red.stdout + red.stderr)
+        self.expect(slug, "red", "BM_OPEN", command, 0, marker)
         node = shutil.which("node")
         node_marker = "NODE_LOADER_FAILURE_OPENED_RED"
-        again = self.tdd(
+        self.expect(
             slug, "red", "BM_OPAQUE",
             (node, "-e", "require('module_that_does_not_exist_for_tdd')") if node else missing,
+            2, node_marker if node else marker,
         )
-        self.assertEqual(again.returncode, 2, (node_marker if node else marker) + "\n" + again.stdout + again.stderr)
         document = self.evidence()
         self.assertEqual(document["activeBehaviorId"], "BM_OPEN", marker)
         self.assertEqual([run["behaviorId"] for run in document["runs"]], ["BM_OPEN", "BM_OPAQUE"], marker)
         if node:
             self.assertIn("Cannot find module", document["runs"][-1]["redProofFailure"], node_marker)
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = self.tdd(slug, "green", "BM_OPEN", command)
-        self.assertEqual(green.returncode, 0, marker + "\n" + green.stdout + green.stderr)
+        self.write("app.py", "value = 2\n")
+        self.expect(slug, "green", "BM_OPEN", command, 0, marker)
         self.assertEqual(self.map_item("BM_OPEN")["status"], "green", marker)
 
     def test_direct_operation_opens_red_and_its_success_records_green(self) -> None:
@@ -473,7 +482,7 @@ class MappedTddRepairTests(unittest.TestCase):
             [pending_behavior("BM_DIRECT", red_failure=declared)], "direct-act"
         )
         # An untracked production path makes the RED late; the label must survive.
-        (self.repo / "extra.py").write_text("touched = True\n", encoding="utf-8")
+        self.write("extra.py", "touched = True\n")
         # The operation recovers from a missing optional import, printing that
         # traceback, before it drives the product: the terminal failure decides.
         operation = (
@@ -482,8 +491,7 @@ class MappedTddRepairTests(unittest.TestCase):
             "try:\n    import optional_missing_module\nexcept ModuleNotFoundError:\n    traceback.print_exc()\n"
             f"import app\nassert app.value == 2, {declared!r}",
         )
-        red = self.tdd(slug, "red", "BM_DIRECT", operation)
-        self.assertEqual(red.returncode, 0, "RECOVERED_DIAGNOSTIC_REFUSED_AS_PRE_INTERFACE\n" + red.stderr)
+        self.expect(slug, "red", "BM_DIRECT", operation, 0, "RECOVERED_DIAGNOSTIC_REFUSED_AS_PRE_INTERFACE")
         self.assertEqual(self.map_item("BM_DIRECT")["redCommand"], shlex.join(operation), marker)
         run = self.evidence()["runs"][-1]
         self.assertEqual(
@@ -503,16 +511,14 @@ class MappedTddRepairTests(unittest.TestCase):
         other = self.tdd(slug, "green", "BM_DIRECT", (sys.executable, "-c", "pass"))
         self.assertNotEqual(other.returncode, 0, marker)
         self.assertIn("recorded RED surface", other.stderr, marker)
-        early = self.tdd(slug, "green", "BM_DIRECT", operation)
-        self.assertEqual(early.returncode, 2, marker + "\n" + early.stdout + early.stderr)
+        early = self.expect(slug, "green", "BM_DIRECT", operation, 2, marker)
         self.assertIn("direct operation must exit 0", early.stderr, "GREEN_GUIDANCE_DEMANDS_RUNNER_REPORT\n" + early.stderr)
         self.assertNotIn("pytest", early.stderr, "GREEN_GUIDANCE_DEMANDS_RUNNER_REPORT\n" + early.stderr)
         retained = self.evidence()["runs"][-1]
         self.assertEqual((retained["phase"], retained["valid"], retained["exitCode"]), ("green", False, 1), marker)
         self.assertEqual(self.map_item("BM_DIRECT")["status"], "red", marker)
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = self.tdd(slug, "green", "BM_DIRECT", operation)
-        self.assertEqual(green.returncode, 0, marker + "\n" + green.stdout + green.stderr)
+        self.write("app.py", "value = 2\n")
+        self.expect(slug, "green", "BM_DIRECT", operation, 0, marker)
         run = self.evidence()["runs"][-1]
         self.assertEqual(
             run["passProof"], {"quality": "operation-succeeded", "runner": "exact", "reach": "unresolved"}, marker
@@ -521,88 +527,54 @@ class MappedTddRepairTests(unittest.TestCase):
         self.assertEqual((item["status"], item["proofCommand"]), ("green", shlex.join(operation)), marker)
 
     def test_product_exception_named_by_the_declared_failure_is_red(self) -> None:
-        marker = "RUNNER_PRODUCT_EXCEPTION_REFUSED"
-        pre_interface = "PRE_INTERFACE_IMPORT_OPENED_RED"
         declared = "ValueError: value must be two"
-        missing = "No module named 'module_missing_before_the_product'"
-        slug, _ = self.begin_with_map(
-            [
-                pending_behavior("BM_UNIT_EXC", red_failure=declared),
-                pending_behavior("BM_PY_EXC", red_failure=declared),
-                pending_behavior("BM_UNIT_IMPORT", red_failure=missing),
-                pending_behavior("BM_PY_IMPORT", red_failure=missing),
-                pending_behavior("BM_UNIT_HANDLED", red_failure=declared),
-                pending_behavior("BM_PY_HANDLED", red_failure=declared),
-            ],
-            "product-exception",
+        # One test body per case, wrapped for each runner: the declared failure,
+        # the recorder's verdict, and the bad outcome the assertion names.
+        cases = (
+            ("exc", "app.require_two()", declared, 0, "RUNNER_PRODUCT_EXCEPTION_REFUSED"),
+            ("bare", "app.bare()", "ValueError", 0, "BARE_EXCEPTION_LINE_REFUSED"),
+            # A body failing on an import before it reaches the product is a
+            # pre-Interface failure even when redFailure names that diagnostic.
+            ("import", "import module_missing_before_the_product\napp.require_two()",
+             "No module named 'module_missing_before_the_product'", 2, "PRE_INTERFACE_IMPORT_OPENED_RED"),
+            # A handled exception carrying the declared failure does not make a
+            # later import failure the product's: only the terminal exception counts.
+            ("handled", "try:\n    raise ValueError('value must be two')\nexcept ValueError:\n"
+             "    import module_missing_before_the_product\napp.require_two()", declared, 2,
+             "HANDLED_EXCEPTION_MARKER_OPENED_RED"),
         )
-        (self.repo / "app.py").write_text(
-            "value = 1\ndef require_two():\n    if value != 2:\n        raise ValueError('value must be two')\n",
-            encoding="utf-8",
-        )
-        (self.repo / "test_exc.py").write_text(
-            "import unittest\nimport app\nclass T(unittest.TestCase):\n"
-            "    def test_two(self):\n        app.require_two()\n",
-            encoding="utf-8",
-        )
-        # The same test body failing on an import before it reaches the product
-        # is a pre-Interface failure even when redFailure names that diagnostic.
-        (self.repo / "test_import.py").write_text(
-            "import unittest\nimport app\nclass T(unittest.TestCase):\n"
-            "    def test_two(self):\n        import module_missing_before_the_product\n        app.require_two()\n",
-            encoding="utf-8",
-        )
-        # A handled exception that carries the declared failure does not make a
-        # later import failure the product's: only the terminal exception counts.
-        (self.repo / "test_handled.py").write_text(
-            "import unittest\nimport app\nclass T(unittest.TestCase):\n    def test_two(self):\n"
-            "        try:\n            raise ValueError('value must be two')\n"
-            "        except ValueError:\n            import module_missing_before_the_product\n"
-            "        app.require_two()\n",
-            encoding="utf-8",
-        )
-        runners = [(
-            "unittest", "BM_UNIT_EXC", "BM_UNIT_IMPORT", "BM_UNIT_HANDLED",
-            ("-m", "unittest", "test_exc"), ("-m", "unittest", "test_import"), ("-m", "unittest", "test_handled"),
-        )]
+        runners = [("unittest", "import unittest\nimport app\nclass T(unittest.TestCase):\n    def test_two(self):\n", 8, ("-m", "unittest"))]
         if PYTEST_AVAILABLE:
-            (self.repo / "test_exc_pytest.py").write_text(
-                "import app\ndef test_two():\n    app.require_two()\n", encoding="utf-8"
+            runners.append(("pytest", "import app\ndef test_two():\n", 4, ("-m", "pytest", "-q")))
+        items = [
+            pending_behavior(f"BM_{runner}_{name}".upper(), red_failure=red)
+            for runner, *_ in runners for name, _, red, _, _ in cases
+        ] + [pending_behavior("BM_PY_NATIVE", red_failure=declared)]
+        slug, _ = self.begin_with_map(items, "product-exception")
+        self.write("app.py", "value = 1\ndef require_two():\n    if value != 2:\n        raise ValueError('value must be two')\ndef bare():\n    raise ValueError()\n")
+        for runner, header, indent, launcher in runners:
+            for name, body, _, returncode, note in cases:
+                item, module = f"BM_{runner}_{name}".upper(), f"test_{name}_{runner}"
+                self.write(f"{module}.py", header + textwrap.indent(body, " " * indent) + "\n")
+                command = (sys.executable, *launcher, module if runner == "unittest" else f"{module}.py")
+                self.expect(slug, "red", item, command, returncode, f"{note} {runner}")
+                run = self.evidence()["runs"][-1]
+                if returncode == 0:
+                    proof = run["redProof"]
+                    self.assertEqual((proof["quality"], proof["runner"], proof["testsExecuted"]), ("assertion-reached", runner, 1), note)
+                    continue
+                self.assertIn("before reaching the production Interface", run["redProofFailure"], note)
+                self.assertEqual((run["behaviorId"], run["valid"], self.map_item(item)["status"]), (item, False, "pending"), note)
+                green = self.tdd(slug, "green", item, command)
+                self.assertNotEqual(green.returncode, 0, note)
+                self.assertIn("no valid mapped RED", green.stderr, note + "\n" + green.stderr)
+        if PYTEST_AVAILABLE:
+            # --tb=native prints no E-prefixed report: the refusal names the format.
+            native = self.expect(
+                slug, "red", "BM_PY_NATIVE", (sys.executable, "-m", "pytest", "-q", "--tb=native", "test_exc_pytest.py"),
+                2, "TB_NATIVE_REFUSAL_UNEXPLAINED",
             )
-            (self.repo / "test_import_pytest.py").write_text(
-                "import app\ndef test_two():\n    import module_missing_before_the_product\n    app.require_two()\n",
-                encoding="utf-8",
-            )
-            (self.repo / "test_handled_pytest.py").write_text(
-                "import app\ndef test_two():\n    try:\n        raise ValueError('value must be two')\n"
-                "    except ValueError:\n        import module_missing_before_the_product\n    app.require_two()\n",
-                encoding="utf-8",
-            )
-            runners.append((
-                "pytest", "BM_PY_EXC", "BM_PY_IMPORT", "BM_PY_HANDLED",
-                ("-m", "pytest", "-q", "test_exc_pytest.py"), ("-m", "pytest", "-q", "test_import_pytest.py"),
-                ("-m", "pytest", "-q", "test_handled_pytest.py"),
-            ))
-        handled_marker = "HANDLED_EXCEPTION_MARKER_OPENED_RED"
-        for runner, product_item, import_item, handled_item, product_command, import_command, handled_command in runners:
-            result = self.tdd(slug, "red", product_item, (sys.executable, *product_command))
-            self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
-            proof = self.evidence()["runs"][-1]["redProof"]
-            self.assertEqual(
-                (proof["quality"], proof["runner"], proof["testsExecuted"]), ("assertion-reached", runner, 1), marker
-            )
-            result = self.tdd(slug, "red", import_item, (sys.executable, *import_command))
-            self.assertEqual(result.returncode, 2, f"{pre_interface} {runner}\n" + result.stderr)
-            run = self.evidence()["runs"][-1]
-            self.assertIn("before reaching the production Interface", run["redProofFailure"], pre_interface)
-            self.assertEqual((run["behaviorId"], run["valid"]), (import_item, False), pre_interface)
-            self.assertEqual(self.map_item(import_item)["status"], "pending", pre_interface)
-            green = self.tdd(slug, "green", import_item, (sys.executable, *import_command))
-            self.assertNotEqual(green.returncode, 0, pre_interface)
-            self.assertIn("no valid mapped RED", green.stderr, pre_interface + "\n" + green.stderr)
-            result = self.tdd(slug, "red", handled_item, (sys.executable, *handled_command))
-            self.assertEqual(result.returncode, 2, f"{handled_marker} {runner}\n" + result.stderr)
-            self.assertIn("before reaching the production Interface", result.stderr, handled_marker)
+            self.assertIn("--tb=native", native.stderr, "TB_NATIVE_REFUSAL_UNEXPLAINED\n" + native.stderr)
 
     def test_only_the_runners_setup_entry_is_a_setup_failure(self) -> None:
         marker = "APPLICATION_SETUP_NAME_REFUSED"
@@ -617,92 +589,32 @@ class MappedTddRepairTests(unittest.TestCase):
             ],
             "setup-entry",
         )
-        (self.repo / "app.py").write_text(
-            "value = 1\ndef setUp():\n    raise ValueError('VALUE_NOT_TWO')\n", encoding="utf-8"
-        )
-        (self.repo / "test_sync.py").write_text(
-            "import unittest\nclass T(unittest.TestCase):\n"
-            "    def setUp(self):\n        raise RuntimeError('VALUE_NOT_TWO')\n"
-            "    def test_value(self):\n        self.fail('never runs')\n",
-            encoding="utf-8",
-        )
-        (self.repo / "test_async.py").write_text(
-            "import unittest\nclass T(unittest.IsolatedAsyncioTestCase):\n"
-            "    async def asyncSetUp(self):\n        raise RuntimeError('VALUE_NOT_TWO')\n"
-            "    async def test_value(self):\n        self.fail('never runs')\n",
-            encoding="utf-8",
-        )
-        # One run holding a fixture failure beside a product failure refuses as a whole.
-        (self.repo / "test_mixed.py").write_text(
-            "import unittest\nimport app\nclass Fixture(unittest.TestCase):\n"
-            "    def setUp(self):\n        raise RuntimeError('broken fixture')\n"
-            "    def test_value(self):\n        self.fail('never runs')\n"
-            "class Product(unittest.TestCase):\n    def test_operation(self):\n        app.setUp()\n",
-            encoding="utf-8",
-        )
-        (self.repo / "test_app_setup.py").write_text(
-            "import unittest\nimport app\nclass T(unittest.TestCase):\n"
-            "    def test_operation(self):\n        app.setUp()\n",
-            encoding="utf-8",
-        )
+        self.write("app.py", "value = 1\ndef setUp():\n    raise ValueError('VALUE_NOT_TWO')\n")
+        fixture = "    def setUp(self):\n        raise RuntimeError('VALUE_NOT_TWO')\n    def test_value(self):\n        self.fail('never runs')\n"
         # A decorator's wrapper is the outermost frame either way: attribution
         # follows which of setUp or the test method the traceback reaches first.
-        guard = (
-            "import functools, unittest, app\ndef guard(fn):\n    @functools.wraps(fn)\n"
-            "    def wrapper(self):\n        return fn(self)\n    return wrapper\n"
-        )
-        (self.repo / "test_decorated_setup.py").write_text(
-            guard + "class T(unittest.TestCase):\n    @guard\n    def setUp(self):\n"
-            "        raise RuntimeError('VALUE_NOT_TWO')\n    def test_value(self):\n        self.fail('never runs')\n",
-            encoding="utf-8",
-        )
-        (self.repo / "test_decorated_test.py").write_text(
-            guard + "class T(unittest.TestCase):\n    @guard\n    def test_operation(self):\n        app.setUp()\n",
-            encoding="utf-8",
-        )
+        guard = "import functools\ndef guard(fn):\n    @functools.wraps(fn)\n    def wrapper(self):\n        return fn(self)\n    return wrapper\n"
+        self.write("test_sync.py", "import unittest\nclass T(unittest.TestCase):\n" + fixture)
+        self.write("test_async.py", "import unittest\nclass T(unittest.IsolatedAsyncioTestCase):\n" + fixture.replace("    def setUp", "    async def asyncSetUp").replace("    def test", "    async def test"))
+        # One run holding a fixture failure (with its own diagnostic) beside a
+        # product failure carrying the declared one refuses as a whole.
+        self.write("test_mixed.py", "import unittest\nimport app\nclass Fixture(unittest.TestCase):\n" + fixture.replace("VALUE_NOT_TWO", "broken fixture") + "class Product(unittest.TestCase):\n    def test_operation(self):\n        app.setUp()\n")
+        self.write("test_decorated_setup.py", guard + "import unittest\nclass T(unittest.TestCase):\n    @guard\n" + fixture)
+        self.write("test_app_setup.py", "import unittest\nimport app\nclass T(unittest.TestCase):\n    def test_operation(self):\n        app.setUp()\n")
+        self.write("test_decorated_test.py", guard + "import unittest\nimport app\nclass T(unittest.TestCase):\n    @guard\n    def test_operation(self):\n        app.setUp()\n")
         decorated = "DECORATED_FIXTURE_ADMITTED_AS_RED"
         for behavior, module, note in (
             ("BM_SYNC", "test_sync", marker), ("BM_ASYNC", "test_async", marker),
             ("BM_MIXED", "test_mixed", marker), ("BM_DECORATED_SETUP", "test_decorated_setup", decorated),
         ):
-            result = self.tdd(slug, "red", behavior, (sys.executable, "-m", "unittest", module))
-            self.assertEqual(result.returncode, 2, f"{note} {module}\n" + result.stderr)
+            result = self.expect(slug, "red", behavior, (sys.executable, "-m", "unittest", module), 2, f"{note} {module}")
             self.assertIn("loader/setup", result.stderr, note)
         self.assertNotIn("tddCycleCount", read_workflow(resolve_repo_identity(self.repo)), marker)
         # An application function that happens to be named setUp is reached
         # through the test body: its declared failure is the product failure.
         for behavior, module, note in (("BM_APP", "test_app_setup", marker), ("BM_DECORATED_TEST", "test_decorated_test", decorated)):
-            result = self.tdd(slug, "red", behavior, (sys.executable, "-m", "unittest", module))
-            self.assertEqual(result.returncode, 0, note + "\n" + result.stderr)
+            self.expect(slug, "red", behavior, (sys.executable, "-m", "unittest", module), 0, note)
             self.assertEqual(self.evidence()["runs"][-1]["redProof"]["runner"], "unittest", note)
-
-    def test_message_less_production_exception_named_by_type_is_red(self) -> None:
-        marker = "BARE_EXCEPTION_LINE_REFUSED"
-        slug, _ = self.begin_with_map(
-            [
-                pending_behavior("BM_UNIT_BARE", red_failure="ValueError"),
-                pending_behavior("BM_PY_BARE", red_failure="ValueError"),
-            ],
-            "bare-exception",
-        )
-        (self.repo / "app.py").write_text("value = 1\ndef require_two():\n    raise ValueError()\n", encoding="utf-8")
-        (self.repo / "test_bare.py").write_text(
-            "import unittest\nimport app\nclass T(unittest.TestCase):\n"
-            "    def test_two(self):\n        app.require_two()\n",
-            encoding="utf-8",
-        )
-        result = self.tdd(slug, "red", "BM_UNIT_BARE", (sys.executable, "-m", "unittest", "test_bare"))
-        self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
-        self.assertEqual(self.evidence()["runs"][-1]["redProof"]["runner"], "unittest", marker)
-        if PYTEST_AVAILABLE:
-            (self.repo / "test_bare_pytest.py").write_text(
-                "import app\ndef test_two():\n    app.require_two()\n", encoding="utf-8"
-            )
-            result = self.tdd(
-                slug, "red", "BM_PY_BARE", (sys.executable, "-m", "pytest", "-q", "test_bare_pytest.py")
-            )
-            self.assertEqual(result.returncode, 0, marker + "\n" + result.stderr)
-            self.assertEqual(self.evidence()["runs"][-1]["redProof"]["runner"], "pytest", marker)
 
     def test_runner_tokens_after_sentinel_are_runner_owned(self) -> None:
         marker = "RUNNER_HELP_MARKER"
