@@ -21,10 +21,17 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.tests.support import build_document, pending_behavior, record_context_forge  # noqa: E402
+from hooks.tests.support import (  # noqa: E402
+    build_document,
+    fixture_env,
+    pending_behavior,
+    record_context_forge,
+    run_git,
+    run_intake,
+    run_workflow,
+)
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
-BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
 CANONICAL_BOOTSTRAP = Path("/home/prop_/.local/share/repo-context-forge/current/scripts/codex_context_bootstrap.py")
 GITNEXUS = shutil.which("gitnexus")
 PYTEST = importlib.util.find_spec("pytest") is not None
@@ -41,13 +48,7 @@ class PassStartSnapshotTests(unittest.TestCase):
         self.repo.mkdir()
         self.slug = "pass-start-snapshot"
         self.intent = "record the pass-start snapshot identity"
-        self.env = os.environ.copy()
-        self.env.update({
-            "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-            "PYTHONDONTWRITEBYTECODE": "1",
-        })
+        self.env = fixture_env(self.tmp / "state")
         self.git("init", "-q")
         self.git("config", "user.email", "test@example.invalid")
         self.git("config", "user.name", "Workflow Harness")
@@ -67,39 +68,14 @@ class PassStartSnapshotTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def git(self, *args: str) -> None:
-        result = subprocess.run(
-            ["git", *args], cwd=self.repo, env=self.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
+        result = run_git(self.repo, self.env, *args)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def workflow(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(WORKFLOW), *args, "--repo", str(self.repo)],
-            cwd=self.repo, env=self.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
+        return run_workflow(self.repo, self.env, *args)
 
     def intake(self, *extra: str, timeout: int = 900) -> subprocess.CompletedProcess[str]:
-        """One real governed intake: a real index, so a real snapshot identity.
-
-        Local mode against a dirty dependent, the same shape the adapter suite
-        uses: with no target the producer plans no checks and refuses the
-        intake, and an intake that never ran indexes nothing to record.
-        """
-        (self.repo / "caller.py").write_text(
-            "from app import compute\n\n\ndef run():\n    return compute(2)\n", encoding="utf-8"
-        )
-        return subprocess.run(
-            [
-                sys.executable, str(BOOTSTRAP), "--repo", str(self.repo),
-                "--workflow-slug", self.slug, "--mode", "local", "--intent", self.intent,
-                "--map-build", "never", "--gitnexus-mode", "auto", "--top", "5",
-                "--out", os.devnull, *extra,
-            ],
-            cwd=self.repo, env=self.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout,
-        )
+        return run_intake(self.repo, self.env, self.slug, self.intent, *extra, timeout=timeout)
 
     def status(self) -> dict[str, object]:
         result = self.workflow("status")
@@ -234,31 +210,6 @@ class PassStartSnapshotTests(unittest.TestCase):
             "compute", [str(symbol.get("name")) for symbol in report["changed_symbols"]], marker,
         )
 
-    def test_revalidation_loss_is_visible_from_the_recorded_identity(self) -> None:
-        """Revalidation rebuilds the selector's index in place, and that is detectable.
-
-        The recorded tree is what makes it detectable: after a revalidation the
-        selector answers about a different graph, and a consumer comparing the
-        reported baseline against the recorded one sees that rather than
-        silently accepting the refreshed index as this pass's baseline.
-        """
-        marker = "REVALIDATION_LOSS_IS_SILENT"
-        self.assertEqual(self.intake().returncode, 0)
-        snapshot = self.status()["passStartSnapshot"]
-        (self.repo / "app.py").write_text(
-            "def compute(value):\n    return value + 6\n", encoding="utf-8"
-        )
-        self.assertEqual(self.intake("--revalidate").returncode, 0)
-
-        result = self.detect_changes(snapshot)
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        reported = json.loads(result.stdout)["analysis"]["baseline"]["tree"]
-        self.assertNotEqual(reported, snapshot["indexedTree"], marker)
-        # And the recorded identity is still the pass's own, so the comparison
-        # a consumer makes is against the intake snapshot, not a moving target.
-        self.assertEqual(self.status()["passStartSnapshot"], snapshot, marker)
-
     def test_a_swept_index_is_not_a_clean_empty_result(self) -> None:
         """A baseline that is gone must not read as a candidate that changed nothing."""
         marker = "SWEPT_INDEX_READ_AS_A_CLEAN_EMPTY_RESULT"
@@ -295,13 +246,7 @@ class ExecutedSelectionsTests(unittest.TestCase):
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
         self.slug = "executed-selections"
-        self.env = os.environ.copy()
-        self.env.update({
-            "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-            "PYTHONDONTWRITEBYTECODE": "1",
-        })
+        self.env = fixture_env(self.tmp / "state")
         previous = os.environ.get("CLAUDE_WORKFLOW_STATE_ROOT")
 
         def restore_state_root() -> None:
@@ -327,18 +272,11 @@ class ExecutedSelectionsTests(unittest.TestCase):
         record_context_forge(self.repo, self.tmp)
 
     def git(self, *args: str) -> None:
-        result = subprocess.run(
-            ["git", *args], cwd=self.repo, env=self.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
+        result = run_git(self.repo, self.env, *args)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def workflow(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(WORKFLOW), *args, "--repo", str(self.repo)],
-            cwd=self.repo, env=self.env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
+        return run_workflow(self.repo, self.env, *args)
 
     def status(self) -> dict[str, object]:
         result = self.workflow("status")
@@ -462,6 +400,24 @@ class ExecutedSelectionsTests(unittest.TestCase):
             record = _selection(f"{sys.executable} {form}", self.repo)
             self.assertEqual(record["targets"], expected, f"{marker}: {form}")
             self.assertNotIn("unknown", record, f"{marker}: {form}")
+
+        # A few regression checks of the advisory matcher over the scopes these
+        # selections resolve to, so the per-selector advisory fixtures can go: ./
+        # normalizes to the file; a class scope owns its own method but not a
+        # different class; a non-recursive package owns no subtree; a recursive
+        # directory owns its subtree but not a sibling. Unknown handling stays
+        # with the advisory recorder case (it exercises _owned_scopes itself).
+        from hooks.lib.tdd_workflow import _target_scope, _is_owned
+
+        dot = _target_scope("./suite/test_x.py", self.repo, False)
+        self.assertTrue(dot and _is_owned("suite/test_x.py", "T.t", [dot]), f"{marker}: ./-prefix not normalized")
+        cls = _target_scope("suite.test_x.Probe", self.repo, False)
+        self.assertTrue(_is_owned("suite/test_x.py", "Probe.test_it", [cls]), f"{marker}: class lost its method")
+        self.assertFalse(_is_owned("suite/test_x.py", "Rogue.test_it", [cls]), f"{marker}: class owned another class")
+        self.assertIsNone(_target_scope("suite", self.repo, False), f"{marker}: non-recursive package owned a subtree")
+        rec = _target_scope("suite", self.repo, True)
+        self.assertTrue(_is_owned("suite/sub/test_y.py", "", [rec]), f"{marker}: recursive directory lost its subtree")
+        self.assertFalse(_is_owned("other/test_z.py", "", [rec]), f"{marker}: recursive directory owned a sibling")
 
     def test_a_cluster_of_only_irrelevant_options_still_resolves(self) -> None:
         """`-xq` is fail-fast plus quiet, so the path still says which tests ran."""

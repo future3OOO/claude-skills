@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
+from pathlib import Path
 
 from . import behavior_map, tdd_surface
 from .command_runner import (
@@ -15,12 +19,19 @@ from .command_runner import (
     run_entry as _run_entry,
 )
 from .repo_identity import RepoIdentity, resolve_repo_identity
-from .state_store import production_changes, utc_timestamp
+from .state_store import (
+    atomic_write_json,
+    production_changes,
+    read_json,
+    repo_state_dir,
+    utc_timestamp,
+)
 from .workflow_documents import load_json
 from .workflow_state import (
     NO_INSTANCE_ID,
     TDD_CLOSED,
     WorkflowError,
+    _executed_selections,
     _head_oid,
     bound_state,
     commit_tdd,
@@ -665,6 +676,173 @@ def _run_tdd(values: list[str]) -> int:
             file=sys.stderr,
         )
     return 2
+
+
+_ADVISORY_FILE = "map-advisory.json"
+_ADVISORY_TIMEOUT = 10
+# Git permits control bytes in a path and the graph can surface one verbatim, so
+# escape them before the path reaches the one-line notice.
+_ADVISORY_CONTROL_ESCAPES = {c: f"\\x{c:02x}" for c in range(0x20)} | {0x7f: "\\x7f"}
+
+
+def map_advisory(identity: RepoIdentity, state: JsonObject) -> str | None:
+    """After a successful production edit, name the impacted tests the map does
+    not own, or a short gap when that cannot be decided against this pass's
+    index. Advisory only: it returns at most one notice line for the caller to
+    deliver and writes one disposable file, and never raises into the edit it
+    follows."""
+    workflow_id = str(state.get("workflowId") or "")
+    try:
+        snapshot = state.get("passStartSnapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            return _advisory_publish(identity, workflow_id, "the pass-start index identity was not recorded", {})
+        root = Path(identity.root)
+        impacted, gap = _impacted_tests(snapshot, root)
+        owned = _owned_scopes(identity, state, root)
+        unowned: dict[str, int] = {}
+        for entry in impacted:
+            path = str(entry.get("filePath") or "").replace("\\", "/")
+            node = (str(entry.get("id") or "").split(":", 2)[2:] or [""])[0]
+            if path and not _is_owned(path, node, owned):
+                unowned[path] = unowned.get(path, 0) + 1
+        return _advisory_publish(identity, workflow_id, gap, unowned)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError, subprocess.SubprocessError):
+        return _advisory_publish(identity, workflow_id, "the advisory could not complete", {})
+
+
+def _impacted_tests(snapshot: JsonObject, root: Path) -> tuple[list[JsonObject], str | None]:
+    """The impacted tests the pass-start index attributes to the current candidate,
+    with a gap reason when the analysis is not a complete diff against that index."""
+    binary = shutil.which("gitnexus")
+    if binary is None:
+        return [], "the graph tool is unavailable"
+    try:
+        proc = subprocess.run(
+            [binary, "detect-changes", "--repo", str(snapshot["indexRepo"]), "--worktree", str(root)],
+            capture_output=True, text=True, check=False, timeout=_ADVISORY_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return [], "the graph diff did not finish in time"
+    if proc.returncode != 0:
+        return [], "the pass-start index could not be diffed"
+    data = json.loads(proc.stdout)
+    impacted = data.get("impacted_tests") or []
+    analysis = data.get("analysis") or {}
+    baseline = analysis.get("baseline") or {}
+    if baseline.get("tree") != snapshot.get("indexedTree") or baseline.get("source_commit") != snapshot.get("sourceCommit"):
+        return impacted, "the graph baseline is not this pass's index"
+    status = analysis.get("status")
+    return impacted, None if status == "complete" else f"the graph analysis is {status}"
+
+
+def _owned_scopes(identity: RepoIdentity, state: JsonObject, root: Path) -> list[tuple[str, str, bool]]:
+    """Every (path, node-prefix, is-directory) the current map's recorded proofs
+    selected. An unresolved selection contributes nothing, so it owns nothing."""
+    selections = _executed_selections(identity, state) or {}
+    scopes: list[tuple[str, str, bool]] = []
+    for phases in selections.values():
+        if not isinstance(phases, dict):
+            continue
+        for selection in phases.values():
+            if not isinstance(selection, dict):
+                continue
+            targets = selection.get("targets")
+            if not isinstance(targets, list):
+                continue
+            # A directory owns its subtree only for a recursive selection: a
+            # pytest path or a unittest `discover`. A plain unittest package
+            # load is non-recursive, so it owns only the tests it names.
+            surface = tdd_surface.identify(shlex.split(str(selection.get("command") or "")))
+            recursive = surface.get("runner") == "pytest" or bool(selection.get("discover"))
+            for target in targets:
+                scope = _target_scope(str(target), root, recursive)
+                if scope is not None:
+                    scopes.append(scope)
+    return scopes
+
+
+def _target_scope(target: str, root: Path, recursive: bool) -> tuple[str, str, bool] | None:
+    """Resolve a recorded selection target to (path, node-prefix, is-directory)
+    under root, or None when it names nothing there or is a non-recursive
+    directory. A pytest target is a path with an optional ``::`` node; a unittest
+    target is a dotted path whose file prefix is found on disk and its remainder
+    the node."""
+    if "::" in target or "/" in target or target.endswith(".py") or target in (".", ".."):
+        head, _, node = target.partition("::")
+        resolved = root / head.rstrip("/")
+        is_dir = resolved.is_dir()
+        if is_dir and not recursive:
+            return None
+        # Normalise to the producer's root-relative filePath shape, so a
+        # recorded "./tests/x.py" or "." matches "tests/x.py"; "" owns the tree.
+        relative = _relative(resolved, root)
+        path = "" if relative == "." else relative
+        return path, node.replace("::", "."), is_dir
+    parts = target.split(".")
+    for i in range(len(parts), 0, -1):
+        base = root.joinpath(*parts[:i])
+        file = base.with_suffix(".py")
+        if file.is_file():
+            return _relative(file, root), ".".join(parts[i:]), False
+        if base.is_dir():
+            return (_relative(base, root), "", True) if recursive else None
+    return None
+
+
+def _relative(path: Path, root: Path) -> str:
+    return os.path.relpath(path, root).replace("\\", "/")
+
+
+def _is_owned(path: str, node: str, scopes: list[tuple[str, str, bool]]) -> bool:
+    """Whether one impacted test (path, node) falls inside any selected scope: a
+    directory owns its subtree, a file with an empty node-prefix owns the file,
+    and a node-prefix owns itself and its descendants."""
+    for scope_path, node_prefix, is_dir in scopes:
+        if is_dir:
+            if scope_path == "" or path == scope_path or path.startswith(scope_path.rstrip("/") + "/"):
+                return True
+        elif path == scope_path and (
+            node_prefix == "" or node == node_prefix or node.startswith(node_prefix + ".")
+        ):
+            return True
+    return False
+
+
+def _advisory_publish(
+    identity: RepoIdentity, workflow_id: str, gap: str | None, unowned: dict[str, int]
+) -> str | None:
+    """Write the canonical result and return one notice line only when it changed
+    and has something to report; an identical result is silent (returns None) and
+    writes nothing."""
+    paths = {name: unowned[name] for name in sorted(unowned)}
+    canonical = {"workflowId": workflow_id, "gap": gap, "paths": paths}
+    try:
+        store = repo_state_dir(identity) / _ADVISORY_FILE
+        prior = read_json(store)
+        if prior == canonical:
+            return None
+        atomic_write_json(store, canonical)
+    except OSError:
+        # The disposable dedup cache could not be resolved or written. Report
+        # that as a gap through the one-line notice rather than failing the edit
+        # or retrying the same writer, so the edit's outcome and state are
+        # untouched.
+        return "map advisory: gap, the advisory cache could not be written"
+    if not gap and not paths:
+        return None
+    sort = sorted(paths)
+    shown = ", ".join(p.translate(_ADVISORY_CONTROL_ESCAPES) for p in sort[:10])
+    remaining = len(sort) - 10
+    if paths:
+        total = sum(paths.values())
+        report = f"{total} impacted tests not owned by the map: {shown}"
+        if remaining > 0:
+            report += f" (and {remaining} more)"
+    else:
+        report = ""
+    if gap:
+        report = f"gap, {gap}" + (f"; {report}" if report else "")
+    return f"map advisory: {report}"
 
 
 def _map_update(values: list[str]) -> int:

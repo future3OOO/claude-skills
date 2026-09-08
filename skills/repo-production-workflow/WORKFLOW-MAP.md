@@ -106,6 +106,17 @@ changed since the pass began, so a late RED or baseline is labelled in
 update is needed only when a GREEN exposes a new obligation. A normally
 completed workflow is terminal: every mutation except `begin` is rejected.
 
+After a successful production edit in an active pass, the PostToolUse edit
+hook runs one GitNexus `detect-changes` against the pass-start index and names
+in its `additionalContext` the impacted tests the current map's recorded
+selections do not own, or a short gap when that cannot be decided against this
+pass's index. Complete ownership is silent, an identical result repeats neither
+notice nor write, a completed or revalidating pass gets no scan, and the
+advisory never changes the edit's outcome or the workflow state; a mapped GREEN
+issues no second scan. It is advisory and incomplete by nature, and full-map
+reconciliation stays the completeness authority. The installed
+automatic advisory replaces the manual pre-commit detect-changes step.
+
 A governance-document edit after completion is the sole controlled revalidation exception: it opens a window in
 which only verification, code review, the final advisor review, and completion
 are accepted, production editing stays closed, and completing again restores

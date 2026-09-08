@@ -23,13 +23,13 @@ from hooks.tests.support import (  # noqa: E402
     build_no_change_document,
     pending_behavior,
     record_context_forge,
+    run_post_edit,
 )
 from hooks.lib.workflow_state import record_base_oid, set_phase  # noqa: E402
 
 WORKFLOW = ROOT / "skills" / "repo-production-workflow" / "scripts" / "workflow.py"
 QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_gate.py"
 INTAKE = ROOT / "hooks" / "rcf-intake-gate.py"
-POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
 RCF_BOOTSTRAP = ROOT / "skills" / "repo-context-forge" / "scripts" / "bootstrap.py"
 ADVISOR = ROOT / "skills" / "codex-advisor" / "scripts" / "ask-codex-advisor.sh"
 SESSION = "real-hook-session"
@@ -109,17 +109,7 @@ class HookHarness(unittest.TestCase):
     def post_edit(self, relative: str, *, repo: Path | None = None,
                   session: str | None = SESSION,
                   env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        target = repo or self.repo
-        # session=None omits the field entirely rather than blanking it: an
-        # anonymous payload is one that never carried the key.
-        payload: dict[str, object] = {"tool_input": {"file_path": str(target / relative)}}
-        if session is not None:
-            payload["session_id"] = session
-        return subprocess.run(
-            [str(POST_EDIT)], cwd=target, env={**self.env, **(env_extra or {})}, text=True,
-            input=json.dumps(payload),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
+        return run_post_edit(repo or self.repo, self.env, relative, session=session, env_extra=env_extra)
 
     def owner_phase(self, phase: str, status: str, *, findings: str | None = None) -> None:
         set_phase(resolve_repo_identity(self.repo), phase, status, findings=findings)
