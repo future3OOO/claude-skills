@@ -965,6 +965,9 @@ class MappedTddRepairTests(unittest.TestCase):
         ("decorated-setup", "FIXTURE_ENTRY_FAILURE_ACCEPTED_AS_RED",
          GUARD + "class T(unittest.TestCase):\n    @guard\n    def setUp(self):\n        prod.op()\n    def test_op(self):\n        self.fail('never runs')\n",
          UNIT, False, "before reaching the production Interface"),
+        ("fixture-calls-test-named-helper", "FIXTURE_BEFORE_TEST_FRAME_ACCEPTED_AS_RED",
+         "import unittest, prod\ndef test_op():\n    prod.op()\nclass T(unittest.TestCase):\n    def setUp(self):\n        test_op()\n"
+         "    def test_op(self):\n        self.fail('never runs')\n", UNIT, False, "before reaching the production Interface"),
         ("inherited-decorated-setup", "INHERITED_DECORATED_SETUP_ACCEPTED_AS_RED",
          {"support.py": GUARD + "class Base(unittest.TestCase):\n    @guard\n    def setUp(self):\n        prod.op()\n",
           "test_probe.py": "import unittest\nfrom support import Base\nclass T(Base):\n    def test_op(self):\n        pass\n"},

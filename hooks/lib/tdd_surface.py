@@ -398,13 +398,14 @@ def _unittest_red(
 
 def _unittest_unreached(header: str, frames: list[str]) -> str | None:
     """Why the block's test body never ran, when the report shows it: loader stand-in,
-    a class/module fixture named in the header, or a fixture-named frame with no frame
-    named after the test. The test's name is only ever positive evidence it ran."""
+    a class/module fixture named in the header, or a fixture-named frame before any
+    frame named after the test. The test's name is only ever positive evidence it ran."""
     name = header.split()[1]
     if "unittest.loader._FailedTest" in header:
         return f"unittest could not load {name}"
+    entered = frames.index(name) if name in frames else len(frames)
     fixture = name if name in UNITTEST_FIXTURES else next(
-        (frame for frame in frames if frame in UNITTEST_FIXTURES and name not in frames), None
+        (frame for frame in frames[:entered] if frame in UNITTEST_FIXTURES), None
     )
     return f"unittest failed in {fixture} before the test body" if fixture else None
 
