@@ -241,11 +241,13 @@ callers, tests, or another active authority. In this governed workflow `workflow
 workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
-Record immutable intake first as `{"findings":[...]}` through the unified
-Interface, naming the delegate's harness-recorded model and agent id: the
-session's `subagents/agent-<id>.jsonl` transcript under `~/.claude/projects`
-carries both; never infer the model from the parent. A recorded model other
-than `claude-fable-5-1` is a blocker: report it and do not record the review. If it contains findings,
+Before recording, compare the returned checkout, workflow id and reviewed
+tree with the dispatch and `workflow.py status`, and take the delegate's model
+and agent id from the harness receipts (`subagents/agent-<id>.meta.json` and
+its forked-skill marker under `~/.claude/projects`), never from the parent or
+the delegate's own claim; missing or mismatched identity, or a model other
+than `claude-fable-5-1`, is not a valid review and is not recorded. Record
+immutable intake first as `{"findings":[...]}` through the unified Interface. If it contains findings,
 capture the returned `summaryId`, then call
 the same command with `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;
 each disposition carries `kind`, `premise`, `occurrence`, and

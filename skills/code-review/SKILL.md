@@ -23,8 +23,8 @@ In a governed pass read the contract and candidate identity (`intent`,
 and its recorded evidence; otherwise take them from the PR or request. Record
 repository, branch, base and head SHAs, and dirty/staged state. Review the
 actual diff and current files, not a prose summary; if the target changes, the
-review is stale. Open your report with the model ID your system prompt names
-and the tree you reviewed.
+review is stale. Open your report with the checkout, workflow id, and tree
+you reviewed.
 
 ## 2. Read the affected surface
 
@@ -44,19 +44,22 @@ Feature Envy, Data Clumps, Primitive Obsession, Repeated Switches, Shotgun
 Surgery, Divergent Change, Speculative Generality, Message Chains, Middle Man,
 and Refused Bequest.
 
-## 4. Attack the promises
+## 4. Falsify the promises
 
-Derive what the contract and public Interface promise, then drive every
-concretely reachable counterexample the recorded evidence leaves unattacked
-through the real production Interface and inspect the outward result and the
-state effect. Reuse the recorded attack commands and receipts before writing
-new ones; keep every useful operation as a runnable command with its expected
-versus observed effect, and for a bug run that same operation and assertions
-against the old implementation and the candidate, reusing bound receipts that
-already establish the comparison and confirming the actual target identity
-each time. Passing suites, map status, lint, printed success, and
-tests that substitute a collaborator are not the verdict. Disprove a suspicion
-before presenting it as a defect.
+Derive the obligations from the original contract, then ask of the evidence
+you are handed: what materially broken implementation would still pass these
+checks, and which specific wrong behavior would make the relied-on check fail?
+Run the smallest real-Interface attack that distinguishes each answer,
+observing the contract-relevant outcomes, identity, state preservation, and
+cleanup together. Cover the input forms and interactions the changed mechanism
+makes relevant, not every imaginable case. Replay applicable earlier review
+reproductions unchanged against the final candidate, and for a bug reuse the
+same operation and assertions on the old and candidate implementations,
+confirming each target. Keep every useful operation as a runnable command with
+its expected versus observed effect. Passing suites, map status, lint, printed
+success, and tests that substitute a collaborator are not the verdict. Dispute
+an expectation only with measured evidence, and attempt to falsify your own
+diagnosis before presenting it as a defect.
 
 ## 5. Review both axes
 
@@ -83,5 +86,6 @@ intake:
 {"findings":[{"id":"SPEC-1","axis":"Spec","severity":"high","material":true,"kind":"behavioral","location":"path:line","claim":"...","evidence":"...","consequence":"...","smallest_action":"..."}]}
 ```
 
-Use `{"findings":[]}` when there are none and name remaining proof gaps. The
+Material missing acceptance evidence is a Spec finding here, never prose
+beside `{"findings":[]}`; harmless residual uncertainty is not material. The
 lead verifies findings and owns dispositions.
