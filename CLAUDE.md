@@ -82,6 +82,14 @@ Transform tasks into verifiable goals:
 
 For multi-step tasks, state a brief plan with explicit verification per step. Strong success criteria let you loop independently; weak criteria ("make it work") require constant clarification.
 
+When the user designates a local `decisions.md`, read it at task start and after
+resume or compaction. Update it when a consequential decision, scope, authorization
+or delivery status changes, before reporting that change or handing off work.
+Record the decision, reason and current status; mark superseded decisions and
+distinguish agreed work from verified delivery. Use the designated mirror copy
+across worktrees, keep it Git-excluded, and never commit or install it. Do not
+defer updates to session end or turn the record into a transcript or new stage.
+
 ## 5. Quiet Windows And Scheduled Follow-Ups
 
 Do not handle quiet windows, review waits, deploy waits, or scheduled follow-ups with repeated passive `sleep` loops. Use Claude Code's dedicated tools instead.
