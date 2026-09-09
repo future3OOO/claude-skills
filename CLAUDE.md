@@ -82,6 +82,11 @@ Transform tasks into verifiable goals:
 
 For multi-step tasks, state a brief plan with explicit verification per step. Strong success criteria let you loop independently; weak criteria ("make it work") require constant clarification.
 
+For work on the claude-skills estate only, read
+`/home/prop_/projects/claude-skills/decisions.md` at start and after resume or
+compaction. Update decisions, reasons and status before reporting or handoff;
+mark superseded decisions. All worktrees share this local-only, Git-excluded file.
+
 ## 5. Quiet Windows And Scheduled Follow-Ups
 
 Do not handle quiet windows, review waits, deploy waits, or scheduled follow-ups with repeated passive `sleep` loops. Use Claude Code's dedicated tools instead.
