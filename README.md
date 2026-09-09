@@ -18,8 +18,8 @@ The estate records one repository-scoped production workflow:
 
 ```
 context -> preflight advice -> production preflight -> TDD -> production-code
-        -> implementation -> verification -> lead structured code review
-        -> independent final Codex Advisor review -> complete -> delivery
+        -> implementation -> verification -> code-review delegate review
+        -> final Codex Advisor review -> complete -> delivery
 ```
 
 The state is continuity for the agent, not Git authorization. No shipped hook

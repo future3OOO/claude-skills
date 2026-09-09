@@ -15,7 +15,7 @@ second source of truth that drifts on its own.
 | Root-cause-first | `CLAUDE.md` Hard Production Invariants | `diagnose` owns the tracing procedure |
 | GitNexus context/impact doctrine | `CLAUDE.md` §9 | The workflow supplies packet-specific facts |
 | Execution sequence and phase order | `repo-production-workflow/SKILL.md` | `CLAUDE.md` §7 owns only when skills fire |
-| Review ownership | `repo-production-workflow/SKILL.md` | Lead `code-review` is the structured self-check; the final Codex Advisor review is the sole independent reviewer |
+| Review ownership | `repo-production-workflow/SKILL.md` | `code-review` is the forked delegate's task; the lead records and dispositions; the final Codex Advisor review follows |
 | Terminal state and the governance-revalidation exception | `WORKFLOW-MAP.md` | `workflow.py` exposes the operator-facing Interface; `hooks/lib/workflow_state.py` implements shared transitions consumed by the CLI and hooks; legacy scripts are compatibility shims |
 | Public workflow status JSON | `WORKFLOW-MAP.md` | `workflow.py status` emits the canonical `schemaVersion: 1` projection; hooks and advisor automation consume semantic fields only |
 | SQLite ledger schema and transaction mechanics | `hooks/lib/_workflow_db.py` | `workflow_state.py` supplies policy mutations; `state_prune.py` supplies estate retention decisions through the ledger's private inventory/apply Interface |

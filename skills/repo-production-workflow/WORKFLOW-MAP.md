@@ -22,8 +22,8 @@ flowchart LR
     TG --> TM[map update when a proof exposes a new obligation]
     TM -->|new obligation| TR
     TM -->|map resolved| V[verification]
-    V --> CR[lead structured code review when non-trivial]
-    CR --> A2[independent final Codex Advisor review]
+    V --> CR[code-review delegate review when non-trivial]
+    CR --> A2[final Codex Advisor review]
     A2 --> C{context matched and effective findings terminal?}
     C -->|context mismatch| A2
     C -->|behavioral correction| TM2[tdd-map adds the item]
@@ -51,7 +51,7 @@ workflow record-production-code # validates the bundled gate verdict (optional; 
 workflow tdd                   # mapped RED/GREEN or records not-required
 workflow tdd-map               # dispositions and post-GREEN map updates
 workflow verify                # generic commands or typed final-tree quality gate
-workflow record-review         # structured lead review plus tree manifest
+workflow record-review         # delegate review intake, lead dispositions, tree manifest
 workflow advisor-result|advisor-disposition
 workflow pause|checkpoint|complete|prune
 ```
@@ -137,7 +137,7 @@ readiness for the advisor phases without mutating anything.
 - implementation and verification passed;
 - preflight, production-code, and verification each carrying their producer's
   evidence reference;
-- lead code review passed/not required with material findings addressed;
+- code review recorded (delegate intake, or not required) with material findings addressed;
 - a context-matched final review from `codex-advisor` whose effective findings
   are terminal: the immutable raw verdict remains evidence, but
   `fix-before-commit` is not a veto after closure;
@@ -165,7 +165,7 @@ resume at the first unsatisfied phase in the same ordered workflow. A
 governance-first pass therefore returns to TDD, while a completed
 implementation returns to verification.
 
-Behavioral findings from the lead's code review or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. The behavioral/non-behavioral classification is a lead-owned obligation, not a machine-validated edge: the recorder validates the reassessment's structure and blocks completion until one is recorded, but it cannot judge the classification itself - a behavioral defect routed through a why-only reassessment is a doctrine violation the reviews are expected to catch, not a state the hooks can refuse. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
+Behavioral findings from the `code-review` delegate or final Codex Advisor against the current unpushed tree return to mapped TDD under the active `workflowId`: add the Behavior Map item, drive its behavior-specific RED, then fix it. Only genuinely non-behavioral corrections return directly to implementation, with the reason recorded. The behavioral/non-behavioral classification is a lead-owned obligation, not a machine-validated edge: the recorder validates the reassessment's structure and blocks completion until one is recorded, but it cannot judge the classification itself - a behavioral defect routed through a why-only reassessment is a doctrine violation the reviews are expected to catch, not a state the hooks can refuse. A legitimate reviewer signal on a pushed PR head, or a bug/regression outside the active workflow intent, instead starts a new workflow with `begin`.
 
 A finding envelope is one correction batch. A pending behavioral finding rides
 the pass as a map-owned attack obligation; dispositions may cover any subset,
