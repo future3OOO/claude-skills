@@ -82,10 +82,10 @@ Transform tasks into verifiable goals:
 
 For multi-step tasks, state a brief plan with explicit verification per step. Strong success criteria let you loop independently; weak criteria ("make it work") require constant clarification.
 
-Read the user's designated local `decisions.md` at task start and after resume or
-compaction. Update consequential decisions, reasons and status before reporting
-or handing off; mark superseded decisions. Share the designated mirror copy
-across worktrees and keep it local-only and Git-excluded.
+For work on the claude-skills estate only, read
+`/home/prop_/projects/claude-skills/decisions.md` at start and after resume or
+compaction. Update decisions, reasons and status before reporting or handoff;
+mark superseded decisions. All worktrees share this local-only, Git-excluded file.
 
 ## 5. Quiet Windows And Scheduled Follow-Ups
 
