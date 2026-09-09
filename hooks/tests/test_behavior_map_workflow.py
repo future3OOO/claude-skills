@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.tdd_workflow import edit_blockers  # noqa: E402
+from hooks.lib.tdd_workflow import edit_advice  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     advisor_disposition,
     read_workflow,
@@ -203,7 +203,7 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertEqual(state["tdd"], "pending", "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
         self.assertNotIn("tddCycleCount", state)
-        self.assertTrue(edit_blockers(resolve_repo_identity(self.repo), state))
+        self.assertTrue(edit_advice(resolve_repo_identity(self.repo), state)[0])
         ready, missing = ready_for_edit(resolve_repo_identity(self.repo), "app.py")
         self.assertFalse(ready, "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
         self.assertTrue(any("TDD RED" in item for item in missing), "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
@@ -218,7 +218,7 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertEqual(state["tdd"], "in-progress")
         self.assertEqual(state["tddCycleCount"], 1)
-        self.assertEqual(edit_blockers(resolve_repo_identity(self.repo), state), [])
+        self.assertEqual(edit_advice(resolve_repo_identity(self.repo), state)[0], [])
 
     def test_reassessment_can_add_the_next_architecture_falsifier(self) -> None:
         behavior = pending_behavior("BM_VALUE")
@@ -259,7 +259,7 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         identity = resolve_repo_identity(self.repo)
         state = read_workflow(identity)
         self.assertEqual(state["tdd"], "in-progress")
-        self.assertIn("BM_ATOMIC", edit_blockers(identity, state)[0])
+        self.assertIn("BM_ATOMIC", edit_advice(identity, state)[0][0])
         refused = self.cli("complete", "--slug", slug, "--workflow-id", workflow_id)
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
         self.assertIn("BM_ATOMIC", refused.stderr)

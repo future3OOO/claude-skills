@@ -99,12 +99,42 @@ class HookHarness(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
 
-    def intake(self, relative: str) -> subprocess.CompletedProcess[str]:
+    def intake(self, relative: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(INTAKE)], cwd=self.repo, env=self.env, text=True,
+            [sys.executable, str(INTAKE)], cwd=self.repo, env=env or self.env, text=True,
             input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
+
+    def wrapper_rig(self) -> dict[str, str]:
+        rig = self.tmp / "advisor-rig"
+        for name in ("bin", "capture", "home", "claude"):
+            (rig / name).mkdir(parents=True)
+        provider = rig / "bin" / "claude"
+        provider.write_text(PROVIDER_SHIM, encoding="utf-8")
+        provider.chmod(0o755)
+        (rig / "home" / ".bashrc").write_text(
+            "alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid "
+            "ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \\\n"
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \\\n"
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 claude --model offline-model'\n",
+            encoding="utf-8",
+        )
+        (rig / "design.md").write_text(DESIGN_BODY, encoding="utf-8")
+        self.git("remote", "add", "origin", "https://example.invalid/prompt-rig.git")
+        return dict(self.env, PATH=f"{rig / 'bin'}{os.pathsep}{self.env['PATH']}",
+                    HOME=str(rig / "home"), CLAUDE_HOME=str(rig / "claude"),
+                    CAPTURE_DIR=str(rig / "capture"))
+
+    def run_advisor(self, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(ADVISOR_WRAPPER), "--cwd", str(self.repo), *args],
+                              cwd=ROOT, env=env, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def payload(self, env: dict[str, str], index: int) -> str:
+        # surrogateescape: a payload may carry test source that is not UTF-8.
+        return (Path(env["CAPTURE_DIR"]) / f"payload-{index}").read_text(
+            encoding="utf-8", errors="surrogateescape")
 
     def post_edit(self, relative: str, *, repo: Path | None = None,
                   session: str | None = SESSION,
@@ -182,6 +212,41 @@ class HookHarness(unittest.TestCase):
         )
         self.assertEqual(quality.returncode, 0, quality.stdout + quality.stderr)
 
+    def begin_pass(self, slug: str) -> str:
+        """A pass begun on a commit with two attributes, with its context step recorded."""
+        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "two attributes")
+        begun = self.state("begin", "--slug", slug)
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        record_context_forge(self.repo, self.tmp)
+        return json.loads(begun.stdout)["workflowId"]
+
+    def open_pass(self, slug: str, behavior_map: list) -> str:
+        """begin_pass plus a findings-free preflight consult and the given map as its preflight."""
+        wid = self.begin_pass(slug)
+        consulted = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                               "--source", "codex-advisor", "--verdict", "completed")
+        self.assertEqual(consulted.returncode, 0, consulted.stdout + consulted.stderr)
+        self.record_preflight_evidence(slug, wid, behavior_map=behavior_map)
+        return wid
+
+    def events(self) -> int:
+        return len(json.loads(self.state("history").stdout)["events"])
+
+    def tdd(self, slug: str, phase: str, item: str, attr: str, value: int = 2) -> subprocess.CompletedProcess[str]:
+        """One mapped RED/GREEN through a probe asserting app.<attr> == value."""
+        marker = f"{attr.upper()}_NOT_{ {1: 'ONE', 2: 'TWO'}[value] }"
+        (self.repo / f"test_probe_{attr}.py").write_text(
+            "import app, unittest\n"
+            "class Probe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.{attr}, {value}, {marker!r})\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug, "--phase", phase,
+             "--behavior-id", item, "--", sys.executable, "-m", "unittest", f"test_probe_{attr}"],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
     def complete_workflow(self, slug: str = "hook-sequence", *, resume: bool = False, finish: bool = True) -> None:
         if resume:
             wid = json.loads(self.state("status").stdout)["workflowId"]
@@ -257,8 +322,9 @@ class WorkflowHookTests(HookHarness):
 
         red = self.red("tdd-ordering")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        after_red = self.intake("app.py")
-        self.assertEqual(after_red.stdout, "", "the gate kept advising after a recorded RED")
+        after_red = advice("app.py")
+        self.assertNotIn("missing before", after_red, "the gate kept advising after a recorded RED")
+        self.assertIn("BM_HOOK [red]", after_red, "the obligation reminder is missing after a recorded RED")
 
         self.complete_workflow()
         self.assertIn("new active workflow", advice("app.py"), marker)
@@ -767,36 +833,6 @@ class WrapperPromptTests(HookHarness):
     demands batched enumeration and binds both sides of the verdict, and the
     delegate role names the outgoing-boundary Seam. Drives the real wrapper
     with the suite's provider-capture contract."""
-
-    def wrapper_rig(self) -> dict[str, str]:
-        rig = self.tmp / "advisor-rig"
-        for name in ("bin", "capture", "home", "claude"):
-            (rig / name).mkdir(parents=True)
-        provider = rig / "bin" / "claude"
-        provider.write_text(PROVIDER_SHIM, encoding="utf-8")
-        provider.chmod(0o755)
-        (rig / "home" / ".bashrc").write_text(
-            "alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid "
-            "ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \\\n"
-            "CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000 CLAUDE_CODE_AUTO_COMPACT_WINDOW=240000 \\\n"
-            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 claude --model offline-model'\n",
-            encoding="utf-8",
-        )
-        (rig / "design.md").write_text(DESIGN_BODY, encoding="utf-8")
-        self.git("remote", "add", "origin", "https://example.invalid/prompt-rig.git")
-        return dict(self.env, PATH=f"{rig / 'bin'}{os.pathsep}{self.env['PATH']}",
-                    HOME=str(rig / "home"), CLAUDE_HOME=str(rig / "claude"),
-                    CAPTURE_DIR=str(rig / "capture"))
-
-    def run_advisor(self, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([str(ADVISOR_WRAPPER), "--cwd", str(self.repo), *args],
-                              cwd=ROOT, env=env, text=True,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-    def payload(self, env: dict[str, str], index: int) -> str:
-        # surrogateescape: a payload may carry test source that is not UTF-8.
-        return (Path(env["CAPTURE_DIR"]) / f"payload-{index}").read_text(
-            encoding="utf-8", errors="surrogateescape")
 
     def preflight_consult(self, env: dict[str, str], slug: str, *, intent: str | None = None,
                           edit=None, marker: str = "") -> None:
@@ -1402,33 +1438,13 @@ class RedFirstTests(HookHarness):
                 pending_behavior("BM_B", behavior="b is two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")]
 
     def open_pass(self, slug: str, behavior_map: list | None = None) -> str:
-        (self.repo / "app.py").write_text("a = 1\nb = 1\n", encoding="utf-8")
-        self.git("commit", "-q", "-am", "two attributes")
-        begun = self.state("begin", "--slug", slug)
-        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
-        wid = json.loads(begun.stdout)["workflowId"]
-        record_context_forge(self.repo, self.tmp)
-        consulted = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
-                               "--source", "codex-advisor", "--verdict", "completed")
-        self.assertEqual(consulted.returncode, 0, consulted.stdout + consulted.stderr)
-        self.record_preflight_evidence(slug, wid, behavior_map=behavior_map or self.two_items())
-        return wid
+        return super().open_pass(slug, behavior_map or self.two_items())
 
     def workflow(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(WORKFLOW), args[0], "--repo", str(self.repo), *args[1:]],
             cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
-
-    def tdd(self, slug: str, phase: str, item: str, attr: str) -> subprocess.CompletedProcess[str]:
-        (self.repo / f"test_probe_{attr}.py").write_text(
-            "import app, unittest\n"
-            f"class Probe(unittest.TestCase):\n"
-            f"    def test_value(self): self.assertEqual(app.{attr}, 2, '{attr.upper()}_NOT_TWO')\n",
-            encoding="utf-8",
-        )
-        return self.workflow("tdd", "--slug", slug, "--phase", phase, "--behavior-id", item,
-                             "--", sys.executable, "-m", "unittest", f"test_probe_{attr}")
 
     def map_status(self) -> dict[str, str]:
         state = json.loads(self.state("status").stdout)
@@ -1453,9 +1469,6 @@ class RedFirstTests(HookHarness):
     def rev_parse(self, ref: str) -> str:
         return subprocess.run(["git", "rev-parse", ref], cwd=self.repo, env=self.env, text=True,
                               stdout=subprocess.PIPE, check=True).stdout.strip()
-
-    def events(self) -> int:
-        return len(json.loads(self.state("history").stdout)["events"])
 
     def rewrite_latest_evidence(self, update) -> None:
         """Rewrite the persisted TDD evidence document the way an older producer left it."""
@@ -1694,7 +1707,7 @@ class RedFirstTests(HookHarness):
         red_c = self.tdd(slug, "red", "BM_C", "c")
         self.assertEqual(red_c.returncode, 0, marker + ": " + red_c.stdout + red_c.stderr)
         admitted = self.intake("app.py")
-        self.assertEqual(admitted.stdout, "", marker + ": " + admitted.stdout)
+        self.assertNotIn("missing before", admitted.stdout, marker + ": " + admitted.stdout)
 
     def test_a_skipped_green_is_not_proof(self) -> None:
         marker = "SKIPPED_RUN_ACCEPTED_AS_GREEN"
@@ -1908,7 +1921,7 @@ class RedFirstTests(HookHarness):
         self.assertNotIn("permissionDecision", output, marker + ": " + advised.stdout)
         self.assertIn("BM_B", output.get("additionalContext", ""), marker + ": " + advised.stdout)
         self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
-        self.assertEqual(self.intake("app.py").stdout, "", marker)
+        self.assertNotIn("missing before", self.intake("app.py").stdout, marker)
 
     def test_a_red_run_binds_the_tree_it_ran_on(self) -> None:
         marker = "RED_RUN_LACKS_TREE_BINDING"
@@ -2038,7 +2051,7 @@ class RedFirstTests(HookHarness):
         self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
         baseline = self.tdd(slug, "red", "BM_B", "b")
         self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
-        self.assertEqual(self.intake("app.py").stdout, "", marker + ": the gate advised with every contract item red or resolved")
+        self.assertNotIn("missing before", self.intake("app.py").stdout, marker + ": the gate advised with every contract item red or resolved")
         (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 2\nd = 2\n", encoding="utf-8")
         for item, attr in (("BM_C", "c"), ("BM_D", "d")):
             green = self.tdd(slug, "green", item, attr)
@@ -2156,6 +2169,247 @@ class ProducerMaskGuardTests(unittest.TestCase):
         self.assertNotIn("FileNotFoundError", run.stderr, marker + ": " + run.stderr[-600:])
         self.assertIn("skipped", run.stderr, marker + ": " + run.stderr[-600:])
         self.assertEqual(run.returncode, 0, marker)
+
+
+DIGEST_HEADER = "Behavior Map obligations"
+# Process-boundary counters for the hook subprocess: every call still reaches the
+# real function; the counts land in $HOOK_PROBE_OUT at exit.
+HOOK_PROBE = (
+    "import atexit, json, os, sqlite3, subprocess\n"
+    "counts = {'sqlite_connect': 0, 'child_processes': 0}\n"
+    "_connect, _popen = sqlite3.connect, subprocess.Popen.__init__\n"
+    "def connect(*a, **k):\n    counts['sqlite_connect'] += 1\n    return _connect(*a, **k)\n"
+    "def popen(self, *a, **k):\n    counts['child_processes'] += 1\n    return _popen(self, *a, **k)\n"
+    "sqlite3.connect, subprocess.Popen.__init__ = connect, popen\n"
+    "atexit.register(lambda: open(os.environ['HOOK_PROBE_OUT'], 'a').write(json.dumps(counts) + '\\n'))\n"
+)
+
+
+class ObligationDigestTests(HookHarness):
+    """Issue #215 section 4: the edit hook reminds the lead of the map's obligations
+    from the map it already loads, bounded to 2,048 bytes and adding no I/O."""
+
+    def advice(self, relative: str, marker: str, env: dict[str, str] | None = None) -> str:
+        result = self.intake(relative, env=env)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        self.assertTrue(result.stdout, marker + ": no advice for " + relative)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertNotIn("permissionDecision", output, marker + ": " + result.stdout)
+        return output["additionalContext"]
+
+    def test_the_hook_reminds_obligations_on_consecutive_edits(self) -> None:
+        marker = "DIGEST_ABSENT"
+        slug = "digest-reminder"
+        self.open_pass(slug, [
+            pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
+            pending_behavior("BM_KEEP", kind="preservation", behavior="b stays one", seam="app module",
+                             expected="app.b == 1", red_failure="B_NOT_ONE"),
+            {**pending_behavior("BM_SKIP", kind="preservation", behavior="c is out of scope", seam="app module",
+                                expected="c untouched", red_failure="C_CHANGED"),
+             "status": "omitted", "evidence": "out of scope by governing evidence"},
+        ])
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP", "b", 1).returncode, 0, marker)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a", 2).returncode, 0, marker)
+        events = self.events()
+        for _ in range(2):
+            context = self.advice("app.py", marker)
+            self.assertNotIn("missing before", context, marker + ": satisfied preservation reported as missing")
+            for row in ("BM_A [red] a is two -> app.a == 2",
+                        "BM_KEEP [already-satisfied] b stays one -> app.b == 1",
+                        "BM_SKIP [non-applicable, omitted by evidence] c is out of scope -> c untouched"):
+                self.assertIn(row, context, marker + ": " + context)
+        self.assertEqual(self.events(), events, marker + ": the reminder wrote to the ledger")
+        for silent in ("notes.md", "tests/test_app.py"):
+            self.assertEqual(self.intake(silent).stdout, "", marker + ": " + silent)
+        begun = self.state("begin", "--slug", "digest-no-map")
+        self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
+        context = self.advice("app.py", marker)
+        self.assertIn("production preflight", context, marker)
+        self.assertNotIn(DIGEST_HEADER, context, marker)
+
+    def test_the_digest_stays_within_budget_and_adds_no_io(self) -> None:
+        marker = "DIGEST_OVER_BUDGET"
+        slug = "digest-budget"
+        long_row = "\x01" + "é中" * 500 + "\x1b[31m"
+        items = [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")]
+        for index in range(1, 40):
+            status = ("pending", "already-satisfied", "omitted")[index % 3]
+            item = pending_behavior(f"BM_KEEP_{index}", kind="preservation", seam="app module",
+                                    behavior=f"guarantee {index} {long_row if index == 1 else ''}".strip(),
+                                    expected=f"kept {index}", red_failure=f"KEEP_{index}_REGRESSED")
+            if status != "pending":
+                item.update(status=status, evidence=f"evidence {index}")
+            items.append(item)
+        self.open_pass(slug, items)
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a", 2).returncode, 0, marker)
+        probe = self.tmp / "probe"
+        probe.mkdir()
+        (probe / "sitecustomize.py").write_text(HOOK_PROBE, encoding="utf-8")
+        probe_out = self.tmp / "probe.jsonl"
+        env = {**self.env, "PYTHONPATH": str(probe), "HOOK_PROBE_OUT": str(probe_out)}
+        context = self.advice("app.py", marker, env=env)
+        self.assertIn(DIGEST_HEADER, context, marker + ": " + context)
+        digest = context[context.index(DIGEST_HEADER):]
+        size = len(digest.encode("utf-8"))
+        self.assertLessEqual(size, 2048, marker + f": {size} bytes")
+        shown, skipped = (int(n) for n in re.search(r"(\d+) shown, (\d+) not displayed", digest).groups())
+        self.assertEqual((shown + skipped, shown), (40, digest.count("\n")), marker + ": " + digest[:200])
+        self.assertGreater(skipped, 0, marker + ": the budget was never exercised")
+        self.assertIn("BM_A [red] a is two -> app.a == 2", digest, marker)
+        self.assertFalse(re.search(r"[\x00-\x1f\x7f]", digest.replace("\n", "")), marker + ": raw control character")
+        counts = json.loads(probe_out.read_text(encoding="utf-8").splitlines()[-1])
+        limits = {"digest_bytes": 2048, "sqlite_connect": 4, "child_processes": 3}
+        observed = {"digest_bytes": size, **counts}
+        self.assertEqual({k: counts[k] for k in ("sqlite_connect", "child_processes")},
+                         {"sqlite_connect": 4, "child_processes": 3}, marker + ": " + json.dumps(counts))
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, env=self.env, text=True,
+                              stdout=subprocess.PIPE, check=True).stdout.strip()
+        print(json.dumps({"resource": "PreToolUse obligation digest", "scale": f"{len(items)} items, one {len(long_row.encode())}-byte row",
+                          "limit": limits, "observed": observed, "target": {"hook": str(INTAKE), "fixtureHead": head}}))
+
+
+class LedgerTransportTests(HookHarness):
+    """Issue #215 section 5: the final checkpoint projects each finding's intake,
+    executed commands and reassessment state, the wrapper carries them, and a
+    flagged item refuses the consult before the provider is invoked."""
+
+    def owned_final_pass(self, env: dict[str, str], slug: str) -> tuple[str, str]:
+        """A pass whose finding SPEC-1 is owned by a GREEN contract attack and a
+        baselined preservation item, advanced to a ready final-review checkpoint."""
+        wid = self.begin_pass(slug)
+        rig = Path(env["CAPTURE_DIR"]).parent
+        consulted = self.run_advisor(env, "--slug", slug, "--phase", "preflight-advice",
+                                     "--design-file", str(rig / "design.md"), "--", "scope question")
+        self.assertEqual(consulted.returncode, 0, consulted.stdout + consulted.stderr)
+        envelope = self.tmp / "finding-envelope.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [
+            {"id": "SPEC-1", "claim": "b must stay one", "material": True, "kind": "behavioral"}],
+            "verdict": "completed"}), encoding="utf-8")
+        recorded = self.state("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                              "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        intake_id = json.loads(recorded.stdout)["advisorPreflight"]["intakeEvidence"]
+        ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        self.record_preflight_evidence(slug, wid, behavior_map=[
+            {**pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
+             "sourceRefs": ref},
+            {**pending_behavior("BM_KEEP", kind="preservation", behavior="b stays one", seam="app module",
+                                expected="app.b == 1", red_failure="B_NOT_ONE"), "sourceRefs": ref}])
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP", "b", 1).returncode, 0, "baseline")
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a", 2).returncode, 0, "red")
+        (self.repo / "app.py").write_text("a = 2\nb = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_A", "a", 2).returncode, 0, "green")
+        tree = json.loads(self.state("status").stdout)["activeCandidateTree"]
+        closure = self.tmp / "fixed.json"
+        measurement = {"claim": "b stays one", "command": "python -m unittest test_probe_b", "result": "OK"}
+        closure.write_text(json.dumps({"context": {"workflowId": wid, "candidateTree": tree}, "intakeEvidenceId": intake_id,
+            "dispositions": [{"finding_id": "SPEC-1", "status": "fixed", "kind": "behavioral", "premise": measurement,
+                              "occurrence": {"domain": "every reader of b", "count": 0, "complete": True,
+                                             "command": measurement["command"], "result": measurement["result"]},
+                              "materialConsequence": measurement, "evidence": "BM_A GREEN through RED beside the BM_KEEP baseline"}]}),
+            encoding="utf-8")
+        fixed = self.state("advisor-disposition", "--slug", slug, "--workflow-id", wid, "--stage", "preflight",
+                           "--findings", "addressed", "--input", str(closure))
+        self.assertEqual(fixed.returncode, 0, fixed.stdout + fixed.stderr)
+        self.record_gate_evidence(slug, wid)
+        self.assertEqual(self.state("set-phase", "--phase", "implementation", "--status", "passed").returncode, 0)
+        record_context_forge(self.repo, self.tmp)
+        self.run_verification(slug)
+        self.owner_phase("code-review", "not-required", findings="none")
+        return wid, intake_id
+
+    def test_the_final_payload_carries_the_ledger_projection(self) -> None:
+        marker = "LEDGER_PROJECTION_INCOMPLETE"
+        env = self.wrapper_rig()
+        _wid, intake_id = self.owned_final_pass(env, "ledger-projection")
+        ledger = json.loads(self.state("checkpoint", "--phase", "final-review").stdout)["findingLedger"]
+        entry = next(item for item in ledger if item["findingId"] == "SPEC-1")
+        self.assertEqual(entry.get("intakeEvidenceId"), intake_id, marker)
+        owners = {owner["id"]: owner for owner in entry["owners"]}
+        self.assertEqual(sorted(owners["BM_A"].get("executedCommands") or []), ["green", "red"], marker + ": " + json.dumps(owners))
+        self.assertEqual(sorted(owners["BM_KEEP"].get("executedCommands") or []), ["baseline"], marker + ": " + json.dumps(owners))
+        self.assertEqual({owners["BM_A"].get("revalidationRequired"), owners["BM_KEEP"].get("revalidationRequired")}, {False}, marker)
+        rig = Path(env["CAPTURE_DIR"]).parent
+        receipt = "selected receipt evidence-15b5f575f81e3c7eb8499b2aa8c24a8c: digest 2006 of 2048 bytes"
+        result = self.run_advisor(env, "--slug", "ledger-projection", "--phase", "final-review",
+                                  "--design-file", str(rig / "design.md"), "--", "final question; " + receipt)
+        self.assertEqual(result.returncode, 0, marker + ": " + result.stdout + result.stderr)
+        payload = self.payload(env, int((Path(env["CAPTURE_DIR"]) / "count").read_text().strip()))
+        for text in (f'"intakeEvidenceId": "{intake_id}"', '"executedCommands"', '"revalidationRequired"',
+                     "executed commands and reassessment state"):
+            self.assertIn(text, payload, marker + ": " + text)
+        self.assertIn("=== Consult\nfinal question; " + receipt, payload, "RECEIPT_NOT_TRANSPORTED")
+
+    def test_a_flagged_item_refuses_the_final_consult_before_the_provider(self) -> None:
+        marker = "FLAGGED_ITEM_SUBMITTED"
+        env = self.wrapper_rig()
+        wid, _intake_id = self.owned_final_pass(env, "flagged-final")
+        update = self.tmp / "revalidate.json"
+        update.write_text(json.dumps({"reassessment": "the repair touched b", "dispositions": [
+            {"id": "BM_KEEP", "revalidate": True, "evidence": "b's reader changed"}]}), encoding="utf-8")
+        flagged = self.state("tdd-map", "--slug", "flagged-final", "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(flagged.returncode, 0, marker + ": " + flagged.stdout + flagged.stderr)
+        checkpoint = json.loads(self.state("checkpoint", "--phase", "final-review").stdout)
+        self.assertFalse(checkpoint["ready"], marker)
+        self.assertTrue(any("BM_KEEP" in item for item in checkpoint["missing"]), marker + ": " + json.dumps(checkpoint["missing"]))
+        rig = Path(env["CAPTURE_DIR"]).parent
+        count = (Path(env["CAPTURE_DIR"]) / "count").read_text().strip()
+        refused = self.run_advisor(env, "--slug", "flagged-final", "--phase", "final-review",
+                                   "--design-file", str(rig / "design.md"), "--", "final question")
+        self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("BM_KEEP", refused.stderr, marker)
+        self.assertEqual((Path(env["CAPTURE_DIR"]) / "count").read_text().strip(), count, marker + ": the provider was invoked")
+        recheck = self.tdd("flagged-final", "red", "BM_KEEP", "b", 1)
+        self.assertEqual(recheck.returncode, 0, marker + ": " + recheck.stdout + recheck.stderr)
+        self.assertTrue(json.loads(self.state("checkpoint", "--phase", "final-review").stdout)["ready"], marker)
+
+    def test_correction_stays_reachable_from_a_reassessment_blocked_pass(self) -> None:
+        marker = "BLOCKED_PASS_CORRECTION_UNREACHABLE"
+        env = self.wrapper_rig()
+        # The correction's probe exists before verification so the correction
+        # itself changes map state only, never the reviewed tree.
+        (self.repo / "test_probe_c.py").write_text(
+            "import app, unittest\nclass Probe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertFalse(hasattr(app, 'c'), 'C_APPEARED')\n", encoding="utf-8")
+        wid, _intake_id = self.owned_final_pass(env, "blocked-correction")
+        envelope = self.tmp / "final-envelope.json"
+        envelope.write_text(json.dumps({"schemaVersion": 1, "findings": [
+            {"id": "SPEC-9", "claim": "b is not two", "material": True, "kind": "behavioral"}],
+            "verdict": "fix-before-commit"}), encoding="utf-8")
+        recorded = self.state("advisor-result", "--slug", "blocked-correction", "--workflow-id", wid, "--stage", "final",
+                              "--source", "codex-advisor", "--input", str(envelope))
+        self.assertEqual(recorded.returncode, 0, marker + ": " + recorded.stdout + recorded.stderr)
+        final_intake = json.loads(recorded.stdout)["finalReview"]["intakeEvidence"]
+        update = self.tmp / "flag.json"
+        update.write_text(json.dumps({"reassessment": "the repair touched b", "dispositions": [
+            {"id": "BM_KEEP", "status": "pending", "evidence": "b's reader changed"}]}), encoding="utf-8")
+        self.assertEqual(self.state("tdd-map", "--slug", "blocked-correction", "--workflow-id", wid, "--input", str(update)).returncode, 0, marker)
+        blocked = json.loads(self.state("checkpoint", "--phase", "final-review").stdout)
+        self.assertTrue(any("BM_KEEP" in item for item in blocked["missing"]), marker + ": " + json.dumps(blocked["missing"]))
+        tree = json.loads(self.state("status").stdout)["activeCandidateTree"]
+        measurement = {"claim": "b is not two", "command": "python -m unittest test_probe_b", "result": "false"}
+        rejection = self.tmp / "reject.json"
+        rejection.write_text(json.dumps({"context": {"workflowId": wid, "candidateTree": tree}, "intakeEvidenceId": final_intake,
+            "dispositions": [{"finding_id": "SPEC-9", "status": "rejected-with-evidence", "kind": "behavioral", "premise": measurement,
+                              "occurrence": {"domain": "every reader of b", "count": 0, "complete": True,
+                                             "command": measurement["command"], "result": "count=0"},
+                              "materialConsequence": measurement, "evidence": "b is one by contract; the probe passes"}]}), encoding="utf-8")
+        rejected = self.state("advisor-disposition", "--slug", "blocked-correction", "--workflow-id", wid, "--stage", "final",
+                              "--findings", "addressed", "--input", str(rejection))
+        self.assertEqual(rejected.returncode, 0, marker + ": " + rejected.stdout + rejected.stderr)
+        correction = self.tmp / "correct.json"
+        correction.write_text(json.dumps({"reassessment": "map correction while blocked", "items": [
+            pending_behavior("BM_MORE", kind="preservation", behavior="c stays absent", seam="app module",
+                             expected="no app.c", red_failure="C_APPEARED")]}), encoding="utf-8")
+        self.assertEqual(self.state("tdd-map", "--slug", "blocked-correction", "--workflow-id", wid, "--input", str(correction)).returncode, 0, marker)
+        self.assertEqual(self.tdd("blocked-correction", "red", "BM_KEEP", "b", 1).returncode, 0, marker)
+        baseline = subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", "blocked-correction", "--phase", "red",
+             "--behavior-id", "BM_MORE", "--", sys.executable, "-m", "unittest", "test_probe_c"],
+            cwd=ROOT, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        checkpoint = json.loads(self.state("checkpoint", "--phase", "final-review").stdout)
+        self.assertTrue(checkpoint["ready"], marker + ": " + json.dumps(checkpoint["missing"]))
 
 
 if __name__ == "__main__":

@@ -36,19 +36,24 @@ gate's JSON contract.
 
 ## Minimum Implementation Decision
 
-Resolve ownership placement before choosing the implementation mechanism:
+Resolve the affected decision and its owner before choosing the implementation mechanism:
 
-1. Prove whether the required behavior already exists. If a named Interface already provides it and real test-surface evidence verifies the requirement, make no production change.
-2. Choose the responsible owner. Consume production preflight's `moduleShape` decision. When the turn required no preflight, deepen the existing Module; proposing a new Module or Seam requires preflight first. Delete every surface the change supersedes.
-3. Inside that owner, reuse a capability whose Interface already owns the required semantics, invariant, or failure policy: standard library; native platform, runtime, datastore, or protocol; or an already-installed dependency. These are peers; choose by authority, not list order.
-4. Treat the changed Implementation as bloated. **Reduce it first.** Delete duplication and consolidate existing owners before adding code. Every change targets fewer lines; justify necessary growth against the actual requirement. Preserve production behaviour and useful assertions. Moving complexity or compressing formatting does not count.
+1. Derive the requested and preserved guarantees from the original contract, the base Implementation, and reachable callers, docs, and tests, independently of the map. Inspect supported input forms, interactions, known defects, and successful cases a new guard could exclude. Separate intentional contract changes from regressions; keep unrelated behavior outside the repair.
+2. Prove whether the required behavior already exists. If a named Interface already provides it and real test-surface evidence verifies the requirement, make no production change.
+3. Choose the responsible owner. Consume production preflight's `moduleShape` decision. When the turn required no preflight, deepen the existing Module; proposing a new Module or Seam requires preflight first. Delete every surface the change supersedes.
+4. Simplify the shared decision rather than adding symptom guards. Ask what materially wrong behavior would pass the retained checks; reuse the smallest real-Interface operations that distinguish it, observing required results, data, identity, state, and cleanup. Add only uncovered outcomes.
+5. Inside that owner, reuse a capability whose Interface already owns the required semantics, invariant, or failure policy: standard library; native platform, runtime, datastore, or protocol; or an already-installed dependency. These are peers; choose by authority, not list order.
+6. Treat the changed Implementation as bloated. **Reduce it first.** Delete duplication and consolidate existing owners before adding code. Every change targets fewer lines; justify necessary growth against the actual requirement. Preserve production behaviour and useful assertions. Moving complexity or compressing formatting does not count.
 
-Implementation mechanism never chooses placement: a library or native capability does not justify a new Module or Seam. Every choice must preserve required behavior, boundary validation, security, accessibility, data-loss protection, cleanup, and affected-surface proof.
+Implementation mechanism never chooses placement: a library or native capability does not justify a new Module or Seam. Every choice must preserve required behavior, boundary validation, security, accessibility, data-loss protection, and cleanup.
 
-The decision is complete only when one outcome is recorded:
+The decision is complete only when one outcome is recorded and the repair is reconciled:
 
 - Existing behavior: name its owning Interface and real test-surface evidence; plan no production change.
 - Change required: name the responsible owner, preflight's selected `moduleShape` when preflight ran, Interface and test surface, existing capability to reuse or why custom Implementation is required, minimum changed surface, and every superseded surface to delete.
+- Reconciliation: replay applicable retained failing and passing operations unchanged on the candidate. For a bug or suspected regression, run the same operation and assertions against the identified old and candidate Implementations. Reconcile the Behavior Map with this evidence before returning for review.
+
+Use the request and map already in context; load missing evidence once at implementation entry and refresh it only when it materially changes. The edit hook's reminder cannot supply this reasoning for edit arguments already generated.
 
 ## Core Standard
 
@@ -105,17 +110,6 @@ For TypeScript or JavaScript changes, load and apply [references/typescript.md](
 - Update `updated_at` on every successful transition.
 - Make failed transitions observable in logs and audit paths where appropriate.
 
-## Affected-Surface Rewalk Rule
-
-For every code change:
-
-- re-walk the real affected surface before treating the fix as complete
-- do not model the issue as only the edited file or the named review comment
-- re-check adjacent consumers, callers, and no-change surfaces that could regress
-- require proof that the surrounding surface still behaves correctly
-
-Keep this proportional for ordinary work, but do not skip it.
-
 ## Transaction-System Rewalk Rule
 
 For transaction-sensitive work, load and apply [references/transaction-doctrine.md](references/transaction-doctrine.md). Production-code owns the second rewalk against the implemented tree and must not call the change complete until every canonical proof requirement matches the preflight map.
@@ -155,13 +149,12 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
   - commit the changes
   - push the branch
   - only then resolve review threads as fixed
-- For every code change, compare the final code and proof against the affected-surface map before calling the work clean.
+- For every code change, complete the Minimum Implementation Decision's reconciliation before calling the work clean; it owns the affected-surface walk.
 - Compare the final diff against the preflight module shape; delete or inline shallow wrappers/helpers and verify tests cross the public interface.
 - For transaction-sensitive work, compare the final code and proof against the preflight transaction map before calling the work clean.
 - Run the repo's canonical install, lint, typecheck, unit, integration, build, and quality gates for touched areas before calling work complete.
 - Keep changed code paths at or above the repo coverage gate.
 - Add explicit tests for critical control loops even if coverage already passes.
-- For every code change, proof must cover the real affected surface rather than only the local branch or helper.
 - For transaction-sensitive work, add one combined workflow proof plus sharp invariant checks; local branch-only tests are not enough on their own.
 - For bugs and regressions, compare the implementation to the canonical root-cause-first gate and the `/diagnose` trace.
 - Do not mark work done while blockers, follow-ups, dead-letter gaps, retry gaps, or state-regression risks remain.

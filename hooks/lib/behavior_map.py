@@ -22,12 +22,16 @@ REQUIRED_FIELDS = frozenset({
 })
 OPTIONAL_FIELDS = frozenset({
     "evidence", "supersededBy", "sourceRefs", "proofCommand", "baselineProof", "supersededFrom",
-    "redCommand", "redProof",
+    "redCommand", "redProof", "revalidationRequired",
 })
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
 # A baselined item keeps its passing command in `evidence` behind this stamp;
 # the tdd producer writes it and readers of executed selections parse it back.
 BASELINE_STAMP = "baseline-passed: "
+# Git permits control bytes in a path and a map row may carry any text, so both
+# are escaped before they reach a one-line notice.
+CONTROL_ESCAPES = {c: f"\\x{c:02x}" for c in range(0x20)} | {0x7f: "\\x7f"}
+DIGEST_LIMIT = 2048
 
 
 def executed_commands(entry: JsonObject) -> dict[str, str]:
@@ -254,6 +258,15 @@ def validate_items(
             if not allow_runtime or raw.get("supersededFrom") not in PROOF_STATUSES:
                 raise ValueError(f"behavior {identifier} supersededFrom is recorded only by a tdd-map supersession")
             item["supersededFrom"] = raw["supersededFrom"]
+        # Reassessment is the producer's mark on a preservation item; authored
+        # maps never carry it, and its absence keeps every legacy record's meaning.
+        if "revalidationRequired" in raw:
+            if not allow_runtime or raw.get("revalidationRequired") is not True or kind != "preservation":
+                raise ValueError(
+                    f"behavior {identifier} revalidationRequired is recorded only by a tdd-map "
+                    "revalidate disposition on a preservation item"
+                )
+            item["revalidationRequired"] = True
         evidence = _text(raw.get("evidence"))
         if status in EVIDENCED_STATUSES:
             if evidence is None:
@@ -337,7 +350,8 @@ def apply_dispositions(
 ) -> None:
     """Apply no-edit dispositions in place: settle pending items, supersede GREEN
     ones, withdraw a never-attacked, unowned contract item whoever declared it,
-    or reopen a settled preservation item to pending.
+    reopen a settled preservation item to pending, flag a preservation item for
+    re-execution (`revalidate`), or union finding/design references onto an item.
 
     `settled_findings` holds the (intake evidence, finding id) pairs closed
     without a fix; an item owned only by those owns nothing and may be
@@ -350,7 +364,7 @@ def apply_dispositions(
     for position, raw in enumerate(value, 1):
         if not isinstance(raw, dict):
             raise ValueError(f"TDD map disposition {position} must be an object")
-        unknown = sorted(set(raw) - {"id", "status", "evidence", "supersededBy"})
+        unknown = sorted(set(raw) - {"id", "status", "evidence", "supersededBy", "revalidate", "sourceRefs"})
         if unknown:
             raise ValueError(
                 f"TDD map disposition {position} has unknown fields: {', '.join(unknown)}"
@@ -361,14 +375,49 @@ def apply_dispositions(
         if identifier is None or identifier in seen:
             raise ValueError("TDD map dispositions require unique behavior ids")
         seen.add(identifier)
-        if status not in EVIDENCED_STATUSES | {"pending"}:
+        revalidate = raw.get("revalidate", False)
+        if revalidate is not False and revalidate is not True:
+            raise ValueError(f"behavior {identifier} revalidate must be true")
+        if revalidate and status is not None:
+            raise ValueError(f"behavior {identifier} disposition carries both status and revalidate")
+        refs = _source_refs(raw.get("sourceRefs"), identifier)
+        if status is None and not revalidate and not refs:
+            raise ValueError(f"behavior {identifier} disposition needs a status, revalidate, or sourceRefs")
+        if status is not None and status not in EVIDENCED_STATUSES | {"pending"}:
             raise ValueError(
                 f"behavior {identifier} disposition must be one of: "
                 + ", ".join(sorted(EVIDENCED_STATUSES | {"pending"}))
             )
-        if evidence is None:
+        if evidence is None and (status is not None or revalidate):
             raise ValueError(f"behavior {identifier} disposition requires evidence")
         mapped = item(items, identifier)
+        if refs:
+            # Additive only: the union keeps order and existing claims; ownership
+            # is never removed or reassigned through a disposition, and a
+            # withdrawn item owns nothing, so it takes no reference either.
+            if mapped.get("status") == "withdrawn":
+                raise ValueError(f"behavior {identifier} is withdrawn and owns nothing; it cannot take a reference")
+            existing = mapped.setdefault("sourceRefs", [])
+            existing.extend(ref for ref in refs if ref not in existing)
+        if revalidate:
+            if mapped.get("kind") != "preservation":
+                raise ValueError(
+                    f"behavior {identifier} is a {mapped.get('kind')} item; only a preservation "
+                    "item is revalidated, a new defect takes a new item"
+                )
+            if mapped.get("status") not in {"pending", "green"} | DISPOSITION_STATUSES:
+                raise ValueError(
+                    f"behavior {identifier} is {mapped.get('status')}; only a pending, settled, "
+                    "or GREEN preservation item can be revalidated"
+                )
+            if mapped["status"] in DISPOSITION_STATUSES:
+                mapped.pop("evidence", None)
+                mapped.pop("baselineProof", None)
+                mapped["status"] = "pending"
+            mapped["revalidationRequired"] = True
+            continue
+        if status is None:
+            continue
         if status == "superseded":
             if mapped.get("status") not in PROOF_STATUSES:
                 raise ValueError(
@@ -404,15 +453,29 @@ def apply_dispositions(
             mapped.pop("evidence", None)
             mapped.pop("baselineProof", None)
             mapped["status"] = "pending"
+            # Reopening a settled item is a request to re-execute, so prose
+            # cannot settle it again; the marker survives omission and reopening.
+            mapped["revalidationRequired"] = True
             continue
         elif mapped.get("kind") == "contract":
             raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
-        elif mapped.get("status") != "pending":
+        elif status == "already-satisfied" and flagged(mapped):
+            raise ValueError(
+                f"behavior {identifier} awaits re-execution; prose cannot restore already-satisfied, "
+                "run tdd --phase red on its mapped surface"
+            )
+        elif mapped.get("status") != "pending" and not (status == "omitted" and flagged(mapped)):
             raise ValueError(
                 f"behavior {identifier} is {mapped.get('status')}; only pending items can be dispositioned"
             )
         mapped["status"] = status
         mapped["evidence"] = evidence
+
+
+def flagged(entry: JsonObject) -> bool:
+    """Reassessment requested: the item's current proof is unresolved until an
+    accepted passing execution clears the marker; an omitted item carries none."""
+    return entry.get("revalidationRequired") is True
 
 
 def green_through_red(entry: JsonObject) -> bool:
@@ -424,21 +487,27 @@ def green_through_red(entry: JsonObject) -> bool:
 
 
 def producer_proved(entry: JsonObject) -> bool:
-    """Proof statuses come only from the producer; already-satisfied counts only with its recorded proof."""
-    return entry.get("status") in PROOF_STATUSES or (
-        entry.get("status") == "already-satisfied" and isinstance(entry.get("baselineProof"), dict)
+    """Currently applicable proof: statuses come only from the producer, already-satisfied
+    counts only with its recorded proof, and a flagged item's historical proof does not count."""
+    return not flagged(entry) and (
+        entry.get("status") in PROOF_STATUSES
+        or (entry.get("status") == "already-satisfied" and isinstance(entry.get("baselineProof"), dict))
     )
 
 
 def unresolved(items: list[JsonObject]) -> list[str]:
-    """Closure: pending, red, and superseded whose terminal replacement is not proved."""
+    """Closure: pending, red, flagged applicable items, and superseded items whose
+    terminal replacement is not currently proved GREEN."""
     return [
         str(entry["id"])
         for entry in items
         if entry.get("status") in {"pending", "red"} | LEGACY_STATUSES
+        or (flagged(entry) and entry.get("status") != "omitted")
         or (
             entry.get("status") == "superseded"
-            and terminal_item(items, entry).get("status") not in PROOF_STATUSES
+            and not (
+                (terminal := terminal_item(items, entry)).get("status") in PROOF_STATUSES and not flagged(terminal)
+            )
         )
     ]
 
@@ -455,6 +524,44 @@ def may_refactor(items: list[JsonObject]) -> bool:
     return not any(entry["id"] in pending for entry in contract) and any(
         entry.get("status") in {"green", "superseded"} for entry in contract
     )
+
+
+def obligation_digest(items: list[JsonObject]) -> str | None:
+    """A top-priority reminder of the map's obligations for the edit hook, never the
+    full map: at most DIGEST_LIMIT UTF-8 bytes including a header that counts the
+    rows it could not show. Rows rank RED contract, pending contract, unresolved or
+    flagged preservation, satisfied applicable preservation, then evidenced omissions."""
+    def rank(entry: JsonObject) -> int | None:
+        status, contract = entry.get("status"), entry.get("kind") == "contract"
+        if contract:
+            return {"red": 0, "pending": 1}.get(str(status))
+        if status in {"pending", "red"} or (flagged(entry) and status != "omitted"):
+            return 2
+        return {"already-satisfied": 3, "green": 3, "omitted": 4}.get(str(status))
+
+    ranked = sorted((r, position, entry) for position, entry in enumerate(items) if (r := rank(entry)) is not None)
+    rows: list[str] = []
+    for _, _, entry in ranked:
+        label = str(entry["status"])
+        if label == "omitted":
+            label = "non-applicable, omitted by evidence"
+        elif flagged(entry):
+            label += ", re-execution required"
+        rows.append(f"{entry['id']} [{label}] {entry['behavior']} -> {entry['expected']}".translate(CONTROL_ESCAPES))
+    if not rows:
+        return None
+
+    def header(shown: int, skipped: int) -> str:
+        return f"Behavior Map obligations (top-priority reminder, not the full map): {shown} shown, {skipped} not displayed."
+
+    budget = DIGEST_LIMIT - len(header(len(rows), len(rows)).encode("utf-8"))
+    shown: list[str] = []
+    for row in rows:
+        cost = len(row.encode("utf-8")) + 1
+        if cost <= budget:
+            shown.append(row)
+            budget -= cost
+    return "\n".join([header(len(shown), len(rows) - len(shown)), *shown])
 
 
 def edit_blocker(items: list[JsonObject]) -> str | None:

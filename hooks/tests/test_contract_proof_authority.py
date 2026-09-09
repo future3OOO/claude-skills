@@ -222,7 +222,7 @@ class ContractProofAuthorityTests(unittest.TestCase):
         })
         self.assertEqual(dispositioned.returncode, 0, marker + ": " + dispositioned.stdout + dispositioned.stderr)
         self.record_production_code(slug, workflow_id)
-        self.assertEqual(self.intake_advice(), "", marker)
+        self.assertNotIn("missing before", self.intake_advice(), marker)
 
     def test_passing_pre_edit_red_records_producer_backed_already_satisfied(self) -> None:
         marker = "BASELINE_PASS_NOT_RECORDED"

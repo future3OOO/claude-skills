@@ -63,9 +63,10 @@ whether it is behavioral or non-behavioral.
 
 ### `final-review`
 
-Run after implementation, verification, and the lead's structured code-review
-pass when required. This is the workflow's independent review checkpoint: it
-challenges the lead's review rather than trusting it. The wrapper sends the
+Run after implementation, verification, and the delegate code review when
+required. This is the workflow's independent review checkpoint: it judges the
+candidate, the delegate review, and the lead's dispositions rather than
+trusting them. The wrapper sends the
 recorded original request once, the checkpoint's retained advisor projection,
 the current governing-design declaration (a deepened design records as new
 evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff:
@@ -74,8 +75,9 @@ context), production hunks keep ordinary context. The advisor answers in order: 
 original request and public Interface promise; which production operations can
 falsify each load-bearing promise;
 which of those are unattacked through the real Seam in the supplied evidence;
-whether any finding disposition narrows or loses part of its original domain;
-and only then the changed Module shape, minimality, security boundary,
+whether any finding disposition narrows or loses part of its original domain,
+judged against its owners' seams, statuses, executed commands, and reassessment
+state; and only then the changed Module shape, minimality, security boundary,
 candidate binding, and visible regression coverage. A promised load-bearing
 surface with no attack forbids `commit-ready` even when every declared map item
 is green; checkpoint readiness remains wrapper-owned. The rubric binds both

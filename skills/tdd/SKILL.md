@@ -29,7 +29,7 @@ If a required behavior has no clean real Seam, record the proof gap and stop the
 
 The recorded production preflight owns the initial Behavior Map. A plan may reference it but is not authoritative.
 
-A behavior slice is the smallest independently-failable observable outcome under one relevant precondition. Split outcomes when different defects could break them independently. “And” joining independent outcomes is a smell, not a mechanical rule.
+A behavior slice is the smallest independently-failable observable outcome under one relevant precondition. Split outcomes when different defects could break them independently; do not split per input spelling or per finding. Parameterized cases may share one operation while every independently missing guarantee stays a visible item. “And” joining independent outcomes is a smell, not a mechanical rule.
 
 Map:
 
@@ -40,9 +40,11 @@ Map:
 - every value one evaluation system produces and another decides under its own semantics; the item names which system's rules decide, and its attack is **differential** (tests.md);
 - known load-bearing assumptions that need semantic falsification.
 
-Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
+Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items follow the slice rule above — one item per independently-failable outcome — and its closure may claim only the domain those attacks executed.
 
-**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing runner RED instead records a **baseline**, `already-satisfied`, whatever the tree state; a non-runner operation exiting 0 on a pending item is refused. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
+**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing runner RED instead records a **baseline**, `already-satisfied`, whatever the tree state; a non-runner operation exiting 0 on a pending item is refused. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN, currently proved and unflagged. A contract item is never `omitted`. Proof gaps stay pending.
+
+**Reassessment.** A preservation item the repair could disturb is flagged with a `revalidate` disposition (or by reopening a settled item): it keeps its history but its current proof is unresolved until an accepted passing execution clears the flag - a baseline or GREEN through `tdd --phase red` for a flagged pending item, a `tdd --phase green` recheck against the recorded RED surface for a flagged GREEN item. Prose cannot settle a flagged item; `omitted` may, and the flag survives omission and reopening. Identify the affected guarantees before editing and batch their reassessment after the coherent change; never flag every item on every edit.
 
 ## 2. Drive One Mapped Vertical Slice
 
@@ -60,7 +62,7 @@ Select one pending contract ID and write its RED before the production edit that
 
 - Write the smallest production change that passes the same test surface.
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
-- Do not anticipate later slices.
+- Do not implement unrelated future features; affected guarantees and known defects belong to this repair, and one coherent edit may satisfy several recorded REDs.
 
 **ORDER OF PROOF**
 
@@ -79,7 +81,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 JSON
 ```
 
-The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only; `sourceBehaviorId` names the GREEN item whose consequence the update records. Dispositions take the statuses of Section 1: `superseded` names its replacement in `supersededBy` (addable in the same update) and resolves only once the chain's terminal replacement is GREEN, so a target that can never be GREEN refuses; `withdrawn` refuses an attacked or finding-owning item; `pending` refuses anything but an `omitted` or `already-satisfied` preservation item.
+The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only; `sourceBehaviorId` names the GREEN item whose consequence the update records. Dispositions take the statuses of Section 1: `superseded` names its replacement in `supersededBy` (addable in the same update) and resolves only once the chain's terminal replacement is GREEN, so a target that can never be GREEN refuses; `withdrawn` refuses an attacked or finding-owning item; `pending` refuses anything but an `omitted` or `already-satisfied` preservation item. A disposition may instead carry `revalidate: true` (exclusive with `status`), and either form may union finding or design `sourceRefs` onto the item additively. An update that only adds references records evidence without reopening TDD; an unchanged update writes nothing; a changed obligation reopens TDD without resetting downstream readiness, which only production edits reset.
 
 - identify each load-bearing mechanism, state boundary, or cross-system value the GREEN introduced and drive the cheapest real-Seam probe that could falsify it;
 - add any newly exposed touched-Seam preservation or interaction behavior;
