@@ -104,9 +104,10 @@ rerun the bootstrap.
   changed target surface
 - use `<soulforge_impact>` as native SoulForge blast-radius context before
   editing or reviewing selected files
-- use `<semantic_summaries>` and each symbol's summary source as injected
-  context; `full_cached` means cached LLM/LSP/AST/native summaries are used
-  first and deterministic synthetic fill is used without live LLM calls
+- Read per-symbol source labels and `<source_counts>` to see which cached
+  descriptions or deterministic fallback the workflow index actually selected;
+  `full_cached` is a consumption-policy label, not evidence that richer summaries
+  were available or that the entire intake made no model calls.
 - use `<gitnexus_status><repo>` as the repo value for every GitNexus MCP call
 - in `pr` mode, do not treat dirty source-worktree files as PR targets
 - read `<gitnexus_analysis>` as the first GitNexus validation step before
