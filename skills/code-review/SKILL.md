@@ -46,20 +46,24 @@ and Refused Bequest.
 
 ## 4. Falsify the promises
 
-Derive the obligations from the original contract, then ask of the evidence
-you are handed: what materially broken implementation would still pass these
-checks, and which specific wrong behavior would make the relied-on check fail?
-Run the smallest real-Interface attack that distinguishes each answer,
-observing the contract-relevant outcomes, identity, state preservation, and
-cleanup together. Cover the input forms and interactions the changed mechanism
-makes relevant, not every imaginable case. Replay applicable earlier review
-reproductions unchanged against the final candidate, and for a bug reuse the
-same operation and assertions on the old and candidate implementations,
-confirming each target. Keep every useful operation as a runnable command with
-its expected versus observed effect. Passing suites, map status, lint, printed
-success, and tests that substitute a collaborator are not the verdict. Dispute
-an expectation only with measured evidence, and attempt to falsify your own
-diagnosis before presenting it as a defect.
+Derive the requested changes from the contract and the existing guarantees the
+diff could alter: read the base beside the candidate with its callers,
+documentation, and tests, separating intentional changes from regressions;
+historical behavior is evidence, not authority over an intentionally changed
+contract. Challenge the map and supplied evidence against those obligations:
+what materially broken implementation would still pass these checks, and which
+specific wrong behavior would make the relied-on check fail? Run the smallest
+real-Interface attack that distinguishes each answer, observing the
+contract-relevant outcomes, identity, state preservation, and cleanup together;
+for a bug fix or suspected regression run the same operation and assertions
+against both versions, confirming each target. Replay applicable earlier review
+reproductions unchanged against the final candidate, and keep every useful
+operation, including a passing preservation attack or a disproven suspicion, as
+a runnable command with its expected versus observed effect. Cover the input
+forms and interactions the changed mechanism makes relevant. Passing suites, map
+status, lint, printed success, and tests that substitute a collaborator are not
+the verdict; dispute an expectation or present a defect only with measured
+evidence, after attempting to falsify your own diagnosis.
 
 ## 5. Review both axes
 
