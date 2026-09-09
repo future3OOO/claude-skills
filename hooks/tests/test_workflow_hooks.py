@@ -2187,7 +2187,8 @@ HOOK_PROBE = (
 
 class ObligationDigestTests(HookHarness):
     """Issue #215 section 4: the edit hook reminds the lead of the map's obligations
-    from the map it already loads, bounded to 2,048 bytes and adding no I/O."""
+    from the map it already loads, bounded to 2,048 bytes and adding no I/O; a map
+    carrying a status the runtime no longer accepts is refused, not reminded."""
 
     def advice(self, relative: str, marker: str, env: dict[str, str] | None = None) -> str:
         result = self.intake(relative, env=env)
@@ -2266,6 +2267,25 @@ class ObligationDigestTests(HookHarness):
                               stdout=subprocess.PIPE, check=True).stdout.strip()
         print(json.dumps({"resource": "PreToolUse obligation digest", "scale": f"{len(items)} items, one {len(long_row.encode())}-byte row",
                           "limit": limits, "observed": observed, "target": {"hook": str(INTAKE), "fixtureHead": head}}))
+
+    def test_a_retired_status_is_refused_not_reminded(self) -> None:
+        marker = "RETIRED_STATUS_LOADED"
+        slug = "digest-retired"
+        self.open_pass(slug, [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")])
+        self.assertEqual(self.tdd(slug, "red", "BM_A", "a", 2).returncode, 0, marker)
+        # Evidence a retired producer recorded under `post-edit-passed`; no current writer constructs it.
+        evidence_id = json.loads(self.state("status").stdout)["tddEvidence"]
+        connection = sqlite3.connect(Path(self.env["CLAUDE_WORKFLOW_STATE_ROOT"]) / resolve_repo_identity(self.repo).key / "workflow.sqlite3")
+        try:
+            document = json.loads(connection.execute("SELECT document_json FROM evidence WHERE evidence_id = ?", (evidence_id,)).fetchone()[0])
+            document["behaviorMap"][0]["status"] = "post-edit-passed"
+            connection.execute("UPDATE evidence SET document_json = ? WHERE evidence_id = ?", (json.dumps(document), evidence_id))
+            connection.commit()
+        finally:
+            connection.close()
+        context = self.advice("app.py", marker)
+        self.assertIn("workflow evidence is unreadable: behavior BM_A status must be one of", context, marker + ": " + context)
+        self.assertNotIn(DIGEST_HEADER, context, marker + ": " + context)
 
 
 class LedgerTransportTests(HookHarness):

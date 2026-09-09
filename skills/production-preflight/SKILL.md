@@ -142,7 +142,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 - Name the proof you will run for the affected surface.
 - Include one combined workflow proof when the work is stateful or control-loop sensitive.
 - Focused invariant checks may supplement the combined proof, not replace it.
-- Declare the pass's resource requirement before measuring it: the limit, the scale, and the command, reusing a targeted correctness operation wherever possible rather than a cost-only map item or benchmark suite. Run it through `workflow.py verify`; its output carries the scale, limit, observed value, and target identity, and a failing run keeps verification pending until the same command passes. Compare only alternatives that satisfy the same Interface, and never relax the limit to pass.
+- Declare the pass's resource requirement before measuring it: the limit, the scale, and the command, reusing a targeted correctness operation wherever possible rather than a cost-only map item or benchmark suite. Make the command emit the scale, limit, observed value, and target identity, and run it through `workflow.py verify`, which retains that output without validating those fields; a failing run keeps verification pending until the same command passes. Compare only alternatives that satisfy the same Interface, and never relax the limit to pass.
 
 ### `reusePath`
 

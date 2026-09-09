@@ -345,7 +345,6 @@ class ContractProofAuthorityTests(unittest.TestCase):
         marker = "LEGACY_SUPERSEDED_READ_AS_GREEN"
         self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y"}), marker)
         self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "green"}), marker)
-        self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "post-edit-passed"}), marker)
         self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "green"}), marker)
 
     def test_red_phase_baseline_reads_the_terminal_pytest_summary(self) -> None:

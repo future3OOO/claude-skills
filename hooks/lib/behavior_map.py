@@ -7,12 +7,9 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-# Proof is GREEN through the item's own RED. `post-edit-passed` is a retired
-# status: evidence recorded under it still loads, but it is unresolved until
-# the item earns GREEN through RED.
+# Proof is GREEN through the item's own RED.
 PROOF_STATUSES = frozenset({"green"})
-LEGACY_STATUSES = frozenset({"post-edit-passed"})
-RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | LEGACY_STATUSES | {"red", "superseded", "withdrawn"}
+RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | {"red", "superseded", "withdrawn"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded", "withdrawn"}
 NEVER_GREEN = DISPOSITION_STATUSES | {"withdrawn"}
@@ -252,8 +249,8 @@ def validate_items(
             if not allow_runtime or not isinstance(raw.get("baselineProof"), dict):
                 raise ValueError(_BASELINE_PROOF_RESERVED.format(identifier))
             item["baselineProof"] = raw["baselineProof"]
-        # Supersession keeps the proof kind it retired, so a post-edit pass
-        # cannot be laundered into a GREEN through RED by being superseded.
+        # Supersession keeps the proof kind it retired: only a GREEN through
+        # RED may be recorded as the superseded proof.
         if "supersededFrom" in raw:
             if not allow_runtime or raw.get("supersededFrom") not in PROOF_STATUSES:
                 raise ValueError(f"behavior {identifier} supersededFrom is recorded only by a tdd-map supersession")
@@ -501,7 +498,7 @@ def unresolved(items: list[JsonObject]) -> list[str]:
     return [
         str(entry["id"])
         for entry in items
-        if entry.get("status") in {"pending", "red"} | LEGACY_STATUSES
+        if entry.get("status") in {"pending", "red"}
         or (flagged(entry) and entry.get("status") != "omitted")
         or (
             entry.get("status") == "superseded"

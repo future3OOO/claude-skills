@@ -130,7 +130,7 @@ readiness for the advisor phases without mutating anything.
   unavailable with a measured reason;
 - production preflight completed with a non-empty Behavior Map;
 - every contract map item GREEN, baseline `already-satisfied`, or `withdrawn`;
-- every preservation map item GREEN, already satisfied, or omitted with evidence and not flagged for re-execution (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a currently proved GREEN terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
+- every preservation map item currently proved (GREEN or already satisfied, with no re-execution flag) or omitted with evidence, a flagged omission included (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a currently proved GREEN terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
 - no pending proof gap;
 - TDD passed or not required;
 - production-code recorded;
