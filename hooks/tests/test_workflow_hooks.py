@@ -1722,10 +1722,15 @@ class RedFirstTests(HookHarness):
             "    def test_value(self): self.assertEqual(app.a, 2, 'A_NOT_TWO')\n",
             encoding="utf-8",
         )
+        def lifecycle() -> dict[str, object]:
+            return {k: json.loads(self.state("status").stdout).get(k) for k in ("tdd", "phase", "implementation", "tddCycleCount")}
+
+        before = lifecycle()
         skipped = self.workflow("tdd", "--slug", slug, "--phase", "green", "--behavior-id", "BM_A",
                                 "--", sys.executable, "-m", "unittest", "test_probe_a")
         self.assertEqual(skipped.returncode, 2, marker + ": " + skipped.stdout)
         self.assertEqual(self.map_status()["BM_A"], "red", marker)
+        self.assertEqual(lifecycle(), before, marker + ": the skipped GREEN moved the lifecycle")
 
     def test_an_early_exit_green_is_not_proof(self) -> None:
         marker = "EARLY_EXIT_ACCEPTED_AS_GREEN"
@@ -2201,7 +2206,7 @@ class ObligationDigestTests(HookHarness):
     def test_the_hook_reminds_obligations_on_consecutive_edits(self) -> None:
         marker = "DIGEST_ABSENT"
         slug = "digest-reminder"
-        self.open_pass(slug, [
+        wid = self.open_pass(slug, [
             pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO"),
             pending_behavior("BM_KEEP", kind="preservation", behavior="b stays one", seam="app module",
                              expected="app.b == 1", red_failure="B_NOT_ONE"),
@@ -2222,6 +2227,20 @@ class ObligationDigestTests(HookHarness):
         self.assertEqual(self.events(), events, marker + ": the reminder wrote to the ledger")
         for silent in ("notes.md", "tests/test_app.py"):
             self.assertEqual(self.intake(silent).stdout, "", marker + ": " + silent)
+        # Priority groups: a preservation item awaiting re-execution outranks a
+        # merely pending contract item; the RED contract still leads.
+        update = self.tmp / "priority-map.json"
+        update.write_text(json.dumps({"reassessment": "the repair affects b", "items": [
+            pending_behavior("BM_B", behavior="b becomes two", seam="app module", expected="app.b == 2", red_failure="B_NOT_TWO")],
+            "dispositions": [{"id": "BM_KEEP", "revalidate": True, "evidence": "the repair affects b"}]}), encoding="utf-8")
+        updated = self.state("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        context = self.advice("app.py", marker)
+        rows = ["BM_A [red] a is two -> app.a == 2", "BM_KEEP [pending, re-execution required] b stays one -> app.b == 1",
+                "BM_B [pending] b becomes two -> app.b == 2", "BM_SKIP [non-applicable, omitted by evidence] c is out of scope -> c untouched"]
+        positions = [context.find(row) for row in rows]
+        self.assertEqual(positions, sorted(positions), "DIGEST_PRIORITY_INVERTED: " + context)
+        self.assertNotIn(-1, positions, "DIGEST_PRIORITY_INVERTED: " + context)
         begun = self.state("begin", "--slug", "digest-no-map")
         self.assertEqual(begun.returncode, 0, begun.stdout + begun.stderr)
         context = self.advice("app.py", marker)

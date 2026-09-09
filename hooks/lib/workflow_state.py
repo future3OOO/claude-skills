@@ -78,10 +78,6 @@ class WorkflowIncomplete(WorkflowError):
     """The workflow cannot transition to complete."""
 
 
-class CandidateDrift(WorkflowError):
-    """The reviewable tree changed between a run's launch and its commit."""
-
-
 def safe_slug(value: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._").lower()
     return normalized[:80] or "unnamed-workflow"
@@ -501,42 +497,52 @@ def commit_tdd(
     slug: str,
     workflow_id: str | None,
     summary_doc: JsonObject | None,
-    action: str,
+    action: str | None,
     *,
     expected_evidence_id: str | None = None,
     opens_cycle: bool = False,
     tree_before: dict[str, str] | None = None,
-) -> tuple[JsonObject, str | None]:
-    """Commit a TDD transition and its logical evidence under one transaction.
+) -> tuple[JsonObject, str | None, str | None]:
+    """Commit TDD evidence, with or without a transition, under one transaction.
 
-    `opens_cycle` is the caller's answer to the one question the committed
-    action cannot carry: `reopen` is recorded both for a cycle-opening RED and
-    for a GREEN regression, so the count is kept forward here rather than
-    reconstructed from a history that cannot tell the two apart.
+    `action` None is the evidence-only write - a refused or drifted run, a
+    reference union - which must not regress the pass to the tdd phase the way
+    a recorded run does: it keeps the instance binding, the expected-evidence
+    compare-and-swap and the shared map/finding validation, and skips only the
+    transition prerequisites. `opens_cycle` is the caller's answer to the one
+    question the committed action cannot carry: `reopen` is recorded both for a
+    cycle-opening RED and for a GREEN regression.
 
     `tree_before` is the reviewable-tree manifest a reassessment run sampled
-    before its child started; the commit refuses with `CandidateDrift` naming
-    the changed paths when the tree no longer matches, so the caller retains the
-    run invalid instead of clearing a marker with a result about another tree.
+    before its child started. When the tree no longer matches at commit, the
+    attempted run is retained invalid on the current document, naming the
+    drifted paths, and the returned reason tells the caller no transition
+    happened: the map, marker and open cycle stay exactly as that document held
+    them, whatever result the child reported about another tree.
     """
-    if action not in TDD_ACTIONS:
+    if action is not None and action not in TDD_ACTIONS:
         raise ValueError(f"unsupported tdd action: {action}")
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
-        if state.get("revalidation"):
-            raise WorkflowError(TDD_CLOSED)
-        _require_predecessor(state, "tdd")
-        if not state.get("preflightEvidence"):
-            raise WorkflowError("tdd requires recorded preflight evidence")
+        if action is not None:
+            if state.get("revalidation"):
+                raise WorkflowError(TDD_CLOSED)
+            _require_predecessor(state, "tdd")
+            if not state.get("preflightEvidence"):
+                raise WorkflowError("tdd requires recorded preflight evidence")
         if state.get("tddEvidence") != expected_evidence_id:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
+        drift = None
         if tree_before is not None:
             try:
                 drift = _manifest_drift(tree_before, tree_manifest(identity), stale="reviewable tree changed during the reassessment run")
             except RuntimeError as exc:
                 drift = f"the reviewable tree could not be sampled at commit: {exc}"
             if drift is not None:
-                raise CandidateDrift(drift)
+                current = transaction.evidence(expected_evidence_id)
+                run = {**summary_doc["runs"][-1], "valid": False, "bindingError": drift}
+                summary_doc = {**current, "runs": [*current.get("runs", []), run], "updatedAt": utc_timestamp()}
+                action = None
         if summary_doc is not None:
             _validate_tdd_document(transaction, state, summary_doc)
         writes: list[EvidenceWrite] = []
@@ -546,6 +552,9 @@ def commit_tdd(
             writes.append(write)
             evidence_id = write.evidence_id
             state["tddEvidence"] = evidence_id
+        if action is None:
+            state["nextAction"] = _derive_next_action(state, summary_doc)
+            return _commit(transaction, state, "tdd-annotated", evidence=writes), evidence_id, drift
         state.pop("paused", None)
         if opens_cycle:
             state["tddCycleCount"] = state.get("tddCycleCount", 0) + 1
@@ -558,32 +567,7 @@ def commit_tdd(
             state["tdd"] = action
             state["phase"] = "tdd"
             state["nextAction"] = _derive_next_action(state, summary_doc)
-        return _commit(transaction, state, f"tdd-{action}", evidence=writes), evidence_id
-
-
-def annotate_tdd_evidence(
-    identity: RepoIdentity,
-    slug: str,
-    workflow_id: str | None,
-    summary_doc: JsonObject,
-    *,
-    expected_evidence_id: str | None = None,
-) -> tuple[JsonObject, str]:
-    """Record a TDD evidence document without a phase transition.
-
-    Evidence-only writes - a refused or drifted run, a reference union - must
-    not regress the pass to the tdd phase the way a recorded run does; only the
-    evidence pointer moves, under the same map and finding validation.
-    """
-    with mutation(identity) as transaction:
-        state = _bound_instance_state(transaction.state, slug, workflow_id)
-        if state.get("tddEvidence") != expected_evidence_id:
-            raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
-        _validate_tdd_document(transaction, state, summary_doc)
-        write = evidence_write(str(state["workflowId"]), "tdd", summary_doc)
-        state["tddEvidence"] = write.evidence_id
-        state["nextAction"] = _derive_next_action(state, summary_doc)
-        return _commit(transaction, state, "tdd-annotated", evidence=[write]), write.evidence_id
+        return _commit(transaction, state, f"tdd-{action}", evidence=writes), evidence_id, None
 
 
 def _candidate_tree(identity: RepoIdentity) -> str:
@@ -1274,13 +1258,13 @@ def _finding_state_blockers(state: JsonObject) -> list[str]:
     return result
 
 
-def correction_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
-    tdd = evidence_document(identity, state.get("tddEvidence"))
-    preflight = evidence_document(identity, state.get("preflightEvidence"))
-    return behavior_map.closure_blockers(tdd, preflight) + _finding_state_blockers(state)
+def correction_blockers(state: JsonObject, items: list[JsonObject] | None) -> list[str]:
+    return behavior_map.closure_blockers(items) + _finding_state_blockers(state)
 
 
-def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject) -> list[str]:
+def _finding_completion_blockers(
+    transaction: LedgerMutation, state: JsonObject, items: list[JsonObject],
+) -> list[str]:
     states = state.get("findingStates", [])
     if not isinstance(states, list):
         return ["finding lifecycle evidence is corrupt"]
@@ -1292,7 +1276,7 @@ def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject)
             try:
                 _behavioral_finding_closure(
                     transaction, state, str(entry.get("intakeEvidenceId")), str(entry.get("findingId")),
-                    require_green=entry.get("status") == "fixed",
+                    items=items, require_green=entry.get("status") == "fixed",
                 )
             except WorkflowError as exc:
                 blockers.append(str(exc))
@@ -1677,14 +1661,14 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
             )
         except ValueError as exc:
             missing.append(str(exc))
+    items = _recorded_items(identity, state)
     if phase == "final-review":
-        missing.extend(() if state.get("nextAction") in ("appeal-final-review", "re-consult-final-review") else correction_blockers(identity, state))
+        missing.extend(() if state.get("nextAction") in ("appeal-final-review", "re-consult-final-review") else correction_blockers(state, items))
         if drift := _binding_drift(identity, state, "review"):
             missing.append(drift)
         if drift := _binding_drift(identity, state, "quality-gate"):
             missing.append(drift)
     review = state.get("codeReview") if isinstance(state.get("codeReview"), dict) else {}
-    items = _recorded_items(identity, state)
     return {
         "schemaVersion": 1,
         "phase": phase,
@@ -1719,11 +1703,12 @@ def complete(
         state.pop("revalidation", None)
         # Behavior Map closure and design coverage are judged from the evidence
         # this transaction sees, so a concurrent map change cannot slip through.
-        tdd_document = transaction.evidence(state.get("tddEvidence"))
-        preflight_document = transaction.evidence(state.get("preflightEvidence"))
-        missing = behavior_map.closure_blockers(
-            tdd_document, preflight_document,
-        ) + _finding_completion_blockers(transaction, state) + completion_missing(state)
+        items = behavior_map.recorded_map(
+            transaction.evidence(state.get("tddEvidence")), transaction.evidence(state.get("preflightEvidence")),
+        ) or []
+        missing = behavior_map.closure_blockers(items) + _finding_completion_blockers(
+            transaction, state, items,
+        ) + completion_missing(state)
         graph_id = state.get("repoContextForgeEvidence")
         graph_document = transaction.evidence(graph_id) if isinstance(graph_id, str) else None
         if (

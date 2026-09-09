@@ -20,22 +20,22 @@ from .command_runner import (
 )
 from .repo_identity import RepoIdentity, resolve_repo_identity
 from .state_store import (
+    _write_candidate_tree,
     atomic_write_json,
     production_changes,
     read_json,
     repo_state_dir,
     tree_manifest,
+    untracked_paths,
     utc_timestamp,
 )
 from .workflow_documents import load_json
 from .workflow_state import (
     NO_INSTANCE_ID,
     TDD_CLOSED,
-    CandidateDrift,
     WorkflowError,
     _executed_selections,
     _head_oid,
-    annotate_tdd_evidence,
     bound_state,
     commit_tdd,
     evidence_document,
@@ -167,7 +167,7 @@ def edit_advice(identity: RepoIdentity, state: JsonObject) -> tuple[list[str], s
 
 def completion_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
     """Map conditions that forbid workflow completion (diagnostic; complete() re-judges in its transaction)."""
-    return behavior_map.closure_blockers(*_evidence_pair(identity, state))
+    return behavior_map.closure_blockers(behavior_map.recorded_map(*_evidence_pair(identity, state)))
 
 
 def _not_required(
@@ -217,7 +217,7 @@ def _not_required(
             "updatedAt": utc_timestamp(),
         }
     )
-    _, evidence_id = commit_tdd(
+    _, evidence_id, _ = commit_tdd(
         identity,
         str(state["slug"]),
         str(state["workflowId"]),
@@ -330,13 +330,13 @@ def _pass_proof(
     return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, ""
 
 
-def _tree_binding(identity: RepoIdentity, state: JsonObject) -> dict[str, object]:
+def _tree_binding(identity: RepoIdentity, state: JsonObject, untracked: list[str]) -> dict[str, object]:
     """The tree a RED-phase run is launched on: production paths changed since the
     pass began (tracked or untracked) and the commits on either side. Order of
     proof is recorded here as evidence; nothing refuses on it."""
     start = state.get("passStartOid")
     return {
-        "productionChanged": production_changes(identity, start if isinstance(start, str) and start else "HEAD"),
+        "productionChanged": production_changes(identity, start if isinstance(start, str) and start else "HEAD", untracked),
         "passStartOid": start,
         "headOid": _head_oid(identity),
     }
@@ -497,13 +497,22 @@ def _run_tdd(values: list[str]) -> int:
         command = [*command[:sentinel], "--override-ini=addopts=", *command[sentinel:]]
     # Measured before the command runs: the binding describes the tree the RED
     # or the reassessment run was launched on, whatever the command rewrites or
-    # commits before returning.
-    binding = _tree_binding(identity, state) if phase == "red" or (not legacy and reassessment) else {}
-    # A reassessment run also samples the reviewable tree first; the commit
-    # compares it inside the ledger transaction, so a child that changes the
-    # tree is retained invalid rather than clearing the marker. The lock is
-    # never held while the child runs.
-    tree_before = tree_manifest(identity) if not legacy and reassessment else None
+    # commits before returning. A reassessment run also records the exact
+    # candidate it ran on and samples the reviewable tree the commit compares
+    # inside the ledger transaction, so a child that changes the tree is
+    # retained invalid rather than clearing the marker; one untracked listing
+    # serves every part of that snapshot. The lock is never held while the
+    # child runs.
+    binding: dict[str, object] = {}
+    tree_before = None
+    if phase == "red" or (not legacy and reassessment):
+        untracked = untracked_paths(identity)
+        binding = _tree_binding(identity, state, untracked)
+        if not legacy and reassessment:
+            # Manifest first: any persisted change after it, the tree capture's
+            # own window included, is caught by the commit-time comparison.
+            tree_before = tree_manifest(identity, untracked)
+            binding["candidateTree"] = _write_candidate_tree(identity)
     try:
         raw, exit_code, timed_out = _run(command, identity, args.timeout, env=env)
     except OSError as exc:
@@ -637,9 +646,12 @@ def _run_tdd(values: list[str]) -> int:
             action = "in-progress" if behavior_map.unresolved(updated) else "passed"
         else:
             # A refused attempt is evidence, not progress: annotated without a
-            # transition (action None). A failed GREEN is a regression.
+            # transition (action None). A failed GREEN is a regression; a GREEN
+            # whose runner executed no passing test proves nothing either way,
+            # so it is retained as an attempt and completed receipts stand.
             next_active = args.behavior_id if status == "red" else None
-            action = "reopen" if phase == "green" else None
+            absent = not timed_out and exit_code == 0 and proof is None
+            action = "reopen" if phase == "green" and not absent else None
         # Beside another item's open cycle, a baseline, recheck, or refused
         # attempt keeps that cycle's document and binding; only a valid RED for
         # this item opens its own.
@@ -662,26 +674,16 @@ def _run_tdd(values: list[str]) -> int:
                 surface=surface,
                 runs=[*prior_runs, run] if matches else [run],
             )
-    if document is not None and action is not None:
-        try:
-            _, evidence_id = commit_tdd(
-                identity, slug, workflow_id, document, action,
-                expected_evidence_id=evidence_id, opens_cycle=opens_cycle, tree_before=tree_before,
-            )
-        except CandidateDrift as exc:
-            # The child changed the reviewable tree: retain the run invalid with
-            # the drifted paths, and leave the item and whichever cycle was open
-            # (another item's, or this item's own) exactly as they were.
-            run = {**run, "valid": False, "bindingError": str(exc)}
-            document = {**(current if beside_other else document), "behaviorMap": items,
-                        "status": "pending" if behavior_map.unresolved(items) else "passed",
-                        "activeBehaviorId": active if beside_other else args.behavior_id if status == "red" else None,
-                        "runs": [*(current["runs"] if beside_other else prior_runs), run], "updatedAt": utc_timestamp()}
-            valid, action, proof_error = False, None, str(exc)
-    if document is not None and action is None:
-        _, evidence_id = annotate_tdd_evidence(
-            identity, slug, workflow_id, document, expected_evidence_id=evidence_id
+    drift = None
+    if document is not None:
+        _, evidence_id, drift = commit_tdd(
+            identity, slug, workflow_id, document, action,
+            expected_evidence_id=evidence_id, opens_cycle=opens_cycle, tree_before=tree_before,
         )
+        if drift:
+            # The committed outcome is the public one: the run was retained
+            # invalid and nothing the child reported about another tree counts.
+            valid = baseline = False
 
     _print_output(raw)
     payload: JsonObject = {
@@ -697,7 +699,9 @@ def _run_tdd(values: list[str]) -> int:
     _emit_json(payload)
     if valid or baseline:
         return 0
-    if legacy:
+    if drift:
+        print("the run changed the reviewable tree and is retained invalid: " + drift, file=sys.stderr)
+    elif legacy:
         print(
             "RED must fail for the expected reason."
             if phase == "red"
@@ -960,16 +964,11 @@ def _map_update(values: list[str]) -> int:
             else _map_doc(slug=str(state["slug"]), workflow_id=str(state["workflowId"]), items=updated,
                           status=status, kind="map", reassessment=fields["reassessment"], sourceBehaviorId=source)
         )
-        if reference_only:
-            _, evidence_id = annotate_tdd_evidence(
-                identity, str(state["slug"]), str(state["workflowId"]), document,
-                expected_evidence_id=current_evidence_id,
-            )
-        else:
-            _, evidence_id = commit_tdd(
-                identity, str(state["slug"]), str(state["workflowId"]), document,
-                "in-progress" if unresolved else "passed", expected_evidence_id=current_evidence_id,
-            )
+        _, evidence_id, _ = commit_tdd(
+            identity, str(state["slug"]), str(state["workflowId"]), document,
+            None if reference_only else "in-progress" if unresolved else "passed",
+            expected_evidence_id=current_evidence_id,
+        )
     _emit_json(
         {
             "summaryId": evidence_id,

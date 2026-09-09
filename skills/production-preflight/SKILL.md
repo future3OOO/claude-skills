@@ -42,17 +42,7 @@ When the turn edits code on an already-open PR:
 
 ## Affected Surface Rule
 
-Every code change must re-walk the full affected surface before edits.
-
-At minimum, name:
-
-- the real boundary or behavior being changed
-- adjacent consumers, callers, and no-change surfaces that could regress
-- the authoritative contract that must remain true across that surface
-- the invariants that prove the surrounding surface is still correct
-- proof that checks the surrounding surface rather than only the cited branch or file
-
-Keep this proportional for ordinary work.
+Before edits, derive the affected surface the way Production Code's Minimum Implementation Decision requires (requested and preserved guarantees, adjacent consumers, no-change surfaces, proof of the surrounding surface) and record it in the sections below; this preflight owns the record, not a second copy of the rule.
 
 ## Behavior Bug Root-Cause Gate
 

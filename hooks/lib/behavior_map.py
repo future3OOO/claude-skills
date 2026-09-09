@@ -402,6 +402,9 @@ def apply_dispositions(
                     f"behavior {identifier} is a {mapped.get('kind')} item; only a preservation "
                     "item is revalidated, a new defect takes a new item"
                 )
+            if flagged(mapped):
+                # Already awaiting re-execution: the repeated request changes nothing.
+                continue
             if mapped.get("status") not in {"pending", "green"} | DISPOSITION_STATUSES:
                 raise ValueError(
                     f"behavior {identifier} is {mapped.get('status')}; only a pending, settled, "
@@ -470,8 +473,8 @@ def apply_dispositions(
 
 
 def flagged(entry: JsonObject) -> bool:
-    """Reassessment requested: the item's current proof is unresolved until an
-    accepted passing execution clears the marker; an omitted item carries none."""
+    """Reassessment requested: the marker stays until an accepted passing execution
+    clears it. An omitted item keeps the marker but has no proof to resolve."""
     return entry.get("revalidationRequired") is True
 
 
@@ -494,12 +497,13 @@ def producer_proved(entry: JsonObject) -> bool:
 
 def unresolved(items: list[JsonObject]) -> list[str]:
     """Closure: pending, red, flagged applicable items, and superseded items whose
-    terminal replacement is not currently proved GREEN."""
+    terminal replacement is not currently proved GREEN. A superseded item's own
+    marker no longer blocks: its obligation is judged on the replacement's proof."""
     return [
         str(entry["id"])
         for entry in items
         if entry.get("status") in {"pending", "red"}
-        or (flagged(entry) and entry.get("status") != "omitted")
+        or (flagged(entry) and entry.get("status") not in {"omitted", "superseded"})
         or (
             entry.get("status") == "superseded"
             and not (
@@ -526,39 +530,42 @@ def may_refactor(items: list[JsonObject]) -> bool:
 def obligation_digest(items: list[JsonObject]) -> str | None:
     """A top-priority reminder of the map's obligations for the edit hook, never the
     full map: at most DIGEST_LIMIT UTF-8 bytes including a header that counts the
-    rows it could not show. Rows rank RED contract, pending contract, unresolved or
-    flagged preservation, satisfied applicable preservation, then evidenced omissions."""
+    rows it could not show. Priority groups: RED contract, unresolved preservation,
+    the remaining unresolved contract items, satisfied applicable preservation,
+    then evidenced omissions."""
+    open_items = set(unresolved(items))
+
     def rank(entry: JsonObject) -> int | None:
         status, contract = entry.get("status"), entry.get("kind") == "contract"
-        if contract:
-            return {"red": 0, "pending": 1}.get(str(status))
-        if status in {"pending", "red"} or (flagged(entry) and status != "omitted"):
-            return 2
-        return {"already-satisfied": 3, "green": 3, "omitted": 4}.get(str(status))
+        if entry["id"] in open_items:
+            return 0 if contract and status == "red" else 2 if contract else 1
+        return None if contract else {"already-satisfied": 3, "green": 3, "omitted": 4}.get(str(status))
 
     ranked = sorted((r, position, entry) for position, entry in enumerate(items) if (r := rank(entry)) is not None)
-    rows: list[str] = []
+    if not ranked:
+        return None
+
+    def header(shown: int, skipped: int) -> str:
+        return f"Behavior Map obligations (top-priority reminder, not the full map): {shown} shown, {skipped} not displayed."
+
+    budget = DIGEST_LIMIT - len(header(len(ranked), len(ranked)).encode("utf-8"))
+    shown: list[str] = []
     for _, _, entry in ranked:
         label = str(entry["status"])
         if label == "omitted":
             label = "non-applicable, omitted by evidence"
         elif flagged(entry):
             label += ", re-execution required"
-        rows.append(f"{entry['id']} [{label}] {entry['behavior']} -> {entry['expected']}".translate(CONTROL_ESCAPES))
-    if not rows:
-        return None
-
-    def header(shown: int, skipped: int) -> str:
-        return f"Behavior Map obligations (top-priority reminder, not the full map): {shown} shown, {skipped} not displayed."
-
-    budget = DIGEST_LIMIT - len(header(len(rows), len(rows)).encode("utf-8"))
-    shown: list[str] = []
-    for row in rows:
+        raw = f"{entry['id']} [{label}] {entry['behavior']} -> {entry['expected']}"
+        # Escaping never shrinks a row: an oversized raw row skips before formatting.
+        if len(raw.encode("utf-8")) + 1 > budget:
+            continue
+        row = raw.translate(CONTROL_ESCAPES)
         cost = len(row.encode("utf-8")) + 1
         if cost <= budget:
             shown.append(row)
             budget -= cost
-    return "\n".join([header(len(shown), len(rows) - len(shown)), *shown])
+    return "\n".join([header(len(shown), len(ranked) - len(shown)), *shown])
 
 
 def edit_blocker(items: list[JsonObject]) -> str | None:
@@ -599,18 +606,10 @@ def recorded_map(
     return runtime_items(value) if value is not None else None
 
 
-def closure_blockers(
-    tdd_document: JsonObject | None, preflight_document: JsonObject | None
-) -> list[str]:
+def closure_blockers(items: list[JsonObject] | None) -> list[str]:
     """Why the recorded map is not closed; empty when completion may proceed."""
-    items = recorded_map(tdd_document, preflight_document)
-    if items is None:
-        return []
-    missing: list[str] = []
-    pending = unresolved(items)
-    if pending:
-        missing.append("unresolved Behavior Map items: " + ", ".join(pending))
-    return missing
+    pending = unresolved(items) if items else []
+    return ["unresolved Behavior Map items: " + ", ".join(pending)] if pending else []
 
 
 def all_disposition_only(items: list[JsonObject]) -> bool:

@@ -261,9 +261,10 @@ def untracked_paths(identity: RepoIdentity) -> list[str]:
     return _paths(identity, "ls-files", "--others", "--exclude-standard", "-z")
 
 
-def production_changes(identity: RepoIdentity, base: str) -> list[str]:
+def production_changes(identity: RepoIdentity, base: str, untracked: list[str] | None = None) -> list[str]:
     """Production (non-test reviewable) paths that differ from ``base``, tracked or untracked."""
-    changed = [*_paths(identity, "diff", "--name-only", "-z", base), *untracked_paths(identity)]
+    changed = [*_paths(identity, "diff", "--name-only", "-z", base),
+               *(untracked_paths(identity) if untracked is None else untracked)]
     return sorted({path for path in changed if is_reviewable_path(path) and not is_test_path(path)})
 
 
@@ -380,7 +381,7 @@ def _gitlink_entries(identity: RepoIdentity) -> dict[str, str]:
     return entries
 
 
-def tree_manifest(identity: RepoIdentity) -> dict[str, str]:
+def tree_manifest(identity: RepoIdentity, untracked: list[str] | None = None) -> dict[str, str]:
     """Working-tree mode and content hash per reviewable path, tracked and untracked alike.
 
     Hashes what is on disk, not what is staged: an index object id represents
@@ -390,7 +391,8 @@ def tree_manifest(identity: RepoIdentity) -> dict[str, str]:
     as the link rather than its referent, and a submodule is recorded by the
     commit it currently points at.
     """
-    candidates = reviewable_paths([*_paths(identity, "ls-files", "-z"), *untracked_paths(identity)])
+    candidates = reviewable_paths([*_paths(identity, "ls-files", "-z"),
+                                   *(untracked_paths(identity) if untracked is None else untracked)])
     modes = {path: _file_mode(Path(identity.root) / path) for path in candidates}
     present = [path for path in candidates if modes[path] in {"100644", "100755"}]
     manifest = _gitlink_entries(identity)
