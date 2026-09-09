@@ -15,7 +15,8 @@ session hook, must survive an install.
 Development tests stay in GitHub and the complete mirror. All installs exclude
 `hooks/tests/`, `skills/codex-advisor/tests/`, and
 `skills/production-code/scripts/test_code_quality_gate.py`; keep runtime scripts
-and skill references. New development tests must also be excluded from deployment.
+and skill references. Adding development tests elsewhere must update the shared
+`excluded_tests` list below in the same change.
 
 ## Workflow boundary
 
@@ -49,14 +50,60 @@ diff -u settings.json ~/.claude/settings.json
 diff -u CLAUDE.md ~/.claude/CLAUDE.md
 ```
 
-After reconciliation, install without deleting machine-managed additions:
+After reconciliation, back up and retire matching test copies. The snapshot
+contains only files tracked at `$revision`; mismatches stop before any move.
+Unknown files stay in place and must be reconciled if the absence check fails.
 
 ```bash
 backup="$HOME/.claude-backups/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$backup"
 cp -a ~/.claude/CLAUDE.md ~/.claude/settings.json ~/.claude/hooks ~/.claude/skills "$backup/"
-rsync -a --exclude='/codex-advisor/tests/' --exclude='/production-code/scripts/test_code_quality_gate.py' skills/ ~/.claude/skills/
-rsync -a --exclude='/tests/' hooks/ ~/.claude/hooks/
+excluded_tests=(hooks/tests skills/codex-advisor/tests skills/production-code/scripts/test_code_quality_gate.py)
+runtime_excludes=()
+for path in "${excluded_tests[@]}"; do runtime_excludes+=(--exclude="/$path"); done
+python3 - "$snapshot" "$backup/retired-tests" "${excluded_tests[@]}" <<'PY'
+from pathlib import Path
+import sys
+
+source, retired = map(Path, sys.argv[1:3])
+live = Path.home() / ".claude"
+moves = []
+for name in sys.argv[3:]:
+    target = source / name
+    for original in sorted(target.rglob("*")) if target.is_dir() else [target]:
+        if not original.is_file():
+            continue
+        installed = live / original.relative_to(source)
+        if installed.is_symlink():
+            sys.exit(f"Reconcile symlink: {installed}")
+        if not installed.exists():
+            continue
+        if not installed.is_file() or installed.read_bytes() != original.read_bytes():
+            sys.exit(f"Reconcile changed file: {installed}")
+        moves.append(installed)
+        if installed.suffix == ".py":
+            moves.extend((installed.parent / "__pycache__").glob(installed.stem + ".*.pyc"))
+            moves.extend(installed.parent.glob(installed.name + "c"))
+for installed in moves:
+    if any(parent.is_symlink() for parent in installed.parents):
+        sys.exit(f"Reconcile symlink directory: {installed}")
+for installed in moves:
+    destination = retired / installed.relative_to(live)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    installed.rename(destination)
+for name in sys.argv[3:]:
+    target = live / name
+    if target.is_dir():
+        for directory in sorted(target.rglob("*"), reverse=True) + [target]:
+            if directory.is_dir() and not directory.is_symlink() and not any(directory.iterdir()):
+                directory.rmdir()
+PY
+```
+
+Only continue after retirement succeeds. Install without deleting machine additions:
+
+```bash
+rsync -a "${runtime_excludes[@]}" hooks skills ~/.claude/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
 chmod +x ~/.claude/hooks/*.py
@@ -81,11 +128,6 @@ machine integrations may own additional live files. The cost of that choice is
 that a file renamed or deleted upstream is left behind in `~/.claude`, so every
 rename or deletion orphans the old name until someone retires it.
 
-On the first filtered install, move existing repository-owned copies of the
-excluded tests into the backup outside `~/.claude`, including their bytecode.
-Confirm ownership before moving files; preserve machine-managed additions.
-Copy exclusions alone do not retire files already installed.
-
 The `chmod` covers `*.py` only. Every tracked top-level hook is Python, and the
 one live shell hook is registered as `bash '<path>' session`, so its executable
 bit is never read. Adding `*.sh` back would grant nothing to that hook and would
@@ -98,31 +140,24 @@ Verify the installed estate itself, not only the checkout:
 python3 ~/.claude/skills/repo-production-workflow/scripts/workflow.py --help
 diff -u CLAUDE.md ~/.claude/CLAUDE.md
 diff -u settings.json ~/.claude/settings.json
-diff -qr --exclude 'tests' --exclude 'test_code_quality_gate.py' --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
-diff -qr --exclude 'tests' --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
+python3 - "${excluded_tests[@]}" <<'PY'
+from pathlib import Path
+import sys
+live = Path.home() / ".claude"
+remaining = [live / name for name in sys.argv[1:] if (live / name).exists() or (live / name).is_symlink()]
+remaining += list((live / "skills/production-code/scripts").rglob("test_code_quality_gate*.pyc"))
+if remaining:
+    sys.exit("Reconcile remaining tests:\n" + "\n".join(map(str, remaining)))
+PY
+rsync -rcni --delete "${runtime_excludes[@]}" --exclude='__pycache__' --exclude='*.pyc' hooks skills ~/.claude/
 find ~/.claude/hooks -maxdepth 1 -name '*.py' ! -perm -u+x
 ```
 
-The final hooks diff should report only deliberate externally managed files
-(currently `herdr-agent-state.sh`) and files retired under the procedure below.
-Any other difference needs reconciliation.
-
-Only one of those line types reports content drift. `Only in ~/.claude/` is an
-orphan or a machine-owned file, classified below; the install never deletes, so
-these accumulate with every upstream rename. `Files … differ` is content drift,
-in either direction, and should never appear — check it alone rather than
-reading it out of a list that is mostly orphans:
-
-```bash
-{ diff -qr --exclude 'tests' --exclude 'test_code_quality_gate.py' --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
-  diff -qr --exclude 'tests' --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/; } | grep '^Files'
-```
-
-The `find` prints nothing when every installed hook is executable. It is a
-separate command because neither of the checks above covers modes: `diff -qr`
-compares content only. A non-executable hook fails silently, so the mode is
-worth its own line. Run development suites from a source checkout when needed;
-the installed command check above confirms launchability, not full behavior.
+Stop if the absence check fails; `find` must print nothing. The checksum
+comparison is a dry run (`-n`): `--delete` only lists extra live files for ownership review; never remove
+`-n`. Reconcile every content difference and classify each `*deleting` entry
+below, preserving machine-owned files. Run development suites from a source
+checkout when needed; `--help` confirms launchability, not full behavior.
 
 After successful installation and reconciliation, fast-forward the clean mirror
 to the installed revision without filtering its files:
@@ -137,7 +172,7 @@ rm -rf "$snapshot"
 Absence from the checkout does not make a file an orphan. `herdr-agent-state.sh`
 is absent and live, and because the install never deletes, `~/.claude/hooks/`
 also keeps files this repo has never tracked. Classify each unexplained
-`Only in ~/.claude/` line by positive evidence, in this order:
+`*deleting` entry by positive evidence, in this order:
 
 - a path named in `settings.json` is live, whatever the checkout holds;
 - a path this repo tracked and then removed is an orphan of that rename or
