@@ -57,11 +57,13 @@ real-Interface attack that distinguishes each answer, observing the
 contract-relevant outcomes, identity, state preservation, and cleanup together;
 for a bug fix or suspected regression run the same operation and assertions
 against both versions, confirming each target. Replay applicable earlier review
-reproductions unchanged against the final candidate. Cover the input forms and
-interactions the changed mechanism makes relevant, not every imaginable case.
-Passing suites, map status, lint, printed success, and tests that substitute a
-collaborator are not the verdict; dispute an expectation or present a defect
-only with measured evidence, after attempting to falsify your own diagnosis.
+reproductions unchanged against the final candidate, and keep every useful
+operation, including a passing preservation attack or a disproven suspicion, as
+a runnable command with its expected versus observed effect. Cover the input
+forms and interactions the changed mechanism makes relevant. Passing suites, map
+status, lint, printed success, and tests that substitute a collaborator are not
+the verdict; dispute an expectation or present a defect only with measured
+evidence, after attempting to falsify your own diagnosis.
 
 ## 5. Review both axes
 
