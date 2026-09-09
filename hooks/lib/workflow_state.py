@@ -434,19 +434,24 @@ def _map_items(document: JsonObject | None) -> list[JsonObject] | None:
 
 
 def _linked_finding_items(
-    transaction: LedgerMutation, document: JsonObject,
+    transaction: LedgerMutation, document: JsonObject | None = None,
+    *, items: list[JsonObject] | None = None,
 ) -> dict[tuple[str, str], dict[str, JsonObject]]:
     """Map items grouped by the recorded intake finding each sourceRef names."""
     by_ref: dict[tuple[str, str], dict[str, JsonObject]] = {}
-    for entry in _map_items(document) or []:
+    intakes: dict[str, set[str]] = {}
+    for entry in (_map_items(document) or []) if items is None else items:
         for ref in entry.get("sourceRefs", []):
             if isinstance(ref, dict) and ref.get("type") == "finding":
                 key = (str(ref.get("evidenceId")), str(ref.get("id")))
-                intake = transaction.evidence(key[0])
-                findings = intake.get("findings") if isinstance(intake, dict) else None
-                if not isinstance(findings, list) or key[1] not in {
-                    str(finding.get("id")) for finding in findings if isinstance(finding, dict)
-                }:
+                if key[0] not in intakes:
+                    intake = transaction.evidence(key[0])
+                    findings = intake.get("findings") if isinstance(intake, dict) else None
+                    intakes[key[0]] = {
+                        str(finding.get("id")) for finding in findings if isinstance(finding, dict)
+                    } if (isinstance(findings, list)
+                          and intake.get("workflowId") == transaction.state.get("workflowId")) else set()
+                if key[1] not in intakes[key[0]]:
                     raise WorkflowError(f"behavior {entry['id']} finding sourceRef is unrecorded, stale, or foreign")
                 by_ref.setdefault(key, {})[str(entry["id"])] = entry
     return by_ref
@@ -473,10 +478,11 @@ def commit_tdd(
     slug: str,
     workflow_id: str | None,
     summary_doc: JsonObject | None,
-    action: str,
+    action: str | None,
     *,
     expected_evidence_id: str | None = None,
     opens_cycle: bool = False,
+    tree_before: dict[str, str] | None = None,
 ) -> tuple[JsonObject, str | None]:
     """Commit a TDD transition and its logical evidence under one transaction.
 
@@ -485,7 +491,7 @@ def commit_tdd(
     for a GREEN regression, so the count is kept forward here rather than
     reconstructed from a history that cannot tell the two apart.
     """
-    if action not in TDD_ACTIONS:
+    if action is not None and action not in TDD_ACTIONS:
         raise ValueError(f"unsupported tdd action: {action}")
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
@@ -497,15 +503,33 @@ def commit_tdd(
         if state.get("tddEvidence") != expected_evidence_id:
             raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
         if summary_doc is not None:
-            _linked_finding_items(transaction, summary_doc)
-            # A fixed behavioral finding is re-judged against the updated map, so
-            # a later tdd-map cannot silently un-own its proved attack.
-            for entry in state.get("findingStates", []) if isinstance(state.get("findingStates"), list) else []:
+            if summary_doc.get("workflowId") != state["workflowId"]:
+                raise WorkflowError("TDD document belongs to another workflow instance")
+            if tree_before is not None:
+                run = summary_doc["runs"][-1]
+                try:
+                    drift = _manifest_drift(tree_before, tree_manifest(identity),
+                                            stale="candidate changed during reassessment")
+                    if _active_candidate_tree(identity) != run.get("candidateTree") and drift is None:
+                        drift = "candidate tree changed during reassessment"
+                except (OSError, RuntimeError) as exc:
+                    drift = f"candidate could not be sampled at commit: {exc}"
+                if drift:
+                    run.update(valid=False, bindingError=drift)
+                    prior = transaction.evidence(expected_evidence_id)
+                    summary_doc = {**prior, "runs": [*prior.get("runs", []), run],
+                                   "updatedAt": utc_timestamp()}
+                    action, opens_cycle = None, False
+            items = _map_items(summary_doc) or []
+            owned = _linked_finding_items(transaction, items=items)
+            # Mutation may request proof from already-settled owners; closure
+            # still judges current proof. Ownership cannot be moved away.
+            for entry in state.get("findingStates", []):
                 if isinstance(entry, dict) and entry.get("status") in {"fixed", "report-only"} and entry.get("kind") == "behavioral":
                     _behavioral_finding_closure(
                         transaction, state, str(entry.get("intakeEvidenceId")),
-                        str(entry.get("findingId")), summary_doc, admit_pending=True,
-                        require_green=entry.get("status") == "fixed",
+                        str(entry.get("findingId")), admit_pending=True,
+                        require_green=entry.get("status") == "fixed", items=items, owned=owned,
                     )
         writes: list[EvidenceWrite] = []
         evidence_id: str | None = None
@@ -514,7 +538,8 @@ def commit_tdd(
             writes.append(write)
             evidence_id = write.evidence_id
             state["tddEvidence"] = evidence_id
-        state.pop("paused", None)
+        if action is not None:
+            state.pop("paused", None)
         if opens_cycle:
             state["tddCycleCount"] = state.get("tddCycleCount", 0) + 1
         if action == "reopen":
@@ -522,11 +547,11 @@ def commit_tdd(
             state["phase"] = "implementation"
             state["implementation"] = "in-progress"
             _reset_downstream(state)
-        else:
+        elif action is not None:
             state["tdd"] = action
             state["phase"] = "tdd"
             state["nextAction"] = _derive_next_action(state, summary_doc)
-        return _commit(transaction, state, f"tdd-{action}", evidence=writes), evidence_id
+        return _commit(transaction, state, f"tdd-{action or 'annotated'}", evidence=writes), evidence_id
 
 
 def annotate_tdd_evidence(
@@ -537,20 +562,12 @@ def annotate_tdd_evidence(
     *,
     expected_evidence_id: str | None = None,
 ) -> tuple[JsonObject, str]:
-    """Record a TDD evidence document without a phase transition.
-
-    Bookkeeping writes - such as flagging a resolved map for post-edit
-    reassessment - must not regress the pass to the tdd phase the way a
-    recorded run does; only the evidence pointer moves.
-    """
-    with mutation(identity) as transaction:
-        state = _bound_instance_state(transaction.state, slug, workflow_id)
-        if state.get("tddEvidence") != expected_evidence_id:
-            raise WorkflowError("TDD evidence changed during the run; re-read and re-run the candidate")
-        write = evidence_write(str(state["workflowId"]), "tdd", summary_doc)
-        state["tddEvidence"] = write.evidence_id
-        state["nextAction"] = _derive_next_action(state, summary_doc)
-        return _commit(transaction, state, "tdd-annotated", evidence=[write]), write.evidence_id
+    """Use the same binding/ownership transaction without changing lifecycle."""
+    state, evidence_id = commit_tdd(
+        identity, slug, workflow_id, summary_doc, None,
+        expected_evidence_id=expected_evidence_id,
+    )
+    return state, evidence_id
 
 
 def _candidate_tree(identity: RepoIdentity) -> str:
@@ -1142,37 +1159,30 @@ def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: st
 
 
 def _behavioral_finding_closure(
-    transaction: LedgerMutation, state: JsonObject, intake_id: str, finding_id: str,
+    transaction: LedgerMutation | None, state: JsonObject, intake_id: str, finding_id: str,
     tdd_document: JsonObject | None = None,
     *,
     admit_pending: bool = False,
     require_green: bool = True,
+    items: list[JsonObject] | None = None,
+    owned: dict[tuple[str, str], dict[str, JsonObject]] | None = None,
 ) -> None:
-    """A behavioral finding closes fixed only through its owning GREEN attack items.
+    """Judge current owning proof; mutation admission keeps reassessment reachable.
 
-    `admit_pending` is the append-only deepening window: a map update may add a
-    new pending attack to an already-fixed finding's domain (ordinary map closure
-    keeps it from completion until GREEN), but may never remove the finding's
-    GREEN ownership or supersede it away to an unlinked item.
-
-    `require_green=False` is the report-only rule: the finding claims no fix,
-    but the attack it asked for must exist, so at least one owning item's
-    terminal must be producer-proved (GREEN, or a baseline the tdd producer
-    recorded). Prose already-satisfied and pending owners do not count.
+    Only existing fixed/report-only owners use admit_pending. It preserves
+    ownership, not a closure verdict; a new disposition always uses strict
+    proof, and completion re-judges all settled findings against the current map.
     """
-    if tdd_document is None:
-        tdd_document = transaction.evidence(state.get("tddEvidence"))
-    preflight_document = transaction.evidence(state.get("preflightEvidence"))
-    items = behavior_map.recorded_map(tdd_document, preflight_document) or []
-    linked = {
+    if items is None:
+        if tdd_document is None:
+            tdd_document = transaction.evidence(state.get("tddEvidence"))
+        items = behavior_map.recorded_map(
+            tdd_document, transaction.evidence(state.get("preflightEvidence")),
+        ) or []
+    linked = owned.get((intake_id, finding_id), {}) if owned is not None else {
         str(entry["id"]): entry for entry in items
-        if any(
-            isinstance(ref, dict)
-            and ref.get("type") == "finding"
-            and ref.get("evidenceId") == intake_id
-            and ref.get("id") == finding_id
-            for ref in entry.get("sourceRefs", [])
-        )
+        if any(ref.get("type") == "finding" and ref.get("evidenceId") == intake_id
+               and ref.get("id") == finding_id for ref in entry.get("sourceRefs", []))
     }
     if not linked:
         raise WorkflowError(
@@ -1188,6 +1198,15 @@ def _behavioral_finding_closure(
                 "superseded by an item without the finding sourceRef; keep the "
                 "finding's domain owned or re-disposition it explicitly"
             )
+    if admit_pending and any(
+        entry.get("revalidationRequired") or (
+            entry.get("status") == "already-satisfied" and behavior_map.producer_proved(entry)
+        ) for entry in linked.values()
+    ):
+        # Reassessment may temporarily remove all current proof, or finish as
+        # a baseline that cannot sustain fixed. Strict closure still blocks it;
+        # measured correction must remain possible without fabricating RED.
+        return
     unresolved = set(behavior_map.unresolved(items))
     if not require_green:
         proved = [
@@ -1239,25 +1258,33 @@ def _finding_state_blockers(state: JsonObject) -> list[str]:
     return result
 
 
-def correction_blockers(identity: RepoIdentity, state: JsonObject) -> list[str]:
-    tdd = evidence_document(identity, state.get("tddEvidence"))
-    preflight = evidence_document(identity, state.get("preflightEvidence"))
-    return behavior_map.closure_blockers(tdd, preflight) + _finding_state_blockers(state)
+def correction_blockers(
+    identity: RepoIdentity, state: JsonObject, *, items: list[JsonObject] | None = None,
+) -> list[str]:
+    if items is None:
+        items = _recorded_items(identity, state)
+    pending = behavior_map.unresolved(items)
+    return (["unresolved Behavior Map items: " + ", ".join(pending)] if pending else []) + _finding_completion_blockers(
+        None, state, items=items,
+    )
 
 
-def _finding_completion_blockers(transaction: LedgerMutation, state: JsonObject) -> list[str]:
+def _finding_completion_blockers(
+    transaction: LedgerMutation | None, state: JsonObject, *, items: list[JsonObject] | None = None,
+) -> list[str]:
     states = state.get("findingStates", [])
     if not isinstance(states, list):
         return ["finding lifecycle evidence is corrupt"]
-    # A fixed behavioral finding is re-judged against the final map inside the
-    # transaction, so its owning attacks cannot regress or vanish after closure.
+    if items is None:
+        items = behavior_map.recorded_map(transaction.evidence(state.get("tddEvidence")),
+                                          transaction.evidence(state.get("preflightEvidence"))) or []
     blockers: list[str] = []
     for entry in states:
         if isinstance(entry, dict) and entry.get("status") in {"fixed", "report-only"} and entry.get("kind") == "behavioral":
             try:
                 _behavioral_finding_closure(
                     transaction, state, str(entry.get("intakeEvidenceId")), str(entry.get("findingId")),
-                    require_green=entry.get("status") == "fixed",
+                    require_green=entry.get("status") == "fixed", items=items,
                 )
             except WorkflowError as exc:
                 blockers.append(str(exc))
@@ -1326,12 +1353,13 @@ def _apply_finding_dispositions(
     }
     if set(intake_states) != set(findings):
         raise WorkflowError("recorded finding lifecycle does not match immutable intake")
+    items = behavior_map.recorded_map(
+        transaction.evidence(state.get("tddEvidence")), transaction.evidence(state.get("preflightEvidence")),
+    ) or []
     for disposition in dispositions:
         identifier, status = str(disposition["finding_id"]), str(disposition["status"])
         kind = str(disposition["kind"])
-        finding_state = next((entry for entry in states if isinstance(entry, dict)
-                              and entry.get("intakeEvidenceId") == intake_id
-                              and entry.get("findingId") == identifier), None)
+        finding_state = intake_states.get(identifier)
         if finding_state is None:
             raise WorkflowError(f"finding {identifier} has no immutable intake state")
         current = finding_state.get("status")
@@ -1340,10 +1368,22 @@ def _apply_finding_dispositions(
         if status == current:
             raise WorkflowError(f"finding {identifier} disposition does not change effective state")
         if current in {"fixed", "rejected-with-evidence", "report-only"}:
-            raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
+            correcting = False
+            if kind == "behavioral" and current in {"fixed", "report-only"} and status in {"report-only", "rejected-with-evidence"}:
+                try:
+                    _behavioral_finding_closure(
+                        transaction, state, intake_id, identifier, require_green=current == "fixed", items=items,
+                    )
+                except WorkflowError:
+                    # Only a terminal claim its present owning proof no longer
+                    # supports may be corrected. The new measured disposition
+                    # is validated normally and retains the old one in history.
+                    correcting = True
+            if not correcting:
+                raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
         if status in {"fixed", "report-only"} and kind == "behavioral":
             _behavioral_finding_closure(
-                transaction, state, intake_id, identifier, require_green=status == "fixed",
+                transaction, state, intake_id, identifier, require_green=status == "fixed", items=items,
             )
         if current != "pending":
             prior = _disposition_evidence(state, finding_state, stage, producer)
@@ -1481,15 +1521,12 @@ CHECKPOINT_PHASES = {"preflight-advice", "final-review"}
 
 
 def _recorded_items(identity: RepoIdentity, state: JsonObject) -> list[JsonObject]:
-    """The recorded Behavior Map, or nothing when the evidence is unreadable."""
+    """Load the current map once; corrupt evidence must not imply closed obligations."""
     tdd_id, preflight_id = state.get("tddEvidence"), state.get("preflightEvidence")
-    try:
-        return behavior_map.recorded_map(
-            evidence_document(identity, tdd_id if isinstance(tdd_id, str) else None),
-            evidence_document(identity, preflight_id if isinstance(preflight_id, str) else None),
-        ) or []
-    except ValueError:
-        return []
+    return behavior_map.recorded_map(
+        evidence_document(identity, tdd_id if isinstance(tdd_id, str) else None),
+        evidence_document(identity, preflight_id if isinstance(preflight_id, str) else None),
+    ) or []
 
 
 def _late_contract_items(items: list[JsonObject]) -> list[JsonObject]:
@@ -1507,14 +1544,15 @@ def _late_contract_items(items: list[JsonObject]) -> list[JsonObject]:
     return late
 
 
-def _finding_ledger(identity: RepoIdentity, state: JsonObject) -> list[JsonObject]:
+def _finding_ledger(
+    identity: RepoIdentity, state: JsonObject, items: list[JsonObject],
+) -> list[JsonObject]:
     """Every recorded finding's immutable claim and its owning attack items.
 
     This is the evidence the final consult adjudicates domain narrowing from:
     the verbatim claim beside the seams and statuses of the attacks that closed
     it, so a broad finding narrowed to one convenient attack is visible.
     """
-    items = _recorded_items(identity, state)
     owners: dict[tuple[str, str], list[JsonObject]] = {}
     for entry in items:
         for ref in entry.get("sourceRefs", []):
@@ -1524,45 +1562,43 @@ def _finding_ledger(identity: RepoIdentity, state: JsonObject) -> list[JsonObjec
                     "behavior": entry.get("behavior"), "expected": entry.get("expected"),
                     "seam": entry.get("seam"), "status": entry.get("status"),
                     "proofCommand": entry.get("proofCommand"),
+                    "executedCommands": behavior_map.executed_commands(entry),
+                    "revalidationRequired": entry.get("revalidationRequired") is True,
                 })
     states = state.get("findingStates")
+    intakes: dict[str, dict[str, JsonObject]] = {}
+    dispositions: dict[str, dict[str, JsonObject]] = {}
     ledger: list[JsonObject] = []
     for entry in states if isinstance(states, list) else []:
         if not isinstance(entry, dict):
             continue
         intake_id = str(entry.get("intakeEvidenceId"))
-        intake = evidence_document(identity, intake_id)
-        findings = intake.get("findings") if isinstance(intake, dict) else None
-        claim = next((finding.get("claim") for finding in findings or []
-                      if isinstance(finding, dict) and str(finding.get("id")) == str(entry.get("findingId"))), None)
+        if intake_id not in intakes:
+            intake = evidence_document(identity, intake_id)
+            intakes[intake_id] = {str(finding.get("id")): finding for finding in (intake or {}).get("findings", [])
+                                  if isinstance(finding, dict)}
+        finding_id = str(entry.get("findingId"))
+        claim = intakes[intake_id].get(finding_id, {}).get("claim")
+        disposition_id = _disposition_evidence(state, entry, str(entry.get("stage")), str(entry.get("producer")))
+        if disposition_id is not None and disposition_id not in dispositions:
+            document = evidence_document(identity, disposition_id)
+            dispositions[disposition_id] = {
+                str(item.get("finding_id")): item for item in (document or {}).get("dispositions", [])
+                if isinstance(item, dict)
+            }
+        measured = dispositions.get(disposition_id, {}).get(finding_id)
+        measurement = {key: measured[key] for key in ("premise", "occurrence", "materialConsequence", "evidence", "reference")
+                       if measured.get(key) is not None} if measured else None
         ledger.append({
+            "intakeEvidenceId": intake_id,
             "producer": entry.get("producer"), "stage": entry.get("stage"),
             "findingId": entry.get("findingId"), "kind": entry.get("kind"),
             "material": entry.get("material"), "status": entry.get("status"),
             "claim": claim,
             "owners": owners.get((intake_id, str(entry.get("findingId"))), []),
-            "measurement": _disposition_measurement(identity, state, entry),
+            "measurement": measurement,
         })
     return ledger
-
-
-def _disposition_measurement(identity: RepoIdentity, state: JsonObject, finding_state: JsonObject) -> JsonObject | None:
-    """The measured premise, occurrence, consequence, and evidence the lead recorded
-    for this finding's disposition, so an appeal reads the rejection's numbers from
-    the ledger instead of a hand-written summary. Legacy-imported states carry only
-    the stage-level pointer, which _disposition_evidence resolves."""
-    disposition_id = _disposition_evidence(
-        state, finding_state, str(finding_state.get("stage")), str(finding_state.get("producer")),
-    )
-    if disposition_id is None:
-        return None
-    document = evidence_document(identity, disposition_id)
-    dispositions = document.get("dispositions") if isinstance(document, dict) else None
-    for disposition in dispositions if isinstance(dispositions, list) else []:
-        if isinstance(disposition, dict) and str(disposition.get("finding_id")) == str(finding_state.get("findingId")):
-            return {key: disposition.get(key) for key in ("premise", "occurrence", "materialConsequence", "evidence", "reference")
-                    if disposition.get(key) is not None}
-    return None
 
 
 def _context_steps(state: JsonObject) -> tuple[tuple[str, bool], ...]:
@@ -1629,8 +1665,10 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
             )
         except ValueError as exc:
             missing.append(str(exc))
+    items = _recorded_items(identity, state)
     if phase == "final-review":
-        missing.extend(() if state.get("nextAction") in ("appeal-final-review", "re-consult-final-review") else correction_blockers(identity, state))
+        missing.extend(() if state.get("nextAction") in ("appeal-final-review", "re-consult-final-review")
+                       else correction_blockers(identity, state, items=items))
         if drift := _binding_drift(identity, state, "review"):
             missing.append(drift)
         if drift := _binding_drift(identity, state, "quality-gate"):
@@ -1652,8 +1690,8 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
         "advisorProjection": projection,
         "governedDesignEvidence": design_evidence_id,
         "governedDesign": design,
-        "findingLedger": _finding_ledger(identity, state),
-        "lateRed": _late_contract_items(_recorded_items(identity, state)),
+        "findingLedger": _finding_ledger(identity, state, items),
+        "lateRed": _late_contract_items(items),
         "tdd": state.get("tdd"),
         "codeReviewStatus": review.get("status"),
     }

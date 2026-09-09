@@ -142,6 +142,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 - Name the proof you will run for the affected surface.
 - Include one combined workflow proof when the work is stateful or control-loop sensitive.
 - Focused invariant checks may supplement the combined proof, not replace it.
+- For each production-writing pass, name the targeted correctness operation that also measures/asserts the chosen resource limit. Run it through ordinary `workflow.py verify`; its output names scale, fixed limit, observed value, and actual target identity. Reuse its selected receipt, not a new benchmark suite or cost-only map item.
 
 ### `reusePath`
 
@@ -151,7 +152,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 
 ### `chosenApproach`
 
-- State the intended implementation in direct terms.
+- State the intended implementation in direct terms, including a meaningful resource limit, scale, and command **before measurement**. Compare only alternatives satisfying the same Interface; before a real mechanism reversal, deepen the governing design with the measured reason and reassess affected guarantees.
 - State each material implementation assumption and its evidence. An unresolved architecture-selection or contract question - one whose answer could change the chosen approach - moves to `openQuestions` and blocks recording until resolved. A settled choice whose behavioral consequence still needs falsification is not an open question: record it as a pending `behaviorMap` item and drive it through TDD.
 - Explain why it is the shortest correct path.
 - Keep the approach aligned with fail-closed behavior, boundary validation, and minimal diff size.
@@ -197,7 +198,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 
 ### `riskChecks`
 
-- Name the concrete failure modes to guard against.
+- Name the concrete failure modes to guard against, including violation of the declared resource bound. Do not relax that bound after a failure merely to pass; the same verification command must subsequently pass. Declaration adequacy remains review judgment, not universal automatic enforcement.
 - Cover at least the relevant subset of: data integrity, cleanup, retries, auth, race conditions, cross-surface regressions, compatibility, and observability.
 - If a risk cannot be evaluated yet, say so and move it to `openQuestions`.
 - For all code work, include adjacent-surface regression risk, not just the direct edited branch.
@@ -245,13 +246,7 @@ Record a non-empty JSON array. Every item has these eight required fields:
 - Map every category the tdd skill's [Record the Behavior Map in Preflight](../tdd/SKILL.md) section lists; read it before writing the map.
 - Only runtime behavior is mappable: delivery line accounting, budget measurement, and other non-runtime bookkeeping never become items.
 - A pending behavioral finding is owned by giving an attack item a finding entry in `sourceRefs`; the recorder refuses a map that leaves one unowned. No preservation-only item is needed when existing focused regression evidence already owns the obligation — reference that evidence in an `already-satisfied` disposition instead.
-- Split independently-failable outcomes.
-- When a behavioral finding is accepted for proof, its owning map items mirror
-  the finding's enumerated sub-surfaces — one item per independently-failable
-  sub-surface: each ordering, each named seam, each input form, each
-  failure-matrix row the claim covers. One blanket item per finding is a
-  coverage gap, not a judgement call; prose in a later disposition cannot
-  widen what the mapped attacks prove.
+- Use TDD's one-item-per-independently-failing-outcome rule, including finding-owned attacks. Parameterized forms can share an operation; separate missing guarantees stay visible. Prose cannot widen the domain the retained attacks actually prove.
 - Proof gaps stay in `openQuestions`; they are not omissions.
 
 ## Execution Gate

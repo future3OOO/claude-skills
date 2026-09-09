@@ -40,9 +40,11 @@ Map:
 - every value one evaluation system produces and another decides under its own semantics; the item names which system's rules decide, and its attack is **differential** (tests.md);
 - known load-bearing assumptions that need semantic falsification.
 
-Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. An accepted behavioral finding's map items mirror its enumerated sub-surfaces — one item per independently-failable sub-surface — and its closure may claim only the domain those attacks executed.
+Each item has a stable ID and a `kind`: `contract` for the requested behavior, `preservation` for everything the change must keep true. A behavior-changing map has at least one contract item. Every applicable category above must be accounted for before the first RED. Use one item per independently failing outcome, not per input spelling or finding. Parameterized cases may share an operation; independently missing guarantees remain visible. Finding closure may claim only the domain its owning attacks executed.
 
-**Statuses.** An item is `pending` until the recorder moves it: RED to `red`, GREEN through that RED to `green`. A passing runner RED instead records a **baseline**, `already-satisfied`, whatever the tree state; a non-runner operation exiting 0 on a pending item is refused. A baseline is never proof and never owns `fixed`. `tdd-map` dispositions are prose: a preservation item may be `already-satisfied` with real-Seam evidence, `omitted` by governing evidence, or reopened to `pending`; a never-attacked contract item owning no finding (its `sourceRefs`, if any, name findings closed without a fix) may be `withdrawn`; a GREEN item may be `superseded` by a replacement that must itself reach GREEN. A contract item is never `omitted`. Proof gaps stay pending.
+**Statuses.** Items start `pending`; the producer records `red`, then `green` through that RED. A passing pytest/unittest RED instead records a baseline, `already-satisfied`, without a cycle. This is executed preservation evidence, not proof of a repaired defect: baseline alone never owns `fixed`. Pending non-runner exit-zero remains refused. Initial preservation may settle through evidenced `already-satisfied` or governing `omitted`; contract items are never omitted. A never-attacked contract with no open/fixed ownership may be `withdrawn`. A GREEN may be `superseded`, but its terminal replacement needs currently proved GREEN, not a baseline.
+
+Affected preservation uses producer-owned `revalidationRequired: true`, never authored initial/additional items. Reopening settled preservation to `pending` removes present settlement authority; historical GREEN stays GREEN but flagged proof is unresolved. Only accepted passing execution clears the flag. Governing `omitted` can suspend applicability, including flagged GREEN, subject to finding ownership; it retains the flag and is not proof. Prose cannot restore flagged `already-satisfied`. [recorder.md](recorder.md) owns the execution/binding details.
 
 ## 2. Drive One Mapped Vertical Slice
 
@@ -60,7 +62,7 @@ Select one pending contract ID and write its RED before the production edit that
 
 - Write the smallest production change that passes the same test surface.
 - Run `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd --repo "$PWD" --slug <task> --phase green --behavior-id <ID> -- <same-test-surface>`.
-- Do not anticipate later slices.
+- Do not implement unrelated future features; affected guarantees and known defects belong to this repair, and one coherent edit may satisfy several recorded REDs.
 
 **ORDER OF PROOF**
 
@@ -79,19 +81,16 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 JSON
 ```
 
-The JSON accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions` only; `sourceBehaviorId` names the GREEN item whose consequence the update records. Dispositions take the statuses of Section 1: `superseded` names its replacement in `supersededBy` (addable in the same update) and resolves only once the chain's terminal replacement is GREEN, so a target that can never be GREEN refuses; `withdrawn` refuses an attacked or finding-owning item; `pending` refuses anything but an `omitted` or `already-satisfied` preservation item.
+The document accepts `sourceBehaviorId`, `reassessment`, `items`, and `dispositions`. Use Production Code's **Minimum Implementation Decision** to identify affected guarantees before editing; batch their reassessment after the coherent change and before closure. New independently failing outcomes need items; existing attacks gain finding ownership through additive `sourceRefs`, without re-executing unchanged evidence. Source references union by full `(type,evidenceId,id)` identity; duplicate unions write nothing.
 
-- identify each load-bearing mechanism, state boundary, or cross-system value the GREEN introduced and drive the cheapest real-Seam probe that could falsify it;
-- add any newly exposed touched-Seam preservation or interaction behavior;
-- a retained real-Seam probe (its command, tested domain, result, and candidate context kept in the `tdd --phase red` baseline or the `tdd-map` disposition prose) can establish a preservation obligation or support a disposition through that existing evidence route; it never waives RED/GREEN for new behavior or a reproduced regression, and a passing falsifier is retained only as regression evidence;
-- if review finds a behavioral defect, add it to the map and drive a fresh RED before the fix.
+A disposition may carry `revalidate:true` plus evidence, or `status` plus evidence, never both; additive references can accompany either or stand alone. Supersession names `supersededBy` and preserves finding ownership. Reference-only updates preserve active cycles and downstream readiness, execute nothing, and add no acknowledgement. Requesting or finishing reassessment does not replay downstream checks solely for metadata; source edits still invalidate current-tree checks.
 
-An update that adds items reopens TDD; the next production edit requires a valid RED for one of them. Cycle count is not a quality target.
+For execution and the necessary call forms, use [recorder.md](recorder.md). Add unrelated future features neither to this repair nor its map. Cycle count is not a quality target.
 
 ## 4. Refactor and Complete
 
 The refactor window opens only after every contract item is resolved and at least one reached GREEN through RED; a baseline alone never opens it. Refactor only inside that window and rerun relevant tests after each step. If GREEN reveals a structural refactor candidate, use `/codebase-design` to evaluate it.
 
-TDD is complete only when every contract item is GREEN, baseline, or `withdrawn`, every preservation item is GREEN, `already-satisfied`, or `omitted` with evidence — a superseded item of either kind instead needs a GREEN terminal replacement — no proof gap remains, the broader relevant suite passes, and no behavior-changing edit occurred after the last applicable GREEN.
+TDD is complete only when every contract item is GREEN, baseline, or `withdrawn`, every preservation item is GREEN, `already-satisfied`, or `omitted` with evidence — a superseded item of either kind instead needs a currently proved GREEN terminal replacement — no applicable revalidation or proof gap remains, the affected retained checks pass, and no behavior-changing edit occurred after the last applicable GREEN.
 
 When governed workflow continuity is active, follow [recorder.md](recorder.md). It records bounded map/RED/GREEN evidence; it is not authorization.

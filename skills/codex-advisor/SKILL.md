@@ -63,9 +63,7 @@ whether it is behavioral or non-behavioral.
 
 ### `final-review`
 
-Run after implementation, verification, and the lead's structured code-review
-pass when required. This is the workflow's independent review checkpoint: it
-challenges the lead's review rather than trusting it. The wrapper sends the
+Run after implementation, verification, and the required native delegate code review. This independent checkpoint challenges the candidate and supplied evidence rather than trusting the lead or delegate verdict. The wrapper sends the
 recorded original request once, the checkpoint's retained advisor projection,
 the current governing-design declaration (a deepened design records as new
 evidence), and one direct `passStartOid^{tree} -> activeCandidateTree` diff:
@@ -74,11 +72,11 @@ context), production hunks keep ordinary context. The advisor answers in order: 
 original request and public Interface promise; which production operations can
 falsify each load-bearing promise;
 which of those are unattacked through the real Seam in the supplied evidence;
-whether any finding disposition narrows or loses part of its original domain;
+whether any finding disposition narrows or loses part of its immutable claim/domain, reconciling exact intake identity with executed commands, preservation, and reassessment state;
 and only then the changed Module shape, minimality, security boundary,
 candidate binding, and visible regression coverage. A promised load-bearing
 surface with no attack forbids `commit-ready` even when every declared map item
-is green; checkpoint readiness remains wrapper-owned. The rubric binds both
+is green; checkpoint readiness remains wrapper-owned. Judge the selected resource receipt in the existing consult question against its declared scale/limit and measured target, without assuming a generic receipt contains a candidate-tree ID. Known missing required material acceptance is a Spec finding, not prose beside empty findings; an omitted payload channel alone is not such a gap. Attribute repeated or self-introduced defects bluntly only when supplied evidence demonstrates them; prompt emission alone proves no model reasoning. The rubric binds both
 sides of the verdict: it demands every demonstrable additional material
 failure class batched in one envelope, a finding that names no measured or
 concretely reachable failure is not material, and a re-raise of a finding whose

@@ -516,9 +516,9 @@ def _finding_dispositions(value: object, allowed: set[str]) -> list[JsonObject]:
             raise ValueError(_disposition_error(
                 status, f"finding {identifier} {status} requires a false premise or zero occurrence on a complete domain",
             ))
-        # A behavioral fix keeps its finding's whole recorded domain: only a
-        # measured zero over a complete domain closes it, so a narrow attack
-        # cannot silently stand in for the full caller-reachable surface.
+        # Require the whole-domain claim's fields, not a certificate that the
+        # measurements cover it. Closure checks owning proof; review reconciles
+        # the immutable claim/domain with the operations actually executed.
         if status == "fixed" and kind == "behavioral" and not (
             occurrence.get("count") == 0 and occurrence.get("complete") is True
         ):

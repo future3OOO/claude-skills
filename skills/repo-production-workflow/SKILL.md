@@ -141,7 +141,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --not-required "<specific non-behavioral reason>"
 ```
 
-The edit hook advises, never refuses; `WORKFLOW-MAP.md` owns its role. A RED or baseline taken after production changed is late: labelled in `summary` and the final review, never refused at `complete`. A refactor that changes behavior adds its item with `tdd-map` and proves it. TDD remains in progress through implementation, GREEN, and reassessment. Cycle count remains a coarse granularity smell, never a coverage target.
+The edit hook advises, never refuses; `WORKFLOW-MAP.md` owns its role. A RED or baseline taken after production changed is late: labelled in `summary` and the final review, never refused at `complete`. A refactor that changes behavior adds its item with `tdd-map` and proves it. Current unresolved obligations block closure; evidence-only updates and rechecks preserve completed downstream checks. Cycle count remains a coarse granularity smell, never a coverage target.
 
 ### 7. Production code
 
@@ -182,23 +182,16 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd 
   -- <same test surface>
 ```
 
-When a GREEN exposes a new obligation (a touched-Seam
-preservation, interaction, semantic falsification, or review-discovered
-behavior), add it with `workflow.py tdd-map` before the next production edit;
-when it exposes nothing, record nothing. The update is admitted while other
-cycles are open. Pass the document on stdin:
+Use Production Code's **Minimum Implementation Decision** for repair completion and TDD's [map-update and reassessment rules](../tdd/recorder.md). Batch affected preservation and additive finding ownership in the existing call:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input - <<'JSON'
-{"sourceBehaviorId": "BM_...", "reassessment": "...", "items": [...]}
+{"reassessment":"Affected preservation and retained attack ownership","dispositions":[{"id":"BM_KEEP","revalidate":true,"evidence":"Changed shared decision"},{"id":"BM_ATTACK","sourceRefs":[{"type":"finding","evidenceId":"<actual intake>","id":"SPEC-1"}]}]}
 JSON
 ```
 
-The JSON document accepts `sourceBehaviorId` (the GREEN item whose consequence it records),
-`reassessment`, `items`, and `dispositions` only. Terminal proof
-(TDD `passed` or `not-required`) opens verification directly; no implementation
-acknowledgement is recorded.
+Terminal TDD proof opens verification directly; no implementation acknowledgement is recorded. Metadata-only reassessment is not another downstream review chain.
 
 ### 9. Verification
 
@@ -218,7 +211,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   verify --repo "$PWD" --slug "<task>" --kind quality-gate --base-ref "<base>"
 ```
 
-Which generic commands constitute sufficient verification stays lead judgment; that they ran does not. Completion additionally requires the typed `quality-gate` run over the current reviewable tree.
+Use preflight's selected resource/correctness operation in the ordinary verification call. Reuse the returned evidence ID and operation output; a generic receipt does not retain a candidate-tree ID. Which commands suffice remains review judgment. Completion additionally requires the typed `quality-gate` run over the current reviewable tree.
 
 Before the typed run, rerun the Repo Context Forge bootstrap with the same slug
 so the recorded graph evidence is snapshot-bound to the edited candidate tree.
@@ -280,6 +273,8 @@ corrections record their current-tree evidence directly. A later map update
 that would leave a fixed finding without its owning attack refuses.
 
 ### 11. Final Codex Advisor review
+
+Before routine consult, reconcile known material sibling obligations and affected preservation through the existing correction blockers. In the existing final-consult question, quote only the selected resource receipt: evidence ID, command, scale, fixed limit, observed value, and the operation's actual target identity. Reuse returned evidence; read one document only if needed, not verification history. Known missing material acceptance belongs in a Spec finding.
 
 The final Codex Advisor review judges the candidate, the delegate review, and
 the lead's dispositions. Invoke it against the live diff with wrapper

@@ -47,15 +47,19 @@ def main() -> int:
     if not is_reviewable_path(relative):
         return 0
 
+    reminders: list[str] = []
     try:
         ready, missing = ready_for_edit(identity, relative)
         if ready and not is_test_path(relative):
-            missing = edit_blockers(identity, read_workflow(identity))
+            missing = edit_blockers(identity, read_workflow(identity), reminders=reminders)
     except (WorkflowError, LedgerError, ValueError) as exc:
         advise(f"workflow intake: workflow evidence is unreadable: {exc}. Admitted; nothing records this edit until it is repaired.")
         return 0
     if missing:
-        advise("workflow intake: missing before this production edit: " + ", ".join(missing) + ". Admitted; a RED taken after it is recorded as late.")
+        reminders.insert(0, "workflow intake: missing before this production edit: " + ", ".join(missing)
+                         + ". Admitted; a RED taken after it is recorded as late.")
+    if reminders:
+        advise("\n".join(reminders))
     return 0
 
 

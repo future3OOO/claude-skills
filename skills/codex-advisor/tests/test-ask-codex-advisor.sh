@@ -181,13 +181,20 @@ if [[ "${FAIL_PROVIDER:-0}" == 1 ]]; then exit 7; fi
 if [[ " $* " == *" --resume "* ]]; then
   printf '%s\n' '{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}'
 else
-  printf '%s\n' '{"schemaVersion":1,"findings":[],"verdict":"completed"}'
+  printf '%s\n' '{"schemaVersion":1,"findings":[{"id":"SPEC-1","claim":"the public reader returns the wrong value","kind":"behavioral","material":true},{"id":"SPEC-2","claim":"another reader returns the wrong value","kind":"behavioral","material":true}],"verdict":"completed"}'
 fi
 PROVIDER
 chmod +x "$rigtmp/bin/claude"
 rigstate="$rigtmp/state"
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" begin --repo "$rigtmp/repo" --slug scoped-rig --intent 'scoped advisor transport' >/dev/null
 printf 'value = 2\n' >"$rigtmp/repo/app.py"
+cat >"$rigtmp/repo/test_transport_probe.py" <<'PY'
+import unittest
+import app
+class Reader(unittest.TestCase):
+    def test_value(self):
+        self.assertEqual(app.value, 2, "READER_VALUE_WRONG")
+PY
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 - "$ROOT" "$rigtmp/repo" <<'PY'
 import sys
 from pathlib import Path
@@ -230,26 +237,78 @@ for old in 'repo context packet' 'Repo Context Forge graph evidence' '--- unstag
 done
 
 wid=$(CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" status --repo "$rigtmp/repo" | python3 -c 'import json,sys; print(json.load(sys.stdin)["workflowId"])')
-CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" advisor-disposition --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --stage preflight --findings none >/dev/null
+# The controlled intake owns real runner-backed evidence, not authored GREEN.
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 - "$ROOT" "$rigtmp/repo" "$rigtmp/preflight.json" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[1])
 from hooks.lib.repo_identity import resolve_repo_identity
 from hooks.lib.workflow_state import read_workflow
-from hooks.tests.support import build_no_change_document
+from hooks.tests.support import build_document, pending_behavior
 state = read_workflow(resolve_repo_identity(sys.argv[2]))
-doc = build_no_change_document("scoped wrapper diagnostic")
-doc["behaviorMap"][0]["sourceRefs"] = [{"type":"design","evidenceId":state["governedDesignEvidence"],"id":"PRES-1"}]
+intake = state["advisorPreflight"]["intakeEvidence"]
+refs = [{"type":"finding", "evidenceId":intake, "id":identifier} for identifier in ("SPEC-1", "SPEC-2")]
+contract = {**pending_behavior("BM_READER", red_failure="READER_VALUE_WRONG"), "sourceRefs":refs}
+keep = {**contract, "id":"BM_KEEP", "kind":"preservation", "sourceRefs":[
+    *refs, {"type":"design", "evidenceId":state["governedDesignEvidence"], "id":"PRES-1"}]}
+doc = build_document("scoped wrapper diagnostic", behavior_map=[contract, keep])
+doc["chosenApproach"] = "Reuse the hook correctness operation at 82 rows; limit 2048 UTF-8 bytes and 2 seconds per hook, no extra DB reads or subprocesses versus old."
+doc["riskChecks"] = "Keep fixed bounds after measurement; compare the same real-hook Interface."
+doc["proofPlan"] = "workflow.py verify -- python3 -m unittest hooks.tests.test_behavior_map_workflow.BehaviorMapWorkflowTests.test_consecutive_hook_obligations_are_bounded_without_extra_edit_work; report actual source target, scale, limit and observed value."
 open(sys.argv[3], "w", encoding="utf-8").write(json.dumps(doc))
 PY
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" record-preflight --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --input "$rigtmp/preflight.json" >/dev/null
-CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" tdd --repo "$rigtmp/repo" --slug scoped-rig --not-required 'diagnostic has no production behavior' >/dev/null
+for behavior in BM_KEEP BM_READER; do
+  out=$(CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" tdd --repo "$rigtmp/repo" --slug scoped-rig --phase red --behavior-id "$behavior" -- python3 -m unittest test_transport_probe 2>&1); status=$?
+  check_status "$behavior receives an executed baseline" 0 "$status"
+done
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/skills/production-code/scripts/code_quality_gate.py" check --repo "$rigtmp/repo" --json >"$rigtmp/gate.json"
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" record-production-code --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --input "$rigtmp/gate.json" >/dev/null
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" set-phase --repo "$rigtmp/repo" --phase implementation --status passed >/dev/null
-CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" verify --repo "$rigtmp/repo" --slug scoped-rig -- python3 -c pass >/dev/null
+selected_receipt=$(PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" verify --repo "$rigtmp/repo" --slug scoped-rig -- python3 -m unittest hooks.tests.test_behavior_map_workflow.BehaviorMapWorkflowTests.test_consecutive_hook_obligations_are_bounded_without_extra_edit_work 2>"$rigtmp/measurement.err"); status=$?
+check_status "declared hook resource operation verifies through the real runner" 0 "$status"
+check "selected operation reports its fixed byte limit" '"limitBytes": 2048' "$selected_receipt"
+check "selected operation reports its retained scale" '"scale": 82' "$selected_receipt"
+printf '%s\n' "$selected_receipt" | tee "$rigtmp/selected-receipt.txt"
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" verify --repo "$rigtmp/repo" --slug scoped-rig --kind quality-gate --base-ref HEAD >/dev/null
 CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" set-phase --repo "$rigtmp/repo" --phase code-review --status not-required --findings none >/dev/null
+
+# One report-only finding is settled; the other remains pending. Reassessment
+# blocks final transport, but measured rejection remains reachable in that pass.
+CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 - "$ROOT" "$rigtmp/repo" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.lib.workflow_state import read_workflow
+from hooks.lib.state_store import _active_candidate_tree
+repo = Path(sys.argv[2])
+state = read_workflow(resolve_repo_identity(repo))
+for identifier, status in (("SPEC-1", "report-only"), ("SPEC-2", "rejected-with-evidence")):
+    doc = {"context":{"workflowId":state["workflowId"], "candidateTree":_active_candidate_tree(resolve_repo_identity(repo))},
+           "intakeEvidenceId":state["advisorPreflight"]["intakeEvidence"], "dispositions":[{
+               "finding_id":identifier, "status":status, "kind":"behavioral",
+               "premise":{"claim":"reader value differs", "command":"python3 -m unittest test_transport_probe", "result":"false" if status == "rejected-with-evidence" else "true: reported reader differs"},
+               "occurrence":{"domain":"all public app.value reads", "count":0, "complete":True, "command":"python3 -m unittest test_transport_probe", "result":"count=0"},
+               "materialConsequence":{"claim":"callers see the wrong value", "command":"python3 -m unittest test_transport_probe", "result":"false"},
+               "evidence":"retained public-reader operation passed"}]}
+    (repo.parent / f"{identifier}.json").write_text(json.dumps(doc), encoding="utf-8")
+(repo.parent / "reassess.json").write_text(json.dumps({"reassessment":"reader preservation affected", "dispositions":[{"id":"BM_KEEP", "revalidate":True, "evidence":"re-execute retained reader before closure"}]}), encoding="utf-8")
+PY
+out=$(CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" advisor-disposition --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --stage preflight --findings addressed --input "$rigtmp/SPEC-1.json" 2>&1); status=$?
+check_status "executed owning evidence settles report-only" 0 "$status"
+out=$(CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" tdd-map --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --input "$rigtmp/reassess.json" 2>&1); status=$?
+check_status "settled owner enters reassessment" 0 "$status"
+out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' 2>&1); status=$?
+check_status "pending preservation blocks ordinary final transport" 2 "$status"
+check "refusal names the unresolved owner" "BM_KEEP" "$out"
+check_status "blocked final never invokes the provider" 1 "$(cat "$rigtmp/capture/count")"
+out=$(CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" advisor-disposition --repo "$rigtmp/repo" --slug scoped-rig --workflow-id "$wid" --stage preflight --findings addressed --input "$rigtmp/SPEC-2.json" 2>&1); status=$?
+check_status "measured rejection remains reachable with pending preservation" 0 "$status"
+out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' 2>&1); status=$?
+check_status "rejecting a finding does not erase pending preservation" 2 "$status"
+check_status "unrelated pending work still prevents provider invocation" 1 "$(cat "$rigtmp/capture/count")"
+out=$(CLAUDE_WORKFLOW_STATE_ROOT="$rigstate" python3 "$WORKFLOW" tdd --repo "$rigtmp/repo" --slug scoped-rig --phase red --behavior-id BM_KEEP -- python3 -m unittest test_transport_probe 2>&1); status=$?
+check_status "same retained operation closes preservation without a fabricated RED" 0 "$status"
 
 FAIL_PROVIDER=1 run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' >/dev/null 2>"$rigtmp/resume-fail.err"; status=$?
 check_status "resume provider failure propagates" 7 "$status"
@@ -268,7 +327,7 @@ missing_args=$(cat "$rigtmp/capture/args-3")
 check "missing SID creates the persisted session" "--session-id $created_sid" "$missing_args"
 check_absent "missing SID does not resume" "--resume" "$missing_args"
 
-final_out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- 'final question' 2>"$rigtmp/final.err"); status=$?
+final_out=$(run_wrapper --slug scoped-rig --phase final-review --design-file "$rigtmp/design.md" -- "Reconcile ownership and preservation with this selected verification receipt only: $selected_receipt" 2>"$rigtmp/final.err"); status=$?
 check_status "controlled final composition exits 0" 0 "$status"
 final_args=$(cat "$rigtmp/capture/args-4")
 check "successful final resumes the created session" "--resume $created_sid" "$final_args"
@@ -282,6 +341,15 @@ check "final design telemetry emitted" "codex_advisor_evidence name=governing-de
 check "projection telemetry emitted" "codex_advisor_evidence name=advisor-projection" "$(cat "$rigtmp/final.err")"
 check "diff telemetry emitted" "codex_advisor_evidence name=current-pass-diff" "$(cat "$rigtmp/final.err")"
 check "completion marker emitted" "codex_advisor_complete status=0 provider=codex" "$(cat "$rigtmp/final.err")"
+python3 - "$rigtmp/capture/payload-4" "$rigtmp/selected-receipt.txt" "$rigtmp/SPEC-1.json" <<'PY'
+import json, sys
+payload, receipt, disposition = [open(path, encoding="utf-8").read() for path in sys.argv[1:]]
+assert receipt.strip() in payload, "SELECTED_RECEIPT_DROPPED"
+assert json.loads(disposition)["intakeEvidenceId"] in payload, "EXACT_INTAKE_ID_DROPPED"
+for value in ('"executedCommands"', 'python3 -m unittest test_transport_probe', '"revalidationRequired": false', 'all public app.value reads', 'the public reader returns the wrong value'):
+    assert value in payload, "OWNERSHIP_OR_MEASUREMENT_DROPPED: " + value
+PY
+check_status "outgoing final payload retains exact ownership, commands and selected receipt" 0 "$?"
 
 cat >"$rigtmp/home/.bashrc" <<'BASHRC'
 alias claudex='ANTHROPIC_BASE_URL=https://transport.invalid ANTHROPIC_AUTH_TOKEN=offline-token CLAUDE_CODE_SUBAGENT_MODEL=offline-model \
