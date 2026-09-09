@@ -12,6 +12,11 @@ session hook, must survive an install.
 | `settings.json` | `~/.claude/settings.json` — permissions, model, hooks, effort |
 | `hooks/` | `~/.claude/hooks/` — the gates settings.json wires up |
 
+Development tests stay in GitHub and the complete mirror. All installs exclude
+`hooks/tests/`, `skills/codex-advisor/tests/`, and
+`skills/production-code/scripts/test_code_quality_gate.py`; keep runtime scripts
+and skill references. New development tests must also be excluded from deployment.
+
 ## Workflow boundary
 
 The estate records one repository-scoped production workflow:
@@ -29,14 +34,17 @@ there is no Stop hook. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns th
 
 ## Install or update
 
-Start from a clean checkout of the current `main`. Review any live differences
-before overwriting them; reconcile intentional machine changes into the tracked
-configuration first.
+Install a pinned remote `main` snapshot, then fast-forward the mirror after
+verification. Review live differences before overwriting them; reconcile
+intentional machine changes into tracked configuration first.
 
 ```bash
+mirror="$PWD"
 git fetch origin
-git switch main
-git pull --ff-only
+revision=$(git rev-parse origin/main)
+snapshot=$(mktemp -d)
+git archive "$revision" | tar -x -C "$snapshot"
+cd "$snapshot"
 diff -u settings.json ~/.claude/settings.json
 diff -u CLAUDE.md ~/.claude/CLAUDE.md
 ```
@@ -47,8 +55,8 @@ After reconciliation, install without deleting machine-managed additions:
 backup="$HOME/.claude-backups/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$backup"
 cp -a ~/.claude/CLAUDE.md ~/.claude/settings.json ~/.claude/hooks ~/.claude/skills "$backup/"
-rsync -a skills/ ~/.claude/skills/
-rsync -a hooks/ ~/.claude/hooks/
+rsync -a --exclude='/codex-advisor/tests/' --exclude='/production-code/scripts/test_code_quality_gate.py' skills/ ~/.claude/skills/
+rsync -a --exclude='/tests/' hooks/ ~/.claude/hooks/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
 chmod +x ~/.claude/hooks/*.py
@@ -73,6 +81,11 @@ machine integrations may own additional live files. The cost of that choice is
 that a file renamed or deleted upstream is left behind in `~/.claude`, so every
 rename or deletion orphans the old name until someone retires it.
 
+On the first filtered install, move existing repository-owned copies of the
+excluded tests into the backup outside `~/.claude`, including their bytecode.
+Confirm ownership before moving files; preserve machine-managed additions.
+Copy exclusions alone do not retire files already installed.
+
 The `chmod` covers `*.py` only. Every tracked top-level hook is Python, and the
 one live shell hook is registered as `bash '<path>' session`, so its executable
 bit is never read. Adding `*.sh` back would grant nothing to that hook and would
@@ -82,12 +95,11 @@ files it should be ignoring.
 Verify the installed estate itself, not only the checkout:
 
 ```bash
-bash ~/.claude/hooks/tests/run.sh
-bash ~/.claude/skills/codex-advisor/tests/test-ask-codex-advisor.sh
+python3 ~/.claude/skills/repo-production-workflow/scripts/workflow.py --help
 diff -u CLAUDE.md ~/.claude/CLAUDE.md
 diff -u settings.json ~/.claude/settings.json
-diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
-diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
+diff -qr --exclude 'tests' --exclude 'test_code_quality_gate.py' --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
+diff -qr --exclude 'tests' --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
 find ~/.claude/hooks -maxdepth 1 -name '*.py' ! -perm -u+x
 ```
 
@@ -102,15 +114,25 @@ in either direction, and should never appear — check it alone rather than
 reading it out of a list that is mostly orphans:
 
 ```bash
-{ diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
-  diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/; } | grep '^Files'
+{ diff -qr --exclude 'tests' --exclude 'test_code_quality_gate.py' --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
+  diff -qr --exclude 'tests' --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/; } | grep '^Files'
 ```
 
 The `find` prints nothing when every installed hook is executable. It is a
 separate command because neither of the checks above covers modes: `diff -qr`
-compares content only, and both test scripts are launched through `bash`, which
-does not need the executable bit. A non-executable hook fails silently, so the
-mode is worth its own line.
+compares content only. A non-executable hook fails silently, so the mode is
+worth its own line. Run development suites from a source checkout when needed;
+the installed command check above confirms launchability, not full behavior.
+
+After successful installation and reconciliation, fast-forward the clean mirror
+to the installed revision without filtering its files:
+
+```bash
+cd "$mirror"
+git switch main
+git merge --ff-only "$revision"
+rm -rf "$snapshot"
+```
 
 Absence from the checkout does not make a file an orphan. `herdr-agent-state.sh`
 is absent and live, and because the install never deletes, `~/.claude/hooks/`
@@ -145,12 +167,13 @@ them in the hooks diff until then.
 
 **Install, motherfucker.**
 
-The procedure above reconciles the whole estate from current `main`; never
-run it from a divergent branch. To install a verified but unmerged slice,
-install only the branch's changed-path set —
+The procedure above reconciles the whole estate from pinned remote `main`.
+For a verified but unmerged slice, pin its published head and install only
+the branch's changed-path set —
 `git diff --name-status origin/main...HEAD` — and within it only paths with a
-live target in the mapping above; repository-only paths such as `README.md`
-have none. Update a live path when it matches current `main`, the candidate,
+live target in the mapping above, applying the same test exclusions; a scoped
+install must not restore them. Repository-only paths such as `README.md` have
+none. Update a live path when it matches current `main`, the candidate,
 or what this PR last installed there: copy an added or modified candidate,
 retire a deleted one with the procedure above, and treat a rename as that
 retirement plus a copy. Anything else means another slice may own it — stop.
