@@ -21,7 +21,7 @@ The recorder counts valid cycle-opening REDs only as a coarse granularity smell.
 
 ## Map updates
 
-`tdd-map` records a change to the map: new items a GREEN exposed, dispositions of pending preservation items, supersessions, withdrawals, or a review-discovered defect added before its fix. A proof that changes nothing records nothing. Pass the document on stdin:
+`tdd-map` changes existing obligations or adds uncovered outcomes. A no-op writes nothing. Pass the document on stdin:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-map \
@@ -30,9 +30,19 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-
 JSON
 ```
 
-`sourceBehaviorId`, when given, names the GREEN item whose consequence the update records. New items use the preflight schema and reopen TDD; dispositions take the statuses in [SKILL.md](SKILL.md). A missing `supersededBy` target, self-reference, cycle, non-GREEN source, or a terminal replacement that can never be GREEN refuses the whole update. Updates are admitted while cycles are open.
+`sourceBehaviorId`, when given, names the GREEN whose consequence the update records. New items use the initial preflight schema; runtime proof and `revalidationRequired` are reserved. Dispositions follow [SKILL.md](SKILL.md). Missing replacement targets, cycles, impossible terminal replacements, and foreign finding references refuse the whole update atomically.
 
-While an item's cycle is open, a changed surface for that item refuses before execution; other pending contract items record their own RED beside it. Every RED-phase run entry carries `productionChanged` (production paths differing from the pass start commit, tracked or untracked, measured when the run is launched), `passStartOid`, and `headOid`; a non-empty set is copied into the item's `redProof` or `baselineProof` and surfaces as `Late RED` in `summary` and `lateRed` in the final-review checkpoint. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
+Reassess affected preservation with `{"id":"BM_KEEP","revalidate":true,"evidence":"Name the affected guarantee and change"}`. `revalidate` and `status` are mutually exclusive; repeated flagged requests are idempotent. `status:pending` reopening sets the same flag. Settled preservation loses present settlement/baseline authority, while GREEN retains historical RED/GREEN fields. Governing omission retains the flag through reopening; finding closure still requires current owning proof.
+
+Flagged pending uses ordinary `tdd --phase red`: a passing pytest/unittest baseline clears reassessment without a cycle; a genuine failure opens RED, and GREEN later clears it. Flagged GREEN reruns `tdd --phase green` against its **producer-recorded `redCommand`**, including direct operations, with the same normalized-surface rules. Success refreshes evidence without a new cycle or invalidating unrelated receipts. Failure, timeout, skipped-only/setup output, and candidate drift retain the run and unresolved flag for retry. Positively identified non-executing rechecks on the unchanged candidate also preserve unrelated receipts; genuine regressions and ambiguous failures invalidate downstream checks. Missing producer binding stays unresolved unless governing omission or a valid current GREEN replacement settles the obligation. Neither authored `proofCommand` nor prose supplies that binding. Do not fabricate RED or wrap an operation just to change parser classification.
+
+Reassessment runs retain `candidateTree` sampled before execution and compare the candidate at commit, outside the child execution lock. Drift records `bindingError`, never accepted proof. RED's existing `productionChanged`, `passStartOid`, and `headOid` remain pass-relative; lateness is sticky and historical documents remain immutable.
+
+Add ownership without another execution: `{"id":"BM_KEEP","sourceRefs":[{"type":"finding","evidenceId":"<actual intake>","id":"SPEC-1"}]}`. References union in order by full identity, including historical intakes in the same workflow; withdrawn items cannot acquire new references. They cannot remove/reassign ownership. Reference-only updates preserve lifecycle, verification, review, cycle count, and active command/surface/runs; repeated unions write nothing. Mixed updates commit atomically, transitioning only for actual obligations.
+
+Any map update, refusal, baseline, or recheck beside A's open RED keeps A's binding unless another RED genuinely opens a cycle. Repeated RED as well as GREEN must match the item's own recorded `redCommand` before execution. The admitted RED sweep remains available.
+
+Already fixed/report-only owners can obtain reassessment evidence without first possessing it. Strict behavioral `fixed` still needs current owning evidence and at least one genuine GREEN-through-RED; baseline alone never claims a repair. When reassessment invalidates an existing terminal proof claim, a measured rejection or report-only correction remains possible through the existing disposition command, retaining its history. It is not permission to relabel a still-supported terminal finding.
 
 ## No behavior change
 

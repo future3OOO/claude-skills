@@ -7,12 +7,9 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-# Proof is GREEN through the item's own RED. `post-edit-passed` is a retired
-# status: evidence recorded under it still loads, but it is unresolved until
-# the item earns GREEN through RED.
+# Map proof is GREEN through its own RED; retired statuses are not admitted.
 PROOF_STATUSES = frozenset({"green"})
-LEGACY_STATUSES = frozenset({"post-edit-passed"})
-RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | LEGACY_STATUSES | {"red", "superseded", "withdrawn"}
+RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | {"red", "superseded", "withdrawn"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded", "withdrawn"}
 NEVER_GREEN = DISPOSITION_STATUSES | {"withdrawn"}
@@ -22,7 +19,7 @@ REQUIRED_FIELDS = frozenset({
 })
 OPTIONAL_FIELDS = frozenset({
     "evidence", "supersededBy", "sourceRefs", "proofCommand", "baselineProof", "supersededFrom",
-    "redCommand", "redProof",
+    "redCommand", "redProof", "revalidationRequired",
 })
 IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_-]{1,63}$")
 # A baselined item keeps its passing command in `evidence` behind this stamp;
@@ -163,6 +160,7 @@ def validate_items(
     *,
     allow_runtime: bool,
     existing: Iterable[JsonObject] = (),
+    terminals: dict[str, JsonObject] | None = None,
 ) -> list[JsonObject]:
     """Validate and return one canonical Behavior Map item list.
 
@@ -244,6 +242,10 @@ def validate_items(
         # The producer records its baseline proof here and prose never may, so
         # an already-satisfied item carrying it is producer-backed in every
         # lineage; evidence text proves nothing.
+        if "revalidationRequired" in raw:
+            if not allow_runtime or kind != "preservation" or raw["revalidationRequired"] is not True:
+                raise ValueError(f"behavior {identifier} revalidationRequired is producer-owned preservation state")
+            item["revalidationRequired"] = True
         if "baselineProof" in raw:
             if not allow_runtime or not isinstance(raw.get("baselineProof"), dict):
                 raise ValueError(_BASELINE_PROOF_RESERVED.format(identifier))
@@ -269,8 +271,9 @@ def validate_items(
             raise ValueError(f"behavior {identifier} status {status} cannot carry supersededBy")
         result.append(item)
     whole = [*existing, *result]
-    for entry in whole:
-        terminal_item(whole, entry)
+    resolved = terminal_items(whole)
+    if terminals is not None:
+        terminals.update(resolved)
     if not allow_runtime and any(
         entry["status"] == "pending" for entry in whole
     ) and not any(entry.get("kind") == "contract" for entry in whole):
@@ -292,8 +295,8 @@ def initial_items(value: object) -> list[JsonObject]:
     return validate_items(value, allow_runtime=False)
 
 
-def runtime_items(value: object) -> list[JsonObject]:
-    return validate_items(value, allow_runtime=True)
+def runtime_items(value: object, *, terminals: dict[str, JsonObject] | None = None) -> list[JsonObject]:
+    return validate_items(value, allow_runtime=True, terminals=terminals)
 
 
 def added_items(value: object, existing: list[JsonObject]) -> list[JsonObject]:
@@ -311,22 +314,33 @@ def item(items: list[JsonObject], identifier: str) -> JsonObject:
         raise ValueError(f"behavior id is not in the recorded map: {identifier}") from exc
 
 
-def terminal_item(items: list[JsonObject], entry: JsonObject) -> JsonObject:
-    """The item a superseded entry finally defers to; self-reference, cycles, and missing targets refuse."""
-    seen = {entry["id"]}
-    while entry.get("status") == "superseded":
-        target = entry.get("supersededBy")
-        if target in seen:
-            raise ValueError(
-                f"behavior {entry['id']} supersededBy must name another item without forming a cycle"
-            )
-        seen.add(target)
-        entry = item(items, str(target))
-    if len(seen) > 1 and entry.get("status") in NEVER_GREEN:
-        raise ValueError(
-            f"behavior {entry['id']} is {entry['status']} and can never be GREEN; it cannot replace a superseded item"
-        )
-    return entry
+def terminal_items(items: list[JsonObject]) -> dict[str, JsonObject]:
+    """Resolve the whole replacement graph once, including shared suffixes.
+
+    The result belongs to this map evaluation only; no evidence survives here.
+    """
+    by_id = {str(entry["id"]): entry for entry in items}
+    resolved: dict[str, JsonObject] = {}
+    for origin in items:
+        entry = origin
+        path: set[str] = set()
+        while str(entry["id"]) not in resolved:
+            identifier = str(entry["id"])
+            if identifier in path:
+                raise ValueError(f"behavior {identifier} supersededBy must name another item without forming a cycle")
+            path.add(identifier)
+            if entry.get("status") != "superseded":
+                break
+            target = str(entry.get("supersededBy"))
+            if target not in by_id:
+                raise ValueError(f"behavior id is not in the recorded map: {target}")
+            entry = by_id[target]
+        terminal = resolved.get(str(entry["id"]), entry)
+        if origin.get("status") == "superseded" and terminal.get("status") in NEVER_GREEN:
+            raise ValueError(f"behavior {terminal['id']} is {terminal['status']} and can never be GREEN; "
+                             "it cannot replace a superseded item")
+        resolved.update((identifier, terminal) for identifier in path)
+    return resolved
 
 
 def apply_dispositions(
@@ -335,14 +349,11 @@ def apply_dispositions(
     *,
     settled_findings: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
-    """Apply no-edit dispositions in place: settle pending items, supersede GREEN
-    ones, withdraw a never-attacked, unowned contract item whoever declared it,
-    or reopen a settled preservation item to pending.
+    """Add ownership or reassess existing obligations, never manufacture proof.
 
-    `settled_findings` holds the (intake evidence, finding id) pairs closed
-    without a fix; an item owned only by those owns nothing and may be
-    withdrawn. The supersession graph is checked by the caller's validation of
-    the merged map, so a replacement added in the same update is legal.
+    References only grow. Reopening removes present settlement authority, while
+    immutable evidence documents retain the old proof. Rejected/report-only
+    findings retain the existing unowned-contract withdrawal rule.
     """
     if not isinstance(value, list):
         raise ValueError("TDD map dispositions must be an array")
@@ -350,67 +361,80 @@ def apply_dispositions(
     for position, raw in enumerate(value, 1):
         if not isinstance(raw, dict):
             raise ValueError(f"TDD map disposition {position} must be an object")
-        unknown = sorted(set(raw) - {"id", "status", "evidence", "supersededBy"})
+        unknown = sorted(set(raw) - {"id", "status", "evidence", "supersededBy", "sourceRefs", "revalidate"})
         if unknown:
-            raise ValueError(
-                f"TDD map disposition {position} has unknown fields: {', '.join(unknown)}"
-            )
+            raise ValueError(f"TDD map disposition {position} has unknown fields: {', '.join(unknown)}")
         identifier = _text(raw.get("id"))
-        status = _text(raw.get("status"))
-        evidence = _text(raw.get("evidence"))
         if identifier is None or identifier in seen:
             raise ValueError("TDD map dispositions require unique behavior ids")
         seen.add(identifier)
-        if status not in EVIDENCED_STATUSES | {"pending"}:
-            raise ValueError(
-                f"behavior {identifier} disposition must be one of: "
-                + ", ".join(sorted(EVIDENCED_STATUSES | {"pending"}))
-            )
+        mapped = item(items, identifier)
+        if "sourceRefs" in raw:
+            refs = _source_refs(raw["sourceRefs"], identifier)
+            if refs is None:
+                raise ValueError(f"behavior {identifier} sourceRefs must be an array")
+            existing = mapped.get("sourceRefs", [])
+            additions = [ref for ref in refs if ref not in existing]
+            if additions and mapped.get("status") == "withdrawn":
+                raise ValueError(f"behavior {identifier} is withdrawn; it cannot acquire sourceRefs")
+            if additions:
+                mapped["sourceRefs"] = [*existing, *additions]
+        revalidate = "revalidate" in raw
+        status = _text(raw.get("status"))
+        if revalidate and (raw["revalidate"] is not True or "status" in raw):
+            raise ValueError("revalidate must be true and is mutually exclusive with status")
+        if not revalidate and "status" not in raw:
+            if set(raw) - {"id", "sourceRefs"} or "sourceRefs" not in raw:
+                raise ValueError(f"behavior {identifier} disposition requires status, revalidate or sourceRefs")
+            continue
+        evidence = _text(raw.get("evidence"))
         if evidence is None:
             raise ValueError(f"behavior {identifier} disposition requires evidence")
-        mapped = item(items, identifier)
-        if status == "superseded":
-            if mapped.get("status") not in PROOF_STATUSES:
-                raise ValueError(
-                    f"behavior {identifier} is {mapped.get('status')}; only a GREEN item can be superseded"
-                )
-            mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
-            mapped["supersededFrom"] = mapped["status"]
-        elif "supersededBy" in raw:
+        if "supersededBy" in raw and status != "superseded":
             raise ValueError(f"behavior {identifier} disposition {status} cannot carry supersededBy")
+        previous = mapped.get("status")
+        if revalidate or status == "pending":
+            permitted = {"pending", "green", *DISPOSITION_STATUSES} if revalidate else DISPOSITION_STATUSES
+            if revalidate and mapped.get("revalidationRequired") and previous == "red":
+                permitted = permitted | {"red"}
+            if mapped.get("kind") != "preservation" or previous not in permitted:
+                raise ValueError(f"behavior {identifier} is a {mapped.get('kind')} item at {previous}; "
+                                 "only settled preservation can be reopened or preservation revalidated")
+            if revalidate and mapped.get("revalidationRequired"):
+                continue
+            mapped["revalidationRequired"] = True
+            if previous in DISPOSITION_STATUSES:
+                mapped["status"] = "pending"
+                mapped.pop("evidence", None)
+                mapped.pop("baselineProof", None)
+            continue
+        if status not in EVIDENCED_STATUSES:
+            raise ValueError(f"behavior {identifier} disposition must be one of: "
+                             + ", ".join(sorted(EVIDENCED_STATUSES | {"pending"})))
+        if status == "superseded":
+            if previous not in PROOF_STATUSES:
+                raise ValueError(f"behavior {identifier} is {previous}; only a GREEN item can be superseded")
+            mapped["supersededBy"] = _required(raw, "supersededBy", identifier)
+            mapped["supersededFrom"] = previous
         elif status == "withdrawn":
             if mapped.get("kind") != "contract":
                 raise ValueError(_PRESERVATION_WITHDRAWN_REFUSED.format(identifier))
-            if mapped.get("status") != "pending":
-                raise ValueError(
-                    f"behavior {identifier} is {mapped.get('status')}; only a never-attacked "
-                    "pending contract item can be withdrawn"
-                )
-            if any(
-                ref.get("type") != "finding"
-                or (str(ref.get("evidenceId")), str(ref.get("id"))) not in settled_findings
-                for ref in mapped.get("sourceRefs") or []
-            ):
-                raise ValueError(
-                    f"behavior {identifier} carries sourceRefs; an owned item cannot be "
-                    "withdrawn while any owning finding is open or fixed"
-                )
-        elif status == "pending":
-            if mapped.get("kind") == "contract" or mapped.get("status") not in DISPOSITION_STATUSES:
-                raise ValueError(
-                    f"behavior {identifier} is a {mapped.get('kind')} item at {mapped.get('status')}; "
-                    "only a preservation item at omitted or already-satisfied can be reopened"
-                )
-            mapped.pop("evidence", None)
-            mapped.pop("baselineProof", None)
-            mapped["status"] = "pending"
-            continue
+            if previous != "pending":
+                raise ValueError(f"behavior {identifier} is {previous}; only a never-attacked "
+                                 "pending contract item can be withdrawn")
+            if any(ref.get("type") != "finding"
+                   or (str(ref.get("evidenceId")), str(ref.get("id"))) not in settled_findings
+                   for ref in mapped.get("sourceRefs") or []):
+                raise ValueError(f"behavior {identifier} carries sourceRefs; an owned item cannot be "
+                                 "withdrawn while any owning finding is open or fixed")
         elif mapped.get("kind") == "contract":
             raise ValueError(_CONTRACT_DISPOSITION_REFUSED.format(identifier))
-        elif mapped.get("status") != "pending":
-            raise ValueError(
-                f"behavior {identifier} is {mapped.get('status')}; only pending items can be dispositioned"
-            )
+        elif status == "already-satisfied" and mapped.get("revalidationRequired"):
+            raise ValueError(f"behavior {identifier} requires executed revalidation, not prose already-satisfied")
+        elif previous != "pending" and not (
+            status == "omitted" and previous == "green" and mapped.get("revalidationRequired")
+        ):
+            raise ValueError(f"behavior {identifier} is {previous}; only pending items can be dispositioned")
         mapped["status"] = status
         mapped["evidence"] = evidence
 
@@ -425,21 +449,27 @@ def green_through_red(entry: JsonObject) -> bool:
 
 def producer_proved(entry: JsonObject) -> bool:
     """Proof statuses come only from the producer; already-satisfied counts only with its recorded proof."""
-    return entry.get("status") in PROOF_STATUSES or (
-        entry.get("status") == "already-satisfied" and isinstance(entry.get("baselineProof"), dict)
+    return not entry.get("revalidationRequired") and (
+        entry.get("status") in PROOF_STATUSES or (
+            entry.get("status") == "already-satisfied" and isinstance(entry.get("baselineProof"), dict)
+        )
     )
 
 
-def unresolved(items: list[JsonObject]) -> list[str]:
-    """Closure: pending, red, and superseded whose terminal replacement is not proved."""
+def unresolved(
+    items: list[JsonObject], *, terminals: dict[str, JsonObject] | None = None,
+) -> list[str]:
+    if terminals is None:
+        terminals = terminal_items(items)
     return [
         str(entry["id"])
         for entry in items
-        if entry.get("status") in {"pending", "red"} | LEGACY_STATUSES
-        or (
-            entry.get("status") == "superseded"
-            and terminal_item(items, entry).get("status") not in PROOF_STATUSES
-        )
+        if entry.get("status") in {"pending", "red"}
+        or (entry.get("revalidationRequired") and entry.get("status") not in {"omitted", "superseded"})
+        or (entry.get("status") == "superseded" and not (
+            terminals[str(entry["id"])].get("status") == "green"
+            and producer_proved(terminals[str(entry["id"])])
+        ))
     ]
 
 
@@ -458,8 +488,7 @@ def may_refactor(items: list[JsonObject]) -> bool:
 
 
 def edit_blocker(items: list[JsonObject]) -> str | None:
-    """What the map still lacks before the next production edit, or None when it
-    lacks nothing. Advice the edit hook surfaces, never a refusal."""
+    """Missing ordering prerequisites, not the full set of edit obligations. Advice only."""
     preservation = [
         str(entry["id"]) for entry in items
         if entry.get("kind") != "contract" and entry.get("status") == "pending"
@@ -482,6 +511,43 @@ def edit_blocker(items: list[JsonObject]) -> str | None:
         "window needs every contract item resolved and one GREEN through RED): "
         + (", ".join(contract) or "none mapped")
     )
+
+
+def obligation_digest(items: list[JsonObject], active: object = None) -> str:
+    """A stateless, bounded reminder from already-loaded items; excluded rows still apply."""
+    header = "Behavior obligations (top priority; consult the full map):\n"
+    footer = "\n{} row(s) not displayed; budget exclusion does not remove obligations."
+    remaining = 2048 - len(header.encode("utf-8")) - len(footer.format(len(items)).encode("utf-8"))
+    groups: list[list[JsonObject]] = [[], [], [], []]
+    for entry in items:
+        status = entry.get("status")
+        if status == "omitted" and entry.get("evidence"):
+            groups[3].append(entry)
+        elif entry.get("kind") == "contract" and (status == "red" or entry.get("id") == active):
+            groups[0].append(entry)
+        elif entry.get("kind") == "preservation" and status != "superseded":
+            groups[1 if status in {"pending", "red"} or entry.get("revalidationRequired") else 2].append(entry)
+    rows: list[str] = []
+    for group in groups:
+        for entry in group:
+            fields = [str(entry[key]) for key in ("id", "status", "behavior", "expected")]
+            # Even ASCII cannot fit this row. Do not normalize/encode huge text
+            # just to discard it, or repeatedly build/encode the whole digest.
+            if sum(map(len, fields)) > remaining:
+                continue
+            identifier, status, behavior, expected = (
+                "".join(" " if not char.isprintable() or char.isspace() else char
+                        for char in field) for field in fields
+            )
+            label = "non-applicable" if status == "omitted" else (
+                "revalidation required" if entry.get("revalidationRequired") else "applicable"
+            )
+            row = f"{identifier} [{status}; {label}] {behavior} => {expected}\n"
+            size = len(row.encode("utf-8"))
+            if size <= remaining:
+                rows.append(row)
+                remaining -= size
+    return header + "".join(rows) + footer.format(len(items) - len(rows))
 
 
 def recorded_map(
@@ -511,7 +577,9 @@ def closure_blockers(
 
 def all_disposition_only(items: list[JsonObject]) -> bool:
     return bool(items) and all(
-        entry.get("status") in DISPOSITION_STATUSES for entry in items
+        entry.get("status") in DISPOSITION_STATUSES
+        and (not entry.get("revalidationRequired") or entry.get("status") == "omitted")
+        for entry in items
     )
 
 

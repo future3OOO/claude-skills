@@ -83,6 +83,26 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(state["preflight"], "pending", marker)
         self.assertIsNone(state.get("preflightEvidence"), marker)
 
+    def test_shared_supersession_closure_reuses_only_current_terminal_proof(self) -> None:
+        items = [
+            {**contract(identifier), "status": "superseded", "supersededFrom": "green",
+             "supersededBy": target, "evidence": "same promise, sharper operation"}
+            for identifier, target in (("BM_A", "BM_B"), ("BM_B", "BM_C"), ("BM_D", "BM_B"))
+        ] + [{**preservation("BM_C"), "status": "green"}]
+        terminals = {}
+        loaded = behavior_map.runtime_items(items, terminals=terminals)
+        self.assertEqual({key: value["id"] for key, value in terminals.items()},
+                         {key: "BM_C" for key in ("BM_A", "BM_B", "BM_C", "BM_D")})
+        self.assertEqual(behavior_map.unresolved(loaded, terminals=terminals), [])
+        items[-1]["revalidationRequired"] = True
+        self.assertEqual(behavior_map.unresolved(behavior_map.runtime_items(items)),
+                         ["BM_A", "BM_B", "BM_D", "BM_C"])
+        for target in ("BM_A", "BM_MISSING"):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                behavior_map.runtime_items([*items[:-1], {
+                    **items[0], "id": "BM_C", "supersededBy": target,
+                }])
+
     def test_preflight_refuses_contract_dispositions_and_kindless_items(self) -> None:
         marker = "CONTRACT_PROSE_DISPOSITION_RECORDED_AT_PREFLIGHT"
         slug, workflow_id = self.begin("preflight-contract")
@@ -181,7 +201,7 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
 
     def intake_advice(self, relative: str = "app.py") -> str:
-        """The real PreToolUse hook's advisory context for a production path, '' when nothing is missing."""
+        """The real PreToolUse hook: prerequisites and obligations, never a denial."""
         hook = subprocess.run(
             [sys.executable, str(INTAKE)], cwd=self.repo, env=self.h.env, text=True,
             input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
@@ -222,7 +242,20 @@ class ContractProofAuthorityTests(unittest.TestCase):
         })
         self.assertEqual(dispositioned.returncode, 0, marker + ": " + dispositioned.stdout + dispositioned.stderr)
         self.record_production_code(slug, workflow_id)
-        self.assertEqual(self.intake_advice(), "", marker)
+        before = {}
+        for action, key in (("status", "workflowId"), ("history", "events")):
+            captured = self.h.cli(action)
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            before[action] = json.loads(captured.stdout)
+            self.assertIn(key, before[action])
+        context = self.intake_advice()
+        self.assertNotIn("missing before", context, marker)
+        self.assertIn("BM_C [red; applicable]", context)
+        self.assertIn("BM_P [already-satisfied; applicable]", context)
+        for action in before:
+            captured = self.h.cli(action)
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            self.assertEqual(json.loads(captured.stdout), before[action])
 
     def test_passing_pre_edit_red_records_producer_backed_already_satisfied(self) -> None:
         marker = "BASELINE_PASS_NOT_RECORDED"

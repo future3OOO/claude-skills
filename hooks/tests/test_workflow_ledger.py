@@ -471,6 +471,49 @@ class WorkflowLedgerTests(unittest.TestCase):
         self.assertTrue(json.loads(green.stdout.splitlines()[-1])["valid"])
         self.assertEqual(json.loads(self.cli("status", "--repo", str(self.repo)).stdout)["tdd"], "passed")
 
+    def test_mapless_import_uses_preflight_ownership_without_inventing_proof(self) -> None:
+        from hooks.lib._workflow_db import evidence_write
+        from hooks.lib.workflow_state import WorkflowError, annotate_tdd_evidence
+        from hooks.tests.support import pending_behavior
+
+        legacy, preflight_path = self.legacy_state()
+        wid = str(legacy["workflowId"])
+        review = {"schemaVersion": 1, "workflowId": wid, "slug": "legacy",
+                  "recordedAt": "2026-08-01T00:00:01+00:00",
+                  "findings": [{"id": "LEGACY-1", "kind": "behavioral"}]}
+        intake = evidence_write(wid, "code-review", review).evidence_id
+        (self.slot / "review-legacy.json").write_text(json.dumps(review))
+        preflight = json.loads(preflight_path.read_text())
+        owner = {**pending_behavior("BM_OWNER"), "kind": "preservation",
+                 "status": "already-satisfied", "evidence": "legacy prose settlement",
+                 "sourceRefs": [{"type": "finding", "evidenceId": intake, "id": "LEGACY-1"}]}
+        preflight["document"]["behaviorMap"] = [owner]
+        preflight_path.write_text(json.dumps(preflight))
+        legacy["findingStates"] = [{"stage": "code-review", "kind": "behavioral",
+                                    "status": "report-only", "findingId": "LEGACY-1",
+                                    "intakeEvidenceId": intake}]
+        (self.slot / "workflow.json").write_text(json.dumps(legacy))
+        imported = self.cli("status", "--repo", str(self.repo))
+        self.assertEqual(imported.returncode, 0, imported.stderr)
+        history = self.cli("history", "--repo", str(self.repo))
+        self.assertEqual(history.returncode, 0, history.stderr)
+        json.loads(history.stdout)["events"]
+        for mapped in (None, [owner], "corrupt"):
+            document = {"schemaVersion": 1, "workflowId": wid, "runs": []}
+            if mapped is not None:
+                document["behaviorMap"] = mapped
+            with self.subTest(map=mapped), self.assertRaises((WorkflowError, ValueError)) as error:
+                annotate_tdd_evidence(self.identity, "legacy", wid, document)
+            if mapped != "corrupt":
+                self.assertIn("producer proved", str(error.exception), "IMPORTED_MAP_OWNER_WAS_LOST")
+            else:
+                self.assertIn("behaviorMap", str(error.exception))
+            for action, before in (("status", imported), ("history", history)):
+                after = self.cli(action, "--repo", str(self.repo))
+                self.assertEqual(after.returncode, 0, after.stderr)
+                self.assertEqual(json.loads(after.stdout), json.loads(before.stdout))
+        self.assertEqual(json.loads(preflight_path.read_text()), preflight)
+
     def test_candidate_refused_legacy_begin_rolls_back_authority_import(self) -> None:
         marker = "GUARDED_MUTATION_PRECOMMITTED_AUTHORITY_ROWS"
         self.legacy_state(); before = self.ledger_counts(); self.slot.mkdir(parents=True, exist_ok=True)

@@ -2817,9 +2817,51 @@ class PassLifecycleTests(unittest.TestCase):
         blocked, _ = ready_for_edit(identity, "app.py")
         self.assertFalse(blocked, "a reviewable edit reopened production editing on a completed pass")
 
-        invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
-        state = json.loads(self.cli("status").stdout)
+        from hooks.lib.workflow_state import TDD_CLOSED, WorkflowError, annotate_tdd_evidence
+        prepared = {"workflowId": wid, "behaviorMap": self.preflight_document()["behaviorMap"], "runs": []}
+        # Observe the real writer before transaction acquisition; substitute no collaborator.
+        program = """import json, sys
+from hooks.lib.repo_identity import resolve_repo_identity
+from hooks.lib.workflow_state import annotate_tdd_evidence
+def wait_at_mutation(frame, event, arg):
+    if event == 'call' and frame.f_code.co_name == 'mutation':
+        sys.settrace(None)
+        print('before mutation', flush=True)
+        sys.stdin.readline()
+    return wait_at_mutation
+sys.settrace(wait_at_mutation)
+annotate_tdd_evidence(resolve_repo_identity(sys.argv[1]), 'terminal-state', sys.argv[2],
+                      json.loads(sys.argv[3]), expected_evidence_id=json.loads(sys.argv[4]))
+"""
+        with subprocess.Popen(
+            [sys.executable, "-c", program, str(self.repo), wid, json.dumps(prepared),
+             json.dumps(terminal.get("tddEvidence"))], cwd=ROOT, env=self.env, text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ) as writer:
+            self.assertEqual(writer.stdout.readline(), "before mutation\n")
+            invalidate_after_edit(identity, "skills/diagnose/SKILL.md")
+            state, history = json.loads(self.cli("status").stdout), self.history_events()
+            _, error = writer.communicate("\n", timeout=30)
+        failure = "GOVERNANCE_CHANGED_BEFORE_COMMIT_WAS_MISSED"
+        self.assertNotEqual(writer.returncode, 0, failure)
+        self.assertIn(TDD_CLOSED, error, failure)
         self.assertEqual(state["verification"], "pending")
+        failure = "GOVERNANCE_ANNOTATION_MUTATED_DOCUMENT: STALE_PREPARATION_BYPASSED_GOVERNANCE"
+        with self.assertRaisesRegex(WorkflowError, TDD_CLOSED, msg=failure):
+            annotate_tdd_evidence(identity, "terminal-state", wid, prepared,
+                                  expected_evidence_id=state.get("tddEvidence"))
+        self.assertEqual(json.loads(self.cli("status").stdout), state, failure)
+        self.assertEqual(self.history_events(), history, failure)
+        update = self.tmp / "governance-map.json"
+        update.write_text(json.dumps({"reassessment": "recheck frozen map", "dispositions": [
+            {"id": "BM_NO_CHANGE", "revalidate": True, "evidence": "governance freeze"}]}))
+        rejected = self.cli("tdd-map", "--slug", "terminal-state", "--workflow-id", wid,
+                            "--input", str(update))
+        failure = "GOVERNANCE_REVALIDATION_ACCEPTED_TDD_MAP_MUTATION"
+        self.assertEqual(rejected.returncode, 2, failure)
+        self.assertIn(TDD_CLOSED, rejected.stderr, failure)
+        self.assertEqual(json.loads(self.cli("status").stdout), state, failure)
+        self.assertEqual(self.history_events(), history, failure)
 
         for phase in ("repo-context-forge", "preflight", "implementation"):
             rejected = self.cli("set-phase", "--phase", phase, "--status", "passed")

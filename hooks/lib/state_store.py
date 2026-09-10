@@ -223,21 +223,25 @@ def _write_candidate_tree(identity: RepoIdentity) -> str:
     handle = tempfile.NamedTemporaryFile(prefix="workflow-candidate-index-", delete=False)
     handle.close()
     env = {"GIT_INDEX_FILE": handle.name}
+    step = "read-tree"
     try:
         try:
-            _git(identity, "rev-parse", "--verify", "HEAD^{commit}")
-            seed = ("read-tree", "HEAD")
+            _git(identity, "read-tree", "HEAD", env=env)
         except RuntimeError:
-            seed = ("read-tree", "--empty")
-        for args in (seed, ("add", "-A", ".")):
+            # Normal HEAD needs no existence probe. Preserve the empty seed
+            # fallback for unresolvable HEAD; a valid HEAD's seed failure refuses.
             try:
-                _git(identity, *args, env=env)
-            except RuntimeError as exc:
-                raise OSError(f"candidate capture failed at git {args[0]}: {exc}") from exc
-        try:
-            return _git(identity, "write-tree", env=env).decode("utf-8").strip()
-        except RuntimeError as exc:
-            raise OSError(f"candidate capture failed at git write-tree: {exc}") from exc
+                _git(identity, "rev-parse", "--verify", "HEAD^{commit}")
+            except RuntimeError:
+                _git(identity, "read-tree", "--empty", env=env)
+            else:
+                raise
+        step = "add"
+        _git(identity, "add", "-A", ".", env=env)
+        step = "write-tree"
+        return _git(identity, "write-tree", env=env).decode("utf-8").strip()
+    except RuntimeError as exc:
+        raise OSError(f"candidate capture failed at git {step}: {exc}") from exc
     finally:
         Path(handle.name).unlink(missing_ok=True)
 
@@ -353,7 +357,7 @@ def _symlink_entry(identity: RepoIdentity, path: str) -> str | None:
     return f"120000 {digest}"
 
 
-def _gitlink_entries(identity: RepoIdentity) -> dict[str, str]:
+def _gitlink_entries(identity: RepoIdentity, listing: list[bytes]) -> dict[str, str]:
     """Each tracked submodule's checked-out commit, as `160000 <sha>`.
 
     The index says which paths are gitlinks; what a gitlink currently points at
@@ -365,7 +369,6 @@ def _gitlink_entries(identity: RepoIdentity) -> dict[str, str]:
     Only the commit is recorded. Uncommitted content inside an initialised
     submodule belongs to that repository, not to this one's reviewable surface.
     """
-    listing = _git(identity, "ls-files", "-s", "-z").split(b"\0")
     paths = reviewable_paths(
         os.fsdecode(entry.split(b"\t", 1)[1]) for entry in listing if entry.startswith(b"160000 ")
     )
@@ -390,10 +393,12 @@ def tree_manifest(identity: RepoIdentity) -> dict[str, str]:
     as the link rather than its referent, and a submodule is recorded by the
     commit it currently points at.
     """
-    candidates = reviewable_paths([*_paths(identity, "ls-files", "-z"), *untracked_paths(identity)])
+    listing = _git(identity, "ls-files", "-s", "-z").split(b"\0")
+    tracked = [os.fsdecode(entry.split(b"\t", 1)[1]) for entry in listing if entry]
+    candidates = reviewable_paths([*tracked, *untracked_paths(identity)])
     modes = {path: _file_mode(Path(identity.root) / path) for path in candidates}
     present = [path for path in candidates if modes[path] in {"100644", "100755"}]
-    manifest = _gitlink_entries(identity)
+    manifest = _gitlink_entries(identity, listing)
     for path in (path for path in candidates if modes[path] == "120000"):
         entry = _symlink_entry(identity, path)
         if entry:

@@ -134,6 +134,30 @@ class HookHarness(unittest.TestCase):
         finally:
             connection.close()
 
+    def assert_obligations_only(self, *identifiers: str) -> None:
+        before = {}
+        for action, key in (("status", "workflowId"), ("history", "events")):
+            result = self.state(action)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            before[action] = json.loads(result.stdout)
+            self.assertIsInstance(before[action], dict)
+            self.assertIn(key, before[action])
+        result = self.intake("app.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertNotIn("permissionDecision", output)
+        context = output["additionalContext"]
+        self.assertNotIn("missing before", context)
+        red_ids = re.findall(r"(?m)^([A-Z][A-Z0-9_-]*) \[red;", context)
+        self.assertCountEqual(red_ids, identifiers, context)
+        for action, key in (("status", "workflowId"), ("history", "events")):
+            result = self.state(action)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            after = json.loads(result.stdout)
+            self.assertIsInstance(after, dict)
+            self.assertIn(key, after)
+            self.assertEqual(after, before[action])
+
     def record_preflight_evidence(self, slug: str, wid: str, behavior_map: list | None = None) -> None:
         if behavior_map is None:
             document = build_no_change_document("hook-suite setup")
@@ -257,8 +281,7 @@ class WorkflowHookTests(HookHarness):
 
         red = self.red("tdd-ordering")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        after_red = self.intake("app.py")
-        self.assertEqual(after_red.stdout, "", "the gate kept advising after a recorded RED")
+        self.assert_obligations_only("BM_HOOK")
 
         self.complete_workflow()
         self.assertIn("new active workflow", advice("app.py"), marker)
@@ -1693,8 +1716,7 @@ class RedFirstTests(HookHarness):
         self.assertEqual(red_b.returncode, 0, marker + ": " + red_b.stdout + red_b.stderr)
         red_c = self.tdd(slug, "red", "BM_C", "c")
         self.assertEqual(red_c.returncode, 0, marker + ": " + red_c.stdout + red_c.stderr)
-        admitted = self.intake("app.py")
-        self.assertEqual(admitted.stdout, "", marker + ": " + admitted.stdout)
+        self.assert_obligations_only("BM_B", "BM_C")
 
     def test_a_skipped_green_is_not_proof(self) -> None:
         marker = "SKIPPED_RUN_ACCEPTED_AS_GREEN"
@@ -1908,7 +1930,7 @@ class RedFirstTests(HookHarness):
         self.assertNotIn("permissionDecision", output, marker + ": " + advised.stdout)
         self.assertIn("BM_B", output.get("additionalContext", ""), marker + ": " + advised.stdout)
         self.assertEqual(self.tdd(slug, "red", "BM_B", "b").returncode, 0)
-        self.assertEqual(self.intake("app.py").stdout, "", marker)
+        self.assert_obligations_only("BM_A", "BM_B")
 
     def test_a_red_run_binds_the_tree_it_ran_on(self) -> None:
         marker = "RED_RUN_LACKS_TREE_BINDING"
@@ -2038,7 +2060,7 @@ class RedFirstTests(HookHarness):
         self.assertEqual(added.returncode, 0, marker + ": " + added.stdout + added.stderr)
         baseline = self.tdd(slug, "red", "BM_B", "b")
         self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
-        self.assertEqual(self.intake("app.py").stdout, "", marker + ": the gate advised with every contract item red or resolved")
+        self.assert_obligations_only("BM_C", "BM_D")
         (self.repo / "app.py").write_text("a = 2\nb = 2\nc = 2\nd = 2\n", encoding="utf-8")
         for item, attr in (("BM_C", "c"), ("BM_D", "d")):
             green = self.tdd(slug, "green", item, attr)

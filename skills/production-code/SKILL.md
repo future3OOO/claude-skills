@@ -36,7 +36,15 @@ gate's JSON contract.
 
 ## Minimum Implementation Decision
 
-Resolve ownership placement before choosing the implementation mechanism:
+Before choosing a repair or mechanism, complete the affected decision:
+
+- Derive requested and preserved guarantees from the original contract, base, and reachable callers/docs/tests independently of the map. Inspect supported input forms, interactions, known defects, and successful cases a new guard could exclude. Separate intentional contract changes from regressions; keep unrelated behavior outside the repair.
+- Simplify the shared decision rather than adding symptom guards. Ask what materially wrong behavior would pass the retained checks. Reuse the smallest real-Interface operations that distinguish it, observing required results, data, identity, state, and cleanup; add only uncovered outcomes.
+- Replay applicable retained failing and passing operations unchanged on the candidate. For a bug or suspected regression, use the same operation/assertions against identified old and candidate implementations. Reconcile the map with this evidence before returning for review.
+
+Use the request/map already in context; load missing evidence once at implementation entry and refresh only on material change. An edit-hook reminder cannot supply reasoning for already-generated edit arguments.
+
+Resolve ownership placement inside that decision:
 
 1. Prove whether the required behavior already exists. If a named Interface already provides it and real test-surface evidence verifies the requirement, make no production change.
 2. Choose the responsible owner. Consume production preflight's `moduleShape` decision. When the turn required no preflight, deepen the existing Module; proposing a new Module or Seam requires preflight first. Delete every surface the change supersedes.
@@ -105,20 +113,9 @@ For TypeScript or JavaScript changes, load and apply [references/typescript.md](
 - Update `updated_at` on every successful transition.
 - Make failed transitions observable in logs and audit paths where appropriate.
 
-## Affected-Surface Rewalk Rule
+## Transaction-Sensitive Work
 
-For every code change:
-
-- re-walk the real affected surface before treating the fix as complete
-- do not model the issue as only the edited file or the named review comment
-- re-check adjacent consumers, callers, and no-change surfaces that could regress
-- require proof that the surrounding surface still behaves correctly
-
-Keep this proportional for ordinary work, but do not skip it.
-
-## Transaction-System Rewalk Rule
-
-For transaction-sensitive work, load and apply [references/transaction-doctrine.md](references/transaction-doctrine.md). Production-code owns the second rewalk against the implemented tree and must not call the change complete until every canonical proof requirement matches the preflight map.
+Load [references/transaction-doctrine.md](references/transaction-doctrine.md) for transaction-sensitive changes. Its canonical proof requirements are part of the Minimum Implementation Decision, not a separate repair or review stage.
 
 ## Retries, Cleanup, and Dependencies
 
@@ -155,14 +152,10 @@ For transaction-sensitive work, load and apply [references/transaction-doctrine.
   - commit the changes
   - push the branch
   - only then resolve review threads as fixed
-- For every code change, compare the final code and proof against the affected-surface map before calling the work clean.
-- Compare the final diff against the preflight module shape; delete or inline shallow wrappers/helpers and verify tests cross the public interface.
-- For transaction-sensitive work, compare the final code and proof against the preflight transaction map before calling the work clean.
+- Reconcile closure through the Minimum Implementation Decision. Compare the final diff against the preflight module shape; delete or inline shallow wrappers/helpers and verify tests cross the public interface.
 - Run the repo's canonical install, lint, typecheck, unit, integration, build, and quality gates for touched areas before calling work complete.
 - Keep changed code paths at or above the repo coverage gate.
 - Add explicit tests for critical control loops even if coverage already passes.
-- For every code change, proof must cover the real affected surface rather than only the local branch or helper.
-- For transaction-sensitive work, add one combined workflow proof plus sharp invariant checks; local branch-only tests are not enough on their own.
 - For bugs and regressions, compare the implementation to the canonical root-cause-first gate and the `/diagnose` trace.
 - Do not mark work done while blockers, follow-ups, dead-letter gaps, retry gaps, or state-regression risks remain.
 - Do not present PR remediation as complete while the fix exists only locally or while review threads were resolved ahead of the pushed fix.
