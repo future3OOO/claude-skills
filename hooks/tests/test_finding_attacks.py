@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -366,8 +367,12 @@ class SamePassAttack(AttackHarness):
                         "same-pass-attack", "--input", str(path))
 
     def test_a_late_attack_is_proved_and_closed_in_the_same_workflow(self) -> None:
+        from hooks.tests.test_workflow_hooks import WrapperPromptTests
         marker = "SAME_PASS_CORRECTION_FORCED_RESTART"
         slug = "same-pass"
+        env = WrapperPromptTests.wrapper_rig(self)
+        env["ADVISOR_SHIM_REPLY"] = '{"schemaVersion":1,"findings":[],"verdict":"commit-ready"}'
+        consult = ("--slug", slug, "--phase", "final-review", "--design-absent", "attack fixture")
         wid = self.begin(slug)
         self.ok("advisor-result", "--slug", slug, "--workflow-id", wid,
                 "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed")
@@ -427,6 +432,10 @@ class SamePassAttack(AttackHarness):
         self.assertEqual(after_metadata.get("workflowId"), wid, marker)
         self.assertEqual(after_metadata.get("repoContextForge"), "passed",
                          marker + ": metadata-only correction invalidated the graph context")
+        refused = WrapperPromptTests.run_advisor(self, env, *consult, "--", "pending work")
+        self.assertEqual(refused.returncode, 2, "PENDING_WORK_REACHED_PROVIDER")
+        self.assertIn("BM_NOTE", refused.stderr)
+        self.assertFalse((Path(env["CAPTURE_DIR"]) / "count").exists(), "PENDING_WORK_REACHED_PROVIDER")
 
         probe = self.repo / "test_note_probe.py"
         probe.write_text(
@@ -493,10 +502,19 @@ class SamePassAttack(AttackHarness):
         cleared = self.review(slug, wid, self.json_file("review-clear.json",
                                                         {"findings": [], "dispositions": []}))
         self.assertEqual(cleared.returncode, 0, marker + ": " + cleared.stdout + cleared.stderr)
-        self.ok("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
-                "--source", "codex-advisor", "--verdict", "commit-ready")
-        self.ok("advisor-disposition", "--slug", slug, "--workflow-id", wid,
-                "--stage", "final", "--findings", "none")
+        ledger = self.ok("checkpoint", "--phase", "final-review")["findingLedger"]
+        [entry] = [item for item in ledger if item["intakeEvidenceId"] == intake_id]
+        [owner] = entry["owners"]
+        self.assertEqual(owner["id"], "BM_NOTE")
+        self.assertEqual(owner["executedCommands"],
+                         dict.fromkeys(("red", "green"), shlex.join(command[command.index("--") + 1:])))
+        self.assertFalse(owner["revalidationRequired"])
+        question = "Selected verification receipt:\n" + verified.stdout
+        emitted = WrapperPromptTests.run_advisor(self, env, *consult, "--", question)
+        self.assertEqual(emitted.returncode, 0, emitted.stdout + emitted.stderr)
+        payload = WrapperPromptTests.payload(self, env, 1)
+        self.assertIn(json.dumps(ledger, indent=2, sort_keys=True), payload, "CLOSED_PAYLOAD_LOST_EVIDENCE")
+        self.assertTrue(payload.endswith(question + "\n"), "CLOSED_PAYLOAD_LOST_EVIDENCE")
         completed = self.cli("complete")
         self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
         history = self.ok("history")
@@ -726,20 +744,6 @@ class PytestDebugOptionValue(AttackHarness):
                          marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
 
 
-class AddoptsPyargsNeutralized(AttackHarness):
-    def test_env_addopts_pyargs_cannot_route_execution_outside(self) -> None:
-        marker = "ADDOPTS_PYARGS_ESCAPED_REPOSITORY_BOUNDARY"
-        self.open_pytest_pass("addopts-pyargs", marker)
-        env = dict(self.plant_external_victim(marker), PYTEST_ADDOPTS="--pyargs")
-        before = self.status()
-        run = self.mapped_tdd("addopts-pyargs", "red",
-                              [sys.executable, "-m", "pytest", "victim"], env=env)
-        tail = (run.stderr.strip().splitlines() or [""])[-1] or (run.stdout.strip().splitlines() or [""])[-1]
-        self.assertNotEqual(run.returncode, 0,
-                            marker + ": the inherited env addopts opened a mapped cycle: " + tail)
-        self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
-
-
 class PytestConfigFileOptionValue(AttackHarness):
     def test_the_config_file_separate_value_reaches_the_mapped_assertion(self) -> None:
         marker = "CONFIG_FILE_OPTION_VALUE_MISREAD_AS_TARGET"
@@ -754,23 +758,32 @@ class PytestConfigFileOptionValue(AttackHarness):
                          marker + ": " + (red.stderr.strip().splitlines() or [""])[-1])
 
 
-class ConfigAddoptsNeutralized(AttackHarness):
-    def test_config_addopts_pyargs_cannot_route_execution_outside(self) -> None:
-        marker = "CONFIG_ADDOPTS_ESCAPED_REPOSITORY_BOUNDARY"
-        self.open_pytest_pass("config-addopts", marker)
+class AddoptsPyargsNeutralized(AttackHarness):
+    def test_addopts_pyargs_cannot_route_execution_outside(self) -> None:
+        marker = "ADDOPTS_PYARGS_ESCAPED_REPOSITORY_BOUNDARY"
+        self.open_pytest_pass("addopts-pyargs", marker)
         env = self.plant_external_victim(marker)
         injected = self.tmp / "pytest.ini"
         injected.write_text("[pytest]\naddopts = --pyargs\n", encoding="utf-8")
         before = self.status()
-        for attempt in (
-            [sys.executable, "-m", "pytest", "-c", str(injected), "victim"],
-            [sys.executable, "-m", "pytest", "-o", "addopts=--pyargs", "victim"],
-        ):
-            run = self.mapped_tdd("config-addopts", "red", attempt, env=env)
-            tail = (run.stderr.strip().splitlines() or [""])[-1] or (run.stdout.strip().splitlines() or [""])[-1]
-            self.assertNotEqual(run.returncode, 0,
-                                marker + ": injected addopts opened a mapped cycle: " + tail)
-            self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
+        for options, inherited in (([], {"PYTEST_ADDOPTS": "--pyargs"}),
+                                   (["-c", str(injected)], {}), (["-o", "addopts=--pyargs"], {})):
+            with self.subTest(options=options, inherited=inherited):
+                run = self.mapped_tdd("addopts-pyargs", "red",
+                                      [sys.executable, "-m", "pytest", *options, "victim"], env=env | inherited)
+                self.assertEqual(run.returncode, 2, marker)
+                after = self.status()
+                retained = {"tddEvidence", "updatedAt"}
+                self.assertEqual({k: v for k, v in after.items() if k not in retained},
+                                 {k: v for k, v in before.items() if k not in retained}, marker)
+                document = self.ok("evidence", "--evidence-id", after["tddEvidence"])["document"]
+                self.assertEqual(document["status"], "pending", marker)
+                self.assertIsNone(document["activeBehaviorId"], marker)
+                self.assertEqual([item["status"] for item in document["behaviorMap"]], ["pending"], marker)
+                attempt = document["runs"][-1]
+                self.assertFalse(attempt["valid"], marker)
+                self.assertNotIn("redProof", attempt, marker)
+                self.assertIn("redProofFailure", attempt, marker)
 
 
 class BulkRejectionAdvisorTests(AttackHarness):

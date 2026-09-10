@@ -21,11 +21,14 @@ printf '%s' "$request_text" | python3 "$HOME/.claude/skills/repo-production-work
 #   ... begin --repo "$PWD" --slug "<task>" --intent-file "<path>"
 ```
 
-Pass the request text, not a summary. The recorded intent is the contract the
-rest of the pass is answerable to, so it is stored exactly as given and read back
-at the plan-commit gate and in every advisor consult; a paraphrase written here is
-the paraphrase those steps will enforce. `--intent "<text>"` still takes a literal
-argument, and `--intent`/`--intent-file` are mutually exclusive.
+Pass the request text, not a summary: build `$request_text` in a file from the
+message, append the verbatim body of any issue or spec it names, and feed that
+file — shell quoting mangles a long request passed inline. The recorded intent
+is the contract the rest of the pass is answerable to, so it is stored exactly as
+given (valid UTF-8; U+0000 refused) and read back at the plan-commit gate and in
+every advisor consult; a paraphrase written here is the paraphrase those steps
+will enforce. `--intent "<text>"` still takes a literal argument, and
+`--intent`/`--intent-file` are mutually exclusive.
 
 The repository-scoped SQLite event ledger remembers accepted transitions, logical evidence, phase, and next action across process restarts. Its disposable active projection is repaired from that history. It is agent-writable workflow continuity, not an attestation, approval, audit credential, or Git boundary.
 
@@ -223,9 +226,8 @@ absent gap instead of evaluating.
 
 ### 10. Delegate code review
 
-For a non-trivial change invoke `code-review`: the skill forks a fresh
-general-purpose delegate pinned to `claude-fable-5-1` in this checkout as a
-background task; wait for its result and do not edit the candidate meanwhile. It returns a
+For a non-trivial change invoke `code-review` for a fresh, general-purpose
+background delegate in this checkout. Wait without editing the candidate. It returns a
 Standards/Spec review and a findings intake. Verify every finding and
 disposition each one. A disposition is invalid
 without its measurement; advisor agreement is not authorization; historical behavior
@@ -234,13 +236,11 @@ callers, tests, or another active authority. In this governed workflow `workflow
 workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
-Before recording, compare the returned checkout, workflow id and reviewed
-tree with the dispatch and `workflow.py status`, and take the delegate's model
-and agent id from the harness receipts (`subagents/agent-<id>.meta.json` and
-its forked-skill marker under `~/.claude/projects`), never from the parent or
-the delegate's own claim; missing or mismatched identity, or a model other
-than `claude-fable-5-1`, is not a valid review: report the blocker and do not
-record the review. Record
+Before recording, match checkout/workflow/tree against dispatch and
+`workflow.py status`. Verify agent identity from `subagents/agent-<id>.meta.json`
+and its forked-skill marker under `~/.claude/projects`; match model and effort
+from harness receipts to the loaded `code-review` frontmatter. Missing or
+mismatched evidence blocks recording: report it. Record
 immutable intake first as `{"findings":[...]}` through the unified Interface. If it contains findings,
 capture the returned `summaryId`, then call
 the same command with `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;

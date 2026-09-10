@@ -115,7 +115,7 @@ When spawning sub-agents via the `Agent` tool, default to:
 - `subagent_type`: choose the most specific agent type that matches the task (`Explore` for codebase searches, `Plan` for planning-input work, `general-purpose` otherwise).
 - `Explore` and `Plan`: when reading production code, invoke `codebase-design` and discover deepening opportunities; do not stop at locating code.
 - `model`: omit it; delegates inherit the parent session's model — through a proxy/gateway, the gateway's model. Pass one only when the task clearly warrants a different tier, and never a model the session's auth route cannot serve.
-- If `CLAUDE_CODE_SUBAGENT_MODEL` is set in the session environment (e.g. `claudehx` sessions route subagents to GPT-5.6 via CLIProxyAPI), it force-overrides the Agent tool's `model` parameter: every delegated agent runs on that model, and a "fresh Claude second opinion" is actually that model's opinion. When the delegated model matters, check `echo $CLAUDE_CODE_SUBAGENT_MODEL` before claiming which model ran.
+- On Claude Code 2.1.251+, `CLAUDE_CODE_SUBAGENT_MODEL` supplies a default; explicit Agent/skill model selections take precedence. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` changes that precedence on supported versions. Verify the executed model from harness receipts, not environment settings.
 
 Keep delegation bounded:
 
@@ -194,12 +194,9 @@ python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
   --repo "$PWD" --workflow-slug "<stable-task-slug>" --intent "<user request>"
 ```
 
-**Pass the request text, not a summary.** `--intent -` reads stdin, `--intent-file
-<path>` reads a file (supplying both refuses); plain `--intent "<text>"` stays legal
-for short text. The recorded intent is stored exactly as given (valid UTF-8; U+0000
-refused) and is the contract
-every later step enforces — `record-preflight` echoes it back and both advisor
-consults carry it — so a paraphrase written here corrupts everything downstream.
+**Pass the request text, not a summary.** `repo-production-workflow` owns how that
+intent is built and fed to `begin`; whatever reaches `begin` is what
+`record-preflight` and both advisor consults enforce for the rest of the pass.
 
 The SQLite event ledger and its active projection are workflow continuity only. They are not an attestation,
 permission object, or Git authorization boundary.

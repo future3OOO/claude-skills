@@ -497,9 +497,9 @@ def commit_tdd(
         raise ValueError(f"unsupported tdd action: {action}")
     with mutation(identity) as transaction:
         state = _bound_instance_state(transaction.state, slug, workflow_id)
+        if state.get("revalidation"):
+            raise WorkflowError(TDD_CLOSED)
         if action is not None:
-            if state.get("revalidation"):
-                raise WorkflowError(TDD_CLOSED)
             _require_predecessor(state, "tdd")
             if not state.get("preflightEvidence"):
                 raise WorkflowError("tdd requires recorded preflight evidence")
@@ -536,9 +536,9 @@ def commit_tdd(
             for entry in state.get("findingStates", []):
                 if isinstance(entry, dict) and entry.get("status") in {"fixed", "report-only"} and entry.get("kind") == "behavioral":
                     _behavioral_finding_closure(
-                        transaction, state, str(entry.get("intakeEvidenceId")),
+                        str(entry.get("intakeEvidenceId")),
                         str(entry.get("findingId")), admit_pending=True,
-                        require_green=entry.get("status") == "fixed", items=items, owned=owned,
+                        require_green=entry.get("status") == "fixed", owned=owned,
                         terminals=terminals, pending=pending,
                     )
         writes: list[EvidenceWrite] = []
@@ -1169,15 +1169,13 @@ def pause(identity: RepoIdentity, slug: str, workflow_id: str | None, reason: st
 
 
 def _behavioral_finding_closure(
-    transaction: LedgerMutation | None, state: JsonObject, intake_id: str, finding_id: str,
-    tdd_document: JsonObject | None = None,
+    intake_id: str, finding_id: str,
     *,
+    owned: dict[tuple[str, str], dict[str, JsonObject]],
+    terminals: dict[str, JsonObject],
+    pending: set[str],
     admit_pending: bool = False,
     require_green: bool = True,
-    items: list[JsonObject] | None = None,
-    owned: dict[tuple[str, str], dict[str, JsonObject]] | None = None,
-    terminals: dict[str, JsonObject] | None = None,
-    pending: set[str] | None = None,
 ) -> None:
     """Judge current owning proof; mutation admission keeps reassessment reachable.
 
@@ -1185,21 +1183,7 @@ def _behavioral_finding_closure(
     ownership, not a closure verdict; a new disposition always uses strict
     proof, and completion re-judges all settled findings against the current map.
     """
-    if terminals is None:
-        terminals = {}
-    if items is None:
-        if tdd_document is None:
-            tdd_document = transaction.evidence(state.get("tddEvidence"))
-        items = _map_items(tdd_document, terminals=terminals)
-        if items is None:
-            items = _map_items(transaction.evidence(state.get("preflightEvidence")), terminals=terminals) or []
-    if not terminals and items:
-        terminals = behavior_map.terminal_items(items)
-    linked = owned.get((intake_id, finding_id), {}) if owned is not None else {
-        str(entry["id"]): entry for entry in items
-        if any(ref.get("type") == "finding" and ref.get("evidenceId") == intake_id
-               and ref.get("id") == finding_id for ref in entry.get("sourceRefs", []))
-    }
+    linked = owned.get((intake_id, finding_id), {})
     if not linked:
         raise WorkflowError(
             f"behavioral fixed for {finding_id} requires an owning Behavior Map "
@@ -1223,8 +1207,6 @@ def _behavioral_finding_closure(
         # a baseline that cannot sustain fixed. Strict closure still blocks it;
         # measured correction must remain possible without fabricating RED.
         return
-    if pending is None:
-        pending = set(behavior_map.unresolved(items, terminals=terminals))
     if not require_green:
         proved = [
             identifier for identifier, entry in linked.items()
@@ -1314,8 +1296,8 @@ def _finding_completion_blockers(
         if isinstance(entry, dict) and entry.get("status") in {"fixed", "report-only"} and entry.get("kind") == "behavioral":
             try:
                 _behavioral_finding_closure(
-                    transaction, state, str(entry.get("intakeEvidenceId")), str(entry.get("findingId")),
-                    require_green=entry.get("status") == "fixed", items=items, owned=owned,
+                    str(entry.get("intakeEvidenceId")), str(entry.get("findingId")),
+                    require_green=entry.get("status") == "fixed", owned=owned,
                     terminals=terminals, pending=pending,
                 )
             except WorkflowError as exc:
@@ -1407,7 +1389,7 @@ def _apply_finding_dispositions(
             if kind == "behavioral" and current in {"fixed", "report-only"} and status in {"report-only", "rejected-with-evidence"}:
                 try:
                     _behavioral_finding_closure(
-                        transaction, state, intake_id, identifier, require_green=current == "fixed", items=items,
+                        intake_id, identifier, require_green=current == "fixed",
                         owned=owned, terminals=terminals, pending=pending,
                     )
                 except WorkflowError:
@@ -1419,7 +1401,7 @@ def _apply_finding_dispositions(
                 raise WorkflowError(f"finding {identifier} already has terminal disposition {current}")
         if status in {"fixed", "report-only"} and kind == "behavioral":
             _behavioral_finding_closure(
-                transaction, state, intake_id, identifier, require_green=status == "fixed", items=items,
+                intake_id, identifier, require_green=status == "fixed",
                 owned=owned, terminals=terminals, pending=pending,
             )
         if current != "pending":
