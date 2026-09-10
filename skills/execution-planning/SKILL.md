@@ -234,7 +234,7 @@ Rules for that prompt:
 - when the work targets an existing PR, require realignment of the exact checkout to the live PR head before edits, then commit and push before resolving review threads as fixed
 - keep the PR near the review-budget target unless the user approved a concrete exception
 - require the affected-surface rewalk before edits and completion; include the full transaction-system rewalk when applicable
-- direct each execution pass through [repo-production-workflow](../repo-production-workflow/SKILL.md)
+- direct each execution pass through [repo-production-workflow](../repo-production-workflow/SKILL.md), which records this prompt verbatim as that pass's intent
 - keep the prompt compact; do not duplicate the design
 
 ## Output Shape
