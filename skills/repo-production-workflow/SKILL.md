@@ -192,6 +192,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input - <<'JSON'
 {"reassessment":"Affected preservation and retained attack ownership","dispositions":[{"id":"BM_KEEP","revalidate":true,"evidence":"Changed shared decision"},{"id":"BM_ATTACK","sourceRefs":[{"type":"finding","evidenceId":"<actual intake>","id":"SPEC-1"}]}]}
 JSON
+# or, when the caller already has the document in a file: --input <path>
 ```
 
 Terminal TDD proof opens verification directly; no implementation acknowledgement is recorded. Metadata-only reassessment is not another downstream review chain.
