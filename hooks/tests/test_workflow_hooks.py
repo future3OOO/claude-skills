@@ -2294,7 +2294,7 @@ class ObligationDigestTests(HookHarness):
         quiet = self.advice("app.py", marker, env=env)
         self.assertNotIn(DIGEST_HEADER, quiet, marker + ": the baseline rendered a digest")
         without_digest = json.loads(probe_out.read_text(encoding="utf-8").splitlines()[-1])
-        limits = {"digest_bytes": 2048, "sqlite_connect": 4, "child_processes": 3}
+        limits = {"digest_bytes": 2048, "sqlite_connect": 3, "child_processes": 3}
         observed = {"digest_bytes": size, **counts, "withoutDigest": without_digest}
         # The reminder is free: rendering it adds no connection and no child over
         # the same path with nothing to render. The declared ceilings are kept
