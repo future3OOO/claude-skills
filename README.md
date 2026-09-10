@@ -33,6 +33,19 @@ parses Bash or intercepts commits. Edit hooks admit governed work and invalidate
 stale downstream review state; compaction/resume hooks preserve the next action;
 there is no Stop hook. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns the hook roles.
 
+## Code-review delegate
+
+Edit `model` (currently `claude-opus-5`) and `effort` (`xhigh`) in
+[`skills/code-review/SKILL.md`](skills/code-review/SKILL.md); keep the other
+frontmatter. Publish, install to `~/.claude/skills/code-review/SKILL.md`, and
+restart existing sessions. Step 10 uses the same configuration.
+
+Normal Claude needs allowance for that model; Claude X needs its proxy to serve
+it with the requested effort. On Claude Code 2.1.251+, the skill pin overrides
+Claude X's default subagent model; leave `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
+unset. Confirm model/effort in execution receipts, including the upstream
+request when proxied. The Codex Advisor is configured separately.
+
 ## Install or update
 
 Install a pinned remote `main` snapshot, then fast-forward the mirror after
