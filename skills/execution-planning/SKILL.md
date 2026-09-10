@@ -226,7 +226,7 @@ Rules for that prompt:
 - say explicitly: deepen the design append-only when new obligations surface; use workflow history and GitHub PR state for durable progress, with Tasks only as session-local convenience
 - when the work targets an existing PR, require realignment of the exact checkout to the live PR head before edits, then commit and push before resolving review threads as fixed
 - keep the PR near the review-budget target unless the user approved a concrete exception
-- require Production Code's Minimum Implementation Decision and its reconciliation before edits and completion; include the [canonical transaction doctrine](../production-code/references/transaction-doctrine.md) when applicable
+- require Production Code's Minimum Implementation Decision before edits and its reconciliation before completion; include the [canonical transaction doctrine](../production-code/references/transaction-doctrine.md) when applicable
 - direct each execution pass through [repo-production-workflow](../repo-production-workflow/SKILL.md), which records this prompt verbatim as that pass's intent
 - keep the prompt compact; do not duplicate the design
 
