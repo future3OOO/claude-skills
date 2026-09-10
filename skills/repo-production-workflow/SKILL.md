@@ -189,13 +189,14 @@ When a GREEN exposes a new obligation (a touched-Seam
 preservation, interaction, semantic falsification, or review-discovered
 behavior), add it with `workflow.py tdd-map` before the next production edit;
 when it exposes nothing, record nothing. The update is admitted while other
-cycles are open. Pass the document on stdin:
+cycles are open. Pass the document on stdin, or as `--input <path>`:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input - <<'JSON'
 {"sourceBehaviorId": "BM_...", "reassessment": "...", "items": [...]}
 JSON
+# or, when the caller already has the document in a file: --input <path>
 ```
 
 The JSON document accepts `sourceBehaviorId` (the GREEN item whose consequence it records),
