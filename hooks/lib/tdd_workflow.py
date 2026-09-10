@@ -298,7 +298,7 @@ _BASELINE_STAMP = behavior_map.BASELINE_STAMP
 
 
 def _pass_proof(
-    surface: JsonObject, output: str, *, baseline: bool
+    surface: JsonObject, output: str, *, baseline: bool, exit_code: int,
 ) -> tuple[dict[str, object] | None, str, bool]:
     """The final result positively identifies no execution, not an unknown failure.
 
@@ -338,9 +338,11 @@ def _pass_proof(
         passed = re.search(r"(?<!\d)(\d+) passed\b", summaries[-1]) if summaries else None
         executed = int(passed.group(1)) if passed else 0
         nonexecuting = bool(summaries and re.fullmatch(
-            r"no tests ran|\d+ (?:skipped|deselected)(?:, \d+ (?:skipped|deselected|warnings?))*",
+            r"no tests ran|\d+ (?:skipped|deselected|warnings?)(?:, \d+ (?:skipped|deselected|warnings?))*",
             summaries[-1],
-        ))
+        ) and (exit_code == 5 or (
+            exit_code == 0 and re.search(r"[1-9]\d* (?:skipped|deselected)\b", summaries[-1])
+        )))
     if executed < 1:
         return None, f"{runner} did not report an executed passing test", nonexecuting
     return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, "", False
@@ -473,7 +475,7 @@ def _run_tdd(values: list[str]) -> int:
     if not legacy and (status == "red" and recorded_red is not None or status == "green" and reassessment) and not own_red:
         prefix = "candidate does not match the active mapped cycle; " if phase == "red" else ""
         raise WorkflowError(f"{prefix}{phase.upper()} must run the item's recorded RED surface: {recorded_red}")
-    if sweep or own_red:
+    if sweep or (own_red and active != args.behavior_id):
         candidate, same_instance, drift, matches, guidance = None, False, [], False, ""
     completed_cycle = (
         legacy
@@ -544,14 +546,14 @@ def _run_tdd(values: list[str]) -> int:
         # Producer-backed baseline: a pending surface passing is already
         # satisfied, opens nothing, counts no cycle. A dirty tree does not refuse
         # it; the run entry records what had changed, and the reviews weigh it.
-        proof, proof_error, nonexecuting = _pass_proof(surface, output, baseline=True)
+        proof, proof_error, nonexecuting = _pass_proof(surface, output, baseline=True, exit_code=exit_code)
         baseline = proof is not None
     elif phase == "green" and not legacy and not timed_out and (
         exit_code == 0 or (surface.get("runner") == "pytest" and exit_code == 5)
     ):
         # A GREEN is the surface passing, not the command exiting 0: a skipped or
         # incomplete run reports no passing test and proves nothing.
-        proof, proof_error, nonexecuting = _pass_proof(surface, output, baseline=False)
+        proof, proof_error, nonexecuting = _pass_proof(surface, output, baseline=False, exit_code=exit_code)
     valid = (
         red_ok
         if phase == "red"
@@ -626,7 +628,6 @@ def _run_tdd(values: list[str]) -> int:
             updated_item.pop("revalidationRequired", None)
             next_active = None
             reassessment_pending = None
-            action = "in-progress" if behavior_map.unresolved(updated) else "passed"
             doc_kind = "map"
         elif phase == "red" and valid:
             updated_item["status"] = "red"
@@ -646,33 +647,35 @@ def _run_tdd(values: list[str]) -> int:
             updated_item.pop("revalidationRequired", None)
             next_active = None
             reassessment_pending = None
-            action = "in-progress" if behavior_map.unresolved(updated) else "passed"
         else:
             # A refused attempt is evidence, not progress: annotated without a
             # transition (action None). A failed GREEN is a regression.
             next_active = args.behavior_id if status == "red" else None
             reassessment_pending = None
             action = "reopen" if phase == "green" else None
+        pending = behavior_map.unresolved(updated)
+        if baseline or (phase == "green" and valid):
+            action = "in-progress" if pending else "passed"
         if reassessment and (baseline or (
             phase == "green" and status == "green" and (valid or nonexecuting)
         )):
             # No execution leaves the obligation unresolved, not contradicted.
             # A regression or ambiguous failure keeps ordinary invalidation.
-            action = ("passed" if (valid or baseline) and not behavior_map.unresolved(updated)
+            action = ("passed" if (valid or baseline) and not pending
                       and state.get("tdd") not in {"passed", "not-required"} else None)
         if isinstance(current, dict) and (
             action is None or (active is not None and active != args.behavior_id and not opens_cycle)
         ):
             # Evidence beside A's RED must not replace A's binding, including
             # baselines, unsuccessful attempts and another item's recheck.
-            document = {**current, "behaviorMap": updated,
+            document = {**current, "behaviorMap": updated, "status": "pending" if pending else "passed",
                         "runs": [*current.get("runs", []), run], "updatedAt": utc_timestamp()}
         else:
             document = _map_doc(
                 slug=slug,
                 workflow_id=workflow_id,
                 items=updated,
-                status="passed" if action == "passed" or (phase == "green" and valid) else "pending",
+                status="pending" if pending else "passed",
                 kind=doc_kind,
                 active=next_active,
                 reassessment_pending=reassessment_pending,
@@ -951,7 +954,7 @@ def _map_update(values: list[str]) -> int:
         document = {**(current or _map_doc(
             slug=str(state["slug"]), workflow_id=str(state["workflowId"]),
             items=items, status=status, kind="map",
-        )), "behaviorMap": updated, "reassessment": reassessment.strip(),
+        )), "behaviorMap": updated, "status": status, "reassessment": reassessment.strip(),
             "sourceBehaviorId": source, "updatedAt": utc_timestamp()}
         # Flagged reassessment is not a new cycle or a reason to replay a
         # finished downstream chain. Actual new/settled obligations still move

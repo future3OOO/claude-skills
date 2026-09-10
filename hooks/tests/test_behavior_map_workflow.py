@@ -163,8 +163,6 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         slug, wid = self.begin_to_preflight(rows[:3])
         result = self.tdd(slug, "red", "BM_ATTACK", "import app; assert app.value == 2, 'VALUE_NOT_TWO'")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        identity = resolve_repo_identity(self.repo)
-        before = read_workflow(identity)
         request = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(self.repo / "app.py")}})
         instrument = r'''import json, runpy, sys, time
 cost = {"dbReads": 0, "subprocesses": 0}
@@ -204,8 +202,13 @@ finally:
                     "items": rows[3:],
                 })
                 self.assertEqual(update.returncode, 0, update.stdout + update.stderr)
-            before = read_workflow(identity)
-            history = self.cli("history").stdout
+            before = {}
+            for action, key in (("status", "workflowId"), ("history", "events")):
+                captured = self.cli(action)
+                self.assertEqual(captured.returncode, 0, captured.stdout + captured.stderr)
+                before[action] = json.loads(captured.stdout)
+                self.assertIsInstance(before[action], dict)
+                self.assertIn(key, before[action])
             for label, root in targets.items():
                 runs = []
                 contexts = []
@@ -217,8 +220,9 @@ finally:
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     cost = json.loads(result.stderr.split("HOOK_COST ")[-1])
-                    context = (json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-                               if result.stdout.strip() else "")
+                    output = json.loads(result.stdout)["hookSpecificOutput"] if result.stdout.strip() else {}
+                    self.assertNotIn("permissionDecision", output)
+                    context = output.get("additionalContext", "")
                     cost["emittedBytes"] = len(context.encode("utf-8"))
                     runs.append(cost)
                     contexts.append(context)
@@ -226,14 +230,28 @@ finally:
                 if label == "candidate":
                     candidate_contexts = contexts
             from hooks.lib.state_store import _active_candidate_tree
+            observations = {}
+            if old:
+                observations = {
+                    field: max(run[field] for run in measurements["candidate"])
+                    - max(run[field] for run in measurements["old"])
+                    for field in ("dbReads", "subprocesses")
+                }
             print("HOOK_RESOURCE " + json.dumps({
                 "scale": scale, "limitBytes": 2048, "limitSeconds": 2,
-                "additionalDbReads": 0, "additionalSubprocesses": 0,
-                "target": _active_candidate_tree(resolve_repo_identity(ROOT)),
+                "limitsAdditional": {"dbReads": 0, "subprocesses": 0},
+                "observedAdditional": observations if old else None,
+                "targets": {label: _active_candidate_tree(resolve_repo_identity(root))
+                            for label, root in targets.items()},
                 "measurements": measurements,
             }), flush=True)
-            self.assertEqual(read_workflow(identity), before, "REMINDER_WROTE_LEDGER")
-            self.assertEqual(self.cli("history").stdout, history, "REMINDER_APPENDED_EVENT")
+            for action, key in (("status", "workflowId"), ("history", "events")):
+                captured = self.cli(action)
+                self.assertEqual(captured.returncode, 0, captured.stdout + captured.stderr)
+                after = json.loads(captured.stdout)
+                self.assertIsInstance(after, dict)
+                self.assertIn(key, after)
+                self.assertEqual(after, before[action], "REMINDER_CHANGED_" + action)
             for context, cost in zip(candidate_contexts, measurements["candidate"], strict=True):
                 self.assertTrue(context, "ORDERED_MAP_HAS_NO_OBLIGATION_REMINDER")
                 self.assertLessEqual(cost["emittedBytes"], 2048, "OBLIGATION_DIGEST_OVER_BUDGET")
@@ -252,6 +270,55 @@ finally:
                 for field in ("dbReads", "subprocesses"):
                     self.assertLessEqual(max(run[field] for run in measurements["candidate"]),
                                          max(run[field] for run in measurements["old"]), field)
+
+    def test_repeated_red_keeps_only_its_active_owner_history(self) -> None:
+        rows = [pending_behavior(name) for name in ("BM_A", "BM_B", "BM_KEEP")]
+        rows[-1]["kind"] = "preservation"
+        slug, _ = self.begin_to_preflight(rows)
+        fail = "import app; assert app.value == 2, 'VALUE_NOT_TWO'"
+        for phase, owner, script, expected in (
+            ("red", "BM_A", fail, 0),
+            ("green", "BM_A", fail, 2),  # Keep this unsuccessful run in the prefix.
+            ("red", "BM_KEEP", "import app; assert app.value == 1, 'VALUE_NOT_TWO'", 0),
+        ):
+            result = self.tdd(slug, phase, owner, script)
+            self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        evidence = self.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(evidence.returncode, 0, evidence.stderr)
+        before = json.loads(evidence.stdout)["document"]
+        self.assertEqual([run["behaviorId"] for run in before["runs"]], ["BM_A", "BM_A", "BM_KEEP"])
+        result = self.tdd(slug, "red", "BM_A", fail)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        repeated = read_workflow(resolve_repo_identity(self.repo))
+        evidence = self.cli("evidence", "--evidence-id", str(repeated["tddEvidence"]))
+        self.assertEqual(evidence.returncode, 0, evidence.stderr)
+        after = json.loads(evidence.stdout)["document"]
+        self.assertEqual(after["runs"][:-1], before["runs"], "SAME_OWNER_RED_DROPPED_RUNS")
+        self.assertEqual(after["runs"][-1]["behaviorId"], "BM_A")
+        self.assertEqual(repeated["tddCycleCount"], state["tddCycleCount"])
+        for key in ("activeBehaviorId", "command", "surface"):
+            self.assertEqual(after[key], before[key])
+        result = self.tdd(slug, "red", "BM_B", fail)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        other = read_workflow(resolve_repo_identity(self.repo))
+        evidence = self.cli("evidence", "--evidence-id", str(other["tddEvidence"]))
+        self.assertEqual(evidence.returncode, 0, evidence.stderr)
+        document = json.loads(evidence.stdout)["document"]
+        self.assertEqual(document["activeBehaviorId"], "BM_B")
+        self.assertEqual([run["behaviorId"] for run in document["runs"]], ["BM_B"])
+        self.assertEqual(other["tddCycleCount"], state["tddCycleCount"] + 1)
+        original = self.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(original.returncode, 0, original.stderr)
+        self.assertEqual(json.loads(original.stdout)["document"], before)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        for owner, expected_status in (("BM_B", "pending"), ("BM_A", "passed")):
+            result = self.tdd(slug, "green", owner, fail)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            state = read_workflow(resolve_repo_identity(self.repo))
+            evidence = self.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+            self.assertEqual(evidence.returncode, 0, evidence.stderr)
+            self.assertEqual(json.loads(evidence.stdout)["document"]["status"], expected_status)
 
     def test_preflight_requires_a_non_generic_behavior_map(self) -> None:
         begun = self.cli("begin", "--slug", "map-contract")
@@ -365,6 +432,10 @@ finally:
         identity = resolve_repo_identity(self.repo)
         state = read_workflow(identity)
         self.assertEqual(state["tdd"], "in-progress")
+        evidence = self.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(evidence.returncode, 0, evidence.stdout + evidence.stderr)
+        self.assertEqual(json.loads(evidence.stdout)["document"]["status"],
+                         json.loads(assessed.stdout)["status"], "CURRENT_MAP_STATUS_STALE")
         self.assertIn("BM_ATOMIC", edit_blockers(identity, state)[0])
         refused = self.cli("complete", "--slug", slug, "--workflow-id", workflow_id)
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)

@@ -201,7 +201,7 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
 
     def intake_advice(self, relative: str = "app.py") -> str:
-        """The real PreToolUse hook's advisory context for a production path, '' when nothing is missing."""
+        """The real PreToolUse hook: prerequisites and obligations, never a denial."""
         hook = subprocess.run(
             [sys.executable, str(INTAKE)], cwd=self.repo, env=self.h.env, text=True,
             input=json.dumps({"tool_input": {"file_path": str(self.repo / relative)}}),
@@ -242,7 +242,20 @@ class ContractProofAuthorityTests(unittest.TestCase):
         })
         self.assertEqual(dispositioned.returncode, 0, marker + ": " + dispositioned.stdout + dispositioned.stderr)
         self.record_production_code(slug, workflow_id)
-        self.assertEqual(self.intake_advice(), "", marker)
+        before = {}
+        for action, key in (("status", "workflowId"), ("history", "events")):
+            captured = self.h.cli(action)
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            before[action] = json.loads(captured.stdout)
+            self.assertIn(key, before[action])
+        context = self.intake_advice()
+        self.assertNotIn("missing before", context, marker)
+        self.assertIn("BM_C [red; applicable]", context)
+        self.assertIn("BM_P [already-satisfied; applicable]", context)
+        for action in before:
+            captured = self.h.cli(action)
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            self.assertEqual(json.loads(captured.stdout), before[action])
 
     def test_passing_pre_edit_red_records_producer_backed_already_satisfied(self) -> None:
         marker = "BASELINE_PASS_NOT_RECORDED"

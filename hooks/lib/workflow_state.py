@@ -524,7 +524,11 @@ def commit_tdd(
                                    "updatedAt": utc_timestamp()}
                     action, opens_cycle = None, False
             terminals: dict[str, JsonObject] = {}
-            items = _map_items(summary_doc, terminals=terminals) or []
+            items = _map_items(summary_doc, terminals=terminals)
+            if items is None:
+                items = _map_items(
+                    transaction.evidence(state.get("preflightEvidence")), terminals=terminals,
+                ) or []
             owned = _linked_finding_items(transaction, items=items)
             pending = set(behavior_map.unresolved(items, terminals=terminals))
             # Mutation may request proof from already-settled owners; closure

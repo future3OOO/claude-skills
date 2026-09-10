@@ -135,18 +135,28 @@ class HookHarness(unittest.TestCase):
             connection.close()
 
     def assert_obligations_only(self, *identifiers: str) -> None:
-        before = self.state("status").stdout
-        history = self.state("history").stdout
+        before = {}
+        for action, key in (("status", "workflowId"), ("history", "events")):
+            result = self.state(action)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            before[action] = json.loads(result.stdout)
+            self.assertIsInstance(before[action], dict)
+            self.assertIn(key, before[action])
         result = self.intake("app.py")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         output = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertNotIn("permissionDecision", output)
         context = output["additionalContext"]
         self.assertNotIn("missing before", context)
-        for identifier in identifiers:
-            self.assertIn(identifier + " [red;", context)
-        self.assertEqual(self.state("status").stdout, before)
-        self.assertEqual(self.state("history").stdout, history)
+        red_ids = re.findall(r"(?m)^([A-Z][A-Z0-9_-]*) \[red;", context)
+        self.assertCountEqual(red_ids, identifiers, context)
+        for action, key in (("status", "workflowId"), ("history", "events")):
+            result = self.state(action)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            after = json.loads(result.stdout)
+            self.assertIsInstance(after, dict)
+            self.assertIn(key, after)
+            self.assertEqual(after, before[action])
 
     def record_preflight_evidence(self, slug: str, wid: str, behavior_map: list | None = None) -> None:
         if behavior_map is None:

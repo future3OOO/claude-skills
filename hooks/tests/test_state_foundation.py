@@ -94,9 +94,15 @@ class StateFoundationTests(unittest.TestCase):
         app.write_bytes(b"value = 2\r\n")
         self.assertEqual(_active_candidate_tree(identity), candidate, "Git text filtering changed")
         self.assertNotEqual(tree_manifest(identity), raw, "raw drift disappeared behind Git filtering")
-        app.chmod(app.stat().st_mode | stat.S_IXUSR)
-        self.assertNotEqual(_active_candidate_tree(identity), candidate)
-        self.assertTrue(tree_manifest(identity)["app.py"].startswith("100755 "))
+        with self.subTest(capability="owner-execute bit"):
+            git(repo, "config", "core.filemode", "true")
+            old_mode = app.stat().st_mode
+            app.chmod(old_mode ^ stat.S_IXUSR)
+            if (app.stat().st_mode ^ old_mode) & stat.S_IXUSR == 0:
+                self.skipTest("fixture filesystem cannot change the owner-execute bit")
+            self.assertNotEqual(_active_candidate_tree(identity), candidate)
+            mode = "100755" if app.stat().st_mode & stat.S_IXUSR else "100644"
+            self.assertTrue(tree_manifest(identity)["app.py"].startswith(mode + " "))
         self.assertEqual(index.read_bytes(), original_index)
         # An existing HEAD whose tree cannot be read is not an unborn repository.
         tree = git(repo, "rev-parse", "HEAD^{tree}")
