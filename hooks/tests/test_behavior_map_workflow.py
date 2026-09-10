@@ -254,6 +254,22 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         self.assertEqual(statuses, {"BM_A": "red", "BM_B": "green"}, marker)
         self.assertEqual(document["status"], "pending", marker)
 
+    def test_a_settled_item_refuses_a_further_green_and_writes_nothing(self) -> None:
+        """A settled contract item has no open cycle, so a later GREEN - passing or
+        failing - is refused before it can rewrite the document it would describe."""
+        marker = "SETTLED_ITEM_ACCEPTED_A_FURTHER_GREEN"
+        slug = self.two_item_pass()
+        for behavior_id, failure in (("BM_B", "B_NOT_DONE"), ("BM_A", "A_NOT_DONE")):
+            self.assertEqual(self.tdd(slug, "green", behavior_id, self.probe(failure)).returncode, 0, marker)
+        before = self.document(read_workflow(resolve_repo_identity(self.repo)))
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        regressed = self.tdd(slug, "green", "BM_A", self.probe("A_NOT_DONE"))
+        self.assertEqual(regressed.returncode, 2, marker + ": " + regressed.stdout + regressed.stderr)
+        self.assertIn("no valid mapped RED", regressed.stderr, marker)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertEqual(state["tdd"], "passed", marker)
+        self.assertEqual(self.document(state), before, marker + ": the refusal rewrote the document")
+
     def test_the_document_passes_once_every_item_is_settled(self) -> None:
         marker = "SETTLED_MAP_DOCUMENT_STAYS_PENDING"
         slug = self.two_item_pass()
