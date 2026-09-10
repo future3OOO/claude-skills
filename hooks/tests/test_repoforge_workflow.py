@@ -1288,10 +1288,6 @@ class GraphEvidenceContractTests(unittest.TestCase):
             self.document_for(self.packet(), snapshot={"base": "b" * 40})
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class BootstrapHelpTests(unittest.TestCase):
     def test_help_lists_the_wrapper_options(self) -> None:
         # X6R11 queried --help twice and then read the wrapper source to find these.
@@ -1300,3 +1296,85 @@ class BootstrapHelpTests(unittest.TestCase):
         self.assertIn("--workflow-slug", run.stdout, marker + ": " + run.stdout[-300:] + run.stderr[-300:])
         self.assertIn("--revalidate", run.stdout, marker)
 
+
+@unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
+class IntakeSerialisationTests(unittest.TestCase):
+    """One intake at a time: GitNexus rewrites its global registry without an
+    atomic replace (future3OOO/GitNexus#25), so two producers running together
+    can tear it and break every later intake."""
+
+    def intake_rig(self) -> tuple[Path, list[str], dict[str, str]]:
+        """A private HOME is where the real lock path lands, so this attack
+        drives that computation rather than a way around it."""
+        tmp = Path(tempfile.mkdtemp(prefix="intake-lock-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        lock = tmp / ".cache" / "repo-context-forge" / "intake.lock"
+        lock.parent.mkdir(parents=True)
+        env = {**os.environ, "HOME": str(tmp), "PYTHONDONTWRITEBYTECODE": "1"}
+        command = [sys.executable, str(BOOTSTRAP), "--repo", str(repo), "--intent", "intake lock probe"]
+        return lock, command, env
+
+    def test_a_held_lock_stops_a_second_intake_before_its_producer(self) -> None:
+        import fcntl
+
+        marker = "INTAKE_RAN_WHILE_LOCK_HELD"
+        lock, command, env = self.intake_rig()
+
+        with open(lock, "a+", encoding="utf-8") as holder:  # closing releases the flock
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with self.assertRaises(subprocess.TimeoutExpired, msg=marker):
+                subprocess.run(command, env=env, text=True, capture_output=True, timeout=8, check=False)
+
+        # The same budget the held lock exhausted, and the producer's own exit
+        # code for this empty repository: both prove the intake got past the lock.
+        released = subprocess.run(command, env=env, text=True, capture_output=True, timeout=8, check=False)
+        self.assertEqual(released.returncode, 1,
+                         marker + ": released lock still blocked the intake: " + released.stderr[-300:])
+
+    def test_two_real_intakes_never_run_two_producers(self) -> None:
+        """Exclusion across two real producer lifetimes, not just admission against
+        a lock this test holds. A private HOME carries both the lock and GitNexus's
+        global registry, so the registry is read back afterwards from inside it."""
+        marker = "TWO_PRODUCERS_RAN_AT_ONCE"
+        tmp = Path(tempfile.mkdtemp(prefix="intake-concurrency-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env = {**os.environ, "HOME": str(tmp), "PYTHONDONTWRITEBYTECODE": "1"}
+        repos = []
+        for name in ("a", "b"):
+            repo = tmp / f"repo-{name}"
+            (repo / "pkg").mkdir(parents=True)
+            (repo / "pkg" / "mod.py").write_text(f"def f_{name}(x):\n    return x + 1\n", encoding="utf-8")
+            (repo / "main.py").write_text(f"from pkg.mod import f_{name}\nprint(f_{name}(1))\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@e", "-c", "user.name=t",
+                            "commit", "-qm", "init"], check=True)
+            repos.append(repo)
+
+        running = [subprocess.Popen([sys.executable, str(BOOTSTRAP), "--repo", str(repo),
+                                     "--intent", "concurrent intake"], env=env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                   for repo in repos]
+        self.addCleanup(lambda: [run.kill() for run in running if run.poll() is None])
+        peak, contended = 0, 0
+        while any(run.poll() is None for run in running):
+            listing = subprocess.run(["ps", "-eo", "args="], text=True, capture_output=True, check=False).stdout
+            alive = sum(1 for line in listing.splitlines()
+                        if "codex_context_bootstrap.py" in line and f"{tmp}/repo-" in line)
+            peak = max(peak, alive)
+            contended += alive and sum(1 for run in running if run.poll() is None) == 2
+            time.sleep(0.05)
+        for run in running:
+            run.wait()
+
+        self.assertGreater(contended, 0, marker + ": the two intakes never actually overlapped")
+        self.assertEqual(peak, 1, marker + f": {peak} producers were alive at once")
+        registry = json.loads((tmp / ".gitnexus" / "registry.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(registry), 2, marker + ": the registry did not survive both intakes")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

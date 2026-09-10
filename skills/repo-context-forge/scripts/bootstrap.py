@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import filecmp
 import json
 import os
@@ -33,6 +34,7 @@ from hooks.lib.workflow_state import (  # noqa: E402
 
 SOURCE_ROOT = Path("/home/prop_/.local/share/repo-context-forge/current")
 BOOTSTRAP = SOURCE_ROOT / "scripts" / "codex_context_bootstrap.py"
+INTAKE_LOCK = Path.home() / ".cache" / "repo-context-forge" / "intake.lock"
 
 
 def _extract_option(argv: list[str], name: str) -> str | None:
@@ -144,12 +146,20 @@ def _record_pass_start(identity: RepoIdentity, slug: str, workflow_id: str, pack
 
 
 def _run_producer(args: list[str]) -> int:
-    result = subprocess.run(
-        [sys.executable, str(BOOTSTRAP), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    """One producer at a time. GitNexus rewrites its global registry without an
+    atomic replace, so two analyses finishing together can tear it and every
+    later intake then fails. The lock covers the producer alone; packet assembly
+    and evidence recording stay concurrent. Upstream fix: future3OOO/GitNexus#25."""
+    INTAKE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(INTAKE_LOCK, "a+", encoding="utf-8") as lock:
+        # Closing the file releases the flock, on the error path too.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        result = subprocess.run(
+            [sys.executable, str(BOOTSTRAP), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
     sys.stdout.buffer.write(result.stdout)
     sys.stderr.buffer.write(result.stderr)
     return result.returncode

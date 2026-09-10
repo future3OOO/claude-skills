@@ -1,32 +1,37 @@
 #!/usr/bin/env bash
-# Integrated workflow verification.
+# Integrated workflow verification. Tests are dealt across worker processes rather
+# than run one module at a time: each case builds its own scratch repository and
+# ledger, each job gets its own CLAUDE_HOME, and the Repo Context Forge wrapper
+# serialises Repo Context Forge intakes, whose producers would otherwise tear
+# GitNexus's global registry. A direct gitnexus call stays outside that lock.
+#
+# With no arguments the whole suite runs. Arguments select files or unittest ids;
+# anything unittest can load is dealt case by case too, so a targeted selection of
+# the slow modules parallelises instead of pinning one module per worker.
+# HOOKS_TEST_WORKERS=1 restores single-process execution.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 export PYTHONDONTWRITEBYTECODE=1
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
-export CLAUDE_HOME="${CLAUDE_HOME:-$scratch}"
+workers="${HOOKS_TEST_WORKERS:-$(nproc)}"
 
-python3 -u "$ROOT/hooks/tests/test_state_foundation.py"
-python3 -u "$ROOT/hooks/tests/test_state_prune.py"
-python3 -u "$ROOT/hooks/tests/test_workflow_ledger.py"
-python3 -u "$ROOT/hooks/tests/test_workflow_shims.py"
-python3 -u "$ROOT/hooks/tests/test_pass_lifecycle.py"
-python3 -u "$ROOT/hooks/tests/test_workflow_hooks.py"
-python3 -u "$ROOT/hooks/tests/test_concurrent_verification.py"
-python3 -u "$ROOT/hooks/tests/test_pass_start_snapshot.py"
-python3 -u "$ROOT/hooks/tests/test_review_summary.py"
-python3 -u "$ROOT/hooks/tests/test_behavior_map_workflow.py"
-python3 -u "$ROOT/hooks/tests/test_contract_proof_authority.py"
-python3 -u "$ROOT/hooks/tests/test_finding_attacks.py"
-python3 -u "$ROOT/hooks/tests/test_tdd_repairs.py"
-python3 -u "$ROOT/hooks/tests/test_tdd_dispatch.py"
-python3 -u "$ROOT/hooks/tests/test_tdd_policy_gates.py"
-python3 -u "$ROOT/hooks/tests/test_tdd_intake_fail_closed.py"
-python3 -u "$ROOT/hooks/tests/test_tdd_summary.py"
-python3 -u "$ROOT/hooks/tests/test_repoforge_workflow.py"
-# The installed estate carries skills/ and hooks/ only, so this one is absent there.
-[ -f "$ROOT/.github/scripts/test_pr_scope.py" ] && python3 -u "$ROOT/.github/scripts/test_pr_scope.py"
-python3 -u "$ROOT/skills/production-code/scripts/test_code_quality_gate.py"
-bash "$ROOT/skills/codex-advisor/tests/test-ask-codex-advisor.sh"
+run_job() {
+  local job="$1"
+  local home
+  # Jobs run at the same time, so the runner owns each job's estate state.
+  home="$(mktemp -d "$scratch/home-XXXXXX")"
+  export CLAUDE_HOME="$home"
+  case "$job" in
+    *.sh) bash "$job" ;;
+    *.py) python3 -u "$job" ;;
+    *) python3 -u -m unittest ${job} ;;   # one shard: one or more unittest ids
+  esac
+}
+export -f run_job
+export scratch
+
+cd "$ROOT"
+mapfile -t jobs < <(python3 "$ROOT/hooks/tests/deal.py" "$workers" "$@")
+printf '%s\0' "${jobs[@]}" | xargs -0 -P "$workers" -n 1 bash -c 'run_job "$0"'
