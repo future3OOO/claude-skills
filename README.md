@@ -49,8 +49,13 @@ revision=$(git rev-parse origin/main)
 snapshot=$(mktemp -d)
 git archive "$revision" | tar -x -C "$snapshot"
 cd "$snapshot"
-diff -u settings.json ~/.claude/settings.json
-diff -u CLAUDE.md ~/.claude/CLAUDE.md
+for path in settings.json CLAUDE.md; do
+  if [[ -e "$HOME/.claude/$path" || -L "$HOME/.claude/$path" ]]; then
+    diff -u "$path" "$HOME/.claude/$path" || test "$?" -eq 1
+  else
+    printf 'New live file: %s\n' "$path"
+  fi
+done
 ```
 
 After reconciliation, back up and retire matching test copies. The snapshot
@@ -59,8 +64,12 @@ Unknown files stay in place and must be reconciled if the absence check fails.
 
 ```bash
 backup="$HOME/.claude-backups/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$backup"
-cp -a ~/.claude/CLAUDE.md ~/.claude/settings.json ~/.claude/hooks ~/.claude/skills "$backup/"
+mkdir -p "$backup" ~/.claude
+for path in CLAUDE.md settings.json hooks skills; do
+  if [[ -e "$HOME/.claude/$path" || -L "$HOME/.claude/$path" ]]; then
+    cp -a "$HOME/.claude/$path" "$backup/"
+  fi
+done
 excluded_tests=(hooks/tests skills/codex-advisor/tests skills/production-code/scripts/test_code_quality_gate.py)
 runtime_excludes=()
 for path in "${excluded_tests[@]}"; do runtime_excludes+=(--exclude="/$path"); done
