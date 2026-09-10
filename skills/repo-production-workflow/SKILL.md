@@ -227,31 +227,72 @@ absent gap instead of evaluating.
 
 ### 10. Delegate code review
 
-For a non-trivial change invoke `code-review` for a fresh, general-purpose
-background delegate in this checkout. Wait without editing the candidate. It returns a
-Standards/Spec review and a findings intake. Verify every finding and
-disposition each one. A disposition is invalid
-without its measurement; advisor agreement is not authorization; historical behavior
-is contextual evidence only — a current Interface claim needs current documentation,
-callers, tests, or another active authority. In this governed workflow `workflow.py record-review` is the required producer for non-trivial review state (`set-phase` cannot record a passed review); outside the governed
-workflow it stays optional. For a genuinely trivial change, record
+For a non-trivial change invoke `code-review` once for the initial independent,
+general-purpose background review in this checkout. It leaves candidate source
+and authoritative state unchanged and returns a Standards/Spec review and actual
+findings intake. Admit it below; retain the harness agent ID and returned
+`summaryId` (intake ID). For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
-Before recording, match checkout/workflow/tree against dispatch and
-`workflow.py status`. Verify agent identity from `subagents/agent-<id>.meta.json`
-and its forked-skill marker under `~/.claude/projects`; match model and effort
-from harness receipts to the loaded `code-review` frontmatter. Missing or
-mismatched evidence blocks recording: report it. Record
-immutable intake first as `{"findings":[...]}` through the unified Interface. If it contains findings,
-capture the returned `summaryId`, then call
-the same command with `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;
-each disposition carries `kind`, `premise`, `occurrence`, and
-`materialConsequence`. A document carrying both forms refuses. Print the
-canonical disposition shape table, generated from its installed validator
-declarations, with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`;
-the `codex-advisor` skill's disposition section owns the recorder's other
-refusals (temporary-directory paths, behavioral `report-only` without a proved
-owning attack).
+Continue the retained agent with native **SendMessage**, not another Skill
+invocation. Only if its ID is missing from conversation context, recover
+`reviewContextId` from the known recorded intake; no reviewer registry, routine
+transcript scan, or ListAgents polling. Send one batch of missing/changed context:
+checkout and active workflow, previous/current candidate identity and actual
+delta, accepted finding identities, permitted edits/recorder operations, and
+relevant existing commands/evidence. Wait without editing the candidate or
+concurrently mutating the pass while the delegated operation runs.
+
+Assign execution once, using current TDD rules and existing mapped ownership:
+
+| Task | Repair and evidence owner |
+| --- | --- |
+| Delegate-authored repair | Authorize the bounded correction. The delegate reconciles ownership before editing, records required prospective RED, makes the coherent repair, then records GREEN and assigned uncovered targeted verification. |
+| Lead-authored repair | The lead establishes required ownership/RED and edits. The resumed reviewer inspects the delta and affected preservation without candidate edits; assign outstanding GREEN/targeted verification to one executor, allowing the reviewer to record it when assigned. |
+
+The repairing author invokes Production Code, respects the cumulative change
+budget, and finishes necessary cleanup before final-candidate measurements.
+Delegated recording is limited to assigned `tdd-map`, `tdd`, and ordinary targeted
+`verify` on the actual active pass, never the initial review's scratch ledger.
+Authorization is not a recorder-policy bypass. Reuse valid ownership and
+applicable executed evidence; a new executor is not a reason to rerun a check.
+Do not manufacture RED for satisfied/nonbehavioral obligations or undo/reapply
+a finished correction; use legitimate baseline/not-required routes and disclose
+missing historical proof. The lead owns `begin`, bootstrap/graph refresh, final
+typed verification after the last source edit, `record-review`, advisor and
+disposition producers, `complete`, merge, and installation. Do not repeat recorded
+verification just because the delegate returned or waive current requirements
+in anticipation of a later workflow change.
+
+Batch known corrections. Another continuation needs a changed candidate, new
+relevant evidence, or a named unanswered question, not confirmation of the same
+resolved batch. A failed repair returns to Production Code's coherent-decision
+rule, not reviewer shopping, retry quotas, or automatic approval. Launch a fresh
+independent review only when materially changed contract/architecture/scope,
+unreconcilable lineage, or unavailable retained context makes the original
+unusable; name that condition. New map rows, corrections in the same decision,
+SHAs, or pass IDs alone do not. Report an actual native resumption failure before
+selecting its necessary replacement.
+
+When required verification is ready, match the returned checkout/workflow/tree
+against dispatch and `workflow.py status`. Verify agent identity from
+`subagents/agent-<id>.meta.json` and its forked-skill marker under
+`~/.claude/projects`; match actual model/effort receipts to the loaded
+`code-review` frontmatter. Missing/mismatched evidence blocks recording; recorder
+acceptance is not proof the reviewer ran. No edit may intervene between the
+returned target and admission: otherwise resume on the actual delta. Record the
+actual intake once, using the same `reviewContextId` for continuation; never
+invent an empty intake or mark required review not-required.
+
+`workflow.py record-review` is the required non-trivial review producer in a
+governed pass (`set-phase` cannot record a passed review); outside it, recording
+stays optional. Preserve original intakes/receipts. Admit `{"findings":[...]}` for
+genuinely new findings or material proof gaps only; outcomes for originals keep
+`(intakeEvidenceId, findingId)`. An empty intake does not close earlier unresolved
+findings; it permits review readiness only when none remain and other
+prerequisites hold. Findings block completion, not verification, the typed gate,
+or continuation; every material finding needs a measured terminal disposition,
+while a `material:false` note needs none.
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
@@ -259,19 +300,29 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   --resolved-model "<model>" --review-context-id "<agent-id>" --input <review.json>
 ```
 
-A no-finding intake binds the reviewed tree and passes immediately. A finding
-intake stays pending until its appended dispositions resolve every material
-finding. Dispositions may cover any subset of an intake; every material finding still
-needs a terminal disposition before completion; a `material:false` note needs none. Verification, the typed gate, and a new review all run while findings
-are open; open findings block completion only. A false premise records normalized `result`
-exactly `false`; otherwise
-rejection requires zero occurrence on a complete domain. `report-only` resolves
-completion without authorizing an edit and cannot later become `fixed`. A
-behavioral finding is fixed by owning it: add the attack item with its finding
-`sourceRefs` through `tdd-map`, drive RED/GREEN, then record
-`fixed` with the zero-count complete-domain occurrence; nonbehavioral
-corrections record their current-tree evidence directly. A later map update
-that would leave a fixed finding without its owning attack refuses.
+The lead verifies findings and dispositions originals by their original intake
+IDs: call the same command separately with
+`{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;
+each disposition carries `kind`, `premise`, `occurrence`, and
+`materialConsequence`. A document carrying intake and dispositions refuses;
+subsets are allowed. Print the canonical disposition shape table from installed
+validator declarations with `python3 -I -c 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.home() / ".claude")); from hooks.lib.workflow_documents import DOCUMENT_SHAPE_TABLE; print(DOCUMENT_SHAPE_TABLE)'`;
+the `codex-advisor` skill's disposition section owns the other recorder refusals.
+A disposition without measurement is invalid; advisor agreement is not
+authorization, and historical behavior is context, not current Interface
+authority. A false premise records normalized `result` exactly `false`; otherwise
+rejection needs zero occurrence on a complete domain. `report-only` resolves
+completion without authorizing an edit and cannot later become `fixed`.
+Behavioral `fixed` needs an owning attack linked by finding `sourceRefs`, required
+RED/GREEN, and zero-count complete-domain occurrence; nonbehavioral corrections
+use current-tree evidence. A later map update cannot orphan a fixed finding.
+
+Retained reviewer context cannot revive a completed pass or bypass governance
+revalidation's production-edit freeze. When step 13 requires a new pass, the lead
+starts it and supplies its identity. Historical findings/evidence remain context
+under their original workflow; establish current obligations through current-pass
+preflight/map/intake rules, never foreign intake ownership or relabelled
+historical execution as prospective proof.
 
 ### 11. Final Codex Advisor review
 
@@ -287,8 +338,12 @@ narrowed its finding's domain — only then implementation detail and declared-m
 closure. A promised load-bearing surface with no attack forbids `commit-ready`
 even when every declared item is green. Address and disposition material findings. The
 wrapper leaves final findings pending; the lead explicitly records `none` or
-`addressed` only after validating the output. Any production edit repeats
-verification, code review where required, and final review.
+`addressed` only after validating the output. Disclose repair authorship in the
+existing consult question: delegated self-checking is not independent review;
+the final advisor independently assesses the final candidate and evidence.
+After a production edit, satisfy current-candidate verification, continue code
+review under step 10 (fresh only for its stated conditions), and repeat final
+review. Reuse applicable recorded checks, not stale readiness.
 
 ### 12. Complete the workflow
 

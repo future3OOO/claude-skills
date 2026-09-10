@@ -10,11 +10,13 @@ background: true
 
 # Code review
 
-You are a fresh-context reviewer running in the lead's checkout. You own
-review, not implementation: read source and run tests or attacks, but never
-edit candidate source, rewrite the contract, mutate the active workflow ledger,
-merge, or install. Run every mutating operation against temporary state (for
-this estate's recorder, a temporary `CLAUDE_WORKFLOW_STATE_ROOT`) and clean up.
+Your initial independent review runs in the lead's checkout without editing
+candidate source or authoritative workflow state. On continuation, perform only
+the lead-authorized repair or verification task; verification-only authorization
+never permits candidate edits. Do not rewrite the contract, merge, or install.
+Mutating product attacks use isolated temporary state (for this estate's
+recorder, a temporary `CLAUDE_WORKFLOW_STATE_ROOT`) and clean up; that scratch
+ledger is not the active pass used for authorized evidence recording.
 
 ## 1. Fix the review target
 
@@ -23,16 +25,20 @@ In a governed pass read the contract and candidate identity (`intent`,
 `python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" status --repo "$PWD"`
 and its recorded evidence; otherwise take them from the PR or request. Record
 repository, branch, base and head SHAs, and dirty/staged state. Review the
-actual diff and current files, not a prose summary; if the target changes, the
-review is stale. Open your report with the checkout, workflow id, and tree
-you reviewed.
+actual diff and current files, not a prose summary. Reconcile unexpected target
+drift with the lead; an authorized repair returns its resulting candidate.
+Open your report with the checkout, workflow id, and final tree you reviewed.
 
 ## 2. Read the affected surface
 
 Inspect changed files, direct callers and callees, governing artifacts, and
 named no-change surfaces, using the Repo Context Forge packet and GitNexus
-evidence already recorded. Do not begin a workflow, run the Repo Context Forge
-bootstrap, or record anything: the lead's pass owns them.
+evidence already recorded. On continuation, apply sections 1–5 to the actual
+correction delta and the affected decision's preservation and interactions,
+including necessary callers and material repair regressions, not another
+whole-change investigation. Reuse unchanged rubrics and packets. Dispatch and
+execution authority belong to [workflow step 10](../repo-production-workflow/SKILL.md#10-delegate-code-review);
+record only the assigned operations there, never lead-owned transitions.
 
 ## 3. Apply the owned rubrics
 
@@ -55,12 +61,14 @@ contract. Challenge the map and supplied evidence against those obligations:
 what materially broken implementation would still pass these checks, and which
 specific wrong behavior would make the relied-on check fail? Run the smallest
 real-Interface attack that distinguishes each answer, observing the
-contract-relevant outcomes, identity, state preservation, and cleanup together;
-for a bug fix or suspected regression run the same operation and assertions
-against both versions, confirming each target. Replay applicable earlier review
-reproductions unchanged against the final candidate, and keep every useful
-operation, including a passing preservation attack or a disproven suspicion, as
-a runnable command with its expected versus observed effect. Cover the input
+contract-relevant outcomes, identity, state preservation, and cleanup together.
+For a bug fix or suspected regression, require results from the same operation
+and assertions against both versions, with each target confirmed. Reuse
+applicable old/candidate reproductions and suitable current-target receipts;
+replay unchanged when a concrete target, coverage, reliability, or regression
+question requires it, not merely to hand off execution. Keep every useful
+operation, including a passing preservation attack or a disproven suspicion,
+as a runnable command with its expected versus observed effect. Cover the input
 forms and interactions the changed mechanism makes relevant. Passing suites, map
 status, lint, printed success, and tests that substitute a collaborator are not
 the verdict; dispute an expectation or present a defect only with measured
@@ -84,13 +92,22 @@ correction.
 
 ## 6. Return structured output
 
-Return a human-readable Standards/Spec review followed by immutable finding
-intake:
+Return a Standards/Spec review with checkout, workflow, final candidate identity,
+changed paths, relevant existing evidence IDs/commands, and expected versus
+observed outcomes. The checkout is shared: no patch transfer or new repair-report
+artifact. Disclose who repaired what; you are independent of a lead-authored
+edit, not your own repair. Self-checking is not a second independent review.
+
+For continuation, report original findings by `(intakeEvidenceId, findingId)` as
+still present, corrected, or awaiting evidence. These outcomes are not lead
+finding dispositions. Follow with the existing immutable intake for genuinely
+new findings or material proof gaps only; never recreate unchanged originals:
 
 ```json
 {"findings":[{"id":"SPEC-1","axis":"Spec","severity":"high","material":true,"kind":"behavioral","location":"path:line","claim":"...","evidence":"...","consequence":"...","smallest_action":"..."}]}
 ```
 
-Material missing acceptance evidence is a Spec finding here, never prose
-beside `{"findings":[]}`; harmless residual uncertainty is not material. The
-lead verifies findings and owns dispositions.
+New material missing acceptance evidence is a Spec finding here, never prose
+beside `{"findings":[]}`; an already-recorded gap stays under its original identity.
+Harmless residual uncertainty is not material. An intake may be empty while
+original findings still await the lead's measured dispositions.
