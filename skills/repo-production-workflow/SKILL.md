@@ -230,9 +230,8 @@ absent gap instead of evaluating.
 
 ### 10. Delegate code review
 
-For a non-trivial change invoke `code-review`: the skill forks a fresh
-general-purpose delegate using the invoked skill's `model` and `effort` in this
-checkout as a background task; wait for its result and do not edit the candidate meanwhile. It returns a
+For a non-trivial change invoke `code-review` for a fresh, general-purpose
+background delegate in this checkout. Wait without editing the candidate. It returns a
 Standards/Spec review and a findings intake. Verify every finding and
 disposition each one. A disposition is invalid
 without its measurement; advisor agreement is not authorization; historical behavior
@@ -241,15 +240,11 @@ callers, tests, or another active authority. In this governed workflow `workflow
 workflow it stays optional. For a genuinely trivial change, record
 `set-phase --phase code-review --status not-required --findings none`.
 
-Before recording, compare the returned checkout, workflow id and reviewed
-tree with the dispatch and `workflow.py status`, and take the delegate's model
-and agent id from the harness receipts (`subagents/agent-<id>.meta.json` and
-its forked-skill marker under `~/.claude/projects`), never from the parent or
-the delegate's own claim. Compare against the loaded skill's frontmatter
-(normally `~/.claude/skills/code-review/SKILL.md`), and verify its effort in the
-harness task/request receipt. Missing or mismatched identity, model or effort
-is not a valid review: report the blocker and do not
-record the review. Record
+Before recording, match checkout/workflow/tree against dispatch and
+`workflow.py status`. Verify agent identity from `subagents/agent-<id>.meta.json`
+and its forked-skill marker under `~/.claude/projects`; match model and effort
+from harness receipts to the loaded `code-review` frontmatter. Missing or
+mismatched evidence blocks recording: report it. Record
 immutable intake first as `{"findings":[...]}` through the unified Interface. If it contains findings,
 capture the returned `summaryId`, then call
 the same command with `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<summaryId>","dispositions":[...]}`;

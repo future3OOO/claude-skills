@@ -35,36 +35,16 @@ there is no Stop hook. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns th
 
 ## Code-review delegate
 
-Set the reviewer in `skills/code-review/SKILL.md`, then publish and install it
-using the procedures below. The current settings are:
+Edit `model` (currently `claude-opus-5`) and `effort` (`xhigh`) in
+[`skills/code-review/SKILL.md`](skills/code-review/SKILL.md); keep the other
+frontmatter. Publish, install to `~/.claude/skills/code-review/SKILL.md`, and
+restart existing sessions. Step 10 uses the same configuration.
 
-```yaml
-model: claude-opus-5
-effort: xhigh
-```
-
-Change those fields together; keep `context: fork`, `agent: general-purpose`
-and `background: true` for a fresh reviewer in the lead's checkout. Step 10
-checks the loaded skill's settings against execution receipts, so it needs no
-second model edit. An unavailable reviewer is a blocker, not permission to
-substitute another model or an inline review.
-
-| Session | Reviewer route |
-| --- | --- |
-| Normal `claude` | Uses the session's Anthropic credentials; they must have access and remaining allowance for the selected model. |
-| `claudex` | Uses its `ANTHROPIC_BASE_URL` proxy; that route must serve the selected model and preserve its effort. The GPT lead's allowance does not supply Claude credits. |
-
-On Claude Code 2.1.251+, an explicit skill model overrides the
-`CLAUDE_CODE_SUBAGENT_MODEL` default used by this machine's Claude X launcher.
-Leave `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` unset to preserve that choice. Skill
-`effort` overrides session effort; changing the reviewer's settings does not
-change the lead or ordinary delegates. See the [Claude Code frontmatter reference](https://code.claude.com/docs/en/skills#frontmatter-reference).
-
-Check the skill actually loaded: a personal copy can shadow a project copy.
-Install to `~/.claude/skills/code-review/SKILL.md`, restart existing sessions,
-and invoke `/code-review`. Verify model and effort in the native task/request
-receipts before recording its result; through a proxy, confirm the upstream
-request too, since a local model label cannot prove proxy routing.
+Normal Claude needs allowance for that model; Claude X needs its proxy to serve
+it with the requested effort. On Claude Code 2.1.251+, the skill pin overrides
+Claude X's default subagent model; leave `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
+unset. Confirm model/effort in execution receipts, including the upstream
+request when proxied. The Codex Advisor is configured separately.
 
 ## Install or update
 
