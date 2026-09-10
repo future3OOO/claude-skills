@@ -1334,6 +1334,7 @@ class IntakeSerialisationTests(unittest.TestCase):
         self.assertEqual(released.returncode, 1,
                          marker + ": released lock still blocked the intake: " + released.stderr[-300:])
 
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_two_real_intakes_never_run_two_producers(self) -> None:
         """Exclusion across two real producer lifetimes, not just admission against
         a lock this test holds. A private HOME carries both the lock and GitNexus's

@@ -114,6 +114,27 @@ class RunnerShardingTests(RunnerAttack):
                 self.assertEqual(self.total_ran(result), expected,
                                  marker + f": the selection ran the wrong count at {workers} worker(s)")
 
+    def test_a_named_missing_selection_fails_the_run(self) -> None:
+        """A .py under hooks/tests the caller named is a job the caller asked for.
+        Dropping it is the silent-green case: beside a selector that does resolve,
+        the run reported success having done only the half that existed."""
+        marker = "RUNNER_DROPPED_A_NAMED_JOB"
+        good = "hooks.tests.test_state_foundation"
+        # Absent, and present but holding no cases: the same class, and the second
+        # is the one a rename or a half-finished refactor actually produces.
+        # The path form and the dotted form are separate branches of the dealer, and
+        # a caller reaches the silent-drop shape through either.
+        for named in ("hooks/tests/test_typo_does_not_exist.py", "hooks/tests/deal.py",
+                      "hooks.tests.deal"):
+            for selection in ((named,), (good, named)):
+                with self.subTest(selection=selection):
+                    result, _ = self.run_runner(*selection, workers=2, marker=marker, budget=120)
+                    output = result.stdout + result.stderr
+                    self.assertNotEqual(result.returncode, 0,
+                                        marker + ": the run passed without it: " + output[-300:])
+                    self.assertIn(f"no tests selected by {named}", output,
+                                  marker + ": the run never named it as the job it dropped: "
+                                  + output[-300:])
 
 class ProbeTreeTests(RunnerAttack):
     """What the runner does when the rest of the estate is absent, and which home
@@ -198,6 +219,65 @@ class ProbeTreeTests(RunnerAttack):
         dealt = [identity for line in lines for identity in line.split()]
         self.assertEqual(len(lines), 4, marker + ": the module was not dealt into four shards")
         self.assertEqual(sorted(dealt), want, marker + ": the dealt ids are not the module's own")
+
+    def test_an_empty_job_name_fails_the_run(self) -> None:
+        """`run.sh "$SELECTION"` with the variable unset is an ordinary wrapper
+        shape. The empty name reaches the whole-jobs branch, which is the one
+        branch exempt from the per-member case check, so it is rejected earlier."""
+        marker = "RUNNER_INVENTED_A_JOB"
+        tree = self.probe_tree(marker)
+        for selection in (("",), ("", "hooks/tests/test_probe.py")):
+            with self.subTest(selection=selection):
+                result, _ = self.run_runner(*selection, workers=2, marker=marker,
+                                            runner=tree / "hooks" / "tests" / "run.sh", budget=60)
+                output = result.stdout + result.stderr
+                self.assertNotIn("Ran ", output, marker + ": a test process ran anyway: " + output[-300:])
+                self.assertIn("empty job name", output, marker + ": " + output[-300:])
+                self.assertNotEqual(result.returncode, 0, marker + ": " + output[-300:])
+
+    def test_a_dealer_failure_fails_the_run(self) -> None:
+        """The real dealer, a valid worker count, and a tree whose test package is
+        not importable: discovery raises and the dealer exits non-zero. The runner
+        must stop there rather than dispatch whatever the dealer managed to print."""
+        marker = "RUNNER_IGNORED_A_DEALER_FAILURE"
+        tree = self.probe_tree(marker)
+        # Neither package marker: discovery cannot import the start directory, so
+        # the real dealer raises. A namespace package would still import.
+        (tree / "hooks" / "__init__.py").unlink()
+        (tree / "hooks" / "tests" / "__init__.py").unlink()
+        result, _ = self.run_runner(workers=2, marker=marker,
+                                    runner=tree / "hooks" / "tests" / "run.sh", budget=60)
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, marker + ": " + output[-300:])
+        self.assertIn("deal.py", output,
+                      marker + ": the failure never named the dealer: " + output[-300:])
+        self.assertNotIn("Ran ", output,
+                         marker + ": the runner dispatched anyway: " + output[-300:])
+
+    def test_two_jobs_of_one_run_overlap(self) -> None:
+        """Shard and case counts establish that work was dealt out, not that it ran
+        at the same time. CLOCK_MONOTONIC is system-wide, so the two jobs' own
+        intervals compare directly however many cores the machine has."""
+        marker = "RUNNER_RAN_ITS_JOBS_ONE_AT_A_TIME"
+        tree = self.probe_tree(
+            marker,
+            "import time\n"
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_one(self): self.span()\n"
+            "    def test_two(self): self.span()\n"
+            "    def span(self):\n"
+            "        start = time.monotonic()\n"
+            "        time.sleep(0.5)\n"
+            "        print(f'[SPAN {start} {time.monotonic()}]')\n",
+        )
+        result, _ = self.run_runner("hooks/tests/test_probe.py", workers=2, marker=marker,
+                                    runner=tree / "hooks" / "tests" / "run.sh", budget=60)
+        output = result.stdout + result.stderr
+        spans = [(float(a), float(b)) for a, b in re.findall(r"\[SPAN (\S+) (\S+)\]", output)]
+        self.assertEqual(len(spans), 2, marker + ": " + output[-300:])
+        self.assertLess(max(s for s, _ in spans), min(e for _, e in spans),
+                        marker + f": the two jobs did not overlap: {spans}")
 
     def test_two_jobs_of_one_run_get_two_homes(self) -> None:
         """Jobs run at the same time, so the runner owns each job's estate state

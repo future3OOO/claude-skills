@@ -43,13 +43,27 @@ def main(argv: list[str]) -> int:
 
     if argv[1:]:
         for job in argv[1:]:
+            # Ahead of the branch split: Path("") is the current directory, which
+            # exists, so an empty job name would otherwise be dealt as a whole job
+            # and emitted as a blank line the runner cannot run.
+            if not job:
+                raise SystemExit(f"{sys.argv[0]}: no tests selected by an empty job name")
             path = Path(job)
             if path.suffix == ".py" and path.resolve().parent == TESTS.resolve():
-                cases(loader.discover(str(path.parent), pattern=path.name, top_level_dir="."), ids)
+                selected = loader.discover(str(path.parent), pattern=path.name, top_level_dir=".")
             elif path.exists():
                 whole.append(job)
+                continue
             else:
-                cases(loader.loadTestsFromName(job), ids)
+                selected = loader.loadTestsFromName(job)
+            # Both loaders answer an empty suite rather than raising - discover for
+            # a file that is absent or holds no cases, loadTestsFromName for a module
+            # that imports and defines none - so a job the caller named would
+            # otherwise be dealt away in silence. An unloadable id is not this case:
+            # it comes back as unittest's one-case stub and runs, and fails, as a job.
+            if not selected.countTestCases():
+                raise SystemExit(f"{sys.argv[0]}: no tests selected by {job}")
+            cases(selected, ids)
     else:
         cases(loader.discover(str(TESTS), pattern="test_*.py", top_level_dir="."), ids)
         whole = [*WHOLE, *([OPTIONAL] if Path(OPTIONAL).exists() else [])]

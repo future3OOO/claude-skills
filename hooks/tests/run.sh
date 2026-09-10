@@ -33,5 +33,9 @@ export -f run_job
 export scratch
 
 cd "$ROOT"
-mapfile -t jobs < <(python3 "$ROOT/hooks/tests/deal.py" "$workers" "$@")
+# Command substitution, not process substitution: set -e sees the dealer's status
+# here, and a dealer that failed must stop the run rather than have it proceed on
+# whatever the dealer managed to print.
+dealt="$(python3 "$ROOT/hooks/tests/deal.py" "$workers" "$@")"
+mapfile -t jobs <<< "$dealt"
 printf '%s\0' "${jobs[@]}" | xargs -0 -P "$workers" -n 1 bash -c 'run_job "$0"'
