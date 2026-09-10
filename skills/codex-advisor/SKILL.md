@@ -128,8 +128,8 @@ wait for the process rather than polling with repeated sleeps.
   --budget 600 -- "<focused completion question>"
 ```
 
-Give a long question on stdin instead - `--budget 600 < question.txt`, with no
-`--` argument - which the wrapper reads when none is passed.
+For a long question, drop the `--` argument and feed it on stdin instead:
+`--budget 600 < question.txt`.
 
 Substitute `--design-absent "<specific reason>"` when the pass genuinely has
 no design artifact. The operator-selected default budget is 600 words, and

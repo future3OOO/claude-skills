@@ -196,6 +196,7 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
   tdd-map --repo "$PWD" --slug "<task>" --workflow-id "<active-workflowId>" --input - <<'JSON'
 {"sourceBehaviorId": "BM_...", "reassessment": "...", "items": [...]}
 JSON
+# or, when the caller already has the document in a file: --input <path>
 ```
 
 The JSON document accepts `sourceBehaviorId` (the GREEN item whose consequence it records),
