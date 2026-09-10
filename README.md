@@ -12,6 +12,12 @@ session hook, must survive an install.
 | `settings.json` | `~/.claude/settings.json` — permissions, model, hooks, effort |
 | `hooks/` | `~/.claude/hooks/` — the gates settings.json wires up |
 
+Development tests stay in GitHub and the complete mirror. All installs exclude
+`hooks/tests/`, `skills/codex-advisor/tests/`, and
+`skills/production-code/scripts/test_code_quality_gate.py`; keep runtime scripts
+and skill references. Adding development tests elsewhere must update the shared
+`excluded_tests` list below in the same change.
+
 ## Workflow boundary
 
 The estate records one repository-scoped production workflow:
@@ -29,26 +35,87 @@ there is no Stop hook. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns th
 
 ## Install or update
 
-Start from a clean checkout of the current `main`. Review any live differences
-before overwriting them; reconcile intentional machine changes into the tracked
-configuration first.
+Install a pinned remote `main` snapshot, then fast-forward the mirror after
+verification. Review live differences before overwriting them; reconcile
+intentional machine changes into tracked configuration first.
+Run the blocks in order in one dedicated Bash session; command failures stop
+the session. Reconcile reported differences before continuing.
 
 ```bash
+set -euo pipefail
+mirror="$PWD"
 git fetch origin
-git switch main
-git pull --ff-only
-diff -u settings.json ~/.claude/settings.json
-diff -u CLAUDE.md ~/.claude/CLAUDE.md
+revision=$(git rev-parse origin/main)
+snapshot=$(mktemp -d)
+git archive "$revision" | tar -x -C "$snapshot"
+cd "$snapshot"
+for path in settings.json CLAUDE.md; do
+  if [[ -e "$HOME/.claude/$path" || -L "$HOME/.claude/$path" ]]; then
+    diff -u "$path" "$HOME/.claude/$path" || test "$?" -eq 1
+  else
+    printf 'New live file: %s\n' "$path"
+  fi
+done
 ```
 
-After reconciliation, install without deleting machine-managed additions:
+After reconciliation, back up and retire matching test copies. The snapshot
+contains only files tracked at `$revision`; mismatches stop before any move.
+Unknown files stay in place and must be reconciled if the absence check fails.
 
 ```bash
 backup="$HOME/.claude-backups/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$backup"
-cp -a ~/.claude/CLAUDE.md ~/.claude/settings.json ~/.claude/hooks ~/.claude/skills "$backup/"
-rsync -a skills/ ~/.claude/skills/
-rsync -a hooks/ ~/.claude/hooks/
+mkdir -p "$backup" ~/.claude
+for path in CLAUDE.md settings.json hooks skills; do
+  if [[ -e "$HOME/.claude/$path" || -L "$HOME/.claude/$path" ]]; then
+    cp -a "$HOME/.claude/$path" "$backup/"
+  fi
+done
+excluded_tests=(hooks/tests skills/codex-advisor/tests skills/production-code/scripts/test_code_quality_gate.py)
+runtime_excludes=()
+for path in "${excluded_tests[@]}"; do runtime_excludes+=(--exclude="/$path"); done
+python3 - "$snapshot" "$backup/retired-tests" "${excluded_tests[@]}" <<'PY'
+from pathlib import Path
+import sys
+
+source, retired = map(Path, sys.argv[1:3])
+live = Path.home() / ".claude"
+moves = []
+for name in sys.argv[3:]:
+    target = source / name
+    for original in sorted(target.rglob("*")) if target.is_dir() else [target]:
+        if not original.is_file():
+            continue
+        installed = live / original.relative_to(source)
+        if installed.is_symlink():
+            sys.exit(f"Reconcile symlink: {installed}")
+        if not installed.exists():
+            continue
+        if not installed.is_file() or installed.read_bytes() != original.read_bytes():
+            sys.exit(f"Reconcile changed file: {installed}")
+        moves.append(installed)
+        if installed.suffix == ".py":
+            moves.extend((installed.parent / "__pycache__").glob(installed.stem + ".*.pyc"))
+            moves.extend(installed.parent.glob(installed.name + "c"))
+for installed in moves:
+    if any(parent.is_symlink() for parent in installed.parents):
+        sys.exit(f"Reconcile symlink directory: {installed}")
+for installed in moves:
+    destination = retired / installed.relative_to(live)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    installed.rename(destination)
+for name in sys.argv[3:]:
+    target = live / name
+    if target.is_dir():
+        for directory in sorted(target.rglob("*"), reverse=True) + [target]:
+            if directory.is_dir() and not directory.is_symlink() and not any(directory.iterdir()):
+                directory.rmdir()
+PY
+```
+
+Only continue after retirement succeeds. Install without deleting machine additions:
+
+```bash
+rsync -a "${runtime_excludes[@]}" hooks skills ~/.claude/
 cp CLAUDE.md ~/.claude/CLAUDE.md
 cp settings.json ~/.claude/settings.json
 chmod +x ~/.claude/hooks/*.py
@@ -82,40 +149,42 @@ files it should be ignoring.
 Verify the installed estate itself, not only the checkout:
 
 ```bash
-bash ~/.claude/hooks/tests/run.sh
-bash ~/.claude/skills/codex-advisor/tests/test-ask-codex-advisor.sh
+python3 ~/.claude/skills/repo-production-workflow/scripts/workflow.py --help
 diff -u CLAUDE.md ~/.claude/CLAUDE.md
 diff -u settings.json ~/.claude/settings.json
-diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
-diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/
+python3 - "${excluded_tests[@]}" <<'PY'
+from pathlib import Path
+import sys
+live = Path.home() / ".claude"
+remaining = [live / name for name in sys.argv[1:] if (live / name).exists() or (live / name).is_symlink()]
+remaining += list((live / "skills/production-code/scripts").rglob("test_code_quality_gate*.pyc"))
+if remaining:
+    sys.exit("Reconcile remaining tests:\n" + "\n".join(map(str, remaining)))
+PY
+rsync -rcni --delete "${runtime_excludes[@]}" --exclude='__pycache__' --exclude='*.pyc' hooks skills ~/.claude/
 find ~/.claude/hooks -maxdepth 1 -name '*.py' ! -perm -u+x
 ```
 
-The final hooks diff should report only deliberate externally managed files
-(currently `herdr-agent-state.sh`) and files retired under the procedure below.
-Any other difference needs reconciliation.
+Stop if the absence check fails; `find` must print nothing. The checksum
+comparison is a dry run (`-n`): `--delete` only lists extra live files for ownership review; never remove
+`-n`. Reconcile every content difference and classify each `*deleting` entry
+below, preserving machine-owned files. Run development suites from a source
+checkout when needed; `--help` confirms launchability, not full behavior.
 
-Only one of those line types reports content drift. `Only in ~/.claude/` is an
-orphan or a machine-owned file, classified below; the install never deletes, so
-these accumulate with every upstream rename. `Files … differ` is content drift,
-in either direction, and should never appear — check it alone rather than
-reading it out of a list that is mostly orphans:
+After successful installation and reconciliation, fast-forward the clean mirror
+to the installed revision without filtering its files:
 
 ```bash
-{ diff -qr --exclude '__pycache__' --exclude '*.pyc' skills/ ~/.claude/skills/
-  diff -qr --exclude '__pycache__' --exclude '*.pyc' hooks/ ~/.claude/hooks/; } | grep '^Files'
+cd "$mirror"
+git switch main
+git merge --ff-only "$revision"
+rm -rf "$snapshot"
 ```
-
-The `find` prints nothing when every installed hook is executable. It is a
-separate command because neither of the checks above covers modes: `diff -qr`
-compares content only, and both test scripts are launched through `bash`, which
-does not need the executable bit. A non-executable hook fails silently, so the
-mode is worth its own line.
 
 Absence from the checkout does not make a file an orphan. `herdr-agent-state.sh`
 is absent and live, and because the install never deletes, `~/.claude/hooks/`
 also keeps files this repo has never tracked. Classify each unexplained
-`Only in ~/.claude/` line by positive evidence, in this order:
+`*deleting` entry by positive evidence, in this order:
 
 - a path named in `settings.json` is live, whatever the checkout holds;
 - a path this repo tracked and then removed is an orphan of that rename or
@@ -145,12 +214,13 @@ them in the hooks diff until then.
 
 **Install, motherfucker.**
 
-The procedure above reconciles the whole estate from current `main`; never
-run it from a divergent branch. To install a verified but unmerged slice,
-install only the branch's changed-path set —
+The procedure above reconciles the whole estate from pinned remote `main`.
+For a verified but unmerged slice, pin its published head and install only
+the branch's changed-path set —
 `git diff --name-status origin/main...HEAD` — and within it only paths with a
-live target in the mapping above; repository-only paths such as `README.md`
-have none. Update a live path when it matches current `main`, the candidate,
+live target in the mapping above, applying the same test exclusions; a scoped
+install must not restore them. Repository-only paths such as `README.md` have
+none. Update a live path when it matches current `main`, the candidate,
 or what this PR last installed there: copy an added or modified candidate,
 retire a deleted one with the procedure above, and treat a rename as that
 retirement plus a copy. Anything else means another slice may own it — stop.
