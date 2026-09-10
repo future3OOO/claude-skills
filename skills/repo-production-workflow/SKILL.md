@@ -24,7 +24,8 @@ printf '%s' "$request_text" | python3 "$HOME/.claude/skills/repo-production-work
 Pass the request text, not a summary: build `$request_text` in a file from the
 message itself, then verbatim the body of any issue or spec it names, never an
 inline argument quoting mangles. The recorded intent is the contract the
-rest of the pass is answerable to, so it is stored exactly as given and read back
+rest of the pass is answerable to, so it is stored exactly as given (valid UTF-8;
+U+0000 refused) and read back
 at the plan-commit gate and in every advisor consult; a paraphrase written here is
 the paraphrase those steps will enforce. `--intent "<text>"` still takes a literal
 argument, and `--intent`/`--intent-file` are mutually exclusive.

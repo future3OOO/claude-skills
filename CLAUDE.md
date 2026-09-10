@@ -194,12 +194,9 @@ python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
   --repo "$PWD" --workflow-slug "<stable-task-slug>" --intent "<user request>"
 ```
 
-**Pass the request text, not a summary.** `--intent -` reads stdin, `--intent-file
-<path>` reads a file (supplying both refuses); plain `--intent "<text>"` stays legal
-for short text. The recorded intent is stored exactly as given (valid UTF-8; U+0000
-refused) and is the contract
-every later step enforces — `record-preflight` echoes it back and both advisor
-consults carry it — so a paraphrase written here corrupts everything downstream.
+**Pass the request text, not a summary.** `repo-production-workflow` owns how that
+intent is built and fed to `begin`; a paraphrase written here is what
+`record-preflight` and both advisor consults enforce for the rest of the pass.
 
 The SQLite event ledger and its active projection are workflow continuity only. They are not an attestation,
 permission object, or Git authorization boundary.
