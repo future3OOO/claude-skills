@@ -3,7 +3,8 @@ name: code-review
 description: Review a diff since a fixed point along independent Standards and Spec axes. Use for PRs, branches, WIP changes, or governed completion review.
 context: fork
 agent: general-purpose
-model: claude-fable-5-1
+model: claude-opus-5
+effort: xhigh
 background: true
 ---
 
