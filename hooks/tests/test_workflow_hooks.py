@@ -2250,6 +2250,11 @@ class ObligationDigestTests(HookHarness):
     def test_the_digest_stays_within_budget_and_adds_no_io(self) -> None:
         marker = "DIGEST_OVER_BUDGET"
         slug = "digest-budget"
+        probe = self.tmp / "probe"
+        probe.mkdir()
+        (probe / "sitecustomize.py").write_text(HOOK_PROBE, encoding="utf-8")
+        probe_out = self.tmp / "probe.jsonl"
+        env = {**self.env, "PYTHONPATH": str(probe), "HOOK_PROBE_OUT": str(probe_out)}
         long_row = "\x01" + "é中" * 500 + "\x1b[31m"
         items = [pending_behavior("BM_A", behavior="a is two", seam="app module", expected="app.a == 2", red_failure="A_NOT_TWO")]
         for index in range(1, 40):
@@ -2262,11 +2267,6 @@ class ObligationDigestTests(HookHarness):
             items.append(item)
         self.open_pass(slug, items)
         self.assertEqual(self.tdd(slug, "red", "BM_A", "a", 2).returncode, 0, marker)
-        probe = self.tmp / "probe"
-        probe.mkdir()
-        (probe / "sitecustomize.py").write_text(HOOK_PROBE, encoding="utf-8")
-        probe_out = self.tmp / "probe.jsonl"
-        env = {**self.env, "PYTHONPATH": str(probe), "HOOK_PROBE_OUT": str(probe_out)}
         context = self.advice("app.py", marker, env=env)
         self.assertIn(DIGEST_HEADER, context, marker + ": " + context)
         digest = context[context.index(DIGEST_HEADER):]
@@ -2278,11 +2278,30 @@ class ObligationDigestTests(HookHarness):
         self.assertIn("BM_A [red] a is two -> app.a == 2", digest, marker)
         self.assertFalse(re.search(r"[\x00-\x1f\x7f]", digest.replace("\n", "")), marker + ": raw control character")
         counts = json.loads(probe_out.read_text(encoding="utf-8").splitlines()[-1])
+        # The comparison baseline is the same hook path over a recorded map with
+        # nothing left to render, not a pass carrying no map: that isolates what
+        # rendering the digest costs from what reading the map costs. A baselined
+        # contract item is satisfied, so the digest has no row to show.
+        quiet_slug = "digest-none"
+        quiet_id = json.loads(self.state("begin", "--slug", quiet_slug).stdout)["workflowId"]
+        record_context_forge(self.repo, self.tmp)
+        consulted = self.state("advisor-result", "--slug", quiet_slug, "--workflow-id", quiet_id, "--stage",
+                               "preflight", "--source", "codex-advisor", "--verdict", "completed")
+        self.assertEqual(consulted.returncode, 0, marker + ": " + consulted.stdout + consulted.stderr)
+        self.record_preflight_evidence(quiet_slug, quiet_id, behavior_map=[pending_behavior(
+            "BM_ONLY", behavior="a is one", seam="app module", expected="app.a == 1", red_failure="A_NOT_ONE")])
+        self.assertEqual(self.tdd(quiet_slug, "red", "BM_ONLY", "a", 1).returncode, 0, marker)
+        quiet = self.advice("app.py", marker, env=env)
+        self.assertNotIn(DIGEST_HEADER, quiet, marker + ": the baseline rendered a digest")
+        without_digest = json.loads(probe_out.read_text(encoding="utf-8").splitlines()[-1])
         limits = {"digest_bytes": 2048, "sqlite_connect": 4, "child_processes": 3}
-        observed = {"digest_bytes": size, **counts}
-        # Resource consumption is bounded above: the reminder may cost less than
-        # the declared limit, never more, and the receipt records what it cost.
+        observed = {"digest_bytes": size, **counts, "withoutDigest": without_digest}
+        # The reminder is free: rendering it adds no connection and no child over
+        # the same path with nothing to render. The declared ceilings are kept
+        # beside that comparison, so neither check stands in for the other.
         for name in ("sqlite_connect", "child_processes"):
+            self.assertLessEqual(counts[name], without_digest[name], "DIGEST_ADDED_IO: " + json.dumps(
+                {"withDigest": counts, "withoutDigest": without_digest}))
             self.assertLessEqual(counts[name], limits[name], marker + ": " + json.dumps(counts))
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, env=self.env, text=True,
                               stdout=subprocess.PIPE, check=True).stdout.strip()

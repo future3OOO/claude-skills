@@ -344,6 +344,10 @@ class ContractProofAuthorityTests(unittest.TestCase):
         # not read as GREEN through RED.
         marker = "LEGACY_SUPERSEDED_READ_AS_GREEN"
         self.assertFalse(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y"}), marker)
+        # Second line of defence: the loader already refuses this value, so the
+        # predicate stays fail-closed even if one ever reached it.
+        self.assertFalse(behavior_map.green_through_red(
+            {"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "post-edit-passed"}), marker)
         self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "superseded", "supersededBy": "BM_Y", "supersededFrom": "green"}), marker)
         self.assertTrue(behavior_map.green_through_red({"id": "BM_X", "status": "green"}), marker)
 
