@@ -42,17 +42,7 @@ When the turn edits code on an already-open PR:
 
 ## Affected Surface Rule
 
-Every code change must re-walk the full affected surface before edits.
-
-At minimum, name:
-
-- the real boundary or behavior being changed
-- adjacent consumers, callers, and no-change surfaces that could regress
-- the authoritative contract that must remain true across that surface
-- the invariants that prove the surrounding surface is still correct
-- proof that checks the surrounding surface rather than only the cited branch or file
-
-Keep this proportional for ordinary work.
+Before edits, derive the affected surface the way Production Code's Minimum Implementation Decision requires (requested and preserved guarantees, adjacent consumers, no-change surfaces, proof of the surrounding surface) and record it in the sections below; this preflight owns the record, not a second copy of the rule.
 
 ## Behavior Bug Root-Cause Gate
 
@@ -142,6 +132,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 - Name the proof you will run for the affected surface.
 - Include one combined workflow proof when the work is stateful or control-loop sensitive.
 - Focused invariant checks may supplement the combined proof, not replace it.
+- Declare the pass's resource requirement before measuring it: the limit, the scale, and the command, reusing a targeted correctness operation wherever possible rather than a cost-only map item or benchmark suite. Make the command emit the scale, limit, observed value, and target identity, and run it through `workflow.py verify`, which retains that output without validating those fields; a failing run keeps verification pending until the same command passes. Compare only alternatives that satisfy the same Interface, and never relax the limit to pass.
 
 ### `reusePath`
 
@@ -198,7 +189,7 @@ For transaction-sensitive work, these sections must be explicit enough to govern
 ### `riskChecks`
 
 - Name the concrete failure modes to guard against.
-- Cover at least the relevant subset of: data integrity, cleanup, retries, auth, race conditions, cross-surface regressions, compatibility, and observability.
+- Cover at least the relevant subset of: data integrity, cleanup, retries, auth, race conditions, cross-surface regressions, compatibility, observability, and the declared resource limit.
 - If a risk cannot be evaluated yet, say so and move it to `openQuestions`.
 - For all code work, include adjacent-surface regression risk, not just the direct edited branch.
 - For transaction-sensitive work, include mutation-boundary drift, helper semantic drift, adjacent state races, and replay/finalize version drift.
@@ -246,12 +237,11 @@ Record a non-empty JSON array. Every item has these eight required fields:
 - Only runtime behavior is mappable: delivery line accounting, budget measurement, and other non-runtime bookkeeping never become items.
 - A pending behavioral finding is owned by giving an attack item a finding entry in `sourceRefs`; the recorder refuses a map that leaves one unowned. No preservation-only item is needed when existing focused regression evidence already owns the obligation — reference that evidence in an `already-satisfied` disposition instead.
 - Split independently-failable outcomes.
-- When a behavioral finding is accepted for proof, its owning map items mirror
-  the finding's enumerated sub-surfaces — one item per independently-failable
-  sub-surface: each ordering, each named seam, each input form, each
-  failure-matrix row the claim covers. One blanket item per finding is a
-  coverage gap, not a judgement call; prose in a later disposition cannot
-  widen what the mapped attacks prove.
+- When a behavioral finding is accepted for proof, its owning map items follow
+  the tdd skill's slice rule: one item per independently-failable outcome, not
+  per input spelling or per finding. Parameterized cases may share one
+  operation while every independently missing guarantee stays a visible item;
+  prose in a later disposition cannot widen what the mapped attacks prove.
 - Proof gaps stay in `openQuestions`; they are not omissions.
 
 ## Execution Gate

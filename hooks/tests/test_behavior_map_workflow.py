@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.tdd_workflow import edit_blockers  # noqa: E402
+from hooks.lib.tdd_workflow import edit_advice  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     advisor_disposition,
     read_workflow,
@@ -203,7 +203,7 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertEqual(state["tdd"], "pending", "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
         self.assertNotIn("tddCycleCount", state)
-        self.assertTrue(edit_blockers(resolve_repo_identity(self.repo), state))
+        self.assertTrue(edit_advice(resolve_repo_identity(self.repo), state)[0])
         ready, missing = ready_for_edit(resolve_repo_identity(self.repo), "app.py")
         self.assertFalse(ready, "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
         self.assertTrue(any("TDD RED" in item for item in missing), "REFUSED_ATTEMPT_ADVANCED_TDD_PHASE")
@@ -218,7 +218,66 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         state = read_workflow(resolve_repo_identity(self.repo))
         self.assertEqual(state["tdd"], "in-progress")
         self.assertEqual(state["tddCycleCount"], 1)
-        self.assertEqual(edit_blockers(resolve_repo_identity(self.repo), state), [])
+        self.assertEqual(edit_advice(resolve_repo_identity(self.repo), state)[0], [])
+
+    def document(self, state: dict[str, object]) -> dict[str, object]:
+        """Read the recorded TDD evidence document back through the public CLI."""
+        read = self.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(read.returncode, 0, read.stdout + read.stderr)
+        return json.loads(read.stdout)["document"]
+
+    @staticmethod
+    def probe(failure: str) -> str:
+        return f"import app; assert app.value == 2, {failure!r}"
+
+    def two_item_pass(self) -> str:
+        """Open both items' cycles, then apply the correction that settles them."""
+        slug, _ = self.begin_to_preflight([
+            pending_behavior("BM_A", red_failure="A_NOT_DONE"),
+            pending_behavior("BM_B", red_failure="B_NOT_DONE"),
+        ])
+        for behavior_id, failure in (("BM_A", "A_NOT_DONE"), ("BM_B", "B_NOT_DONE")):
+            red = self.tdd(slug, "red", behavior_id, self.probe(failure))
+            self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        return slug
+
+    def test_a_green_beside_a_red_item_leaves_the_document_pending(self) -> None:
+        marker = "PARTIAL_GREEN_DOCUMENT_CLAIMED_PASSED"
+        slug = self.two_item_pass()
+        green = self.tdd(slug, "green", "BM_B", self.probe("B_NOT_DONE"))
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertEqual(state["tdd"], "in-progress", marker)
+        document = self.document(state)
+        statuses = {str(entry["id"]): entry.get("status") for entry in document["behaviorMap"]}
+        self.assertEqual(statuses, {"BM_A": "red", "BM_B": "green"}, marker)
+        self.assertEqual(document["status"], "pending", marker)
+
+    def test_a_settled_item_refuses_a_further_green_and_writes_nothing(self) -> None:
+        """A settled contract item has no open cycle, so a later GREEN - passing or
+        failing - is refused before it can rewrite the document it would describe."""
+        marker = "SETTLED_ITEM_ACCEPTED_A_FURTHER_GREEN"
+        slug = self.two_item_pass()
+        for behavior_id, failure in (("BM_B", "B_NOT_DONE"), ("BM_A", "A_NOT_DONE")):
+            self.assertEqual(self.tdd(slug, "green", behavior_id, self.probe(failure)).returncode, 0, marker)
+        before = self.document(read_workflow(resolve_repo_identity(self.repo)))
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        regressed = self.tdd(slug, "green", "BM_A", self.probe("A_NOT_DONE"))
+        self.assertEqual(regressed.returncode, 2, marker + ": " + regressed.stdout + regressed.stderr)
+        self.assertIn("no valid mapped RED", regressed.stderr, marker)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertEqual(state["tdd"], "passed", marker)
+        self.assertEqual(self.document(state), before, marker + ": the refusal rewrote the document")
+
+    def test_the_document_passes_once_every_item_is_settled(self) -> None:
+        marker = "SETTLED_MAP_DOCUMENT_STAYS_PENDING"
+        slug = self.two_item_pass()
+        for behavior_id, failure in (("BM_B", "B_NOT_DONE"), ("BM_A", "A_NOT_DONE")):
+            green = self.tdd(slug, "green", behavior_id, self.probe(failure))
+            self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        document = self.document(read_workflow(resolve_repo_identity(self.repo)))
+        self.assertEqual(document["status"], "passed", marker)
 
     def test_reassessment_can_add_the_next_architecture_falsifier(self) -> None:
         behavior = pending_behavior("BM_VALUE")
@@ -259,7 +318,7 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         identity = resolve_repo_identity(self.repo)
         state = read_workflow(identity)
         self.assertEqual(state["tdd"], "in-progress")
-        self.assertIn("BM_ATOMIC", edit_blockers(identity, state)[0])
+        self.assertIn("BM_ATOMIC", edit_advice(identity, state)[0][0])
         refused = self.cli("complete", "--slug", slug, "--workflow-id", workflow_id)
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
         self.assertIn("BM_ATOMIC", refused.stderr)

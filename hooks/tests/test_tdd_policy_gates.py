@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from hooks.lib import behavior_map  # noqa: E402
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
-from hooks.lib.tdd_workflow import completion_blockers, edit_blockers  # noqa: E402
+from hooks.lib.tdd_workflow import completion_blockers, edit_advice  # noqa: E402
 from hooks.lib.workflow_state import read_workflow  # noqa: E402
 from hooks.tests.support import pending_behavior  # noqa: E402
 # Module alias only: binding the TestCase name here would make unittest.main
@@ -69,7 +69,7 @@ class MappedTddPolicyGateTests(unittest.TestCase):
         identity = resolve_repo_identity(self.harness.repo)
         state = read_workflow(identity)
         self.assertEqual([b for b in completion_blockers(identity, state) if "reassess" in b.lower()], [], marker)
-        self.assertEqual([b for b in edit_blockers(identity, state) if "reassess" in b.lower()], [], marker)
+        self.assertEqual([b for b in edit_advice(identity, state)[0] if "reassess" in b.lower()], [], marker)
         second = self.harness.tdd(slug, "red", "BM_B", self.harness.write_unittest(3, "VALUE_NOT_TWO"))
         self.assertEqual(second.returncode, 0, marker + ": " + second.stdout + second.stderr)
 
@@ -80,7 +80,7 @@ class MappedTddPolicyGateTests(unittest.TestCase):
         self.green_and_reassess("reopened-edit-window")
         identity = resolve_repo_identity(self.harness.repo)
         state = read_workflow(identity)
-        self.assertEqual(edit_blockers(identity, state), [])
+        self.assertEqual(edit_advice(identity, state)[0], [])
 
     def test_forced_color_pytest_assertion_is_valid_red(self) -> None:
         marker = "COLORED_PYTEST_PRODUCT_ASSERTION"

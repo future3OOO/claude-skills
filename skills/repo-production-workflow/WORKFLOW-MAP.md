@@ -130,7 +130,7 @@ readiness for the advisor phases without mutating anything.
   unavailable with a measured reason;
 - production preflight completed with a non-empty Behavior Map;
 - every contract map item GREEN, baseline `already-satisfied`, or `withdrawn`;
-- every preservation map item GREEN, already satisfied, or omitted with evidence (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a GREEN terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
+- every preservation map item currently proved (GREEN or already satisfied, with no re-execution flag) or omitted with evidence, a flagged omission included (the recorder validates the evidence structurally; its truth is a lead-owned obligation the reviews check) - a superseded item of either kind instead needs a currently proved GREEN terminal replacement - judged by `behavior_map` inside `complete()`'s transaction;
 - no pending proof gap;
 - TDD passed or not required;
 - production-code recorded;
@@ -222,7 +222,7 @@ session and defers the rest here.
 
 | Hook | Role |
 |---|---|
-| `PreToolUse(Edit\|Write\|NotebookEdit)` | Advise, never refuse: name what the pass has not recorded and admit the edit; docs, scratch, and non-repository paths are silent; test-like paths skip only the RED advice |
+| `PreToolUse(Edit\|Write\|NotebookEdit)` | Advise, never refuse: name what the pass has not recorded, remind the map's obligations in a digest bounded to 2,048 bytes from the map already loaded, and admit the edit; docs, scratch, and non-repository paths are silent; test-like paths skip the RED advice and the digest |
 | `PostToolUse(Edit\|Write\|NotebookEdit)` | Invalidate downstream readiness, record the session's repository association where a pass exists, then return quality feedback — the gate run carries the pass's recorded base OID as `--base-ref` when bootstrap recorded one, so growth warnings read branch-cumulative per edit; with no recorded base the hook derives nothing and the gate reports the base-binding gap |
 | `SessionStart(compact\|resume)` | Restore the full workflow chain and bounded current summary from committed SQLite state |
 

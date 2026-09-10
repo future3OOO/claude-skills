@@ -39,16 +39,7 @@ Use this skill when any of the following are true:
 
 ## Affected Surface Rule
 
-All code changes must re-walk the real affected surface before edits and again before completion.
-
-That means:
-
-- identify the actual boundary being changed, not just the edited file
-- identify adjacent consumers, upstream triggers, and no-change surfaces that could regress
-- require proof that matches that real surface instead of the local branch symptom
-
-For ordinary local work, keep this proportional and short.
-For stateful or control-loop work, use the full transaction-sensitive form below.
+Derive the affected surface the way Production Code's Minimum Implementation Decision requires, before edits and again before completion; for stateful or control-loop work, use the transaction-sensitive form below.
 
 ## Transaction-Sensitive Work
 

@@ -20,7 +20,7 @@ from hooks.lib._workflow_db import LedgerError  # noqa: E402
 from hooks.lib.hook_input import edited_path, read_hook_payload  # noqa: E402
 from hooks.lib.repo_identity import RepoIdentityError, resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import is_reviewable_path, is_test_path  # noqa: E402
-from hooks.lib.tdd_workflow import edit_blockers  # noqa: E402
+from hooks.lib.tdd_workflow import edit_advice  # noqa: E402
 from hooks.lib.workflow_state import (  # noqa: E402
     WorkflowError,
     read_workflow,
@@ -28,8 +28,8 @@ from hooks.lib.workflow_state import (  # noqa: E402
 )
 
 
-def advise(context: str) -> None:
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}))
+def advise(*context: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n".join(context)}}))
 
 
 def main() -> int:
@@ -47,15 +47,23 @@ def main() -> int:
     if not is_reviewable_path(relative):
         return 0
 
+    digest = None
     try:
         ready, missing = ready_for_edit(identity, relative)
         if ready and not is_test_path(relative):
-            missing = edit_blockers(identity, read_workflow(identity))
+            # One map load serves both the ordering advice and the obligation
+            # reminder; satisfied preservation is an obligation, never "missing".
+            missing, digest = edit_advice(identity, read_workflow(identity))
     except (WorkflowError, LedgerError, ValueError) as exc:
         advise(f"workflow intake: workflow evidence is unreadable: {exc}. Admitted; nothing records this edit until it is repaired.")
         return 0
-    if missing:
-        advise("workflow intake: missing before this production edit: " + ", ".join(missing) + ". Admitted; a RED taken after it is recorded as late.")
+    advice = [
+        *(["workflow intake: missing before this production edit: " + ", ".join(missing)
+           + ". Admitted; a RED taken after it is recorded as late."] if missing else []),
+        *([digest] if digest else []),
+    ]
+    if advice:
+        advise(*advice)
     return 0
 
 

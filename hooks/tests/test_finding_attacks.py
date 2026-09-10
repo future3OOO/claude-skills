@@ -25,7 +25,7 @@ QUALITY_GATE = ROOT / "skills" / "production-code" / "scripts" / "code_quality_g
 
 from hooks.lib.repo_identity import resolve_repo_identity  # noqa: E402
 from hooks.lib.state_store import _active_candidate_tree  # noqa: E402
-from hooks.tests.support import build_document, record_context_forge  # noqa: E402
+from hooks.tests.support import build_document, record_context_forge, run_post_edit  # noqa: E402
 
 
 class AttackHarness(unittest.TestCase):
@@ -123,6 +123,16 @@ class AttackHarness(unittest.TestCase):
         return self.cli("record-preflight", "--slug", slug, "--workflow-id", wid,
                         "--input", str(payload))
 
+    def run_tdd(self, slug: str, phase: str, behavior_id: str, *command: str,
+                env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
+                               "--slug", slug, "--phase", phase, "--behavior-id", behavior_id,
+                               "--", *command],
+                              cwd=ROOT, env=env or self.env, text=True, capture_output=True, check=False)
+
+    def tdd(self, slug: str, phase: str, behavior_id: str, module: str) -> subprocess.CompletedProcess[str]:
+        return self.run_tdd(slug, phase, behavior_id, sys.executable, "-m", "unittest", module)
+
     def drive_attack_green(self, slug: str, marker: str, behavior_id: str = "BM_ATTACK") -> None:
         probe = self.repo / "test_attack_probe.py"
         probe.write_text(
@@ -133,10 +143,7 @@ class AttackHarness(unittest.TestCase):
         )
         for phase, value in (("red", 1), ("green", 2)):
             (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
-            run = subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
-                                  "--slug", slug, "--phase", phase, "--behavior-id", behavior_id,
-                                  "--", sys.executable, "-m", "unittest", "test_attack_probe"],
-                                 cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+            run = self.tdd(slug, phase, behavior_id, "test_attack_probe")
             self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
         update = self.json_file("reassess.json", {
             "sourceBehaviorId": behavior_id, "reassessment": "no new obligation",
@@ -189,11 +196,55 @@ class AttackHarness(unittest.TestCase):
 
     def mapped_tdd(self, slug: str, phase: str, command: list[str],
                    env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
-                               "--slug", slug, "--phase", phase, "--behavior-id", "BM_ATTACK",
-                               "--", *command],
-                              cwd=ROOT, env=env or self.env, text=True, capture_output=True,
-                              check=False)
+        return self.run_tdd(slug, phase, "BM_ATTACK", *command, env=env)
+
+    def contract(self, marker: str, refs: list[dict[str, str]] | None = None) -> dict[str, object]:
+        return {
+            "id": "BM_ATTACK", "kind": "contract", "basis": "requested behavior",
+            "behavior": "the reviewed value is corrected", "seam": "fixture app module",
+            "expected": "app.value is 2", "redFailure": marker, "status": "pending",
+            "sourceRefs": refs or [],
+        }
+
+    def open_pass(self, slug: str, behavior_map: list[dict[str, object]]) -> str:
+        wid = self.begin(slug)
+        self.ok("advisor-result", "--slug", slug, "--workflow-id", wid,
+                "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed")
+        self.ok("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                "--stage", "preflight", "--findings", "none")
+        recorded = self.record_preflight(slug, wid, behavior_map)
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        return wid
+
+    def map_update(self, slug: str, **document: object) -> subprocess.CompletedProcess[str]:
+        wid = str(self.status()["workflowId"])
+        update = self.json_file("map.json", {"reassessment": "map correction", **document})
+        return self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
+
+    def map_items(self) -> dict[str, dict[str, object]]:
+        state = self.status()
+        evidence_id = state.get("tddEvidence") or state.get("preflightEvidence")
+        document = self.ok("evidence", "--evidence-id", str(evidence_id))
+        items = document.get("behaviorMap")
+        if items is None:
+            items = (document.get("document") or {}).get("behaviorMap")
+        return {str(entry["id"]): entry for entry in items}
+
+    def keep_probe(self, value: int, prelude: str = "") -> None:
+        """BM_KEEP's probe, optionally preceded by whatever the attack needs the
+        run itself to do before it reaches the mapped assertion."""
+        (self.repo / "test_keep_probe.py").write_text(
+            prelude + "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, {value}, 'KEEP_REGRESSED')\n",
+            encoding="utf-8")
+
+    def attack_probe(self, marker: str) -> None:
+        (self.repo / "test_attack_probe.py").write_text(
+            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
+
+    def events(self) -> list[dict[str, object]]:
+        return json.loads(self.ok_text("history"))["events"]
 
     def write_probe(self, marker: str) -> None:
         (self.repo / "test_probe.py").write_text(
@@ -205,18 +256,22 @@ class AttackHarness(unittest.TestCase):
 
     def refused_unchanged(self, marker: str, action) -> subprocess.CompletedProcess[str]:
         before = self.status()
-        events = len(json.loads(self.ok_text("history"))["events"])
+        events = len(self.events())
         result = action()
         self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
         self.assertEqual(self.status(), before, marker + ": a refusal mutated workflow state")
-        self.assertEqual(len(json.loads(self.ok_text("history"))["events"]), events,
-                         marker + ": a refusal appended history")
+        self.assertEqual(len(self.events()), events, marker + ": a refusal appended history")
         return result
 
     def ok_text(self, *args: str) -> str:
         result = self.cli(*args)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
+
+    def retained_only(self) -> dict[str, object]:
+        """The state after a refused executed attempt: the run is retained as evidence
+        (the tdd evidence pointer moves) and nothing else advances."""
+        return {key: value for key, value in self.status().items() if key not in {"tddEvidence", "updatedAt"}}
 
     def plant_external_victim(self, marker: str) -> dict[str, str]:
         """Empty in-repo victim/ shadowing an external importable package."""
@@ -231,6 +286,40 @@ class AttackHarness(unittest.TestCase):
             encoding="utf-8",
         )
         return dict(self.env, PYTHONPATH=str(self.tmp / "outside"))
+
+    def review(self, slug: str, wid: str, path: Path) -> subprocess.CompletedProcess[str]:
+        return self.cli("record-review", "--slug", slug, "--workflow-id", wid,
+                        "--resolved-model", "attack-harness", "--review-context-id",
+                        "same-pass-attack", "--input", str(path))
+
+    def verify_pass(self, slug: str, wid: str, *, gate: bool = True) -> None:
+        """Verification recorded through the real producers: the gate baseline
+        (once), implementation passed, a generic run and the typed gate."""
+        if gate:
+            verdict = subprocess.run([sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo),
+                                      "--json"], cwd=ROOT, env=self.env, text=True, capture_output=True,
+                                     check=False)
+            self.assertEqual(verdict.returncode, 0, verdict.stdout + verdict.stderr)
+            self.ok("record-production-code", "--slug", slug, "--workflow-id", wid,
+                    "--input", str(self.json_file("gate.json", json.loads(verdict.stdout))))
+        self.ok("set-phase", "--phase", "implementation", "--status", "passed",
+                "--slug", slug, "--workflow-id", wid)
+        for extra in (("--", sys.executable, "-c", "pass"),
+                      ("--kind", "quality-gate", "--base-ref", "HEAD")):
+            verified = self.cli("verify", "--slug", slug, *extra)
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+
+    def close_pass(self, slug: str, wid: str, marker: str) -> None:
+        """A clean review, a commit-ready final consult and completion."""
+        cleared = self.review(slug, wid, self.json_file("review-clear.json",
+                                                        {"findings": [], "dispositions": []}))
+        self.assertEqual(cleared.returncode, 0, marker + ": " + cleared.stdout + cleared.stderr)
+        self.ok("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
+                "--source", "codex-advisor", "--verdict", "commit-ready")
+        self.ok("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                "--stage", "final", "--findings", "none")
+        completed = self.cli("complete")
+        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
 
 
 class CheckpointIntent(AttackHarness):
@@ -360,11 +449,6 @@ class ReservationGone(AttackHarness):
 
 
 class SamePassAttack(AttackHarness):
-    def review(self, slug: str, wid: str, path: Path) -> subprocess.CompletedProcess[str]:
-        return self.cli("record-review", "--slug", slug, "--workflow-id", wid,
-                        "--resolved-model", "attack-harness", "--review-context-id",
-                        "same-pass-attack", "--input", str(path))
-
     def test_a_late_attack_is_proved_and_closed_in_the_same_workflow(self) -> None:
         marker = "SAME_PASS_CORRECTION_FORCED_RESTART"
         slug = "same-pass"
@@ -382,18 +466,7 @@ class SamePassAttack(AttackHarness):
         }])
         self.assertEqual(owned.returncode, 0, marker + ": " + owned.stdout + owned.stderr)
         self.drive_attack_green(slug, main_marker, "BM_MAIN")
-        gate = subprocess.run([sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo),
-                               "--json"], cwd=ROOT, env=self.env, text=True, capture_output=True,
-                              check=False)
-        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
-        self.ok("record-production-code", "--slug", slug, "--workflow-id", wid,
-                "--input", str(self.json_file("gate.json", json.loads(gate.stdout))))
-        self.ok("set-phase", "--phase", "implementation", "--status", "passed",
-                "--slug", slug, "--workflow-id", wid)
-        for extra in (("--", sys.executable, "-c", "pass"),
-                      ("--kind", "quality-gate", "--base-ref", "HEAD")):
-            verified = self.cli("verify", "--slug", slug, *extra)
-            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.verify_pass(slug, wid)
 
         # The late-discovered behavioral finding arrives through the lead review.
         intake = self.review(slug, wid, self.json_file("review-intake.json", {"findings": [{
@@ -484,21 +557,8 @@ class SamePassAttack(AttackHarness):
         # Post-edit revalidation for the production fix itself - the ordinary
         # rule for changed trees, not a metadata-only rerun.
         record_context_forge(self.repo, self.tmp)
-        self.ok("set-phase", "--phase", "implementation", "--status", "passed",
-                "--slug", slug, "--workflow-id", wid)
-        for extra in (("--", sys.executable, "-c", "pass"),
-                      ("--kind", "quality-gate", "--base-ref", "HEAD")):
-            verified = self.cli("verify", "--slug", slug, *extra)
-            self.assertEqual(verified.returncode, 0, marker + ": " + verified.stdout + verified.stderr)
-        cleared = self.review(slug, wid, self.json_file("review-clear.json",
-                                                        {"findings": [], "dispositions": []}))
-        self.assertEqual(cleared.returncode, 0, marker + ": " + cleared.stdout + cleared.stderr)
-        self.ok("advisor-result", "--slug", slug, "--workflow-id", wid, "--stage", "final",
-                "--source", "codex-advisor", "--verdict", "commit-ready")
-        self.ok("advisor-disposition", "--slug", slug, "--workflow-id", wid,
-                "--stage", "final", "--findings", "none")
-        completed = self.cli("complete")
-        self.assertEqual(completed.returncode, 0, marker + ": " + completed.stdout + completed.stderr)
+        self.verify_pass(slug, wid, gate=False)
+        self.close_pass(slug, wid, marker)
         history = self.ok("history")
         begins = [event for event in history["events"] if event.get("kind") == "begin"]
         self.assertEqual(len(begins), 1, marker)
@@ -731,13 +791,13 @@ class AddoptsPyargsNeutralized(AttackHarness):
         marker = "ADDOPTS_PYARGS_ESCAPED_REPOSITORY_BOUNDARY"
         self.open_pytest_pass("addopts-pyargs", marker)
         env = dict(self.plant_external_victim(marker), PYTEST_ADDOPTS="--pyargs")
-        before = self.status()
+        before = self.retained_only()
         run = self.mapped_tdd("addopts-pyargs", "red",
                               [sys.executable, "-m", "pytest", "victim"], env=env)
         tail = (run.stderr.strip().splitlines() or [""])[-1] or (run.stdout.strip().splitlines() or [""])[-1]
         self.assertNotEqual(run.returncode, 0,
                             marker + ": the inherited env addopts opened a mapped cycle: " + tail)
-        self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
+        self.assertEqual(self.retained_only(), before, marker + ": a refused surface advanced state")
 
 
 class PytestConfigFileOptionValue(AttackHarness):
@@ -761,7 +821,7 @@ class ConfigAddoptsNeutralized(AttackHarness):
         env = self.plant_external_victim(marker)
         injected = self.tmp / "pytest.ini"
         injected.write_text("[pytest]\naddopts = --pyargs\n", encoding="utf-8")
-        before = self.status()
+        before = self.retained_only()
         for attempt in (
             [sys.executable, "-m", "pytest", "-c", str(injected), "victim"],
             [sys.executable, "-m", "pytest", "-o", "addopts=--pyargs", "victim"],
@@ -770,7 +830,7 @@ class ConfigAddoptsNeutralized(AttackHarness):
             tail = (run.stderr.strip().splitlines() or [""])[-1] or (run.stdout.strip().splitlines() or [""])[-1]
             self.assertNotEqual(run.returncode, 0,
                                 marker + ": injected addopts opened a mapped cycle: " + tail)
-            self.assertEqual(self.status(), before, marker + ": a refused surface mutated state")
+            self.assertEqual(self.retained_only(), before, marker + ": a refused surface advanced state")
 
 
 class BulkRejectionAdvisorTests(AttackHarness):
@@ -884,29 +944,6 @@ class MapCorrectionAttacks(AttackHarness):
         "evidence": "out of scope by governing evidence",
     }
 
-    def contract(self, marker: str, refs: list[dict[str, str]] | None = None) -> dict[str, object]:
-        return {
-            "id": "BM_ATTACK", "kind": "contract", "basis": "requested behavior",
-            "behavior": "the reviewed value is corrected", "seam": "fixture app module",
-            "expected": "app.value is 2", "redFailure": marker, "status": "pending",
-            "sourceRefs": refs or [],
-        }
-
-    def open_pass(self, slug: str, behavior_map: list[dict[str, object]]) -> str:
-        wid = self.begin(slug)
-        self.ok("advisor-result", "--slug", slug, "--workflow-id", wid,
-                "--stage", "preflight", "--source", "codex-advisor", "--verdict", "completed")
-        self.ok("advisor-disposition", "--slug", slug, "--workflow-id", wid,
-                "--stage", "preflight", "--findings", "none")
-        recorded = self.record_preflight(slug, wid, behavior_map)
-        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
-        return wid
-
-    def map_update(self, slug: str, **document: object) -> subprocess.CompletedProcess[str]:
-        wid = str(self.status()["workflowId"])
-        update = self.json_file("map.json", {"reassessment": "map correction", **document})
-        return self.cli("tdd-map", "--slug", slug, "--workflow-id", wid, "--input", str(update))
-
     def withdraw(self, slug: str, identifier: str) -> subprocess.CompletedProcess[str]:
         return self.map_update(slug, dispositions=[
             {"id": identifier, "status": "withdrawn", "evidence": "added in error"}])
@@ -914,15 +951,6 @@ class MapCorrectionAttacks(AttackHarness):
     def reopen(self, slug: str, identifier: str) -> subprocess.CompletedProcess[str]:
         return self.map_update(slug, dispositions=[
             {"id": identifier, "status": "pending", "evidence": "omitted in error"}])
-
-    def map_items(self) -> dict[str, dict[str, object]]:
-        state = self.status()
-        evidence_id = state.get("tddEvidence") or state.get("preflightEvidence")
-        document = self.ok("evidence", "--evidence-id", str(evidence_id))
-        items = document.get("behaviorMap")
-        if items is None:
-            items = (document.get("document") or {}).get("behaviorMap")
-        return {str(entry["id"]): entry for entry in items}
 
     def test_a_post_preflight_contract_item_withdraws(self) -> None:
         marker = "WITHDRAW_ADDED_REFUSED"
@@ -1092,18 +1120,6 @@ class MapCorrectionAttacks(AttackHarness):
         self.drive_attack_green(slug, marker)
         refused = self.refused_unchanged(marker, lambda: self.reopen(slug, "BM_ATTACK"))
         self.assertIn("reopened", refused.stderr, marker)
-
-    def keep_probe(self, value: int) -> None:
-        (self.repo / "test_keep_probe.py").write_text(
-            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
-            f"    def test_value(self): self.assertEqual(app.value, {value}, 'KEEP_REGRESSED')\n",
-            encoding="utf-8")
-
-    def tdd(self, slug: str, phase: str, behavior_id: str, module: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo),
-                               "--slug", slug, "--phase", phase, "--behavior-id", behavior_id,
-                               "--", sys.executable, "-m", "unittest", module],
-                              cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
 
     def test_an_already_satisfied_preservation_item_reopens(self) -> None:
         marker = "REOPEN_SATISFIED_REFUSED"
@@ -1422,6 +1438,1033 @@ class ReportOnlyProofAttacks(AttackHarness):
                                     command=f"sed -n 1,5p {estate}", premise_result="false")
         accepted = self.dispose(slug, wid, document)
         self.assertEqual(accepted.returncode, 0, marker + ": " + accepted.stdout + accepted.stderr)
+
+
+class ReassessmentAttacks(AttackHarness):
+    """Issue #215: affected preservation is reassessed through the producer and
+    cleared only by an accepted passing execution; map metadata never replays
+    proof, and an open cycle keeps its binding beside every other operation."""
+
+    KEEP: dict[str, object] = {
+        "id": "BM_KEEP", "kind": "preservation", "basis": "existing guarantee",
+        "behavior": "the value stays readable", "seam": "fixture app module",
+        "expected": "app.value stays readable", "redFailure": "KEEP_REGRESSED", "status": "pending",
+    }
+
+    def revalidate(self, slug: str, *identifiers: str, **fields: object) -> subprocess.CompletedProcess[str]:
+        return self.map_update(slug, dispositions=[
+            {"id": identifier, "revalidate": True,
+             "evidence": "the repaired decision affects this guarantee", **fields}
+            for identifier in identifiers])
+
+    def item(self, identifier: str) -> dict[str, object]:
+        return self.map_items()[identifier]
+
+    def flagged_keep(self, slug: str, marker: str, *, green: bool = True) -> str:
+        """The pass every reassessment attack starts from: BM_KEEP flagged for
+        re-execution, proved GREEN through its own RED first unless the attack
+        needs it still pending."""
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        if green:
+            self.drive_attack_green(slug, marker)
+            self.keep_green(slug)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        return wid
+
+    def keep_green(self, slug: str) -> None:
+        """BM_KEEP proved GREEN through its own RED: the probe expects app.value 2."""
+        self.keep_probe(2)
+        for phase, value in (("red", 1), ("green", 2)):
+            (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
+            run = self.tdd(slug, phase, "BM_KEEP", "test_keep_probe")
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+
+    def direct_item(self, identifier: str, script: str, marker: str) -> dict[str, object]:
+        """A preservation item whose Seam is a direct operation: the script exits
+        non-zero carrying its marker unless app.value is 2."""
+        (self.repo / script).write_text(
+            "import sys\nimport app\n"
+            f"if app.value != 2:\n    print({marker!r}, 'value', app.value)\n    sys.exit(1)\n",
+            encoding="utf-8")
+        return {**self.KEEP, "id": identifier, "behavior": f"{script} keeps succeeding",
+                "seam": "fixture direct operation", "redFailure": marker}
+
+    def direct_green(self, slug: str, identifier: str, script: str) -> None:
+        for phase, value in (("red", 1), ("green", 2)):
+            (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
+            run = self.run_tdd(slug, phase, identifier, sys.executable, script)
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+
+    def test_revalidate_reopens_a_settled_item_and_repeats_as_a_no_op(self) -> None:
+        marker = "REVALIDATE_NOT_FLAGGED"
+        slug = "revalidate-settled"
+        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.keep_probe(1)
+        baseline = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+        before = str(self.status()["tddEvidence"])
+        flagged = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(flagged.returncode, 0, marker + ": " + flagged.stdout + flagged.stderr)
+        self.assertEqual(json.loads(flagged.stdout)["pending"], ["BM_ATTACK", "BM_KEEP"], marker)
+        item = self.item("BM_KEEP")
+        self.assertEqual((item["status"], item.get("revalidationRequired")), ("pending", True), marker)
+        self.assertNotIn("evidence", item, marker)
+        self.assertNotIn("baselineProof", item, marker)
+        prior = self.ok("evidence", "--evidence-id", before)["document"]["behaviorMap"]
+        self.assertEqual({e["id"]: e["status"] for e in prior}["BM_KEEP"], "already-satisfied", marker)
+        evidence, events = str(self.status()["tddEvidence"]), len(self.events())
+        repeated = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(repeated.returncode, 0, marker + ": " + repeated.stdout + repeated.stderr)
+        self.assertEqual((str(self.status()["tddEvidence"]), len(self.events())), (evidence, events),
+                         marker + ": a repeated request wrote evidence")
+
+    def test_flagged_pending_refuses_prose_settlement(self) -> None:
+        marker = "FLAGGED_PROSE_SETTLED"
+        slug = "flagged-prose"
+        self.flagged_keep(slug, marker, green=False)
+        refused = self.refused_unchanged(marker, lambda: self.map_update(slug, dispositions=[
+            {"id": "BM_KEEP", "status": "already-satisfied", "evidence": "still passes by inspection"}]))
+        self.assertIn("tdd --phase red", refused.stderr, marker)
+
+    def test_a_flagged_baseline_clears_the_marker_without_a_cycle(self) -> None:
+        marker = "FLAGGED_BASELINE_NOT_CLEARED"
+        slug = "flagged-baseline"
+        self.flagged_keep(slug, marker, green=False)
+        self.keep_probe(1)
+        baseline = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
+        self.assertIn('"already-satisfied"', baseline.stdout, marker)
+        item = self.item("BM_KEEP")
+        self.assertIsInstance(item.get("baselineProof"), dict, marker)
+        self.assertNotIn("revalidationRequired", item, marker)
+        self.assertNotIn("tddCycleCount", self.status(), marker)
+
+    def test_revalidate_keeps_green_history_and_marks_its_proof_unresolved(self) -> None:
+        marker = "FLAGGED_GREEN_STILL_PROVED"
+        slug = "flagged-green"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        owned = self.record_preflight(slug, wid, self.owned_map(intake_id, marker=marker) + [{**self.KEEP, "sourceRefs": ref}])
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        self.drive_attack_green(slug, marker)
+        self.keep_green(slug)
+        flagged = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(flagged.returncode, 0, marker + ": " + flagged.stdout + flagged.stderr)
+        item = self.item("BM_KEEP")
+        self.assertEqual((item["status"], item.get("revalidationRequired")), ("green", True), marker)
+        for field in ("redCommand", "redProof", "proofCommand"):
+            self.assertIn(field, item, marker + ": " + field)
+        self.assertIn("BM_KEEP", self.cli("complete").stderr, marker)
+        stuck = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                         "--stage", "preflight", "--findings", "addressed", "--input",
+                         str(self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertEqual(stuck.returncode, 2, marker + ": " + stuck.stdout + stuck.stderr)
+        self.assertIn("BM_KEEP", stuck.stderr, marker)
+
+    def test_a_green_recheck_clears_for_a_runner_and_a_direct_operation(self) -> None:
+        marker = "GREEN_RECHECK_NOT_ACCEPTED"
+        slug = "green-recheck"
+        direct = self.direct_item("BM_DIRECT", "check_direct.py", "DIRECT_REGRESSED")
+        self.open_pass(slug, [self.contract(marker), dict(self.KEEP), direct])
+        self.drive_attack_green(slug, marker)
+        self.keep_green(slug)
+        self.direct_green(slug, "BM_DIRECT", "check_direct.py")
+        cycles = self.status()["tddCycleCount"]
+        self.assertEqual(self.revalidate(slug, "BM_KEEP", "BM_DIRECT").returncode, 0, marker)
+        recheck = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(recheck.returncode, 0, marker + ": " + recheck.stdout + recheck.stderr)
+        direct_recheck = self.run_tdd(slug, "green", "BM_DIRECT", sys.executable, "check_direct.py")
+        self.assertEqual(direct_recheck.returncode, 0, marker + ": " + direct_recheck.stdout + direct_recheck.stderr)
+        items = self.map_items()
+        for identifier in ("BM_KEEP", "BM_DIRECT"):
+            self.assertEqual(items[identifier]["status"], "green", marker)
+            self.assertNotIn("revalidationRequired", items[identifier], marker + ": " + identifier)
+        self.assertEqual(self.status()["tddCycleCount"], cycles, marker)
+        runs = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]["runs"]
+        self.assertEqual(runs[-1]["passProof"]["quality"], "operation-succeeded", marker)
+
+    def test_a_recheck_with_a_changed_surface_is_refused_before_execution(self) -> None:
+        marker = "RECHECK_SURFACE_UNBOUND"
+        slug = "recheck-surface"
+        self.flagged_keep(slug, marker)
+        sentinel = self.tmp / "changed-surface-ran"
+        (self.repo / "test_keep_other.py").write_text(
+            f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n"
+            "import app, unittest\nclass Other(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n",
+            encoding="utf-8")
+        refused = self.refused_unchanged(marker, lambda: self.tdd(slug, "green", "BM_KEEP", "test_keep_other"))
+        self.assertIn("recorded RED surface", refused.stderr, marker)
+        self.assertFalse(sentinel.exists(), marker + ": the changed surface executed")
+        self.assertTrue(self.item("BM_KEEP").get("revalidationRequired"), marker)
+
+    def test_a_failed_recheck_is_retained_and_retried_after_repair(self) -> None:
+        marker = "FAILED_RECHECK_CLEARED"
+        slug = "recheck-failure"
+        self.flagged_keep(slug, marker)
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        failed = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(failed.returncode, 2, marker + ": " + failed.stdout + failed.stderr)
+        item = self.item("BM_KEEP")
+        self.assertEqual((item["status"], item.get("revalidationRequired")), ("green", True), marker)
+        runs = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]["runs"]
+        self.assertEqual((runs[-1]["behaviorId"], runs[-1]["valid"]), ("BM_KEEP", False), marker)
+        self.assertEqual(self.status()["implementation"], "in-progress", marker)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        repaired = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(repaired.returncode, 0, marker + ": " + repaired.stdout + repaired.stderr)
+        self.assertNotIn("revalidationRequired", self.item("BM_KEEP"), marker)
+
+    def test_a_drifted_recheck_is_retained_invalid(self) -> None:
+        marker = "DRIFTED_RECHECK_ACCEPTED"
+        slug = "recheck-drift"
+        generated = self.repo / "generated.py"
+        (self.repo / "check_drift.py").write_text(
+            "import sys\nfrom pathlib import Path\nimport app\n"
+            f"if app.value != 2:\n    print('DRIFT_REGRESSED', 'value', app.value)\n    sys.exit(1)\n"
+            f"Path({str(generated)!r}).write_text('made = 1\\n')\n",
+            encoding="utf-8")
+        drift = {**self.KEEP, "id": "BM_DRIFT", "behavior": "check_drift.py keeps succeeding",
+                 "seam": "fixture direct operation", "redFailure": "DRIFT_REGRESSED"}
+        self.open_pass(slug, [self.contract(marker), drift])
+        self.drive_attack_green(slug, marker)
+        self.direct_green(slug, "BM_DRIFT", "check_drift.py")
+        generated.unlink()
+        self.assertEqual(self.revalidate(slug, "BM_DRIFT").returncode, 0, marker)
+        events = len(self.events())
+        drifted = self.run_tdd(slug, "green", "BM_DRIFT", sys.executable, "check_drift.py")
+        self.assertEqual(drifted.returncode, 2, marker + ": " + drifted.stdout + drifted.stderr)
+        self.assertTrue(self.item("BM_DRIFT").get("revalidationRequired"), marker)
+        runs = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]["runs"]
+        self.assertEqual((runs[-1]["behaviorId"], runs[-1]["valid"]), ("BM_DRIFT", False), marker)
+        self.assertIn("generated.py", str(runs[-1].get("bindingError")), marker)
+        self.assertEqual(self.events()[-1]["kind"], "tdd-annotated", marker)
+        self.assertEqual(len(self.events()), events + 1, marker)
+
+    def test_a_stale_recheck_is_refused_by_the_evidence_compare_and_swap(self) -> None:
+        marker = "STALE_RECHECK_RECORDED"
+        slug = "recheck-cas"
+        self.flagged_keep(slug, marker)
+        wid = str(self.status()["workflowId"])
+        design = str(self.status()["governedDesignEvidence"])
+        update = self.json_file("child-union.json", {"reassessment": "child update", "dispositions": [
+            {"id": "BM_ATTACK", "sourceRefs": [{"type": "design", "evidenceId": design, "id": "PRES-1"}]}]})
+        # The recorded RED surface is the unittest module; its module-level import
+        # commits another map update on the same workflow before the run returns.
+        (self.repo / "test_keep_probe.py").write_text(
+            "import subprocess, sys\n"
+            f"subprocess.run([sys.executable, {str(WORKFLOW)!r}, 'tdd-map', '--repo', {str(self.repo)!r},"
+            f" '--slug', {slug!r}, '--workflow-id', {wid!r}, '--input', {str(update)!r}], check=True)\n"
+            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n",
+            encoding="utf-8")
+        runs_before = len(self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]["runs"])
+        # The same child also drifts the tree: the stale run is refused whole,
+        # its drift retention included.
+        (self.repo / "test_keep_probe.py").write_text(
+            (self.repo / "test_keep_probe.py").read_text(encoding="utf-8")
+            + f"from pathlib import Path\nPath({str(self.repo / 'drifted.py')!r}).write_text('made = 1\\n')\n",
+            encoding="utf-8")
+        stale = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(stale.returncode, 2, marker + ": " + stale.stdout + stale.stderr)
+        self.assertIn("TDD evidence changed", stale.stderr, marker)
+        document = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]
+        items = {entry["id"]: entry for entry in document["behaviorMap"]}
+        self.assertEqual(items["BM_ATTACK"].get("sourceRefs"), [{"type": "design", "evidenceId": design, "id": "PRES-1"}], marker)
+        self.assertTrue(items["BM_KEEP"].get("revalidationRequired"), marker)
+        self.assertEqual(len(document["runs"]), runs_before, marker + ": the stale recheck was recorded")
+
+    def test_flagged_items_omit_and_reopen_under_finding_ownership(self) -> None:
+        marker = "FLAGGED_OMISSION_MISHANDLED"
+        slug = "flagged-omit"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        second = {**self.KEEP, "id": "BM_KEEP2", "sourceRefs": ref}
+        owned = self.record_preflight(slug, wid, self.owned_map(intake_id, marker=marker) + [dict(self.KEEP), second])
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        omitted = self.map_update(slug, dispositions=[{"id": "BM_KEEP", "status": "omitted", "evidence": "not reachable here"}])
+        self.assertEqual(omitted.returncode, 0, marker + ": " + omitted.stdout + omitted.stderr)
+        self.assertNotIn("BM_KEEP", json.loads(omitted.stdout)["pending"], marker)
+        item = self.item("BM_KEEP")
+        self.assertEqual((item["status"], item.get("revalidationRequired")), ("omitted", True), marker)
+        reopened = self.map_update(slug, dispositions=[{"id": "BM_KEEP", "status": "pending", "evidence": "reachable after all"}])
+        self.assertEqual(reopened.returncode, 0, marker + ": " + reopened.stdout + reopened.stderr)
+        self.assertEqual((self.item("BM_KEEP")["status"], self.item("BM_KEEP").get("revalidationRequired")), ("pending", True), marker)
+        # A flagged GREEN owner of a fixed finding cannot be omitted away.
+        self.drive_attack_green(slug, marker)
+        self.keep_probe(2)
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP2", "test_keep_probe").returncode, 0, marker)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_KEEP2", "test_keep_probe").returncode, 0, marker)
+        closed = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                          "--stage", "preflight", "--findings", "addressed", "--input",
+                          str(self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertEqual(closed.returncode, 0, marker + ": " + closed.stdout + closed.stderr)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP2").returncode, 0, marker)
+        refused = self.refused_unchanged(marker, lambda: self.map_update(slug, dispositions=[
+            {"id": "BM_KEEP2", "status": "omitted", "evidence": "narrowed away"}]))
+        self.assertIn("SPEC-1", refused.stderr, marker)
+
+    def test_supersession_into_a_flagged_terminal_stays_unresolved(self) -> None:
+        marker = "FLAGGED_TERMINAL_RESOLVED"
+        slug = "flagged-terminal"
+        second = {**self.KEEP, "id": "BM_KEEP2"}
+        self.open_pass(slug, [self.contract(marker), dict(self.KEEP), second])
+        self.drive_attack_green(slug, marker)
+        self.keep_green(slug)
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP2", "test_keep_probe").returncode, 0, marker)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        self.assertEqual(self.tdd(slug, "green", "BM_KEEP2", "test_keep_probe").returncode, 0, marker)
+        superseded = self.map_update(slug, dispositions=[{"id": "BM_KEEP", "status": "superseded",
+                                                          "supersededBy": "BM_KEEP2", "evidence": "one probe"}])
+        self.assertEqual(superseded.returncode, 0, superseded.stdout + superseded.stderr)
+        flagged = self.revalidate(slug, "BM_KEEP2")
+        self.assertEqual(flagged.returncode, 0, marker + ": " + flagged.stdout + flagged.stderr)
+        self.assertEqual(json.loads(flagged.stdout)["pending"], ["BM_KEEP", "BM_KEEP2"], marker)
+        recheck = self.tdd(slug, "green", "BM_KEEP2", "test_keep_probe")
+        self.assertEqual(recheck.returncode, 0, marker + ": " + recheck.stdout + recheck.stderr)
+        self.assertEqual(self.status()["tdd"], "passed", marker)
+
+    def test_the_admit_pending_window_covers_fixed_and_report_only_owners(self) -> None:
+        marker = "OWNER_REASSESSMENT_REFUSED"
+        slug = "owner-window"
+        wid = self.begin(slug)
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        owned = self.record_preflight(slug, wid, self.owned_map(intake_id, marker=marker) + [{**self.KEEP, "sourceRefs": ref}])
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        self.keep_probe(1)
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP", "test_keep_probe").returncode, 0, marker)
+        self.drive_attack_green(slug, marker)
+        fixed = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                         "--stage", "preflight", "--findings", "addressed", "--input",
+                         str(self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertEqual(fixed.returncode, 0, fixed.stdout + fixed.stderr)
+        flagged = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(flagged.returncode, 0, marker + ": " + flagged.stdout + flagged.stderr)
+        self.assertIn("BM_KEEP", self.cli("complete").stderr, marker)
+        self.keep_probe(2)
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP", "test_keep_probe").returncode, 0, marker)
+        self.assertNotIn("BM_KEEP", self.cli("complete").stderr, marker)
+        self.assertEqual(self.status()["findingStates"][0]["status"], "fixed", marker)
+
+        slug = "owner-window-report-only"
+        wid = self.begin(slug)
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        intake_id = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        ref = [{"type": "finding", "evidenceId": intake_id, "id": "SPEC-1"}]
+        items = self.owned_map(intake_id, marker=marker)
+        items[0]["sourceRefs"] = []
+        owned = self.record_preflight(slug, wid, items + [{**self.KEEP, "sourceRefs": ref}])
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        self.keep_probe(1)
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP", "test_keep_probe").returncode, 0, marker)
+        baseline_only = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                                 "--stage", "preflight", "--findings", "addressed", "--input",
+                                 str(self.fixed_disposition(wid, intake_id, dict(self.ZERO_DOMAIN))))
+        self.assertEqual(baseline_only.returncode, 2, marker + ": " + baseline_only.stdout + baseline_only.stderr)
+        self.assertIn("baseline alone", baseline_only.stderr, marker)
+        report_only = self.json_file("report-only.json", {
+            "context": {"workflowId": wid, "candidateTree": _active_candidate_tree(resolve_repo_identity(self.repo))},
+            "intakeEvidenceId": intake_id,
+            "dispositions": [{
+                "finding_id": "SPEC-1", "status": "report-only", "kind": "behavioral",
+                "premise": {"claim": "the reviewed value is wrong", "command": "python -m unittest test_keep_probe", "result": "true"},
+                "occurrence": {"domain": "every read of app.value", "count": 0, "complete": True,
+                               "command": "python -m unittest test_keep_probe", "result": "count=0"},
+                "materialConsequence": {"claim": "callers observe the wrong value",
+                                        "command": "python -m unittest test_keep_probe", "result": "false"},
+                "evidence": "measured on the candidate"}]})
+        accepted = self.cli("advisor-disposition", "--slug", slug, "--workflow-id", wid,
+                            "--stage", "preflight", "--findings", "addressed", "--input", str(report_only))
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        flagged = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(flagged.returncode, 0, marker + ": " + flagged.stdout + flagged.stderr)
+        self.assertIn("BM_KEEP", self.cli("complete").stderr, marker)
+
+    def test_revalidate_refusals(self) -> None:
+        marker = "REVALIDATE_REFUSAL_MISSING"
+        slug = "revalidate-refusals"
+        red_keep = {**self.KEEP, "id": "BM_KEEP2"}
+        self.open_pass(slug, [self.contract(marker), dict(self.KEEP), red_keep])
+        self.keep_probe(2)
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP2", "test_keep_probe").returncode, 0, marker)
+        for identifier, extra in (("BM_ATTACK", {}), ("BM_KEEP2", {}), ("BM_KEEP", {"status": "omitted"})):
+            refused = self.refused_unchanged(marker, lambda: self.revalidate(slug, identifier, **extra))
+            self.assertIn(identifier, refused.stderr, marker + ": " + identifier)
+        authored = {**self.KEEP, "id": "BM_AUTHORED", "revalidationRequired": True}
+        refused = self.refused_unchanged(marker, lambda: self.map_update(slug, items=[authored]))
+        self.assertIn("revalidationRequired", refused.stderr, marker)
+        wid = self.begin("revalidate-authored")
+        refused = self.record_preflight("revalidate-authored", wid, [self.contract(marker), authored])
+        self.assertEqual(refused.returncode, 2, marker + ": " + refused.stdout + refused.stderr)
+        self.assertIn("revalidationRequired", refused.stderr, marker)
+
+    def two_intakes(self, slug: str, marker: str) -> tuple[str, str, str]:
+        """One workflow with two recorded intakes whose findings share the label SPEC-1."""
+        wid = self.begin(slug)
+        first = self.behavioral_intake(slug, wid, "the reviewed value is wrong")
+        second = self.behavioral_intake(slug, wid, "the value is also unreadable")
+        second_owner = {**self.KEEP, "id": "BM_KEEP2",
+                        "sourceRefs": [{"type": "finding", "evidenceId": second, "id": "SPEC-1"}]}
+        owned = self.record_preflight(slug, wid, self.owned_map(first, marker=marker) + [dict(self.KEEP), second_owner])
+        self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+        return wid, first, second
+
+    def union(self, slug: str, identifier: str, evidence_id: str, label: str = "SPEC-1") -> subprocess.CompletedProcess[str]:
+        return self.map_update(slug, dispositions=[
+            {"id": identifier, "sourceRefs": [{"type": "finding", "evidenceId": evidence_id, "id": label}]}])
+
+    def test_a_reference_union_annotates_beside_an_open_red(self) -> None:
+        marker = "REFERENCE_UNION_TRANSITIONED"
+        slug = "reference-union"
+        wid, first, second = self.two_intakes(slug, marker)
+        self.attack_probe(marker)
+        self.assertEqual(self.tdd(slug, "red", "BM_ATTACK", "test_attack_probe").returncode, 0, marker)
+        before = self.status()
+        for evidence_id in (first, second):
+            unioned = self.union(slug, "BM_KEEP", evidence_id)
+            self.assertEqual(unioned.returncode, 0, marker + ": " + unioned.stdout + unioned.stderr)
+        self.assertEqual(self.item("BM_KEEP")["sourceRefs"], [
+            {"type": "finding", "evidenceId": first, "id": "SPEC-1"},
+            {"type": "finding", "evidenceId": second, "id": "SPEC-1"}], marker)
+        after = self.status()
+        self.assertEqual({k: after.get(k) for k in ("tdd", "phase", "tddCycleCount", "implementation", "nextAction")},
+                         {k: before.get(k) for k in ("tdd", "phase", "tddCycleCount", "implementation", "nextAction")}, marker)
+        document = self.ok("evidence", "--evidence-id", str(after["tddEvidence"]))["document"]
+        self.assertEqual((document["kind"], document["activeBehaviorId"]), ("cycle", "BM_ATTACK"), marker)
+        self.assertEqual(self.events()[-1]["kind"], "tdd-annotated", marker)
+        ledger = self.ok("checkpoint", "--phase", "preflight-advice")["findingLedger"]
+        owners = {(entry["intakeEvidenceId"], entry["findingId"]): sorted(o["id"] for o in entry["owners"]) for entry in ledger}
+        self.assertEqual(owners, {(first, "SPEC-1"): ["BM_ATTACK", "BM_KEEP"], (second, "SPEC-1"): ["BM_KEEP", "BM_KEEP2"]}, marker)
+
+    def test_a_repeated_union_writes_nothing(self) -> None:
+        marker = "UNION_NOOP_WROTE"
+        slug = "union-noop"
+        _wid, first, _second = self.two_intakes(slug, marker)
+        self.assertEqual(self.union(slug, "BM_KEEP", first).returncode, 0, marker)
+        evidence, events = str(self.status()["tddEvidence"]), len(self.events())
+        repeated = self.union(slug, "BM_KEEP", first)
+        self.assertEqual(repeated.returncode, 0, marker + ": " + repeated.stdout + repeated.stderr)
+        self.assertEqual((str(self.status()["tddEvidence"]), len(self.events())), (evidence, events), marker)
+
+    def test_a_foreign_reference_refuses_atomically(self) -> None:
+        marker = "FOREIGN_REF_ACCEPTED"
+        slug = "foreign-ref"
+        _wid, first, _second = self.two_intakes("foreign-ref-origin", marker)
+        origin = first
+        _wid, first, _second = self.two_intakes(slug, marker)
+        for evidence_id, label in ((first, "SPEC-9"), (origin, "SPEC-1"), ("evidence-" + "0" * 32, "SPEC-1")):
+            refused = self.refused_unchanged(marker, lambda: self.map_update(slug, dispositions=[
+                {"id": "BM_KEEP", "sourceRefs": [{"type": "finding", "evidenceId": evidence_id, "id": label}]},
+                {"id": "BM_KEEP2", "sourceRefs": [{"type": "finding", "evidenceId": first, "id": "SPEC-1"}]}]))
+            self.assertIn("foreign", refused.stderr, marker)
+        ledger = self.ok("checkpoint", "--phase", "preflight-advice")["findingLedger"]
+        owners = {(entry["intakeEvidenceId"], entry["findingId"]): sorted(o["id"] for o in entry["owners"]) for entry in ledger}
+        self.assertEqual(owners[(first, "SPEC-1")], ["BM_ATTACK"], marker + ": the valid half of a refused update landed")
+
+    def test_metadata_never_replays_downstream_readiness(self) -> None:
+        marker = "METADATA_REPLAYED_DOWNSTREAM"
+        slug = "metadata-replay"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.keep_probe(1)
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP", "test_keep_probe").returncode, 0, marker)
+        self.drive_attack_green(slug, marker)
+        gate = subprocess.run([sys.executable, str(QUALITY_GATE), "check", "--repo", str(self.repo), "--json"],
+                              cwd=ROOT, env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        self.ok("record-production-code", "--slug", slug, "--workflow-id", wid,
+                "--input", str(self.json_file("gate.json", json.loads(gate.stdout))))
+        self.ok("set-phase", "--phase", "implementation", "--status", "passed", "--slug", slug, "--workflow-id", wid)
+        for extra in (("--", sys.executable, "-c", "pass"), ("--kind", "quality-gate", "--base-ref", "HEAD")):
+            verified = self.cli("verify", "--slug", slug, *extra)
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        review = self.cli("record-review", "--slug", slug, "--workflow-id", wid, "--resolved-model", "attack-harness",
+                          "--review-context-id", "metadata-replay", "--input", str(self.json_file("review.json", {"findings": []})))
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
+        before = self.status()
+        flagged = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(flagged.returncode, 0, marker + ": " + flagged.stdout + flagged.stderr)
+        after = self.status()
+        self.assertEqual(after["tdd"], "in-progress", marker)
+        for field in ("verificationEvidence", "qualityGateEvidence", "qualityGateManifestId", "codeReview", "implementation"):
+            self.assertEqual(after.get(field), before.get(field), marker + ": " + field)
+        events = len(self.events())
+        mixed = self.map_update(slug, items=[{**self.KEEP, "id": "BM_MORE", "behavior": "another guarantee"}],
+                                dispositions=[{"id": "BM_KEEP", "revalidate": True, "evidence": "still affected"}])
+        self.assertEqual(mixed.returncode, 0, marker + ": " + mixed.stdout + mixed.stderr)
+        self.assertEqual(len(self.events()), events + 1, marker)
+        self.assertIn("BM_MORE", self.cli("complete").stderr, marker)
+        (self.repo / "app.py").write_text("value = 2\nnote = 1\n", encoding="utf-8")
+        edited = run_post_edit(self.repo, self.env, "app.py", session="metadata-replay")
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+        edited_state = self.status()
+        self.assertEqual((edited_state["verification"], edited_state["codeReview"]["status"]), ("pending", "pending"), marker)
+
+    def test_an_open_cycle_keeps_its_binding_beside_updates_and_baselines(self) -> None:
+        marker = "ACTIVE_CYCLE_BINDING_LOST"
+        changed = "CHANGED_RED_EXECUTED"
+        slug = "cycle-binding"
+        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.attack_probe(marker)
+        red = self.tdd(slug, "red", "BM_ATTACK", "test_attack_probe")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        opened = self.document()
+        recorded = self.item("BM_ATTACK")["redCommand"]
+
+        def binding(document: dict[str, object]) -> dict[str, object]:
+            return {key: document.get(key) for key in ("kind", "activeBehaviorId", "command", "surface")}
+
+        # A map update beside the open RED must not loosen the item's own binding.
+        added = self.map_update(slug, items=[{**self.KEEP, "id": "BM_MORE", "behavior": "another guarantee"}])
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.keep_probe(1)
+        baseline = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+        self.assertEqual(binding(self.document()), binding(opened), marker)
+        self.assertEqual([run["behaviorId"] for run in self.document()["runs"]], ["BM_ATTACK", "BM_KEEP"], marker)
+        # A recheck for another item that the runner reports as nothing executed is
+        # audited beside A's cycle, and neither owns nor replaces A's binding.
+        (self.repo / "app.py").write_text(
+            'import os\nvalue = int(os.environ.get("KEEP_VALUE", "2"))\n', encoding="utf-8")
+        (self.repo / "test_keep_probe.py").write_text(self.PROBES["unittest"], encoding="utf-8")
+        for phase, value in (("red", "1"), ("green", None)):
+            self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+            run = self.receipt_recheck(slug, "unittest", phase=phase, value=value)
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        skipped = self.receipt_recheck(slug, "unittest", mode="skip")
+        self.assertEqual(skipped.returncode, 2, marker + ": " + skipped.stdout + skipped.stderr)
+        self.assertEqual(self.document()["runs"][-1]["behaviorId"], "BM_KEEP", marker)
+        self.assertEqual((self.item("BM_ATTACK")["status"], self.item("BM_ATTACK")["redCommand"]), ("red", recorded), marker)
+        # A repeated RED for A whose command differs never reaches the runner.
+        sentinel = self.tmp / "changed-red-ran"
+        (self.repo / "test_attack_other.py").write_text(
+            f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n"
+            "import app, unittest\nclass Other(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 2, {changed!r})\n", encoding="utf-8")
+        self.refused_unchanged(changed, lambda: self.tdd(slug, "red", "BM_ATTACK", "test_attack_other"))
+        self.assertFalse(sentinel.exists(), changed + ": the changed command executed")
+        self.assertEqual((self.item("BM_ATTACK")["status"], self.item("BM_ATTACK")["redCommand"]), ("red", recorded), changed)
+        green = self.tdd(slug, "green", "BM_ATTACK", "test_attack_probe")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+
+    def document(self) -> dict[str, object]:
+        return self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]
+
+    def test_a_drifted_cycle_opening_red_leaves_no_phantom_cycle(self) -> None:
+        marker = "DRIFT_RED_OPENED_CYCLE"
+        slug = "drift-red"
+        generated = self.repo / "generated.py"
+        self.flagged_keep(slug, marker, green=False)
+        # A genuine mapped failure whose probe also rewrites the reviewable tree.
+        self.keep_probe(2, f"from pathlib import Path\nPath({str(generated)!r}).write_text('made = 1\\n')\n")
+        drifted = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(drifted.returncode, 2, marker + ": " + drifted.stdout + drifted.stderr)
+        self.assertIn("generated.py", drifted.stderr, marker)
+        self.assertEqual((self.item("BM_KEEP")["status"], self.item("BM_KEEP").get("revalidationRequired")), ("pending", True), marker)
+        self.assertIsNone(self.document().get("activeBehaviorId"), marker + ": a drifted RED left an active cycle")
+        self.assertNotIn("tddCycleCount", self.status(), marker)
+
+    def test_a_union_onto_a_withdrawn_item_is_refused(self) -> None:
+        marker = "WITHDRAWN_OWNER_ACCEPTED"
+        slug = "union-withdrawn"
+        _wid, first, _second = self.two_intakes(slug, marker)
+        extra = {**self.contract(marker), "id": "BM_EXTRA"}
+        self.assertEqual(self.map_update(slug, items=[extra]).returncode, 0, marker)
+        withdrawn = self.map_update(slug, dispositions=[{"id": "BM_EXTRA", "status": "withdrawn", "evidence": "added in error"}])
+        self.assertEqual(withdrawn.returncode, 0, withdrawn.stdout + withdrawn.stderr)
+        refused = self.refused_unchanged(marker, lambda: self.union(slug, "BM_EXTRA", first))
+        self.assertIn("withdrawn", refused.stderr, marker)
+
+    def test_a_recheck_retains_the_tree_it_ran_on(self) -> None:
+        marker = "RECHECK_UNBOUND_TREE"
+        slug = "recheck-binding"
+        self.flagged_keep(slug, marker)
+        # The candidate is the working tree: app.py unstaged, one probe staged,
+        # the other untracked; its identity is what status reports, not HEAD's.
+        self.git("add", "test_attack_probe.py")
+        expected = str(self.status()["activeCandidateTree"])
+        self.assertNotEqual(expected, self.git("rev-parse", "HEAD^{tree}"), marker)
+        recheck = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(recheck.returncode, 0, marker + ": " + recheck.stdout + recheck.stderr)
+        run = self.document()["runs"][-1]
+        self.assertEqual((run["behaviorId"], run["phase"]), ("BM_KEEP", "green"), marker)
+        self.assertEqual({key: bool(run.get(key)) for key in ("passStartOid", "headOid")}, {"passStartOid": True, "headOid": True}, marker)
+        self.assertEqual(run.get("productionChanged"), ["app.py"], marker)
+        self.assertEqual(run.get("candidateTree"), expected, "EXACT_CANDIDATE_NOT_RETAINED: " + json.dumps(run, sort_keys=True))
+
+    def open_attack_red(self, slug: str, marker: str) -> dict[str, object]:
+        """BM_ATTACK's cycle opened on app.value 1; returns the cycle document."""
+        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        self.attack_probe(marker)
+        red = self.tdd(slug, "red", "BM_ATTACK", "test_attack_probe")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        return self.document()
+
+    def assert_cycle_kept(self, opened: dict[str, object], marker: str, *runs: str) -> None:
+        document = self.document()
+        self.assertEqual({k: document.get(k) for k in ("kind", "activeBehaviorId", "command", "surface")},
+                         {k: opened.get(k) for k in ("kind", "activeBehaviorId", "command", "surface")}, marker)
+        self.assertEqual([run["behaviorId"] for run in document["runs"]], [*(r["behaviorId"] for r in opened["runs"]), *runs], marker)
+
+    def test_a_drifted_red_beside_an_open_cycle_keeps_that_cycle(self) -> None:
+        marker = "DRIFT_BESIDE_OPEN_CYCLE_LOST_BINDING"
+        slug = "drift-beside"
+        generated = self.repo / "generated.py"
+        self.flagged_keep(slug, marker, green=False)
+        opened = self.open_attack_red(slug, marker)
+        self.keep_probe(2, f"from pathlib import Path\nPath({str(generated)!r}).write_text('made = 1\\n')\n")
+        drifted = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(drifted.returncode, 2, marker + ": " + drifted.stdout + drifted.stderr)
+        self.assert_cycle_kept(opened, marker, "BM_KEEP")
+        self.assertEqual((self.item("BM_KEEP")["status"], self.item("BM_KEEP").get("revalidationRequired")), ("pending", True), marker)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_ATTACK", "test_attack_probe")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+
+    def test_a_timed_out_recheck_beside_an_open_cycle_clears_nothing(self) -> None:
+        marker = "TIMEOUT_CLEARED_OR_BROKE_BINDING"
+        slug = "timeout-beside"
+        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.keep_green(slug)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        opened = self.open_attack_red(slug, marker)
+        (self.repo / "test_keep_probe.py").write_text(
+            "import os, time, app, unittest\nif os.environ.get('KEEP_SLEEP'):\n    time.sleep(5)\n"
+            "class KeepProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n", encoding="utf-8")
+        timed_out = subprocess.run(
+            [sys.executable, str(WORKFLOW), "tdd", "--repo", str(self.repo), "--slug", slug, "--phase", "green",
+             "--behavior-id", "BM_KEEP", "--timeout", "1", "--", sys.executable, "-m", "unittest", "test_keep_probe"],
+            cwd=ROOT, env={**self.env, "KEEP_SLEEP": "1"}, text=True, capture_output=True, check=False)
+        self.assertEqual(timed_out.returncode, 2, marker + ": " + timed_out.stdout + timed_out.stderr)
+        self.assert_cycle_kept(opened, marker, "BM_KEEP")
+        run = self.document()["runs"][-1]
+        self.assertEqual((run.get("timedOut"), run["valid"]), (True, False), marker)
+        self.assertEqual((self.item("BM_KEEP")["status"], self.item("BM_KEEP").get("revalidationRequired")), ("green", True), marker)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        retried = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(retried.returncode, 0, marker + ": " + retried.stdout + retried.stderr)
+        self.assertNotIn("revalidationRequired", self.item("BM_KEEP"), marker)
+
+    def test_a_flagged_red_keeps_the_marker_until_green(self) -> None:
+        marker = "RED_ALONE_CLEARED_MARKER"
+        slug = "flagged-red-green"
+        self.flagged_keep(slug, marker, green=False)
+        self.keep_probe(2)
+        red = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
+        self.assertEqual((self.item("BM_KEEP")["status"], self.item("BM_KEEP").get("revalidationRequired")), ("red", True), marker)
+        self.assertIn("BM_KEEP", self.cli("complete").stderr, marker)
+        cycles = self.status()["tddCycleCount"]
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        green = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
+        self.assertEqual((self.item("BM_KEEP")["status"], self.item("BM_KEEP").get("revalidationRequired")), ("green", None), marker)
+        self.assertEqual(self.status()["tddCycleCount"], cycles, marker)
+
+    def replacement_green(self, slug: str) -> None:
+        """BM_REPLACEMENT proved GREEN through its own RED on its own probe."""
+        (self.repo / "test_replacement_probe.py").write_text(
+            "import app, unittest\nclass ReplacementProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 2, 'REPLACEMENT_REGRESSED')\n",
+            encoding="utf-8")
+        for phase, value in (("red", 1), ("green", 2)):
+            (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
+            run = self.tdd(slug, phase, "BM_REPLACEMENT", "test_replacement_probe")
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+
+    def test_a_flagged_superseded_item_resolves_through_its_green_replacement(self) -> None:
+        marker = "FLAGGED_SUPERSESSION_STRANDED"
+        slug = "flagged-supersession"
+        replacement = {**self.KEEP, "id": "BM_REPLACEMENT", "behavior": "the value stays readable through the sharper probe",
+                       "redFailure": "REPLACEMENT_REGRESSED"}
+        self.open_pass(slug, [self.contract(marker), dict(self.KEEP), replacement])
+        self.drive_attack_green(slug, marker)
+        self.keep_green(slug)
+        self.replacement_green(slug)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        superseded = self.map_update(slug, dispositions=[
+            {"id": "BM_KEEP", "status": "superseded", "supersededBy": "BM_REPLACEMENT", "evidence": "the sharper probe owns the guarantee"}])
+        self.assertEqual(superseded.returncode, 0, marker + ": " + superseded.stdout + superseded.stderr)
+        self.assertEqual(json.loads(superseded.stdout)["pending"], [], marker + ": " + superseded.stdout)
+        self.assertNotIn("unresolved Behavior Map items", self.cli("complete").stderr, marker)
+        kept = self.item("BM_KEEP")
+        self.assertEqual((kept["status"], kept["supersededBy"], kept.get("revalidationRequired")), ("superseded", "BM_REPLACEMENT", True), marker)
+        # Re-entry: the obligation follows the replacement. Flagging it makes the
+        # superseded record unresolved again until the replacement is rechecked.
+        reflagged = self.revalidate(slug, "BM_REPLACEMENT")
+        self.assertEqual(reflagged.returncode, 0, marker + ": " + reflagged.stdout + reflagged.stderr)
+        self.assertEqual(json.loads(reflagged.stdout)["pending"], ["BM_KEEP", "BM_REPLACEMENT"], marker)
+        self.assertIn("BM_KEEP, BM_REPLACEMENT", self.cli("complete").stderr, marker)
+        reloaded = self.map_items()
+        self.assertEqual((reloaded["BM_KEEP"]["status"], reloaded["BM_REPLACEMENT"]["status"],
+                          reloaded["BM_REPLACEMENT"].get("revalidationRequired")), ("superseded", "green", True), marker)
+        recheck = self.tdd(slug, "green", "BM_REPLACEMENT", "test_replacement_probe")
+        self.assertEqual(recheck.returncode, 0, marker + ": " + recheck.stdout + recheck.stderr)
+        self.assertNotIn("unresolved Behavior Map items", self.cli("complete").stderr, marker)
+
+    def test_a_drifted_passing_baseline_is_refused(self) -> None:
+        marker = "DRIFT_FALSE_SUCCESS"
+        slug = "drift-baseline"
+        self.flagged_keep(slug, marker, green=False)
+        before = self.document()
+        # The probe passes on the current value and rewrites the reviewable tree.
+        (self.repo / "test_keep_probe.py").write_text(
+            f"from pathlib import Path\nPath({str(self.repo / 'other.py')!r}).write_text('value = 3\\n')\n"
+            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(app.value, 1, 'KEEP_REGRESSED')\n",
+            encoding="utf-8")
+        drifted = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        run = self.document()["runs"][-1]
+        self.assertEqual((run["behaviorId"], run["valid"]), ("BM_KEEP", False), marker)
+        self.assertIn("other.py", str(run.get("bindingError")), marker)
+        self.assertEqual((self.item("BM_KEEP")["status"], self.item("BM_KEEP").get("revalidationRequired")), ("pending", True), marker)
+        self.assertEqual({k: self.document().get(k) for k in ("kind", "activeBehaviorId", "behaviorMap")},
+                         {k: before.get(k) for k in ("kind", "activeBehaviorId", "behaviorMap")}, marker)
+        self.assertEqual(drifted.returncode, 2, marker + ": " + drifted.stdout + drifted.stderr)
+        self.assertNotIn("already-satisfied", drifted.stdout, marker + ": " + drifted.stdout)
+        self.assertIn("other.py", drifted.stderr, marker)
+
+    def test_a_repeated_revalidate_on_a_flagged_red_writes_nothing(self) -> None:
+        marker = "REVALIDATION_REPLAY_REFUSED"
+        slug = "revalidate-red"
+        self.flagged_keep(slug, marker, green=False)
+        self.keep_probe(2)
+        red = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
+        self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        evidence, events = str(self.status()["tddEvidence"]), len(self.events())
+        repeated = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(repeated.returncode, 0, marker + ": " + repeated.stdout + repeated.stderr)
+        self.assertEqual((str(self.status()["tddEvidence"]), len(self.events())), (evidence, events), marker)
+        item = self.item("BM_KEEP")
+        self.assertEqual((item["status"], item.get("revalidationRequired"), "redCommand" in item), ("red", True, True), marker)
+
+    def test_a_repeated_revalidate_on_a_flagged_omission_writes_nothing(self) -> None:
+        marker = "REVALIDATION_REOPENED_OMISSION"
+        slug = "revalidate-omitted"
+        _wid, _, second = self.two_intakes(slug, marker)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        omitted = self.map_update(slug, dispositions=[{"id": "BM_KEEP", "status": "omitted", "evidence": "not reachable here"}])
+        self.assertEqual(omitted.returncode, 0, omitted.stdout + omitted.stderr)
+        settled = self.item("BM_KEEP")
+
+        def lifecycle() -> dict[str, object]:
+            return {k: self.status().get(k) for k in ("tdd", "phase", "tddCycleCount", "implementation", "nextAction")}
+
+        before = lifecycle()
+        evidence, events = str(self.status()["tddEvidence"]), len(self.events())
+        repeated = self.revalidate(slug, "BM_KEEP")
+        self.assertEqual(repeated.returncode, 0, marker + ": " + repeated.stdout + repeated.stderr)
+        self.assertEqual((str(self.status()["tddEvidence"]), len(self.events())), (evidence, events), marker)
+        self.assertEqual(self.item("BM_KEEP"), settled, marker)
+        # An additive reference beside the repeated request unions only.
+        ref = {"type": "finding", "evidenceId": second, "id": "SPEC-1"}
+        unioned = self.revalidate(slug, "BM_KEEP", sourceRefs=[ref])
+        self.assertEqual(unioned.returncode, 0, marker + ": " + unioned.stdout + unioned.stderr)
+        self.assertEqual(self.events()[-1]["kind"], "tdd-annotated", marker)
+        reloaded = self.item("BM_KEEP")
+        self.assertEqual(reloaded, {**settled, "sourceRefs": [*settled.get("sourceRefs", []), ref]}, marker)
+        self.assertEqual(lifecycle(), before, marker)
+        evidence, events = str(self.status()["tddEvidence"]), len(self.events())
+        again = self.revalidate(slug, "BM_KEEP", sourceRefs=[ref])
+        self.assertEqual(again.returncode, 0, marker + ": " + again.stdout + again.stderr)
+        self.assertEqual((str(self.status()["tddEvidence"]), len(self.events())), (evidence, events), marker)
+
+    RECEIPTS = ("verification", "verificationEvidence", "verificationLatestEvidence", "qualityGateEvidence", "codeReview")
+    # One unchanged surface per runner whose outcome the recheck chooses through the
+    # environment: the decision has to tell these apart from the runner's own report.
+    PROBES = {
+        "unittest": (
+            "import os, unittest, app\n"
+            "MODE = os.environ.get('RECHECK_MODE', '')\n"
+            "class KeepProbe(unittest.TestCase):\n"
+            "    @unittest.expectedFailure if MODE in ('expected', 'unexpected') else (lambda case: case)\n"
+            "    def test_value(self):\n"
+            "        if MODE == 'skip': self.skipTest('environment unavailable')\n"
+            "        if MODE == 'early': os._exit(0)\n"
+            "        self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n"
+        ),
+        "pytest": (
+            "import os, warnings, pytest, app\n"
+            "MODE = os.environ.get('RECHECK_MODE', '')\n"
+            "if MODE == 'incomplete':\n"
+            "    import atexit\n"
+            "    atexit.register(lambda: os._exit(2))\n"
+            "if MODE in ('skip', 'incomplete'):\n"
+            "    pytest.skip('environment unavailable', allow_module_level=True)\n"
+            "@pytest.mark.xfail(MODE in ('mixed', 'mixed-xfail'), reason='mixed outcome beside skips')\n"
+            "def test_value():\n"
+            "    if MODE == 'mixed-error': pytest.skip('environment unavailable')\n"
+            "    assert app.value == 2, 'KEEP_REGRESSED'\n"
+            "if MODE.startswith('mixed'):\n"
+            "    def test_other():\n"
+            "        pytest.skip('environment unavailable')\n"
+            "    warnings.warn('mixed outcome beside skips', UserWarning)\n"
+            "if MODE == 'mixed-error':\n"
+            "    @pytest.fixture\n"
+            "    def broken():\n"
+            "        raise RuntimeError('environment unavailable')\n"
+            "    def test_error(broken):\n"
+            "        assert True\n"
+            "if MODE == 'no-tests':\n"
+            "    test_value.__test__ = False\n"
+            "    warnings.warn('Environment has no runnable cases', UserWarning)\n"
+        ),
+    }
+
+    def receipt_recheck(self, slug: str, runner: str, *, phase: str = "green",
+                        mode: str | None = None, value: str | None = None) -> subprocess.CompletedProcess[str]:
+        env = {**self.env, **({"RECHECK_MODE": mode} if mode else {}), **({"KEEP_VALUE": value} if value else {})}
+        target = "test_keep_probe" if runner == "unittest" else "test_keep_probe.py"
+        return self.run_tdd(slug, phase, "BM_KEEP", sys.executable, "-m", runner, target, env=env)
+
+    def receipts(self) -> dict[str, object]:
+        return {key: self.status().get(key) for key in self.RECEIPTS}
+
+    def receipt_pass(self, slug: str, marker: str, runner: str) -> dict[str, object]:
+        """A pass with complete receipts whose BM_KEEP recheck is flagged. The
+        source stays unchanged across the recheck: app.py reads its value from the
+        environment, so only the runner's own result differs."""
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.drive_attack_green(slug, marker)
+        (self.repo / "app.py").write_text(
+            'import os\nvalue = int(os.environ.get("KEEP_VALUE", "2"))\n', encoding="utf-8")
+        (self.repo / "test_keep_probe.py").write_text(self.PROBES[runner], encoding="utf-8")
+        for phase, value in (("red", "1"), ("green", None)):
+            run = self.receipt_recheck(slug, runner, phase=phase, value=value)
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+        self.verify_pass(slug, wid)
+        self.ok("set-phase", "--phase", "code-review", "--status", "not-required", "--findings", "none")
+        before = self.receipts()
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        return before
+
+    def assert_recheck(self, slug: str, marker: str, runner: str, mode: str,
+                       *, keeps: bool, value: str | None = None) -> None:
+        """The recheck is always an invalid attempt with its marker unresolved; only
+        a runner result reporting that nothing executed keeps the pass's receipts."""
+        before = self.receipt_pass(slug, marker, runner)
+        result = self.receipt_recheck(slug, runner, mode=mode, value=value)
+        self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
+        run = self.document()["runs"][-1]
+        self.assertEqual((run["behaviorId"], run["valid"]), ("BM_KEEP", False), marker)
+        self.assertTrue(self.item("BM_KEEP").get("revalidationRequired"), marker)
+        after = self.receipts()
+        if keeps:
+            self.assertEqual(after, before, marker)
+        else:
+            self.assertEqual((after["verification"], after["qualityGateEvidence"]), ("pending", None), marker)
+
+    def test_a_skipped_recheck_keeps_downstream_receipts(self) -> None:
+        marker = "SKIPPED_RECHECK_REPLAYS_DOWNSTREAM"
+        self.assert_recheck("skipped-recheck", marker, "unittest", "skip", keeps=True)
+        # Paired control: a genuine regression through the same surface invalidates.
+        failed = self.receipt_recheck("skipped-recheck", "unittest", value="1")
+        self.assertEqual(failed.returncode, 2, marker + ": " + failed.stdout + failed.stderr)
+        self.assertEqual(self.receipts()["verification"], "pending", marker)
+
+    def test_a_pytest_module_skip_recheck_keeps_receipts(self) -> None:
+        self.assert_recheck("pytest-skip", "SKIP_RECHECK_DISCARDED_RECEIPTS", "pytest", "skip", keeps=True)
+
+    def test_a_zero_collected_warning_recheck_keeps_receipts(self) -> None:
+        self.assert_recheck("warning-recheck", "NO_TESTS_RECHECK_DISCARDED_RECEIPTS", "pytest", "no-tests", keeps=True)
+
+    def test_an_expected_failure_recheck_invalidates_receipts(self) -> None:
+        self.assert_recheck("xfail-recheck", "EXECUTED_XFAIL_KEPT_RECEIPTS", "unittest", "expected", keeps=False, value="3")
+
+    def test_an_unexpected_success_recheck_invalidates_receipts(self) -> None:
+        self.assert_recheck("xpass-recheck", "UNEXPECTED_SUCCESS_KEPT_RECEIPTS", "unittest", "unexpected", keeps=False)
+
+    def test_a_recheck_without_a_runner_result_invalidates_receipts(self) -> None:
+        self.assert_recheck("early-recheck", "MISSING_RESULT_KEPT_RECEIPTS", "unittest", "early", keeps=False)
+
+    def test_a_mixed_outcome_recheck_invalidates_receipts(self) -> None:
+        # An unexpected pass beside a skipped test and a warning: the run finished,
+        # so only the outcome count keeps it out of nonexecution.
+        self.assert_recheck("mixed-recheck", "MIXED_OUTCOME_KEPT_RECEIPTS", "pytest", "mixed", keeps=False)
+
+    def test_an_expected_failure_beside_skips_invalidates_receipts(self) -> None:
+        self.assert_recheck("xfail-mixed-recheck", "XFAIL_BESIDE_SKIPS_KEPT_RECEIPTS", "pytest",
+                            "mixed-xfail", keeps=False, value="3")
+
+    def test_a_setup_error_beside_skips_invalidates_receipts(self) -> None:
+        self.assert_recheck("error-mixed-recheck", "ERROR_BESIDE_SKIPS_KEPT_RECEIPTS", "pytest",
+                            "mixed-error", keeps=False)
+
+    def test_an_unfinished_runner_invalidates_receipts(self) -> None:
+        self.assert_recheck("incomplete-recheck", "INCOMPLETE_RUN_KEPT_RECEIPTS", "pytest", "incomplete", keeps=False)
+
+    def snapshot_writer(self, key: str) -> dict[str, str]:
+        """An environment whose recorder process appends a comment to app.py the
+        first time it spawns a git command carrying `key`: a concurrent writer at
+        the recorder's own process boundary. app.py keeps value 2."""
+        writer = self.tmp / f"writer-{key}"
+        writer.mkdir()
+        (writer / "sitecustomize.py").write_text(
+            "import sys\nfrom pathlib import Path\nstate = {'done': False}\n"
+            "def observe(event, args):\n"
+            f"    if event == 'subprocess.Popen' and not state['done'] and {key!r} in list(args[1]):\n"
+            "        state['done'] = True\n"
+            f"        Path({str(self.repo / 'app.py')!r}).write_text('value = 2\\n# touched {key}\\n')\n"
+            "sys.addaudithook(observe)\n", encoding="utf-8")
+        return {**self.env, "PYTHONPATH": str(writer)}
+
+    def test_a_writer_between_snapshot_captures_cannot_mislabel_the_candidate(self) -> None:
+        marker = "CANDIDATE_TREE_INCOHERENT"
+        slug = "snapshot-writer"
+        self.flagged_keep(slug, marker)
+        # Writer landing as the manifest starts hashing: ahead of both captures, so
+        # the run is valid and its recorded identity is the tree that executed.
+        recheck = self.run_tdd(slug, "green", "BM_KEEP", sys.executable, "-m", "unittest", "test_keep_probe",
+                               env=self.snapshot_writer("hash-object"))
+        run = self.document()["runs"][-1]
+        self.assertEqual((run["behaviorId"], run["valid"], recheck.returncode), ("BM_KEEP", True, 0),
+                         marker + ": " + recheck.stdout + recheck.stderr)
+        self.assertEqual(run.get("candidateTree"), self.status()["activeCandidateTree"], marker + ": " + json.dumps(run, sort_keys=True))
+        self.assertNotIn("revalidationRequired", self.item("BM_KEEP"), marker)
+        # Writer landing strictly between the manifest and the tree capture: the
+        # commit-time comparison retains the run invalid naming the path.
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        between = self.run_tdd(slug, "green", "BM_KEEP", sys.executable, "-m", "unittest", "test_keep_probe",
+                               env=self.snapshot_writer("read-tree"))
+        run = self.document()["runs"][-1]
+        self.assertEqual((run["behaviorId"], run["valid"], between.returncode), ("BM_KEEP", False, 2),
+                         marker + ": " + between.stdout + between.stderr)
+        self.assertIn("app.py", str(run.get("bindingError")), marker)
+        self.assertTrue(self.item("BM_KEEP").get("revalidationRequired"), marker)
+
+    def seed_evidence(self, document: dict[str, object], field: str = "tddEvidence") -> str:
+        """Record evidence the writer itself would refuse, the way an imported or
+        retired ledger already holds it. Fixture-seeded state, never a produced pass."""
+        from hooks.lib._workflow_db import evidence_write, mutation
+        identity = resolve_repo_identity(self.repo)
+        with mutation(identity) as transaction:
+            state = dict(transaction.state)
+            write = evidence_write(str(state["workflowId"]), field.replace("Evidence", ""), document)
+            state[field] = write.evidence_id
+            transaction.append(state, "seeded-evidence", evidence=[write])
+        return write.evidence_id
+
+    def seeded_map(self, slug: str, wid: str, items: object) -> dict[str, object]:
+        return {"schemaVersion": 2, "slug": slug, "workflowId": wid, "kind": "map", "status": "pending",
+                "activeBehaviorId": None, "updatedAt": "2026-01-01T00:00:00+00:00",
+                **({"behaviorMap": items} if items is not None else {})}
+
+    def test_the_recorded_map_authority_survives_each_evidence_shape(self) -> None:
+        marker = "MAP_AUTHORITY_CONFUSED"
+        slug = "map-authority"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        only_tdd = {**self.KEEP, "id": "BM_ONLY_TDD", "behavior": "only the TDD map names this"}
+
+        def omit(identifier: str) -> subprocess.CompletedProcess[str]:
+            return self.map_update(
+                slug, dispositions=[{"id": identifier, "status": "omitted", "evidence": "out of scope here"}])
+
+        # Present and valid: the TDD evidence's own map is authoritative.
+        self.seed_evidence(self.seeded_map(slug, wid, [self.contract(marker), only_tdd]))
+        self.assertEqual(omit("BM_ONLY_TDD").returncode, 0, marker)
+        refused = self.refused_unchanged(marker, lambda: omit("BM_KEEP"))
+        self.assertIn("BM_KEEP", refused.stderr, marker)
+        # Absent: a map-less document resolves the recorded preflight's map.
+        self.seed_evidence(self.seeded_map(slug, wid, None))
+        self.assertEqual(omit("BM_KEEP").returncode, 0, marker)
+        # Present and invalid: never a silent fallback to the preflight's map.
+        self.seed_evidence(self.seeded_map(slug, wid, [{"id": "BM_BROKEN"}]))
+        broken = self.refused_unchanged(marker, lambda: omit("BM_KEEP"))
+        self.assertIn("behaviorMap item", broken.stderr, marker + ": " + broken.stderr)
+
+    def test_an_invalid_recorded_map_blocks_the_checkpoint(self) -> None:
+        marker = "INVALID_MAP_READ_AS_ABSENT"
+        slug = "invalid-map"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.drive_attack_green(slug, marker)
+        self.seed_evidence(self.seeded_map(slug, wid, [{"id": "BM_BROKEN"}]))
+        payload = self.ok("checkpoint", "--phase", "final-review")
+        unreadable = [entry for entry in payload["missing"] if "unreadable" in entry]
+        self.assertTrue(unreadable, marker + ": " + json.dumps(payload["missing"]))
+        self.assertFalse(payload["ready"], marker)
+
+    def test_a_mapless_write_keeps_the_recorded_preflight_ownership(self) -> None:
+        marker = "MAPLESS_WRITE_SKIPPED_OWNERSHIP"
+        slug = "mapless-ownership"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        # An imported ledger: the recorded preflight map owns a finding, and the
+        # TDD evidence the writer receives carries no map of its own.
+        foreign = {**self.contract(marker),
+                   "sourceRefs": [{"type": "finding", "evidenceId": "evidence-" + "0" * 32, "id": "SPEC-1"}]}
+        self.seed_evidence({"schemaVersion": 1, "slug": slug, "workflowId": wid,
+                            "document": {"behaviorMap": [foreign]}}, "preflightEvidence")
+        current = self.seed_evidence(self.seeded_map(slug, wid, None))
+        from hooks.lib.workflow_state import WorkflowError, commit_tdd
+        with self.assertRaises(WorkflowError, msg=marker) as refused:
+            commit_tdd(resolve_repo_identity(self.repo), slug, wid, self.seeded_map(slug, wid, None), None,
+                       expected_evidence_id=current)
+        self.assertIn("sourceRef", str(refused.exception), marker)
+        self.assertEqual(str(self.status()["tddEvidence"]), current, marker)
+
+    def killing_recorder(self) -> str:
+        """A recorder environment whose durable write never lands: once the runner
+        child has run, the process dies inside its open write transaction."""
+        killer = self.tmp / "killer"
+        killer.mkdir()
+        (killer / "sitecustomize.py").write_text(
+            "import os, signal, sys\nstate = {'child': False}\n"
+            "def observe(event, args):\n"
+            "    if event != 'subprocess.Popen':\n        return\n"
+            "    argv = str(args[1])\n"
+            "    if 'unittest' in argv:\n        state['child'] = True\n"
+            "    elif state['child'] and 'hash-object' in argv:\n"
+            "        os.kill(os.getpid(), signal.SIGKILL)\n"
+            "sys.addaudithook(observe)\n", encoding="utf-8")
+        return str(killer)
+
+    def test_an_interrupted_recheck_leaves_the_prior_committed_state(self) -> None:
+        marker = "INTERRUPTED_RECHECK_LEAKED_STATE"
+        slug = "recheck-interrupt"
+        before = self.receipt_pass(slug, marker, "unittest")
+        state, history = self.status(), self.ok_text("history")
+        self.env["PYTHONPATH"] = self.killing_recorder()
+        killed = self.receipt_recheck(slug, "unittest")
+        self.env.pop("PYTHONPATH")
+        self.assertNotEqual(killed.returncode, 0, marker + ": " + killed.stdout + killed.stderr)
+        self.assertEqual(self.status(), state, marker)
+        self.assertEqual(self.ok_text("history"), history, marker)
+        self.assertEqual(self.receipts(), before, marker)
+        # The pass still runs: the killed attempt left nothing behind to repair.
+        retried = self.receipt_recheck(slug, "unittest")
+        self.assertEqual(retried.returncode, 0, marker + ": " + retried.stdout + retried.stderr)
+        self.assertNotIn("revalidationRequired", self.item("BM_KEEP"), marker)
+
+    def test_annotation_is_admitted_where_a_transition_is_refused(self) -> None:
+        marker = "ANNOTATION_ADMISSION_CHANGED"
+        slug = "closed-annotation"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.drive_attack_green(slug, marker)
+        self.keep_probe(2)
+        self.assertEqual(self.tdd(slug, "red", "BM_KEEP", "test_keep_probe").returncode, 0, marker)
+        record_context_forge(self.repo, self.tmp)
+        self.verify_pass(slug, wid)
+        self.close_pass(slug, wid, marker)
+        # A governance edit reopens the completed pass for re-verification only.
+        (self.repo / "skills" / "diagnose").mkdir(parents=True)
+        (self.repo / "skills" / "diagnose" / "SKILL.md").write_text("# diagnose\n", encoding="utf-8")
+        hooked = run_post_edit(self.repo, self.env, "skills/diagnose/SKILL.md", session=None)
+        self.assertEqual(hooked.returncode, 0, marker + ": " + hooked.stdout + hooked.stderr)
+        self.assertTrue(self.status().get("revalidation"), marker)
+        design = str(self.status()["governedDesignEvidence"])
+        unioned = self.map_update(slug, dispositions=[
+            {"id": "BM_KEEP", "sourceRefs": [{"type": "design", "evidenceId": design, "id": "PRES-1"}]}])
+        self.assertEqual(unioned.returncode, 0, marker + ": " + unioned.stdout + unioned.stderr)
+        self.assertEqual(self.events()[-1]["kind"], "tdd-annotated", marker)
+        refused = self.refused_unchanged(marker, lambda: self.map_update(slug, items=[{**self.contract(marker), "id": "BM_LATE"}]))
+        self.assertIn("tdd is closed", refused.stderr, marker)
 
 
 if __name__ == "__main__":
