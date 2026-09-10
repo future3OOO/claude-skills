@@ -7,12 +7,9 @@ from typing import Iterable
 
 JsonObject = dict[str, object]
 INITIAL_STATUSES = frozenset({"pending", "already-satisfied", "omitted"})
-# Proof is GREEN through the item's own RED. `post-edit-passed` is a retired
-# status: evidence recorded under it still loads, but it is unresolved until
-# the item earns GREEN through RED.
+# Map proof is GREEN through its own RED; retired statuses are not admitted.
 PROOF_STATUSES = frozenset({"green"})
-LEGACY_STATUSES = frozenset({"post-edit-passed"})
-RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | LEGACY_STATUSES | {"red", "superseded", "withdrawn"}
+RUNTIME_STATUSES = INITIAL_STATUSES | PROOF_STATUSES | {"red", "superseded", "withdrawn"}
 DISPOSITION_STATUSES = frozenset({"already-satisfied", "omitted"})
 EVIDENCED_STATUSES = DISPOSITION_STATUSES | {"superseded", "withdrawn"}
 NEVER_GREEN = DISPOSITION_STATUSES | {"withdrawn"}
@@ -163,6 +160,7 @@ def validate_items(
     *,
     allow_runtime: bool,
     existing: Iterable[JsonObject] = (),
+    terminals: dict[str, JsonObject] | None = None,
 ) -> list[JsonObject]:
     """Validate and return one canonical Behavior Map item list.
 
@@ -273,8 +271,9 @@ def validate_items(
             raise ValueError(f"behavior {identifier} status {status} cannot carry supersededBy")
         result.append(item)
     whole = [*existing, *result]
-    for entry in whole:
-        terminal_item(whole, entry)
+    resolved = terminal_items(whole)
+    if terminals is not None:
+        terminals.update(resolved)
     if not allow_runtime and any(
         entry["status"] == "pending" for entry in whole
     ) and not any(entry.get("kind") == "contract" for entry in whole):
@@ -296,8 +295,8 @@ def initial_items(value: object) -> list[JsonObject]:
     return validate_items(value, allow_runtime=False)
 
 
-def runtime_items(value: object) -> list[JsonObject]:
-    return validate_items(value, allow_runtime=True)
+def runtime_items(value: object, *, terminals: dict[str, JsonObject] | None = None) -> list[JsonObject]:
+    return validate_items(value, allow_runtime=True, terminals=terminals)
 
 
 def added_items(value: object, existing: list[JsonObject]) -> list[JsonObject]:
@@ -315,22 +314,33 @@ def item(items: list[JsonObject], identifier: str) -> JsonObject:
         raise ValueError(f"behavior id is not in the recorded map: {identifier}") from exc
 
 
-def terminal_item(items: list[JsonObject], entry: JsonObject) -> JsonObject:
-    """The item a superseded entry finally defers to; self-reference, cycles, and missing targets refuse."""
-    seen = {entry["id"]}
-    while entry.get("status") == "superseded":
-        target = entry.get("supersededBy")
-        if target in seen:
-            raise ValueError(
-                f"behavior {entry['id']} supersededBy must name another item without forming a cycle"
-            )
-        seen.add(target)
-        entry = item(items, str(target))
-    if len(seen) > 1 and entry.get("status") in NEVER_GREEN:
-        raise ValueError(
-            f"behavior {entry['id']} is {entry['status']} and can never be GREEN; it cannot replace a superseded item"
-        )
-    return entry
+def terminal_items(items: list[JsonObject]) -> dict[str, JsonObject]:
+    """Resolve the whole replacement graph once, including shared suffixes.
+
+    The result belongs to this map evaluation only; no evidence survives here.
+    """
+    by_id = {str(entry["id"]): entry for entry in items}
+    resolved: dict[str, JsonObject] = {}
+    for origin in items:
+        entry = origin
+        path: set[str] = set()
+        while str(entry["id"]) not in resolved:
+            identifier = str(entry["id"])
+            if identifier in path:
+                raise ValueError(f"behavior {identifier} supersededBy must name another item without forming a cycle")
+            path.add(identifier)
+            if entry.get("status") != "superseded":
+                break
+            target = str(entry.get("supersededBy"))
+            if target not in by_id:
+                raise ValueError(f"behavior id is not in the recorded map: {target}")
+            entry = by_id[target]
+        terminal = resolved.get(str(entry["id"]), entry)
+        if origin.get("status") == "superseded" and terminal.get("status") in NEVER_GREEN:
+            raise ValueError(f"behavior {terminal['id']} is {terminal['status']} and can never be GREEN; "
+                             "it cannot replace a superseded item")
+        resolved.update((identifier, terminal) for identifier in path)
+    return resolved
 
 
 def apply_dispositions(
@@ -364,8 +374,11 @@ def apply_dispositions(
             if refs is None:
                 raise ValueError(f"behavior {identifier} sourceRefs must be an array")
             existing = mapped.get("sourceRefs", [])
-            if refs:
-                mapped["sourceRefs"] = [*existing, *(ref for ref in refs if ref not in existing)]
+            additions = [ref for ref in refs if ref not in existing]
+            if additions and mapped.get("status") == "withdrawn":
+                raise ValueError(f"behavior {identifier} is withdrawn; it cannot acquire sourceRefs")
+            if additions:
+                mapped["sourceRefs"] = [*existing, *additions]
         revalidate = "revalidate" in raw
         status = _text(raw.get("status"))
         if revalidate and (raw["revalidate"] is not True or "status" in raw):
@@ -443,16 +456,19 @@ def producer_proved(entry: JsonObject) -> bool:
     )
 
 
-def unresolved(items: list[JsonObject]) -> list[str]:
-    """Closure: pending, red, and superseded whose terminal replacement is not proved."""
+def unresolved(
+    items: list[JsonObject], *, terminals: dict[str, JsonObject] | None = None,
+) -> list[str]:
+    if terminals is None:
+        terminals = terminal_items(items)
     return [
         str(entry["id"])
         for entry in items
-        if entry.get("status") in {"pending", "red"} | LEGACY_STATUSES
+        if entry.get("status") in {"pending", "red"}
         or (entry.get("revalidationRequired") and entry.get("status") not in {"omitted", "superseded"})
         or (entry.get("status") == "superseded" and not (
-            terminal_item(items, entry).get("status") == "green"
-            and producer_proved(terminal_item(items, entry))
+            terminals[str(entry["id"])].get("status") == "green"
+            and producer_proved(terminals[str(entry["id"])])
         ))
     ]
 

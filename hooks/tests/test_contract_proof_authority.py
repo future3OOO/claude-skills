@@ -83,6 +83,26 @@ class ContractProofAuthorityTests(unittest.TestCase):
         self.assertEqual(state["preflight"], "pending", marker)
         self.assertIsNone(state.get("preflightEvidence"), marker)
 
+    def test_shared_supersession_closure_reuses_only_current_terminal_proof(self) -> None:
+        items = [
+            {**contract(identifier), "status": "superseded", "supersededFrom": "green",
+             "supersededBy": target, "evidence": "same promise, sharper operation"}
+            for identifier, target in (("BM_A", "BM_B"), ("BM_B", "BM_C"), ("BM_D", "BM_B"))
+        ] + [{**preservation("BM_C"), "status": "green"}]
+        terminals = {}
+        loaded = behavior_map.runtime_items(items, terminals=terminals)
+        self.assertEqual({key: value["id"] for key, value in terminals.items()},
+                         {key: "BM_C" for key in ("BM_A", "BM_B", "BM_C", "BM_D")})
+        self.assertEqual(behavior_map.unresolved(loaded, terminals=terminals), [])
+        items[-1]["revalidationRequired"] = True
+        self.assertEqual(behavior_map.unresolved(behavior_map.runtime_items(items)),
+                         ["BM_A", "BM_B", "BM_D", "BM_C"])
+        for target in ("BM_A", "BM_MISSING"):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                behavior_map.runtime_items([*items[:-1], {
+                    **items[0], "id": "BM_C", "supersededBy": target,
+                }])
+
     def test_preflight_refuses_contract_dispositions_and_kindless_items(self) -> None:
         marker = "CONTRACT_PROSE_DISPOSITION_RECORDED_AT_PREFLIGHT"
         slug, workflow_id = self.begin("preflight-contract")

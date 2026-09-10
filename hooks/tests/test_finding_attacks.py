@@ -924,6 +924,153 @@ class MapCorrectionAttacks(AttackHarness):
             items = (document.get("document") or {}).get("behaviorMap")
         return {str(entry["id"]): entry for entry in items}
 
+    def test_withdrawn_items_cannot_acquire_references_even_in_mixed_updates(self) -> None:
+        from hooks.lib import behavior_map
+
+        slug = "withdrawn-reference"
+        wid = self.open_pass(slug, [self.contract("VALUE_NOT_TWO"), self.EXTRA, self.KEEP_OMITTED])
+        self.assertEqual(self.withdraw(slug, "BM_EXTRA").returncode, 0)
+        intake = self.behavioral_intake(slug, wid, "another value guarantee")
+        for kind in ("finding", "design"):
+            ref = {"type": kind, "evidenceId": intake, "id": "SPEC-1"}
+            update = {"id": "BM_EXTRA", "sourceRefs": [ref]}
+            items = list(self.map_items().values())
+            original = behavior_map.clone(items)
+            with self.subTest(kind=kind):
+                with self.assertRaisesRegex(ValueError, "withdrawn"):
+                    behavior_map.apply_dispositions(items, [update])
+                self.assertEqual(items, original, "refusal must precede ownership mutation")
+                self.refused_unchanged("WITHDRAWN_REFERENCE_ACCEPTED", lambda: self.map_update(
+                    slug, dispositions=[{"id": "BM_KEEP", "revalidate": True,
+                                         "evidence": "affected guarantee"}, update]))
+        # A flag is idempotent, but legitimate new ownership must still union.
+        self.assertEqual(self.map_update(slug, dispositions=[{
+            "id": "BM_KEEP", "revalidate": True, "evidence": "affected guarantee",
+        }]).returncode, 0)
+        update = {"id": "BM_KEEP", "revalidate": True, "evidence": "same guarantee",
+                  "sourceRefs": [{"type": "finding", "evidenceId": intake, "id": "SPEC-1"}]}
+        self.assertEqual(self.map_update(slug, dispositions=[update]).returncode, 0)
+        self.assertEqual(self.map_items()["BM_KEEP"]["sourceRefs"], update["sourceRefs"])
+        before, history = self.status(), self.ok_text("history")
+        self.assertEqual(self.map_update(slug, dispositions=[update]).returncode, 0)
+        self.assertEqual(self.status(), before)
+        self.assertEqual(self.ok_text("history"), history)
+
+    def test_skipped_recheck_preserves_receipts_but_product_regression_invalidates(self) -> None:
+        from hooks.tests.test_workflow_hooks import HookHarness
+
+        slug = "recheck-result"
+        keep = {**self.contract("VALUE_NOT_TWO"), "kind": "preservation", "id": "BM_KEEP"}
+        wid = self.open_pass(slug, [self.contract("VALUE_NOT_TWO"), keep])
+        self.drive_attack_green(slug, "VALUE_NOT_TWO")
+        (self.repo / "test_keep_probe.py").write_text(
+            "import app, os, unittest\nclass T(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            "        mode = os.environ.get('RECHECK_MODE')\n"
+            "        if mode == 'skip': self.skipTest('unavailable environment')\n"
+            "        self.assertEqual(app.value, 2, 'VALUE_NOT_TWO')\n",
+            encoding="utf-8")
+        for phase, value in (("red", 1), ("green", 2)):
+            (self.repo / "app.py").write_text(
+                f"import os\nvalue = int(os.environ.get('RECHECK_VALUE', '{value}'))\n", encoding="utf-8")
+            result = self.tdd(slug, phase, "BM_KEEP", "test_keep_probe")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        HookHarness.record_gate_evidence(self, slug, wid)
+        self.ok("set-phase", "--phase", "implementation", "--status", "passed")
+        HookHarness.run_verification(self, slug)
+        self.ok("set-phase", "--phase", "code-review", "--status", "not-required", "--findings", "none")
+        before = self.status()
+        identity = resolve_repo_identity(self.repo)
+        candidate = _active_candidate_tree(identity)
+        self.assertEqual(self.map_update(slug, dispositions=[{
+            "id": "BM_KEEP", "revalidate": True, "evidence": "affected reader",
+        }]).returncode, 0)
+        flagged = self.status()
+        historical_id = str(flagged["tddEvidence"])
+        historical = self.ok("evidence", "--evidence-id", historical_id)
+        for mode in ("skip", "regression"):
+            self.env["RECHECK_MODE"] = mode
+            if mode == "regression":
+                self.env["RECHECK_VALUE"] = "3"  # Same source, actual public reader now returns the wrong value.
+            result = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            after = self.status()
+            document = self.ok("evidence", "--evidence-id", str(after["tddEvidence"]))["document"]
+            run = document["runs"][-1]
+            self.assertFalse(run["valid"])
+            self.assertEqual(run["candidateTree"], candidate)
+            self.assertEqual(run["behaviorId"], "BM_KEEP")
+            self.assertTrue(self.map_items()["BM_KEEP"]["revalidationRequired"])
+            self.assertEqual(after["tddCycleCount"], before["tddCycleCount"])
+            if mode == "skip":
+                ignored = {"tddEvidence", "updatedAt"}
+                self.assertEqual({k: v for k, v in after.items() if k not in ignored},
+                                 {k: v for k, v in flagged.items() if k not in ignored})
+            else:
+                self.assertEqual(after["verification"], "pending", "REGRESSION_REUSED_VERIFICATION")
+                self.assertEqual(after["tdd"], "in-progress")
+                self.assertEqual(after["codeReview"]["status"], "pending")
+                self.assertIsNone(after.get("qualityGateEvidence"))
+        self.env.pop("RECHECK_MODE")
+        self.env.pop("RECHECK_VALUE")
+        self.assertEqual(self.tdd(slug, "green", "BM_KEEP", "test_keep_probe").returncode, 0)
+        self.assertEqual(self.status()["tdd"], "passed")
+        self.assertEqual(self.status()["verification"], "pending")
+        self.assertNotIn("revalidationRequired", self.map_items()["BM_KEEP"])
+        self.assertEqual(self.ok("evidence", "--evidence-id", historical_id), historical)
+        self.assertEqual(_active_candidate_tree(identity), candidate)
+
+    def test_annotation_keeps_its_admission_without_waiving_transition_prerequisites(self) -> None:
+        from hooks.lib.workflow_state import (
+            WorkflowError, annotate_tdd_evidence, commit_tdd, pause,
+        )
+
+        slug = "annotation-admission"
+        wid = self.begin(slug)  # No preflight: transition must refuse, annotation may record.
+        identity = resolve_repo_identity(self.repo)
+        pause(identity, slug, wid, "await preflight")
+        document = {"schemaVersion": 1, "workflowId": wid,
+                    "behaviorMap": [self.contract("VALUE_NOT_TWO")], "runs": []}
+        before = self.status()
+        with self.assertRaises(WorkflowError):
+            commit_tdd(identity, slug, wid, document, "in-progress")
+        self.assertEqual(self.status(), before)
+        _, eid = annotate_tdd_evidence(identity, slug, wid, document)
+        after = self.status()
+        ignored = {"tddEvidence", "updatedAt", "nextAction"}
+        self.assertEqual({k: v for k, v in after.items() if k not in ignored},
+                         {k: v for k, v in before.items() if k not in ignored})
+        self.assertEqual(after["nextAction"], "preflight")
+        history = self.ok_text("history")
+        for supplied_wid, expected in (("stale-instance", eid), (wid, None)):
+            with self.subTest(workflow=supplied_wid, evidence=expected):
+                with self.assertRaises(WorkflowError):
+                    annotate_tdd_evidence(identity, slug, supplied_wid, document,
+                                          expected_evidence_id=expected)
+                self.assertEqual(self.status(), after)
+                self.assertEqual(self.ok_text("history"), history)
+        self.refused_unchanged("ANNOTATION_ADMITTED_EXECUTION", lambda: self.tdd(
+            slug, "red", "BM_ATTACK", "test_nonexistent"))
+
+    def test_retired_map_state_is_refused_without_rewriting_history(self) -> None:
+        from hooks.lib import behavior_map
+        from hooks.lib.workflow_state import WorkflowError, annotate_tdd_evidence
+
+        slug = "retired-map-state"
+        wid = self.open_pass(slug, [self.contract("VALUE_NOT_TWO")])
+        self.drive_attack_green(slug, "VALUE_NOT_TWO")
+        before, history = self.status(), self.ok_text("history")
+        eid = str(before["tddEvidence"])
+        original = self.ok("evidence", "--evidence-id", eid)["document"]
+        document = behavior_map.clone([original])[0]
+        document["behaviorMap"][0]["status"] = "post-edit-passed"
+        with self.assertRaises((ValueError, WorkflowError)):
+            annotate_tdd_evidence(resolve_repo_identity(self.repo), slug, wid, document,
+                                  expected_evidence_id=eid)
+        self.assertEqual(self.status(), before)
+        self.assertEqual(self.ok_text("history"), history)
+        self.assertEqual(self.ok("evidence", "--evidence-id", eid)["document"], original)
+
     def test_reassessment_preserves_interleaved_cycles_and_reference_identity(self) -> None:
         slug, marker = "interleaved-reassessment", "VALUE_NOT_TWO"
         foreign_wid = self.begin("foreign-owner")

@@ -223,21 +223,25 @@ def _write_candidate_tree(identity: RepoIdentity) -> str:
     handle = tempfile.NamedTemporaryFile(prefix="workflow-candidate-index-", delete=False)
     handle.close()
     env = {"GIT_INDEX_FILE": handle.name}
+    step = "read-tree"
     try:
         try:
-            _git(identity, "rev-parse", "--verify", "HEAD^{commit}")
-            seed = ("read-tree", "HEAD")
+            _git(identity, "read-tree", "HEAD", env=env)
         except RuntimeError:
-            seed = ("read-tree", "--empty")
-        for args in (seed, ("add", "-A", ".")):
+            # Normal HEAD needs no existence probe. Preserve the empty seed
+            # fallback for unresolvable HEAD; a valid HEAD's seed failure refuses.
             try:
-                _git(identity, *args, env=env)
-            except RuntimeError as exc:
-                raise OSError(f"candidate capture failed at git {args[0]}: {exc}") from exc
-        try:
-            return _git(identity, "write-tree", env=env).decode("utf-8").strip()
-        except RuntimeError as exc:
-            raise OSError(f"candidate capture failed at git write-tree: {exc}") from exc
+                _git(identity, "rev-parse", "--verify", "HEAD^{commit}")
+            except RuntimeError:
+                _git(identity, "read-tree", "--empty", env=env)
+            else:
+                raise
+        step = "add"
+        _git(identity, "add", "-A", ".", env=env)
+        step = "write-tree"
+        return _git(identity, "write-tree", env=env).decode("utf-8").strip()
+    except RuntimeError as exc:
+        raise OSError(f"candidate capture failed at git {step}: {exc}") from exc
     finally:
         Path(handle.name).unlink(missing_ok=True)
 

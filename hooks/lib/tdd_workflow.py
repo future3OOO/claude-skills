@@ -80,12 +80,12 @@ def _map_parser() -> argparse.ArgumentParser:
 def _evidence_pair(
     identity: RepoIdentity, state: JsonObject
 ) -> tuple[JsonObject | None, JsonObject | None]:
-    """The recorded TDD and preflight documents the map predicates read."""
-    return tuple(
-        evidence_document(identity, state.get(field))
-        if isinstance(state.get(field), str) else None
-        for field in ("tddEvidence", "preflightEvidence")
-    )
+    """Read preflight only when the current TDD document has no map."""
+    tdd_id, preflight_id = state.get("tddEvidence"), state.get("preflightEvidence")
+    tdd = evidence_document(identity, tdd_id if isinstance(tdd_id, str) else None)
+    preflight = (None if isinstance(tdd, dict) and tdd.get("behaviorMap") is not None
+                 else evidence_document(identity, preflight_id if isinstance(preflight_id, str) else None))
+    return tdd, preflight
 
 
 def current_map(
@@ -299,8 +299,10 @@ _BASELINE_STAMP = behavior_map.BASELINE_STAMP
 
 def _pass_proof(
     surface: JsonObject, output: str, *, baseline: bool
-) -> tuple[dict[str, object] | None, str]:
-    """A pass is the surface passing, not the command exiting 0: a runner's report of
+) -> tuple[dict[str, object] | None, str, bool]:
+    """The final result positively identifies no execution, not an unknown failure.
+
+    A pass is the surface passing, not the command exiting 0: a runner's report of
     an executed passing test; a non-runner exit 0 closes its own RED, never a baseline."""
     runner = surface.get("runner")
     if runner not in {"unittest", "pytest"}:
@@ -308,8 +310,8 @@ def _pass_proof(
             return None, (
                 "a baseline needs the runner's own report of an executed passing "
                 "test; a non-runner operation exiting 0 is not one"
-            )
-        return {"quality": "operation-succeeded", "runner": str(runner)}, ""
+            ), False
+        return {"quality": "operation-succeeded", "runner": str(runner)}, "", False
     output = tdd_surface.ANSI_ESCAPE.sub("", output)
     if runner == "unittest":
         # unittest exits 0 with skipped and expected-failure tests inside its
@@ -320,6 +322,11 @@ def _pass_proof(
         runs = list(tdd_surface.UNITTEST_RAN.finditer(output))
         executed = int(runs[-1].group(1)) if runs else 0
         result = re.search(r"(?m)^OK(?: \((.*)\))?$", output[runs[-1].end():]) if runs else None
+        skipped = re.fullmatch(r"skipped=(\d+)", result.group(1) or "") if result else None
+        nonexecuting = bool(result and (
+            (executed == 0 and not result.group(1))
+            or (skipped and int(skipped.group(1)) == executed)
+        ))
         executed -= sum(
             int(count)
             for count in re.findall(r"(?:skipped|expected failures)=(\d+)", result.group(1) or "")
@@ -330,9 +337,13 @@ def _pass_proof(
         summaries = tdd_surface.PYTEST_SUMMARY.findall(output)
         passed = re.search(r"(?<!\d)(\d+) passed\b", summaries[-1]) if summaries else None
         executed = int(passed.group(1)) if passed else 0
+        nonexecuting = bool(summaries and re.fullmatch(
+            r"no tests ran|\d+ (?:skipped|deselected)(?:, \d+ (?:skipped|deselected|warnings?))*",
+            summaries[-1],
+        ))
     if executed < 1:
-        return None, f"{runner} did not report an executed passing test"
-    return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, ""
+        return None, f"{runner} did not report an executed passing test", nonexecuting
+    return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, "", False
 
 
 def _tree_binding(identity: RepoIdentity, state: JsonObject) -> dict[str, object]:
@@ -522,6 +533,7 @@ def _run_tdd(values: list[str]) -> int:
     proof_error = ""
     red_ok = False
     baseline = False
+    nonexecuting = False
     if phase == "red" and not timed_out and exit_code != 0:
         if legacy:
             red_ok = bool(expected) and expected in output
@@ -532,12 +544,14 @@ def _run_tdd(values: list[str]) -> int:
         # Producer-backed baseline: a pending surface passing is already
         # satisfied, opens nothing, counts no cycle. A dirty tree does not refuse
         # it; the run entry records what had changed, and the reviews weigh it.
-        proof, proof_error = _pass_proof(surface, output, baseline=True)
+        proof, proof_error, nonexecuting = _pass_proof(surface, output, baseline=True)
         baseline = proof is not None
-    elif phase == "green" and not legacy and not timed_out and exit_code == 0:
+    elif phase == "green" and not legacy and not timed_out and (
+        exit_code == 0 or (surface.get("runner") == "pytest" and exit_code == 5)
+    ):
         # A GREEN is the surface passing, not the command exiting 0: a skipped or
         # incomplete run reports no passing test and proves nothing.
-        proof, proof_error = _pass_proof(surface, output, baseline=False)
+        proof, proof_error, nonexecuting = _pass_proof(surface, output, baseline=False)
     valid = (
         red_ok
         if phase == "red"
@@ -639,9 +653,11 @@ def _run_tdd(values: list[str]) -> int:
             next_active = args.behavior_id if status == "red" else None
             reassessment_pending = None
             action = "reopen" if phase == "green" else None
-        if reassessment and (baseline or (phase == "green" and status == "green")):
-            # Re-execution refreshes evidence, not an already-completed chain.
-            # A genuine reopened RED still completes its ordinary cycle below.
+        if reassessment and (baseline or (
+            phase == "green" and status == "green" and (valid or nonexecuting)
+        )):
+            # No execution leaves the obligation unresolved, not contradicted.
+            # A regression or ambiguous failure keeps ordinary invalidation.
             action = ("passed" if (valid or baseline) and not behavior_map.unresolved(updated)
                       and state.get("tdd") not in {"passed", "not-required"} else None)
         if isinstance(current, dict) and (

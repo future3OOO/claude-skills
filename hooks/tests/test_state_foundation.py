@@ -69,6 +69,42 @@ class StateFoundationTests(unittest.TestCase):
         self.assertEqual(resolve_repo_identity(subdirectory), expected)
         self.assertEqual(resolve_repo_identity(link), expected)
 
+    def test_candidate_capture_preserves_the_real_index_and_raw_manifest(self) -> None:
+        from hooks.lib.state_store import _active_candidate_tree, tree_manifest
+
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q")
+        identity = resolve_repo_identity(repo)
+        app, index = repo / "app.py", repo / ".git/index"
+        app.write_text("value = 1\n", encoding="utf-8")
+        unborn = _active_candidate_tree(identity)
+        self.assertFalse(index.exists(), "capture created the real index")
+        self.assertIn("app.py", git(repo, "ls-tree", unborn))
+        git(repo, "config", "user.email", "test@example.invalid")
+        git(repo, "config", "user.name", "Workflow Harness")
+        (repo / ".gitattributes").write_text("app.py text\n", encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "-qm", "base")
+        original_index = index.read_bytes()
+        app.write_bytes(b"value = 2\n")
+        candidate, raw = _active_candidate_tree(identity), tree_manifest(identity)
+        self.assertEqual(git(repo, "show", f"{candidate}:app.py"), "value = 2")
+        self.assertEqual(git(repo, "show", ":app.py"), "value = 1")
+        app.write_bytes(b"value = 2\r\n")
+        self.assertEqual(_active_candidate_tree(identity), candidate, "Git text filtering changed")
+        self.assertNotEqual(tree_manifest(identity), raw, "raw drift disappeared behind Git filtering")
+        app.chmod(app.stat().st_mode | stat.S_IXUSR)
+        self.assertNotEqual(_active_candidate_tree(identity), candidate)
+        self.assertTrue(tree_manifest(identity)["app.py"].startswith("100755 "))
+        self.assertEqual(index.read_bytes(), original_index)
+        # An existing HEAD whose tree cannot be read is not an unborn repository.
+        tree = git(repo, "rev-parse", "HEAD^{tree}")
+        (repo / ".git/objects" / tree[:2] / tree[2:]).unlink()
+        with self.assertRaisesRegex(OSError, "read-tree"):
+            _active_candidate_tree(identity)
+        self.assertEqual(index.read_bytes(), original_index)
+
     def test_atomic_state_is_private_and_round_trips(self) -> None:
         identity = resolve_repo_identity(self.make_repo())
         path = repo_state_dir(identity) / "record.json"
