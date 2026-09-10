@@ -2280,8 +2280,10 @@ class ObligationDigestTests(HookHarness):
         counts = json.loads(probe_out.read_text(encoding="utf-8").splitlines()[-1])
         limits = {"digest_bytes": 2048, "sqlite_connect": 4, "child_processes": 3}
         observed = {"digest_bytes": size, **counts}
-        self.assertEqual({k: counts[k] for k in ("sqlite_connect", "child_processes")},
-                         {"sqlite_connect": 4, "child_processes": 3}, marker + ": " + json.dumps(counts))
+        # Resource consumption is bounded above: the reminder may cost less than
+        # the declared limit, never more, and the receipt records what it cost.
+        for name in ("sqlite_connect", "child_processes"):
+            self.assertLessEqual(counts[name], limits[name], marker + ": " + json.dumps(counts))
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, env=self.env, text=True,
                               stdout=subprocess.PIPE, check=True).stdout.strip()
         print(json.dumps({"resource": "PreToolUse obligation digest", "scale": f"{len(items)} items, one {len(long_row.encode())}-byte row",

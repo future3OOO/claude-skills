@@ -466,13 +466,18 @@ def _validate_tdd_document(transaction: LedgerMutation, state: JsonObject, docum
     the admit-pending window, so a later update cannot silently un-own its attack."""
     items = _map_items(document)
     if items is None:
+        # A write carrying no map of its own is not an unowned one: the recorded
+        # preflight still owns this pass's findings.
+        items = _map_items(transaction.evidence(state.get("preflightEvidence")))
+    if items is None:
         return
-    _linked_finding_items(transaction, state, items)
+    linked = _linked_finding_items(transaction, state, items)
     for entry in state.get("findingStates", []) if isinstance(state.get("findingStates"), list) else []:
         if isinstance(entry, dict) and entry.get("status") in {"fixed", "report-only"} and entry.get("kind") == "behavioral":
+            key = (str(entry.get("intakeEvidenceId")), str(entry.get("findingId")))
             _behavioral_finding_closure(
-                transaction, state, str(entry.get("intakeEvidenceId")), str(entry.get("findingId")),
-                items=items, admit_pending=True, require_green=entry.get("status") == "fixed",
+                transaction, state, *key, items=items, linked=linked.get(key, {}),
+                admit_pending=True, require_green=entry.get("status") == "fixed",
             )
 
 
@@ -1164,6 +1169,7 @@ def _behavioral_finding_closure(
     transaction: LedgerMutation, state: JsonObject, intake_id: str, finding_id: str,
     *,
     items: list[JsonObject] | None = None,
+    linked: dict[str, JsonObject] | None = None,
     admit_pending: bool = False,
     require_green: bool = True,
 ) -> None:
@@ -1184,16 +1190,17 @@ def _behavioral_finding_closure(
         items = behavior_map.recorded_map(
             transaction.evidence(state.get("tddEvidence")), transaction.evidence(state.get("preflightEvidence")),
         ) or []
-    linked = {
-        str(entry["id"]): entry for entry in items
-        if any(
-            isinstance(ref, dict)
-            and ref.get("type") == "finding"
-            and ref.get("evidenceId") == intake_id
-            and ref.get("id") == finding_id
-            for ref in entry.get("sourceRefs", [])
-        )
-    }
+    if linked is None:
+        linked = {
+            str(entry["id"]): entry for entry in items
+            if any(
+                isinstance(ref, dict)
+                and ref.get("type") == "finding"
+                and ref.get("evidenceId") == intake_id
+                and ref.get("id") == finding_id
+                for ref in entry.get("sourceRefs", [])
+            )
+        }
     if not linked:
         raise WorkflowError(
             f"behavioral fixed for {finding_id} requires an owning Behavior Map "
@@ -1499,18 +1506,6 @@ def completion_missing(state: JsonObject) -> list[str]:
 CHECKPOINT_PHASES = {"preflight-advice", "final-review"}
 
 
-def _recorded_items(identity: RepoIdentity, state: JsonObject) -> list[JsonObject]:
-    """The recorded Behavior Map, or nothing when the evidence is unreadable."""
-    tdd_id, preflight_id = state.get("tddEvidence"), state.get("preflightEvidence")
-    try:
-        return behavior_map.recorded_map(
-            evidence_document(identity, tdd_id if isinstance(tdd_id, str) else None),
-            evidence_document(identity, preflight_id if isinstance(preflight_id, str) else None),
-        ) or []
-    except ValueError:
-        return []
-
-
 def _late_contract_items(items: list[JsonObject]) -> list[JsonObject]:
     """Contract items whose RED or baseline ran with production already changed:
     the order of proof the recorder recorded instead of refusing."""
@@ -1661,7 +1656,17 @@ def checkpoint(identity: RepoIdentity, phase: str) -> JsonObject:
             )
         except ValueError as exc:
             missing.append(str(exc))
-    items = _recorded_items(identity, state)
+    tdd_id, preflight_id = state.get("tddEvidence"), state.get("preflightEvidence")
+    items: list[JsonObject] = []
+    try:
+        items = behavior_map.recorded_map(
+            evidence_document(identity, tdd_id if isinstance(tdd_id, str) else None),
+            evidence_document(identity, preflight_id if isinstance(preflight_id, str) else None),
+        ) or []
+    except ValueError as exc:
+        # A present invalid map is not an absent one: it closes nothing, and this
+        # checkpoint can never read ready while it cannot be read.
+        missing.append(f"recorded Behavior Map is unreadable: {exc}")
     if phase == "final-review":
         missing.extend(() if state.get("nextAction") in ("appeal-final-review", "re-consult-final-review") else correction_blockers(state, items))
         if drift := _binding_drift(identity, state, "review"):

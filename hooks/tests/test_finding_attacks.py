@@ -230,11 +230,18 @@ class AttackHarness(unittest.TestCase):
             items = (document.get("document") or {}).get("behaviorMap")
         return {str(entry["id"]): entry for entry in items}
 
-    def keep_probe(self, value: int) -> None:
+    def keep_probe(self, value: int, prelude: str = "") -> None:
+        """BM_KEEP's probe, optionally preceded by whatever the attack needs the
+        run itself to do before it reaches the mapped assertion."""
         (self.repo / "test_keep_probe.py").write_text(
-            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
+            prelude + "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
             f"    def test_value(self): self.assertEqual(app.value, {value}, 'KEEP_REGRESSED')\n",
             encoding="utf-8")
+
+    def attack_probe(self, marker: str) -> None:
+        (self.repo / "test_attack_probe.py").write_text(
+            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
+            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
 
     def events(self) -> list[dict[str, object]]:
         return json.loads(self.ok_text("history"))["events"]
@@ -1453,6 +1460,17 @@ class ReassessmentAttacks(AttackHarness):
     def item(self, identifier: str) -> dict[str, object]:
         return self.map_items()[identifier]
 
+    def flagged_keep(self, slug: str, marker: str, *, green: bool = True) -> str:
+        """The pass every reassessment attack starts from: BM_KEEP flagged for
+        re-execution, proved GREEN through its own RED first unless the attack
+        needs it still pending."""
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        if green:
+            self.drive_attack_green(slug, marker)
+            self.keep_green(slug)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        return wid
+
     def keep_green(self, slug: str) -> None:
         """BM_KEEP proved GREEN through its own RED: the probe expects app.value 2."""
         self.keep_probe(2)
@@ -1503,8 +1521,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_flagged_pending_refuses_prose_settlement(self) -> None:
         marker = "FLAGGED_PROSE_SETTLED"
         slug = "flagged-prose"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker, green=False)
         refused = self.refused_unchanged(marker, lambda: self.map_update(slug, dispositions=[
             {"id": "BM_KEEP", "status": "already-satisfied", "evidence": "still passes by inspection"}]))
         self.assertIn("tdd --phase red", refused.stderr, marker)
@@ -1512,8 +1529,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_flagged_baseline_clears_the_marker_without_a_cycle(self) -> None:
         marker = "FLAGGED_BASELINE_NOT_CLEARED"
         slug = "flagged-baseline"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker, green=False)
         self.keep_probe(1)
         baseline = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
         self.assertEqual(baseline.returncode, 0, marker + ": " + baseline.stdout + baseline.stderr)
@@ -1571,10 +1587,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_recheck_with_a_changed_surface_is_refused_before_execution(self) -> None:
         marker = "RECHECK_SURFACE_UNBOUND"
         slug = "recheck-surface"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.drive_attack_green(slug, marker)
-        self.keep_green(slug)
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker)
         sentinel = self.tmp / "changed-surface-ran"
         (self.repo / "test_keep_other.py").write_text(
             f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n"
@@ -1589,10 +1602,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_failed_recheck_is_retained_and_retried_after_repair(self) -> None:
         marker = "FAILED_RECHECK_CLEARED"
         slug = "recheck-failure"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.drive_attack_green(slug, marker)
-        self.keep_green(slug)
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker)
         (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
         failed = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
         self.assertEqual(failed.returncode, 2, marker + ": " + failed.stdout + failed.stderr)
@@ -1635,10 +1645,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_stale_recheck_is_refused_by_the_evidence_compare_and_swap(self) -> None:
         marker = "STALE_RECHECK_RECORDED"
         slug = "recheck-cas"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.drive_attack_green(slug, marker)
-        self.keep_green(slug)
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker)
         wid = str(self.status()["workflowId"])
         design = str(self.status()["governedDesignEvidence"])
         update = self.json_file("child-union.json", {"reassessment": "child update", "dispositions": [
@@ -1817,9 +1824,7 @@ class ReassessmentAttacks(AttackHarness):
         marker = "REFERENCE_UNION_TRANSITIONED"
         slug = "reference-union"
         wid, first, second = self.two_intakes(slug, marker)
-        (self.repo / "test_attack_probe.py").write_text(
-            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
-            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
+        self.attack_probe(marker)
         self.assertEqual(self.tdd(slug, "red", "BM_ATTACK", "test_attack_probe").returncode, 0, marker)
         before = self.status()
         for evidence_id in (first, second):
@@ -1903,47 +1908,51 @@ class ReassessmentAttacks(AttackHarness):
 
     def test_an_open_cycle_keeps_its_binding_beside_updates_and_baselines(self) -> None:
         marker = "ACTIVE_CYCLE_BINDING_LOST"
+        changed = "CHANGED_RED_EXECUTED"
         slug = "cycle-binding"
         self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        (self.repo / "test_attack_probe.py").write_text(
-            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
-            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
+        self.attack_probe(marker)
         red = self.tdd(slug, "red", "BM_ATTACK", "test_attack_probe")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
-        opened = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]
+        opened = self.document()
+        recorded = self.item("BM_ATTACK")["redCommand"]
+
+        def binding(document: dict[str, object]) -> dict[str, object]:
+            return {key: document.get(key) for key in ("kind", "activeBehaviorId", "command", "surface")}
+
+        # A map update beside the open RED must not loosen the item's own binding.
         added = self.map_update(slug, items=[{**self.KEEP, "id": "BM_MORE", "behavior": "another guarantee"}])
         self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
         self.keep_probe(1)
         baseline = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
         self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
-        document = self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]
-        self.assertEqual({k: document.get(k) for k in ("kind", "activeBehaviorId", "command", "surface")},
-                         {k: opened.get(k) for k in ("kind", "activeBehaviorId", "command", "surface")}, marker)
-        self.assertEqual([run["behaviorId"] for run in document["runs"]], ["BM_ATTACK", "BM_KEEP"], marker)
-        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
-        green = self.tdd(slug, "green", "BM_ATTACK", "test_attack_probe")
-        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
-
-    def test_a_changed_red_never_executes_for_an_open_item(self) -> None:
-        marker = "CHANGED_RED_EXECUTED"
-        slug = "changed-red"
-        self.open_pass(slug, [self.contract(marker)])
-        (self.repo / "test_attack_probe.py").write_text(
-            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
-            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
-        self.assertEqual(self.tdd(slug, "red", "BM_ATTACK", "test_attack_probe").returncode, 0, marker)
-        recorded = self.item("BM_ATTACK")["redCommand"]
-        # A map update beside the open RED must not loosen the item's own binding.
-        added = self.map_update(slug, items=[{**self.KEEP, "id": "BM_MORE", "behavior": "another guarantee"}])
-        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.assertEqual(binding(self.document()), binding(opened), marker)
+        self.assertEqual([run["behaviorId"] for run in self.document()["runs"]], ["BM_ATTACK", "BM_KEEP"], marker)
+        # A recheck for another item that the runner reports as nothing executed is
+        # audited beside A's cycle, and neither owns nor replaces A's binding.
+        (self.repo / "app.py").write_text(
+            'import os\nvalue = int(os.environ.get("KEEP_VALUE", "2"))\n', encoding="utf-8")
+        (self.repo / "test_keep_probe.py").write_text(self.PROBES["unittest"], encoding="utf-8")
+        for phase, value in (("red", "1"), ("green", None)):
+            self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+            run = self.receipt_recheck(slug, "unittest", phase=phase, value=value)
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        skipped = self.receipt_recheck(slug, "unittest", mode="skip")
+        self.assertEqual(skipped.returncode, 2, marker + ": " + skipped.stdout + skipped.stderr)
+        self.assertEqual(self.document()["runs"][-1]["behaviorId"], "BM_KEEP", marker)
+        self.assertEqual((self.item("BM_ATTACK")["status"], self.item("BM_ATTACK")["redCommand"]), ("red", recorded), marker)
+        # A repeated RED for A whose command differs never reaches the runner.
         sentinel = self.tmp / "changed-red-ran"
         (self.repo / "test_attack_other.py").write_text(
             f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n"
             "import app, unittest\nclass Other(unittest.TestCase):\n"
-            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
-        self.refused_unchanged(marker, lambda: self.tdd(slug, "red", "BM_ATTACK", "test_attack_other"))
-        self.assertFalse(sentinel.exists(), marker + ": the changed command executed")
-        self.assertEqual((self.item("BM_ATTACK")["status"], self.item("BM_ATTACK")["redCommand"]), ("red", recorded), marker)
+            f"    def test_value(self): self.assertEqual(app.value, 2, {changed!r})\n", encoding="utf-8")
+        self.refused_unchanged(changed, lambda: self.tdd(slug, "red", "BM_ATTACK", "test_attack_other"))
+        self.assertFalse(sentinel.exists(), changed + ": the changed command executed")
+        self.assertEqual((self.item("BM_ATTACK")["status"], self.item("BM_ATTACK")["redCommand"]), ("red", recorded), changed)
+        green = self.tdd(slug, "green", "BM_ATTACK", "test_attack_probe")
+        self.assertEqual(green.returncode, 0, marker + ": " + green.stdout + green.stderr)
 
     def document(self) -> dict[str, object]:
         return self.ok("evidence", "--evidence-id", str(self.status()["tddEvidence"]))["document"]
@@ -1952,14 +1961,9 @@ class ReassessmentAttacks(AttackHarness):
         marker = "DRIFT_RED_OPENED_CYCLE"
         slug = "drift-red"
         generated = self.repo / "generated.py"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker, green=False)
         # A genuine mapped failure whose probe also rewrites the reviewable tree.
-        (self.repo / "test_keep_probe.py").write_text(
-            f"from pathlib import Path\nPath({str(generated)!r}).write_text('made = 1\\n')\n"
-            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
-            "    def test_value(self): self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n",
-            encoding="utf-8")
+        self.keep_probe(2, f"from pathlib import Path\nPath({str(generated)!r}).write_text('made = 1\\n')\n")
         drifted = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
         self.assertEqual(drifted.returncode, 2, marker + ": " + drifted.stdout + drifted.stderr)
         self.assertIn("generated.py", drifted.stderr, marker)
@@ -1981,10 +1985,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_recheck_retains_the_tree_it_ran_on(self) -> None:
         marker = "RECHECK_UNBOUND_TREE"
         slug = "recheck-binding"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.drive_attack_green(slug, marker)
-        self.keep_green(slug)
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker)
         # The candidate is the working tree: app.py unstaged, one probe staged,
         # the other untracked; its identity is what status reports, not HEAD's.
         self.git("add", "test_attack_probe.py")
@@ -2001,9 +2002,7 @@ class ReassessmentAttacks(AttackHarness):
     def open_attack_red(self, slug: str, marker: str) -> dict[str, object]:
         """BM_ATTACK's cycle opened on app.value 1; returns the cycle document."""
         (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
-        (self.repo / "test_attack_probe.py").write_text(
-            "import app, unittest\nclass AttackProbe(unittest.TestCase):\n"
-            f"    def test_value(self): self.assertEqual(app.value, 2, {marker!r})\n", encoding="utf-8")
+        self.attack_probe(marker)
         red = self.tdd(slug, "red", "BM_ATTACK", "test_attack_probe")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
         return self.document()
@@ -2018,14 +2017,9 @@ class ReassessmentAttacks(AttackHarness):
         marker = "DRIFT_BESIDE_OPEN_CYCLE_LOST_BINDING"
         slug = "drift-beside"
         generated = self.repo / "generated.py"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker, green=False)
         opened = self.open_attack_red(slug, marker)
-        (self.repo / "test_keep_probe.py").write_text(
-            f"from pathlib import Path\nPath({str(generated)!r}).write_text('made = 1\\n')\n"
-            "import app, unittest\nclass KeepProbe(unittest.TestCase):\n"
-            "    def test_value(self): self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n",
-            encoding="utf-8")
+        self.keep_probe(2, f"from pathlib import Path\nPath({str(generated)!r}).write_text('made = 1\\n')\n")
         drifted = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
         self.assertEqual(drifted.returncode, 2, marker + ": " + drifted.stdout + drifted.stderr)
         self.assert_cycle_kept(opened, marker, "BM_KEEP")
@@ -2062,8 +2056,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_flagged_red_keeps_the_marker_until_green(self) -> None:
         marker = "RED_ALONE_CLEARED_MARKER"
         slug = "flagged-red-green"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker, green=False)
         self.keep_probe(2)
         red = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
         self.assertEqual(red.returncode, 0, marker + ": " + red.stdout + red.stderr)
@@ -2120,8 +2113,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_drifted_passing_baseline_is_refused(self) -> None:
         marker = "DRIFT_FALSE_SUCCESS"
         slug = "drift-baseline"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker, green=False)
         before = self.document()
         # The probe passes on the current value and rewrites the reviewable tree.
         (self.repo / "test_keep_probe.py").write_text(
@@ -2143,8 +2135,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_repeated_revalidate_on_a_flagged_red_writes_nothing(self) -> None:
         marker = "REVALIDATION_REPLAY_REFUSED"
         slug = "revalidate-red"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker, green=False)
         self.keep_probe(2)
         red = self.tdd(slug, "red", "BM_KEEP", "test_keep_probe")
         self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
@@ -2186,43 +2177,129 @@ class ReassessmentAttacks(AttackHarness):
         self.assertEqual(again.returncode, 0, marker + ": " + again.stdout + again.stderr)
         self.assertEqual((str(self.status()["tddEvidence"]), len(self.events())), (evidence, events), marker)
 
-    def skipping_keep_green(self, slug: str) -> None:
-        """BM_KEEP GREEN through RED on a probe that skips itself under RECHECK_SKIP."""
-        (self.repo / "test_keep_probe.py").write_text(
-            "import os, app, unittest\nclass KeepProbe(unittest.TestCase):\n"
-            "    def test_value(self):\n"
-            "        if os.environ.get('RECHECK_SKIP'):\n            self.skipTest('environment not available')\n"
-            "        self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n", encoding="utf-8")
-        for phase, value in (("red", 1), ("green", 2)):
-            (self.repo / "app.py").write_text(f"value = {value}\n", encoding="utf-8")
-            run = self.tdd(slug, phase, "BM_KEEP", "test_keep_probe")
-            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
-
     RECEIPTS = ("verification", "verificationEvidence", "verificationLatestEvidence", "qualityGateEvidence", "codeReview")
+    # One unchanged surface per runner whose outcome the recheck chooses through the
+    # environment: the decision has to tell these apart from the runner's own report.
+    PROBES = {
+        "unittest": (
+            "import os, unittest, app\n"
+            "MODE = os.environ.get('RECHECK_MODE', '')\n"
+            "class KeepProbe(unittest.TestCase):\n"
+            "    @unittest.expectedFailure if MODE in ('expected', 'unexpected') else (lambda case: case)\n"
+            "    def test_value(self):\n"
+            "        if MODE == 'skip': self.skipTest('environment unavailable')\n"
+            "        if MODE == 'early': os._exit(0)\n"
+            "        self.assertEqual(app.value, 2, 'KEEP_REGRESSED')\n"
+        ),
+        "pytest": (
+            "import os, warnings, pytest, app\n"
+            "MODE = os.environ.get('RECHECK_MODE', '')\n"
+            "if MODE == 'incomplete':\n"
+            "    import atexit\n"
+            "    atexit.register(lambda: os._exit(2))\n"
+            "if MODE in ('skip', 'incomplete'):\n"
+            "    pytest.skip('environment unavailable', allow_module_level=True)\n"
+            "@pytest.mark.xfail(MODE in ('mixed', 'mixed-xfail'), reason='mixed outcome beside skips')\n"
+            "def test_value():\n"
+            "    if MODE == 'mixed-error': pytest.skip('environment unavailable')\n"
+            "    assert app.value == 2, 'KEEP_REGRESSED'\n"
+            "if MODE.startswith('mixed'):\n"
+            "    def test_other():\n"
+            "        pytest.skip('environment unavailable')\n"
+            "    warnings.warn('mixed outcome beside skips', UserWarning)\n"
+            "if MODE == 'mixed-error':\n"
+            "    @pytest.fixture\n"
+            "    def broken():\n"
+            "        raise RuntimeError('environment unavailable')\n"
+            "    def test_error(broken):\n"
+            "        assert True\n"
+            "if MODE == 'no-tests':\n"
+            "    test_value.__test__ = False\n"
+            "    warnings.warn('Environment has no runnable cases', UserWarning)\n"
+        ),
+    }
+
+    def receipt_recheck(self, slug: str, runner: str, *, phase: str = "green",
+                        mode: str | None = None, value: str | None = None) -> subprocess.CompletedProcess[str]:
+        env = {**self.env, **({"RECHECK_MODE": mode} if mode else {}), **({"KEEP_VALUE": value} if value else {})}
+        target = "test_keep_probe" if runner == "unittest" else "test_keep_probe.py"
+        return self.run_tdd(slug, phase, "BM_KEEP", sys.executable, "-m", runner, target, env=env)
+
+    def receipts(self) -> dict[str, object]:
+        return {key: self.status().get(key) for key in self.RECEIPTS}
+
+    def receipt_pass(self, slug: str, marker: str, runner: str) -> dict[str, object]:
+        """A pass with complete receipts whose BM_KEEP recheck is flagged. The
+        source stays unchanged across the recheck: app.py reads its value from the
+        environment, so only the runner's own result differs."""
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.drive_attack_green(slug, marker)
+        (self.repo / "app.py").write_text(
+            'import os\nvalue = int(os.environ.get("KEEP_VALUE", "2"))\n', encoding="utf-8")
+        (self.repo / "test_keep_probe.py").write_text(self.PROBES[runner], encoding="utf-8")
+        for phase, value in (("red", "1"), ("green", None)):
+            run = self.receipt_recheck(slug, runner, phase=phase, value=value)
+            self.assertEqual(run.returncode, 0, phase + ": " + run.stdout + run.stderr)
+        self.verify_pass(slug, wid)
+        self.ok("set-phase", "--phase", "code-review", "--status", "not-required", "--findings", "none")
+        before = self.receipts()
+        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        return before
+
+    def assert_recheck(self, slug: str, marker: str, runner: str, mode: str,
+                       *, keeps: bool, value: str | None = None) -> None:
+        """The recheck is always an invalid attempt with its marker unresolved; only
+        a runner result reporting that nothing executed keeps the pass's receipts."""
+        before = self.receipt_pass(slug, marker, runner)
+        result = self.receipt_recheck(slug, runner, mode=mode, value=value)
+        self.assertEqual(result.returncode, 2, marker + ": " + result.stdout + result.stderr)
+        run = self.document()["runs"][-1]
+        self.assertEqual((run["behaviorId"], run["valid"]), ("BM_KEEP", False), marker)
+        self.assertTrue(self.item("BM_KEEP").get("revalidationRequired"), marker)
+        after = self.receipts()
+        if keeps:
+            self.assertEqual(after, before, marker)
+        else:
+            self.assertEqual((after["verification"], after["qualityGateEvidence"]), ("pending", None), marker)
 
     def test_a_skipped_recheck_keeps_downstream_receipts(self) -> None:
         marker = "SKIPPED_RECHECK_REPLAYS_DOWNSTREAM"
-        slug = "skipped-recheck"
-        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.drive_attack_green(slug, marker)
-        self.skipping_keep_green(slug)
-        self.verify_pass(slug, wid)
-        self.ok("set-phase", "--phase", "code-review", "--status", "not-required", "--findings", "none")
-        before = self.status()
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
-        skipped = self.run_tdd(slug, "green", "BM_KEEP", sys.executable, "-m", "unittest", "test_keep_probe",
-                               env={**self.env, "RECHECK_SKIP": "1"})
-        self.assertEqual(skipped.returncode, 2, marker + ": " + skipped.stdout + skipped.stderr)
-        self.assertTrue(self.item("BM_KEEP").get("revalidationRequired"), marker)
-        run = self.document()["runs"][-1]
-        self.assertEqual((run["behaviorId"], run["valid"]), ("BM_KEEP", False), marker)
-        after = self.status()
-        self.assertEqual({k: after.get(k) for k in self.RECEIPTS}, {k: before.get(k) for k in self.RECEIPTS}, marker)
-        # Paired control: a genuine regression through the same surface still invalidates.
-        (self.repo / "app.py").write_text("value = 1\n", encoding="utf-8")
-        failed = self.tdd(slug, "green", "BM_KEEP", "test_keep_probe")
+        self.assert_recheck("skipped-recheck", marker, "unittest", "skip", keeps=True)
+        # Paired control: a genuine regression through the same surface invalidates.
+        failed = self.receipt_recheck("skipped-recheck", "unittest", value="1")
         self.assertEqual(failed.returncode, 2, marker + ": " + failed.stdout + failed.stderr)
-        self.assertNotEqual({k: self.status().get(k) for k in self.RECEIPTS}, {k: before.get(k) for k in self.RECEIPTS}, marker)
+        self.assertEqual(self.receipts()["verification"], "pending", marker)
+
+    def test_a_pytest_module_skip_recheck_keeps_receipts(self) -> None:
+        self.assert_recheck("pytest-skip", "SKIP_RECHECK_DISCARDED_RECEIPTS", "pytest", "skip", keeps=True)
+
+    def test_a_zero_collected_warning_recheck_keeps_receipts(self) -> None:
+        self.assert_recheck("warning-recheck", "NO_TESTS_RECHECK_DISCARDED_RECEIPTS", "pytest", "no-tests", keeps=True)
+
+    def test_an_expected_failure_recheck_invalidates_receipts(self) -> None:
+        self.assert_recheck("xfail-recheck", "EXECUTED_XFAIL_KEPT_RECEIPTS", "unittest", "expected", keeps=False, value="3")
+
+    def test_an_unexpected_success_recheck_invalidates_receipts(self) -> None:
+        self.assert_recheck("xpass-recheck", "UNEXPECTED_SUCCESS_KEPT_RECEIPTS", "unittest", "unexpected", keeps=False)
+
+    def test_a_recheck_without_a_runner_result_invalidates_receipts(self) -> None:
+        self.assert_recheck("early-recheck", "MISSING_RESULT_KEPT_RECEIPTS", "unittest", "early", keeps=False)
+
+    def test_a_mixed_outcome_recheck_invalidates_receipts(self) -> None:
+        # An unexpected pass beside a skipped test and a warning: the run finished,
+        # so only the outcome count keeps it out of nonexecution.
+        self.assert_recheck("mixed-recheck", "MIXED_OUTCOME_KEPT_RECEIPTS", "pytest", "mixed", keeps=False)
+
+    def test_an_expected_failure_beside_skips_invalidates_receipts(self) -> None:
+        self.assert_recheck("xfail-mixed-recheck", "XFAIL_BESIDE_SKIPS_KEPT_RECEIPTS", "pytest",
+                            "mixed-xfail", keeps=False, value="3")
+
+    def test_a_setup_error_beside_skips_invalidates_receipts(self) -> None:
+        self.assert_recheck("error-mixed-recheck", "ERROR_BESIDE_SKIPS_KEPT_RECEIPTS", "pytest",
+                            "mixed-error", keeps=False)
+
+    def test_an_unfinished_runner_invalidates_receipts(self) -> None:
+        self.assert_recheck("incomplete-recheck", "INCOMPLETE_RUN_KEPT_RECEIPTS", "pytest", "incomplete", keeps=False)
 
     def snapshot_writer(self, key: str) -> dict[str, str]:
         """An environment whose recorder process appends a comment to app.py the
@@ -2242,10 +2319,7 @@ class ReassessmentAttacks(AttackHarness):
     def test_a_writer_between_snapshot_captures_cannot_mislabel_the_candidate(self) -> None:
         marker = "CANDIDATE_TREE_INCOHERENT"
         slug = "snapshot-writer"
-        self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
-        self.drive_attack_green(slug, marker)
-        self.keep_green(slug)
-        self.assertEqual(self.revalidate(slug, "BM_KEEP").returncode, 0, marker)
+        self.flagged_keep(slug, marker)
         # Writer landing as the manifest starts hashing: ahead of both captures, so
         # the run is valid and its recorded identity is the tree that executed.
         recheck = self.run_tdd(slug, "green", "BM_KEEP", sys.executable, "-m", "unittest", "test_keep_probe",
@@ -2265,6 +2339,108 @@ class ReassessmentAttacks(AttackHarness):
                          marker + ": " + between.stdout + between.stderr)
         self.assertIn("app.py", str(run.get("bindingError")), marker)
         self.assertTrue(self.item("BM_KEEP").get("revalidationRequired"), marker)
+
+    def seed_evidence(self, document: dict[str, object], field: str = "tddEvidence") -> str:
+        """Record evidence the writer itself would refuse, the way an imported or
+        retired ledger already holds it. Fixture-seeded state, never a produced pass."""
+        from hooks.lib._workflow_db import evidence_write, mutation
+        identity = resolve_repo_identity(self.repo)
+        with mutation(identity) as transaction:
+            state = dict(transaction.state)
+            write = evidence_write(str(state["workflowId"]), field.replace("Evidence", ""), document)
+            state[field] = write.evidence_id
+            transaction.append(state, "seeded-evidence", evidence=[write])
+        return write.evidence_id
+
+    def seeded_map(self, slug: str, wid: str, items: object) -> dict[str, object]:
+        return {"schemaVersion": 2, "slug": slug, "workflowId": wid, "kind": "map", "status": "pending",
+                "activeBehaviorId": None, "updatedAt": "2026-01-01T00:00:00+00:00",
+                **({"behaviorMap": items} if items is not None else {})}
+
+    def test_the_recorded_map_authority_survives_each_evidence_shape(self) -> None:
+        marker = "MAP_AUTHORITY_CONFUSED"
+        slug = "map-authority"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        only_tdd = {**self.KEEP, "id": "BM_ONLY_TDD", "behavior": "only the TDD map names this"}
+
+        def omit(identifier: str) -> subprocess.CompletedProcess[str]:
+            return self.map_update(
+                slug, dispositions=[{"id": identifier, "status": "omitted", "evidence": "out of scope here"}])
+
+        # Present and valid: the TDD evidence's own map is authoritative.
+        self.seed_evidence(self.seeded_map(slug, wid, [self.contract(marker), only_tdd]))
+        self.assertEqual(omit("BM_ONLY_TDD").returncode, 0, marker)
+        refused = self.refused_unchanged(marker, lambda: omit("BM_KEEP"))
+        self.assertIn("BM_KEEP", refused.stderr, marker)
+        # Absent: a map-less document resolves the recorded preflight's map.
+        self.seed_evidence(self.seeded_map(slug, wid, None))
+        self.assertEqual(omit("BM_KEEP").returncode, 0, marker)
+        # Present and invalid: never a silent fallback to the preflight's map.
+        self.seed_evidence(self.seeded_map(slug, wid, [{"id": "BM_BROKEN"}]))
+        broken = self.refused_unchanged(marker, lambda: omit("BM_KEEP"))
+        self.assertIn("behaviorMap item", broken.stderr, marker + ": " + broken.stderr)
+
+    def test_an_invalid_recorded_map_blocks_the_checkpoint(self) -> None:
+        marker = "INVALID_MAP_READ_AS_ABSENT"
+        slug = "invalid-map"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        self.drive_attack_green(slug, marker)
+        self.seed_evidence(self.seeded_map(slug, wid, [{"id": "BM_BROKEN"}]))
+        payload = self.ok("checkpoint", "--phase", "final-review")
+        unreadable = [entry for entry in payload["missing"] if "unreadable" in entry]
+        self.assertTrue(unreadable, marker + ": " + json.dumps(payload["missing"]))
+        self.assertFalse(payload["ready"], marker)
+
+    def test_a_mapless_write_keeps_the_recorded_preflight_ownership(self) -> None:
+        marker = "MAPLESS_WRITE_SKIPPED_OWNERSHIP"
+        slug = "mapless-ownership"
+        wid = self.open_pass(slug, [self.contract(marker), dict(self.KEEP)])
+        # An imported ledger: the recorded preflight map owns a finding, and the
+        # TDD evidence the writer receives carries no map of its own.
+        foreign = {**self.contract(marker),
+                   "sourceRefs": [{"type": "finding", "evidenceId": "evidence-" + "0" * 32, "id": "SPEC-1"}]}
+        self.seed_evidence({"schemaVersion": 1, "slug": slug, "workflowId": wid,
+                            "document": {"behaviorMap": [foreign]}}, "preflightEvidence")
+        current = self.seed_evidence(self.seeded_map(slug, wid, None))
+        from hooks.lib.workflow_state import WorkflowError, commit_tdd
+        with self.assertRaises(WorkflowError, msg=marker) as refused:
+            commit_tdd(resolve_repo_identity(self.repo), slug, wid, self.seeded_map(slug, wid, None), None,
+                       expected_evidence_id=current)
+        self.assertIn("sourceRef", str(refused.exception), marker)
+        self.assertEqual(str(self.status()["tddEvidence"]), current, marker)
+
+    def killing_recorder(self) -> str:
+        """A recorder environment whose durable write never lands: once the runner
+        child has run, the process dies inside its open write transaction."""
+        killer = self.tmp / "killer"
+        killer.mkdir()
+        (killer / "sitecustomize.py").write_text(
+            "import os, signal, sys\nstate = {'child': False}\n"
+            "def observe(event, args):\n"
+            "    if event != 'subprocess.Popen':\n        return\n"
+            "    argv = str(args[1])\n"
+            "    if 'unittest' in argv:\n        state['child'] = True\n"
+            "    elif state['child'] and 'hash-object' in argv:\n"
+            "        os.kill(os.getpid(), signal.SIGKILL)\n"
+            "sys.addaudithook(observe)\n", encoding="utf-8")
+        return str(killer)
+
+    def test_an_interrupted_recheck_leaves_the_prior_committed_state(self) -> None:
+        marker = "INTERRUPTED_RECHECK_LEAKED_STATE"
+        slug = "recheck-interrupt"
+        before = self.receipt_pass(slug, marker, "unittest")
+        state, history = self.status(), self.ok_text("history")
+        self.env["PYTHONPATH"] = self.killing_recorder()
+        killed = self.receipt_recheck(slug, "unittest")
+        self.env.pop("PYTHONPATH")
+        self.assertNotEqual(killed.returncode, 0, marker + ": " + killed.stdout + killed.stderr)
+        self.assertEqual(self.status(), state, marker)
+        self.assertEqual(self.ok_text("history"), history, marker)
+        self.assertEqual(self.receipts(), before, marker)
+        # The pass still runs: the killed attempt left nothing behind to repair.
+        retried = self.receipt_recheck(slug, "unittest")
+        self.assertEqual(retried.returncode, 0, marker + ": " + retried.stdout + retried.stderr)
+        self.assertNotIn("revalidationRequired", self.item("BM_KEEP"), marker)
 
     def test_annotation_is_admitted_where_a_transition_is_refused(self) -> None:
         marker = "ANNOTATION_ADMISSION_CHANGED"

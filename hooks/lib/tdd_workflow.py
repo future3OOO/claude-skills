@@ -80,12 +80,16 @@ def _map_parser() -> argparse.ArgumentParser:
 def _evidence_pair(
     identity: RepoIdentity, state: JsonObject
 ) -> tuple[JsonObject | None, JsonObject | None]:
-    """The recorded TDD and preflight documents the map predicates read."""
-    return tuple(
-        evidence_document(identity, state.get(field))
-        if isinstance(state.get(field), str) else None
-        for field in ("tddEvidence", "preflightEvidence")
-    )
+    """The recorded TDD and preflight documents the map predicates read. The
+    preflight is read only when the TDD evidence carries no map of its own: a map
+    that is present, malformed or not, is the authority and never falls back."""
+    def document(field: str) -> JsonObject | None:
+        return evidence_document(identity, state[field]) if isinstance(state.get(field), str) else None
+
+    tdd_document = document("tddEvidence")
+    if isinstance(tdd_document, dict) and tdd_document.get("behaviorMap") is not None:
+        return tdd_document, None
+    return tdd_document, document("preflightEvidence")
 
 
 def current_map(
@@ -293,19 +297,31 @@ _BASELINE_STAMP = behavior_map.BASELINE_STAMP
 
 
 def _pass_proof(
-    surface: JsonObject, output: str, *, baseline: bool
-) -> tuple[dict[str, object] | None, str]:
+    surface: JsonObject, output: str, exit_code: int, *, baseline: bool
+) -> tuple[dict[str, object] | None, str, bool]:
     """A pass is the surface passing, not the command exiting 0: a runner's report of
-    an executed passing test; a non-runner exit 0 closes its own RED, never a baseline."""
+    an executed passing test; a non-runner exit 0 closes its own RED, never a baseline.
+
+    The third value is the runner's own report that nothing executed - only skipped,
+    deselected, or no tests at all, in a run it finished. Absence of proof is not
+    proof against, so that result leaves what the pass already earned alone; a
+    failure, an error, an expected failure, an unexpected success, a run the runner
+    did not finish, and warning text on its own are never it.
+    """
     runner = surface.get("runner")
     if runner not in {"unittest", "pytest"}:
         if baseline:
             return None, (
                 "a baseline needs the runner's own report of an executed passing "
                 "test; a non-runner operation exiting 0 is not one"
-            )
-        return {"quality": "operation-succeeded", "runner": str(runner)}, ""
+            ), False
+        if exit_code != 0:
+            return None, "", False
+        return {"quality": "operation-succeeded", "runner": str(runner)}, "", False
     output = tdd_surface.ANSI_ESCAPE.sub("", output)
+    # Only a run the runner finished describes what executed: its success status, or
+    # the status it reports when it collected nothing.
+    finished = exit_code in {0, tdd_surface.NO_TESTS_STATUS}
     if runner == "unittest":
         # unittest exits 0 with skipped and expected-failure tests inside its
         # Ran count; only its own result line says how many did not genuinely
@@ -313,21 +329,39 @@ def _pass_proof(
         # output either precedes Ran (unbuffered) or flushes after the runner
         # has finished (buffered), never between the two runner writes.
         runs = list(tdd_surface.UNITTEST_RAN.finditer(output))
-        executed = int(runs[-1].group(1)) if runs else 0
-        result = re.search(r"(?m)^OK(?: \((.*)\))?$", output[runs[-1].end():]) if runs else None
-        executed -= sum(
-            int(count)
-            for count in re.findall(r"(?:skipped|expected failures)=(\d+)", result.group(1) or "")
-        ) if result else 0
+        ran = int(runs[-1].group(1)) if runs else 0
+        tail = output[runs[-1].end():] if runs else ""
+        result = re.search(r"(?m)^OK(?: \((.*)\))?$", tail)
+        counts = {
+            name.strip(): int(count)
+            for name, count in re.findall(r"([a-z ]+)=(\d+)", result.group(1) or "")
+        } if result else {}
+        executed = ran - counts.get("skipped", 0) - counts.get("expected failures", 0)
+        nonexecution = finished and ran == counts.get("skipped", 0) and set(counts) <= {"skipped"} and (
+            result is not None or re.search(r"(?m)^NO TESTS RAN$", tail) is not None
+        )
     else:
         # Only the terminal summary line describes the run; text a test prints
         # under -s, or a run that exits before the summary, counts nothing.
         summaries = tdd_surface.PYTEST_SUMMARY.findall(output)
-        passed = re.search(r"(?<!\d)(\d+) passed\b", summaries[-1]) if summaries else None
+        summary = summaries[-1].lower() if summaries else ""
+        passed = re.search(r"(?<!\d)(\d+) passed\b", summary)
         executed = int(passed.group(1)) if passed else 0
+        outcomes = sum(
+            int(count)
+            for word in ("passed", "failed", "error", "xfailed", "xpassed")
+            for count in re.findall(rf"(?<!\d)(\d+) {word}s?\b", summary)
+        )
+        nonexecution = finished and bool(summary) and not outcomes and (
+            exit_code == tdd_surface.NO_TESTS_STATUS
+            or "no tests ran" in summary
+            or re.search(r"(?<!\d)\d+ (?:skipped|deselected)\b", summary) is not None
+        )
+    if exit_code != 0:
+        return None, "", nonexecution
     if executed < 1:
-        return None, f"{runner} did not report an executed passing test"
-    return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, ""
+        return None, f"{runner} did not report an executed passing test", nonexecution
+    return {"quality": "baseline-passed", "runner": runner, "testsExecuted": executed}, "", False
 
 
 def _tree_binding(identity: RepoIdentity, state: JsonObject, untracked: list[str]) -> dict[str, object]:
@@ -532,6 +566,7 @@ def _run_tdd(values: list[str]) -> int:
     )
     proof: dict[str, object] | None = None
     proof_error = ""
+    nonexecution = False
     red_ok = False
     baseline = False
     if phase == "red" and not timed_out and exit_code != 0:
@@ -544,12 +579,14 @@ def _run_tdd(values: list[str]) -> int:
         # Producer-backed baseline: a pending surface passing is already
         # satisfied, opens nothing, counts no cycle. A dirty tree does not refuse
         # it; the run entry records what had changed, and the reviews weigh it.
-        proof, proof_error = _pass_proof(surface, output, baseline=True)
+        proof, proof_error, _ = _pass_proof(surface, output, exit_code, baseline=True)
         baseline = proof is not None
-    elif phase == "green" and not legacy and not timed_out and exit_code == 0:
+    elif phase == "green" and not legacy and not timed_out:
         # A GREEN is the surface passing, not the command exiting 0: a skipped or
-        # incomplete run reports no passing test and proves nothing.
-        proof, proof_error = _pass_proof(surface, output, baseline=False)
+        # incomplete run reports no passing test and proves nothing. The runner's
+        # own result is read whatever the exit code, because the status it uses for
+        # collecting nothing is not a failure.
+        proof, proof_error, nonexecution = _pass_proof(surface, output, exit_code, baseline=False)
     valid = (
         red_ok
         if phase == "red"
@@ -646,12 +683,11 @@ def _run_tdd(values: list[str]) -> int:
             action = "in-progress" if behavior_map.unresolved(updated) else "passed"
         else:
             # A refused attempt is evidence, not progress: annotated without a
-            # transition (action None). A failed GREEN is a regression; a GREEN
-            # whose runner executed no passing test proves nothing either way,
+            # transition (action None). A failed GREEN is a regression; a GREEN the
+            # runner itself reports as nothing executed proves nothing either way,
             # so it is retained as an attempt and completed receipts stand.
             next_active = args.behavior_id if status == "red" else None
-            absent = not timed_out and exit_code == 0 and proof is None
-            action = "reopen" if phase == "green" and not absent else None
+            action = "reopen" if phase == "green" and not nonexecution else None
         # Beside another item's open cycle, a baseline, recheck, or refused
         # attempt keeps that cycle's document and binding; only a valid RED for
         # this item opens its own.

@@ -196,16 +196,9 @@ JSON
 ```
 
 The JSON document accepts `sourceBehaviorId` (the GREEN item whose consequence it records),
-`reassessment`, `items`, and `dispositions` only. A disposition may also flag a
-preservation item the repair could disturb, or union a finding onto its existing
-owner; the `tdd` skill owns the rules:
-
-```json
-{"reassessment": "The repaired decision affects BM_KEEP", "dispositions": [{"id": "BM_KEEP", "revalidate": true, "evidence": "Name the affected guarantee and change"}]}
-{"reassessment": "The existing attack also owns this finding", "dispositions": [{"id": "BM_KEEP", "sourceRefs": [{"type": "finding", "evidenceId": "<intake>", "id": "SPEC-1"}]}]}
-```
-
-Terminal proof
+`reassessment`, `items`, and `dispositions` only; the tdd skill's
+[recorder.md](../tdd/recorder.md) owns the disposition forms and the reassessment,
+interleaving, and receipt rules the producer applies. Terminal proof
 (TDD `passed` or `not-required`) opens verification directly; no implementation
 acknowledgement is recorded.
 

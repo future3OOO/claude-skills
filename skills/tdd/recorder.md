@@ -30,7 +30,18 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" tdd-
 JSON
 ```
 
-`sourceBehaviorId`, when given, names the GREEN item whose consequence the update records. New items use the preflight schema and reopen TDD; dispositions take the statuses, `revalidate`, and `sourceRefs` unions in [SKILL.md](SKILL.md). A missing `supersededBy` target, self-reference, cycle, non-GREEN source, a terminal replacement that can never be GREEN, or a reference naming no recorded finding of this workflow refuses the whole update. Updates are admitted while cycles are open and keep the open cycle's document; a reference-only update annotates evidence, an unchanged update writes nothing.
+`sourceBehaviorId`, when given, names the GREEN item whose consequence the update records. New items use the preflight schema and reopen TDD; dispositions take the statuses, `revalidate`, and `sourceRefs` unions in [SKILL.md](SKILL.md):
+
+```json
+{"reassessment": "The repaired decision affects BM_KEEP", "dispositions": [{"id": "BM_KEEP", "revalidate": true, "evidence": "Name the affected guarantee and change"}]}
+{"reassessment": "The existing attack also owns this finding", "dispositions": [{"id": "BM_KEEP", "sourceRefs": [{"type": "finding", "evidenceId": "<intake>", "id": "SPEC-1"}]}]}
+```
+
+A missing `supersededBy` target, self-reference, cycle, non-GREEN source, a terminal replacement that can never be GREEN, or a reference naming no recorded finding of this workflow refuses the whole update. Updates are admitted while cycles are open and keep the open cycle's document; a reference-only update annotates evidence, an unchanged update writes nothing. A map update, a refusal, a baseline, or a recheck beside another item's open RED keeps that cycle's document and binding and is audited under its own behavior ID, never becoming that item's proof. A union is by the reference's full identity - type, intake evidence, and label together - so the same label in another intake is another reference, and a repeated request is a no-op whatever the item's status.
+
+A flagged item takes one of two routes. A flagged **pending** item clears through `tdd --phase red`: an executed passing runner result re-baselines it, a mapped failure opens its RED and its later GREEN clears the marker. A flagged **GREEN** item clears through `tdd --phase green` against its producer-recorded `redCommand`, which refreshes the receipt without opening a cycle. Neither route accepts prose, and `omitted` settles a flagged item only under existing finding ownership.
+
+The runner's own completed result decides what a recheck did. A result reporting only skipped, deselected, or no tests at all is an absence of proof: the attempt is retained invalid with its marker unresolved, and the pass's already-earned verification and review receipts stand. A failure, an error, an expected failure, an unexpected success, a run the runner did not finish, and warning text on its own are contrary or unknown, and invalidate as before. A drifted run records its `bindingError` and the paths that changed, never accepted proof.
 
 While an item's cycle is open, a changed surface for that item refuses before execution; other pending contract items record their own RED beside it. Every RED-phase run entry carries `productionChanged` (production paths differing from the pass start commit, tracked or untracked, measured when the run is launched), `passStartOid`, and `headOid`; a non-empty set is copied into the item's `redProof` or `baselineProof` and surfaces as `Late RED` in `summary` and `lateRed` in the final-review checkpoint. GREEN stays bound after completion. A valid changed RED after completed `passed` or `not-required` evidence opens the next cycle.
 
