@@ -363,7 +363,7 @@ if [[ -n "$phase" ]]; then
 fi
 set +e
 cd "$repo_root" && env "${provider_unset[@]}" "${provider_env[@]}" \
-  claude -p "${session_args[@]}" "${phase_args[@]}" --model "$model" --output-format text \
+  claude -p "${session_args[@]}" "${phase_args[@]}" --model "$model" --effort xhigh --output-format text \
     --append-system-prompt "$role" \
     --tools "$provider_tools" \
     --disallowed-tools "$disallowed_tools" <"$prompt_file" >"$output_file"
