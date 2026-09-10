@@ -189,7 +189,7 @@ When a GREEN exposes a new obligation (a touched-Seam
 preservation, interaction, semantic falsification, or review-discovered
 behavior), add it with `workflow.py tdd-map` before the next production edit;
 when it exposes nothing, record nothing. The update is admitted while other
-cycles are open. Pass the document on stdin:
+cycles are open. Pass the document on stdin, or as `--input <path>`:
 
 ```bash
 python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
