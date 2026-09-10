@@ -38,8 +38,11 @@ there is no Stop hook. `skills/repo-production-workflow/WORKFLOW-MAP.md` owns th
 Install a pinned remote `main` snapshot, then fast-forward the mirror after
 verification. Review live differences before overwriting them; reconcile
 intentional machine changes into tracked configuration first.
+Run the blocks in order in one dedicated Bash session; command failures stop
+the session. Reconcile reported differences before continuing.
 
 ```bash
+set -euo pipefail
 mirror="$PWD"
 git fetch origin
 revision=$(git rev-parse origin/main)
