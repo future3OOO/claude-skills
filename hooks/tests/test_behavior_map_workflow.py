@@ -220,6 +220,49 @@ class BehaviorMapWorkflowTests(unittest.TestCase):
         self.assertEqual(state["tddCycleCount"], 1)
         self.assertEqual(edit_advice(resolve_repo_identity(self.repo), state)[0], [])
 
+    def document(self, state: dict[str, object]) -> dict[str, object]:
+        """Read the recorded TDD evidence document back through the public CLI."""
+        read = self.cli("evidence", "--evidence-id", str(state["tddEvidence"]))
+        self.assertEqual(read.returncode, 0, read.stdout + read.stderr)
+        return json.loads(read.stdout)["document"]
+
+    @staticmethod
+    def probe(failure: str) -> str:
+        return f"import app; assert app.value == 2, {failure!r}"
+
+    def two_item_pass(self) -> str:
+        """Open both items' cycles, then apply the correction that settles them."""
+        slug, _ = self.begin_to_preflight([
+            pending_behavior("BM_A", red_failure="A_NOT_DONE"),
+            pending_behavior("BM_B", red_failure="B_NOT_DONE"),
+        ])
+        for behavior_id, failure in (("BM_A", "A_NOT_DONE"), ("BM_B", "B_NOT_DONE")):
+            red = self.tdd(slug, "red", behavior_id, self.probe(failure))
+            self.assertEqual(red.returncode, 0, red.stdout + red.stderr)
+        (self.repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+        return slug
+
+    def test_a_green_beside_a_red_item_leaves_the_document_pending(self) -> None:
+        marker = "PARTIAL_GREEN_DOCUMENT_CLAIMED_PASSED"
+        slug = self.two_item_pass()
+        green = self.tdd(slug, "green", "BM_B", self.probe("B_NOT_DONE"))
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        state = read_workflow(resolve_repo_identity(self.repo))
+        self.assertEqual(state["tdd"], "in-progress", marker)
+        document = self.document(state)
+        statuses = {str(entry["id"]): entry.get("status") for entry in document["behaviorMap"]}
+        self.assertEqual(statuses, {"BM_A": "red", "BM_B": "green"}, marker)
+        self.assertEqual(document["status"], "pending", marker)
+
+    def test_the_document_passes_once_every_item_is_settled(self) -> None:
+        marker = "SETTLED_MAP_DOCUMENT_STAYS_PENDING"
+        slug = self.two_item_pass()
+        for behavior_id, failure in (("BM_B", "B_NOT_DONE"), ("BM_A", "A_NOT_DONE")):
+            green = self.tdd(slug, "green", behavior_id, self.probe(failure))
+            self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        document = self.document(read_workflow(resolve_repo_identity(self.repo)))
+        self.assertEqual(document["status"], "passed", marker)
+
     def test_reassessment_can_add_the_next_architecture_falsifier(self) -> None:
         behavior = pending_behavior("BM_VALUE")
         slug, workflow_id = self.begin_to_preflight([behavior])

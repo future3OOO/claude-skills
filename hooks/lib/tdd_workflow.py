@@ -693,14 +693,18 @@ def _run_tdd(values: list[str]) -> int:
         # this item opens its own.
         beside_other = active is not None and active != args.behavior_id
         beside_open_cycle = beside_other and not opens_cycle
+        # The document's status describes the whole map, not the run that wrote
+        # it last, so it derives from the same unresolved set `tdd-map` uses.
+        status = "pending" if behavior_map.unresolved(updated) else "passed"
         if beside_open_cycle:
-            document = {**current, "behaviorMap": updated, "runs": [*current["runs"], run], "updatedAt": utc_timestamp()}
+            document = {**current, "behaviorMap": updated, "status": status,
+                        "runs": [*current["runs"], run], "updatedAt": utc_timestamp()}
         else:
             document = _map_doc(
                 slug=slug,
                 workflow_id=workflow_id,
                 items=updated,
-                status="passed" if action == "passed" or (phase == "green" and valid) else "pending",
+                status=status,
                 kind=doc_kind,
                 active=next_active,
                 behaviorId=args.behavior_id,
