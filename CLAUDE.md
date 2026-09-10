@@ -195,7 +195,7 @@ python3 "$HOME/.claude/skills/repo-context-forge/scripts/bootstrap.py" \
 ```
 
 **Pass the request text, not a summary.** `repo-production-workflow` owns how that
-intent is built and fed to `begin`; a paraphrase written here is what
+intent is built and fed to `begin`; whatever reaches `begin` is what
 `record-preflight` and both advisor consults enforce for the rest of the pass.
 
 The SQLite event ledger and its active projection are workflow continuity only. They are not an attestation,
