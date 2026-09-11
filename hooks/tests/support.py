@@ -106,23 +106,16 @@ def run_intake(
 
     Local mode needs a dirty dependent; the overlay becomes part of the indexed
     baseline, so it never touches the fixture's own changed symbol.
-
-    The analysis worktree goes beside the fixture repository rather than into the
-    caller's own cache. A worktree is named after a hash of the repository and
-    head, so a throwaway fixture repo can never reuse or replace an earlier one:
-    left in the default cache, every fixture run adds worktrees to the real
-    ~/.cache/repo-context-forge permanently, and nothing prunes them.
     """
     (repo / "caller.py").write_text(
         "from app import compute\n\n\ndef run():\n    return compute(2)\n", encoding="utf-8"
     )
-    cache_dir = repo.parent / "rcf-cache"
     return subprocess.run(
         [
             sys.executable, str(BOOTSTRAP), "--repo", str(repo),
             "--workflow-slug", slug, "--mode", "local", "--intent", intent,
             "--map-build", "never", "--gitnexus-mode", "auto", "--top", "5",
-            "--cache-dir", str(cache_dir), "--out", os.devnull, *extra,
+            "--out", os.devnull, *extra,
         ],
         cwd=repo, env=env, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout,
