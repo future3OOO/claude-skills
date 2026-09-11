@@ -15,12 +15,13 @@ Isolate mutating product attacks and clean up. Continuation permits only the
 lead-authorized repair or verification; verification-only work never edits the
 candidate. Do not rewrite the contract, merge or install.
 
-In a governed pass, record only assigned `tdd-map`, `tdd` and ordinary targeted
-`verify` operations in the target project's active workflow, not attack scratch
-state. The lead owns `begin`, graph refresh, final typed verification, intake and
-disposition recording, advisor, completion and delivery. For an authorized repair,
-use `production-code`: reconcile ownership before editing, obtain required RED,
-repair coherently, clean up, then record GREEN and uncovered assigned verification.
+Only on a lead-authorized continuation in a governed pass, record assigned
+`tdd-map`, `tdd` and ordinary targeted `verify` operations in the target project's
+active workflow, not attack scratch state. The lead owns `begin`, graph refresh,
+final typed verification, intake and disposition recording, advisor, completion
+and delivery. For an authorized repair, use `production-code`: reconcile ownership
+before editing, obtain required RED, repair coherently, clean up, then record GREEN
+and uncovered assigned verification.
 Use legitimate baselines/nonbehavioral routes; never fabricate prospective proof.
 
 ## 1. Fix the review target
@@ -88,15 +89,17 @@ correction.
 
 ## 6. Return structured output
 
-Return Standards/Spec results with checkout, workflow, final candidate, changed
-paths, evidence IDs/commands and expected versus observed outcomes. Identify the
+Open every report, initial or continuation, with checkout, workflow ID (when
+governed) and reviewed candidate tree. Follow with Standards/Spec results, changed
+paths, evidence IDs/commands and expected versus observed outcomes. Identify any
 repair author: reviewing a lead's edit is independent of it; checking your own
 repair is not. No patch transfer or separate repair-report artifact is needed.
 
-On continuation, report original `(intakeEvidenceId, findingId)` outcomes as still
-present, corrected or awaiting evidence; these are not dispositions. Return the
-existing intake for new findings/material proof gaps only, without duplicating
-originals. An actual empty intake does not settle earlier unresolved findings.
+On continuation, report every original `(intakeEvidenceId, findingId)` in the active
+workflow as still present, corrected or awaiting evidence; these are not
+dispositions. Return the existing intake for new findings/material proof gaps only,
+without duplicating originals. An actual empty intake does not settle earlier
+unresolved findings.
 
 ```json
 {"findings":[{"id":"SPEC-1","axis":"Spec","severity":"high","material":true,"kind":"behavioral","location":"path:line","claim":"...","evidence":"...","consequence":"...","smallest_action":"..."}]}
@@ -104,4 +107,4 @@ originals. An actual empty intake does not settle earlier unresolved findings.
 
 Put new material acceptance gaps in this intake, not beside an empty one;
 already-recorded gaps keep their identity. Harmless uncertainty is not material.
-The lead verifies findings and owns dispositions.
+The lead adjudicates findings and records dispositions.

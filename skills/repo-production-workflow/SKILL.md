@@ -251,8 +251,11 @@ Continue only for changed code, new relevant evidence or an unanswered question.
 Use a fresh reviewer only when changed contract/architecture/scope, incompatible
 lineage or unavailable context makes the earlier review unusable; report an actual
 resume failure. New map rows for existing promises, SHAs and pass IDs alone do not.
-Step 13 still governs new passes: retain historical identity, establish current
-obligations normally, and never use continuation to bypass the governance freeze.
+Follow the [new-pass rules](WORKFLOW-MAP.md#edit-invalidation) for pushed-head
+reviewer signals and out-of-intent bugs/regressions: the lead runs `begin` and
+supplies the new workflow ID. Keep historical intakes/evidence under their original
+workflow; establish current obligations normally. Continuation cannot revive a
+completed pass or bypass the governance freeze.
 
 Before recording, require current verification and match returned checkout,
 workflow and target against dispatch and `workflow.py status`, with no intervening
@@ -271,8 +274,17 @@ python3 "$HOME/.claude/skills/repo-production-workflow/scripts/workflow.py" \
 This is the required non-trivial review producer in governed passes; recording
 elsewhere remains optional. Continuations intake only new findings; originals
 keep `(intakeEvidenceId, findingId)` and resolve through their measured dispositions.
-An empty intake cannot close old findings. Material findings block completion,
-not verification or continued review; nonmaterial notes need no disposition.
+A no-finding intake binds the reviewed tree and passes immediately when no earlier
+material findings remain unresolved and current prerequisites hold. An empty
+intake cannot close old findings. Material findings block completion, not
+verification or continued review; nonmaterial notes need no disposition.
+
+A disposition is invalid without its measurement;
+advisor agreement is not authorization. A false premise records normalized `result`
+exactly `false`; otherwise rejection requires zero occurrence on a complete domain.
+`report-only` resolves completion without authorizing an edit and cannot later become
+`fixed`. A later map update that would leave a fixed finding without its owning attack
+refuses.
 
 Record dispositions separately, in subsets when useful, using
 `{"context":{"workflowId":"...","candidateTree":"...","prHead":"..."},"intakeEvidenceId":"<original intake>","dispositions":[...]}`.
