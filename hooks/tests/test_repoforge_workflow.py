@@ -88,6 +88,11 @@ class RepoForgeWorkflowTests(unittest.TestCase):
             sys.executable, str(BOOTSTRAP), "--repo", str(self.repo),
             "--workflow-slug", self.slug, "--mode", mode,
             "--map-build", map_build, "--gitnexus-mode", gitnexus_mode, "--top", "5",
+            # Beside the fixture repository, not in the caller's own cache: a
+            # worktree is named after a hash of the repository and head, so a
+            # throwaway fixture can never reuse or replace an earlier one and
+            # every run would otherwise add worktrees to the real cache for good.
+            "--cache-dir", str(self.repo.parent / "rcf-cache"),
         ]
         command += ["--base", base] if base else []
         # An empty intent is passed as no intent at all, which is what leaves a clean
