@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -27,7 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hooks.lib.workflow_documents import graph_evidence_document  # noqa: E402
-from hooks.tests.support import build_no_change_document, graph_packet  # noqa: E402
+from hooks.tests.support import build_no_change_document, fixture_env, graph_packet  # noqa: E402
 
 
 @unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
@@ -38,13 +37,10 @@ class RepoForgeWorkflowTests(unittest.TestCase):
         self.repo.mkdir()
         self.intent = "record the real rendered intake packet"
         self.slug = "repoforge-workflow"
-        self.env = os.environ.copy()
-        self.env.update({
-            "CLAUDE_WORKFLOW_STATE_ROOT": str(self.tmp / "state"),
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-            "PYTHONDONTWRITEBYTECODE": "1",
-        })
+        # The shared fixture environment, not a second copy of it: it also isolates
+        # HOME, which is what keeps these real intakes out of the caller's GitNexus
+        # registry, analysis cache and machine-wide intake lock.
+        self.env = fixture_env(self.tmp / "state")
         self.git("init", "-q")
         self.git("config", "user.email", "test@example.invalid")
         self.git("config", "user.name", "Workflow Harness")
