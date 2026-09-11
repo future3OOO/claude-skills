@@ -81,12 +81,29 @@ def _signal(process: subprocess.Popen[bytes], value: signal.Signals) -> None:
         pass
 
 
+def _tail(raw: bytes) -> str:
+    """Decode the last MAX_CAPTURE bytes, starting after a valid character the cut split."""
+    start = max(0, len(raw) - MAX_CAPTURE)
+    for lead in range(start - 1, max(start - 4, -1), -1):
+        byte = raw[lead]
+        if byte & 0xC0 == 0x80:
+            continue
+        width = 1 if byte < 0xC0 else 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4
+        try:
+            raw[lead:lead + width].decode("utf-8")
+        except UnicodeDecodeError:
+            break
+        start = max(start, lead + width)
+        break
+    return raw[start:].decode("utf-8", errors="replace")
+
+
 def run_entry(raw: bytes, exit_code: int, timed_out: bool, **fields: object) -> dict[str, object]:
     return {
         **fields,
         "exitCode": exit_code,
         "timedOut": timed_out,
-        "outputTail": raw[-MAX_CAPTURE:].decode("utf-8", errors="replace"),
+        "outputTail": _tail(raw),
         "at": utc_timestamp(),
     }
 
@@ -107,7 +124,7 @@ def mute_stdout() -> None:
 
 
 def print_output(raw: bytes) -> None:
-    output = raw[-MAX_CAPTURE:].decode("utf-8", errors="replace")
+    output = _tail(raw)
     if output:
         try:
             print(output, end="" if output.endswith("\n") else "\n")

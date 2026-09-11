@@ -8,6 +8,7 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 export CLAUDE_HOME="${CLAUDE_HOME:-$scratch}"
 
+python3 -u "$ROOT/hooks/tests/test_command_runner.py"
 python3 -u "$ROOT/hooks/tests/test_state_foundation.py"
 python3 -u "$ROOT/hooks/tests/test_state_prune.py"
 python3 -u "$ROOT/hooks/tests/test_workflow_ledger.py"
