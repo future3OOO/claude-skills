@@ -15,14 +15,14 @@ Isolate mutating product attacks and clean up. Continuation permits only the
 lead-authorized repair or verification; verification-only work never edits the
 candidate. Do not rewrite the contract, merge or install.
 
-Only on a lead-authorized continuation in a governed pass, record assigned
-`tdd-map`, `tdd` and ordinary targeted `verify` operations in the target project's
-active workflow, not attack scratch state. The lead owns `begin`, graph refresh,
-final typed verification, intake and disposition recording, advisor, completion
-and delivery. For an authorized repair, use `production-code`: reconcile ownership
-before editing, obtain required RED, repair coherently, clean up, then record GREEN
-and uncovered assigned verification.
-Use legitimate baselines/nonbehavioral routes; never fabricate prospective proof.
+Only on a lead-authorized continuation in a governed pass, record assigned ordinary
+targeted `verify` operations in the target project's active workflow, not attack
+scratch state. The lead records `tdd-map` and `tdd` (ownership, RED, GREEN and
+baselines) and owns `begin`, graph refresh, final typed verification, intake and
+disposition recording, advisor, completion and delivery. For an authorized repair,
+use `production-code`: edit only after the lead has recorded required ownership and
+RED, repair coherently, clean up, record uncovered assigned verification, and return
+for the lead's GREEN.
 
 ## 1. Fix the review target
 

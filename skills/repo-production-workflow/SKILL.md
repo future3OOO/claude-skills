@@ -241,9 +241,10 @@ review or continuation.
 
 Assign the repair author and each necessary execution once. The reviewer follows
 [code-review](../code-review/SKILL.md) for repair/verification authority, affected
-preservation and reporting. For a lead-authored repair, establish required
-ownership/RED before editing and assign outstanding GREEN/targeted verification
-to one executor. Reuse suitable recorded results instead of repeating them at
+preservation and reporting. For either repair author, the lead records `tdd-map`
+and `tdd`: required ownership/RED before the edit and GREEN after it. Assign
+outstanding targeted `verify` to one executor; the reviewer records only `verify`.
+Reuse suitable recorded results instead of repeating them at
 handoff. The lead finishes required graph refresh and typed verification after
 the last source edit, and owns intake, dispositions, final advisor and delivery.
 
