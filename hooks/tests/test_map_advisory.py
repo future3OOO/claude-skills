@@ -366,8 +366,10 @@ class MapAdvisoryTests(unittest.TestCase):
         index_repo = str(self.status()["passStartSnapshot"]["indexRepo"])
 
         srv = subprocess.Popen(
+            # The fixture environment, like every other subprocess here: the server
+            # has to read the same registry the fixture's own intake wrote.
             ["gitnexus", "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, bufsize=1,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1, env=self.env,
         )
         try:
             def rpc(obj: dict[str, object]) -> dict[str, object]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import site
 import subprocess
 import sys
 import time
@@ -30,7 +31,14 @@ POST_EDIT = ROOT / "hooks" / "code-quality-gate.py"
 
 def fixture_env(state_root: Path) -> dict[str, str]:
     """The environment a real-index fixture pass runs under: an isolated state
-    root and no ambient git or bytecode side effects."""
+    root and home, and no ambient git or bytecode side effects.
+
+    HOME is isolated because the producer's global state hangs off it: GitNexus's
+    registry at ~/.gitnexus and the analysis cache at ~/.cache/repo-context-forge.
+    Sharing the caller's home makes every fixture intake write into both and, once
+    intakes are serialised, queue against the caller's own machine-wide lock.
+    Anything a fixture starts that must see the same index inherits this.
+    """
     env = os.environ.copy()
     # A parent Git routing or command-scope config variable (GIT_CONFIG_COUNT and
     # its GIT_CONFIG_KEY_*/VALUE_* pairs, GIT_CONFIG_PARAMETERS) would redirect the
@@ -40,8 +48,16 @@ def fixture_env(state_root: Path) -> dict[str, str]:
                     "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"} or name.startswith(
                 ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
             env.pop(name, None)
+    home = state_root.parent / "fixture-home"
+    home.mkdir(parents=True, exist_ok=True)
     env.update({
         "CLAUDE_WORKFLOW_STATE_ROOT": str(state_root),
+        "HOME": str(home),
+        # The interpreter resolves user site-packages under HOME, so a --user
+        # install such as pytest would vanish with it; keep the real one importable.
+        "PYTHONPATH": os.pathsep.join(
+            path for path in (site.getusersitepackages(), env.get("PYTHONPATH")) if path
+        ),
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull,
         "PYTHONDONTWRITEBYTECODE": "1",
