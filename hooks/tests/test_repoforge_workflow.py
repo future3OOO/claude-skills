@@ -1335,11 +1335,16 @@ class IntakeSerialisationTests(unittest.TestCase):
         self.assertEqual(released.returncode, 1,
                          marker + ": released lock still blocked the intake: " + released.stderr[-300:])
 
-    def producers(self, process: subprocess.Popen) -> list[int]:
-        listing = subprocess.run(["ps", "--ppid", str(process.pid), "-o", "pid=,args="],
+    def producers(self, *processes: subprocess.Popen) -> list[list[int]]:
+        """Every adapter's producers out of one snapshot. A ps call per adapter can
+        catch one producer before a handover and its successor after, and sum the
+        two readings into an overlap that never existed."""
+        owners = [str(run.pid) for run in processes]
+        listing = subprocess.run(["ps", "--ppid", ",".join(owners), "-o", "ppid=,pid=,args="],
                                  text=True, capture_output=True, timeout=5, check=False).stdout
-        return [int(line.split()[0]) for line in listing.splitlines()
-                if str(CANONICAL_BOOTSTRAP) in line]
+        rows = [line.split(maxsplit=2) for line in listing.splitlines()]
+        return [[int(pid) for parent, pid, args in rows
+                 if parent == owner and str(CANONICAL_BOOTSTRAP) in args] for owner in owners]
 
     def stop_intake(self, process: subprocess.Popen) -> None:
         import signal
@@ -1364,7 +1369,7 @@ class IntakeSerialisationTests(unittest.TestCase):
     def await_producer(self, process: subprocess.Popen) -> int:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            children = self.producers(process)
+            children = self.producers(process)[0]
             if children:
                 return children[0]
             if process.poll() is not None:
@@ -1408,7 +1413,7 @@ class IntakeSerialisationTests(unittest.TestCase):
         second = self.start_intake(repos[1], home)
         peak, output_outside_lock, second_started = 0, False, False
         while time.monotonic() - started < 180:
-            children = [self.producers(run) for run in (first, second)]
+            children = self.producers(first, second)
             peak = max(peak, sum(map(len, children)))
             second_started = second_started or bool(children[1])
             if first.poll() is None and not children[0] and children[1]:
