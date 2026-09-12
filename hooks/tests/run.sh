@@ -15,7 +15,19 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 export PYTHONDONTWRITEBYTECODE=1
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
-workers="${HOOKS_TEST_WORKERS:-$(nproc)}"
+# Cores are the wrong bound on their own. A shard running a real Repo Context
+# Forge intake peaked at 1635MB here, and a WSL host caps memory (24GB) while
+# leaving every core visible (24), so the core count alone asked for ~39GB and
+# took the VM down with it. Take whichever bound is lower, and leave
+# HOOKS_TEST_WORKERS as the override for a caller who knows the shape of its run.
+SHARD_PEAK_MB=1700
+workers="${HOOKS_TEST_WORKERS:-}"
+if [ -z "$workers" ]; then
+  workers="$(nproc)"
+  by_memory=$(( $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) / 1024 / SHARD_PEAK_MB ))
+  [ "$by_memory" -lt "$workers" ] && workers="$by_memory"
+  [ "$workers" -lt 1 ] && workers=1
+fi
 
 run_job() {
   local job="$1"
