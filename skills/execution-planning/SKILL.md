@@ -7,7 +7,7 @@ description: Create durable advisor-bound governing designs outside the Git chec
 
 Use this skill for non-trivial planning in this repo.
 
-This skill does not replace the repo's `CLAUDE.md` (or `AGENTS.md`).
+This skill does not replace the repo's `CLAUDE.md` (or `CLAUDE.md`).
 It turns planning and remediation into durable governing designs under workflow state, outside the Git candidate.
 
 ## Mandatory Workflow Position
@@ -35,7 +35,13 @@ Before implementation starts, save one Markdown design under the selected workfl
 
 `<workflow-state-root>/<repo-key>/designs/<workflowId>.md`
 
-The workflow's public status Interface supplies `<workflowId>`; callers do not derive or normalize another workflow identity. The workflow state root is `CLAUDE_WORKFLOW_STATE_ROOT` when set, otherwise `${CLAUDE_HOME:-$HOME/.claude}/state`. Do not derive `<repo-key>` independently; use `hooks.lib.repo_identity.resolve_repo_identity()` or the installed `repo_identity.py --field key` Interface.
+The workflow's public status Interface supplies `<workflowId>`; callers do not derive or normalize another workflow identity. Resolve the design path through the installed workflow CLI — never compute the state root by hand:
+
+```bash
+python3 <estate>/skills/repo-production-workflow/scripts/workflow.py paths --repo "$PWD" --workflow-id <workflowId>
+```
+
+`paths` prints the resolved `designPath`, `repoStateDir`, and `stateRoot`. The prose description of that resolution (`CLAUDE_WORKFLOW_STATE_ROOT`, then `${CLAUDE_HOME:-$HOME/.claude}/state`) is context only; `~/.local/share/devin` is the CLI's data dir and is not the workflow state root.
 
 ## Governing Design Format
 
@@ -75,7 +81,7 @@ Name:
 
 Use repo authorities explicitly when relevant:
 
-- the repo's `CLAUDE.md` or `AGENTS.md`
+- the repo's `CLAUDE.md` or `CLAUDE.md`
 - the repo's canonical implementation spec under `docs/specs/`
 - the repo's `DECISIONS.md`
 - any pinned donor, production, or review evidence document
@@ -160,7 +166,7 @@ For an existing PR branch, completion still requires committed and pushed change
 
 Challenge the design before calling it ready.
 
-If sub-agents are appropriate for the task, spawn one critique agent (Agent tool, subagent_type=general-purpose) after the first full draft and before finalizing the design. The critique pass should check at minimum:
+If sub-agents are appropriate for the task, spawn one critique agent (Agent tool, subsubagent_type=general-purpose) after the first full draft and before finalizing the design. The critique pass should check at minimum:
 
 - authority model and conflict handling
 - scope in / scope out clarity
