@@ -56,6 +56,44 @@ class RunnerAttack(unittest.TestCase):
 
 
 class RunnerShardingTests(RunnerAttack):
+    def test_a_newline_job_is_rejected_before_dispatch(self) -> None:
+        marker = "RUNNER_SPLIT_A_JOB_NAME"
+        with tempfile.TemporaryDirectory(prefix="runner-path-") as tmp:
+            job = Path(tmp) / "line\nbreak.py"
+            job.symlink_to(ROOT / OPTIONAL)
+            result, _ = self.run_runner(str(job), "hooks.tests.test_state_foundation",
+                                        workers=2, marker=marker, budget=10)
+            self.assertNotEqual(result.returncode, 0, marker)
+            self.assertIn("newline in job name", result.stderr, marker)
+            self.assertEqual(self.total_ran(result), 0, marker)
+
+    def test_nonfiles_are_rejected_before_dealing(self) -> None:
+        marker = "DEAL_ACCEPTED_A_NONFILE"
+        with tempfile.TemporaryDirectory(prefix="runner-path-") as tmp:
+            fifo = Path(tmp) / "stream.sh"
+            os.mkfifo(fifo)
+            for job in (Path(tmp), fifo):
+                with self.subTest(job=job.name):
+                    result = subprocess.run(
+                        [sys.executable, str(DEAL), "2", str(job), "hooks.tests.test_state_foundation"],
+                        cwd=ROOT, text=True, capture_output=True, timeout=10, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0, marker)
+                    self.assertIn("not a regular file", result.stderr, marker)
+                    self.assertEqual(result.stdout, "", marker)
+
+    @unittest.skipUnless((ROOT / OPTIONAL).is_file(), "the real CI-only job is unavailable")
+    def test_whole_file_names_preserve_spaces_and_carriage_returns(self) -> None:
+        marker = "RUNNER_REJECTED_A_VALID_FILE"
+        with tempfile.TemporaryDirectory(prefix="runner-path-") as tmp:
+            for name in ("plain.py", "space name.py", "carriage\rreturn.py"):
+                with self.subTest(name=name):
+                    job = Path(tmp) / name
+                    job.symlink_to(ROOT / OPTIONAL)
+                    result, _ = self.run_runner(str(job), workers=2, marker=marker, budget=10)
+                    self.assertEqual(result.returncode, 0, marker)
+                    self.assertEqual(self.total_ran(result), 3, marker)
+
     def test_a_selection_is_dealt_across_workers(self) -> None:
         """A targeted selection must shard too, in either form a caller may write
         it, and must still run every case exactly once: the slow modules are

@@ -48,7 +48,11 @@ def main(argv: list[str]) -> int:
             # and emitted as a blank line the runner cannot run.
             if not job:
                 raise SystemExit(f"{sys.argv[0]}: no tests selected by an empty job name")
+            if "\n" in job:
+                raise SystemExit(f"{sys.argv[0]}: newline in job name: {job!r}")
             path = Path(job)
+            if path.exists() and not path.is_file():
+                raise SystemExit(f"{sys.argv[0]}: not a regular file: {job}")
             if path.suffix == ".py" and path.resolve().parent == TESTS.resolve():
                 selected = loader.discover(str(path.parent), pattern=path.name, top_level_dir=".")
             elif path.exists():
