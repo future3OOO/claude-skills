@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -1288,10 +1289,6 @@ class GraphEvidenceContractTests(unittest.TestCase):
             self.document_for(self.packet(), snapshot={"base": "b" * 40})
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class BootstrapHelpTests(unittest.TestCase):
     def test_help_lists_the_wrapper_options(self) -> None:
         # X6R11 queried --help twice and then read the wrapper source to find these.
@@ -1300,3 +1297,160 @@ class BootstrapHelpTests(unittest.TestCase):
         self.assertIn("--workflow-slug", run.stdout, marker + ": " + run.stdout[-300:] + run.stderr[-300:])
         self.assertIn("--revalidate", run.stdout, marker)
 
+
+@unittest.skipUnless(CANONICAL_BOOTSTRAP.is_file(), "real Repo Context Forge source is unavailable")
+class IntakeSerialisationTests(unittest.TestCase):
+    """One intake at a time: GitNexus rewrites its global registry without an
+    atomic replace (future3OOO/GitNexus#25), so two producers running together
+    can tear it and break every later intake."""
+
+    def intake_rig(self) -> tuple[Path, list[str], dict[str, str]]:
+        """A private HOME is where the real lock path lands, so this attack
+        drives that computation rather than a way around it."""
+        tmp = Path(tempfile.mkdtemp(prefix="intake-lock-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        lock = tmp / ".cache" / "repo-context-forge" / "intake.lock"
+        lock.parent.mkdir(parents=True)
+        env = {**os.environ, "HOME": str(tmp), "PYTHONDONTWRITEBYTECODE": "1"}
+        command = [sys.executable, str(BOOTSTRAP), "--repo", str(repo), "--intent", "intake lock probe"]
+        return lock, command, env
+
+    def test_a_held_lock_stops_a_second_intake_before_its_producer(self) -> None:
+        import fcntl
+
+        marker = "INTAKE_RAN_WHILE_LOCK_HELD"
+        lock, command, env = self.intake_rig()
+
+        with open(lock, "a+", encoding="utf-8") as holder:  # closing releases the flock
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with self.assertRaises(subprocess.TimeoutExpired, msg=marker):
+                subprocess.run(command, env=env, text=True, capture_output=True, timeout=8, check=False)
+
+        # The same budget the held lock exhausted, and the producer's own exit
+        # code for this empty repository: both prove the intake got past the lock.
+        released = subprocess.run(command, env=env, text=True, capture_output=True, timeout=8, check=False)
+        self.assertEqual(released.returncode, 1,
+                         marker + ": released lock still blocked the intake: " + released.stderr[-300:])
+
+    def producers(self, *processes: subprocess.Popen) -> list[list[int]]:
+        """Every adapter's producers out of one snapshot. A ps call per adapter can
+        catch one producer before a handover and its successor after, and sum the
+        two readings into an overlap that never existed."""
+        owners = [str(run.pid) for run in processes]
+        listing = subprocess.run(["ps", "--ppid", ",".join(owners), "-o", "ppid=,pid=,args="],
+                                 text=True, capture_output=True, timeout=5, check=False).stdout
+        rows = [line.split(maxsplit=2) for line in listing.splitlines()]
+        return [[int(pid) for parent, pid, args in rows
+                 if parent == owner and str(CANONICAL_BOOTSTRAP) in args] for owner in owners]
+
+    def stop_intake(self, process: subprocess.Popen) -> None:
+        import signal
+
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            process.communicate(timeout=5)
+            return
+        process.communicate(timeout=5)
+
+    def start_intake(self, repo: Path, home: Path) -> subprocess.Popen:
+        process = subprocess.Popen(
+            [sys.executable, str(BOOTSTRAP), "--repo", str(repo), "--mode", "repo",
+             "--map-build", "never", "--gitnexus-mode", "auto"],
+            env={**os.environ, "HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, pipesize=4096, start_new_session=True,
+        )
+        self.addCleanup(self.stop_intake, process)
+        return process
+
+    def await_producer(self, process: subprocess.Popen) -> int:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            children = self.producers(process)[0]
+            if children:
+                return children[0]
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+        self.fail("real intake did not start its producer within 15s")
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_adapter_death_keeps_its_live_producer_locked(self) -> None:
+        import fcntl
+        import signal
+
+        marker = "CANCELLED_PARENT_RELEASED_LIVE_WRITER"
+        for death in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=death):
+                home = Path(tempfile.mkdtemp(prefix="intake-cancel-"))
+                self.addCleanup(shutil.rmtree, home, True)
+                adapter = self.start_intake(ROOT, home)
+                producer = self.await_producer(adapter)
+                # Freeze the real producer, not a replacement, so parent death
+                # cannot race its natural completion and conceal the lock loss.
+                os.kill(producer, signal.SIGSTOP)
+                adapter.send_signal(death)
+                adapter.wait(timeout=5)
+                with open(home / ".cache/repo-context-forge/intake.lock", "a+") as lock:
+                    with self.assertRaises(BlockingIOError, msg=marker):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.stop_intake(adapter)
+
+    def intake_pair(self) -> bool:
+        marker = "TWO_PRODUCERS_RAN_AT_ONCE"
+        started = time.monotonic()
+        home = Path(tempfile.mkdtemp(prefix="intake-concurrency-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        repos = [home / "repo-a", home / "repo-b"]
+        for repo in repos:
+            subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", str(ROOT), str(repo)],
+                           check=True, timeout=30)
+        first = self.start_intake(repos[0], home)
+        self.await_producer(first)
+        second = self.start_intake(repos[1], home)
+        peak, output_outside_lock, second_started = 0, False, False
+        while time.monotonic() - started < 180:
+            children = self.producers(first, second)
+            peak = max(peak, sum(map(len, children)))
+            second_started = second_started or bool(children[1])
+            if first.poll() is None and not children[0] and children[1]:
+                output_outside_lock = True
+            if second_started and not any(children):
+                # Both adapters may be blocked on their real output pipes now.
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(marker + ": real intakes exceeded 180s")
+        paths = []
+        for run in (first, second):
+            stdout, stderr = run.communicate(timeout=30)
+            self.assertEqual(run.returncode, 0, marker + ": " + stderr.decode()[-300:])
+            match = re.search(rb"<analysis_repo>([^<]+)</analysis_repo>", stdout)
+            self.assertIsNotNone(match, marker + ": no analysis identity")
+            paths.append(match.group(1).decode())
+        self.assertEqual(peak, 1, marker + f": {peak} producers were alive at once")
+        registry = json.loads((home / ".gitnexus/registry.json").read_text())
+        self.assertEqual(sorted(row["path"] for row in registry), sorted(paths), marker)
+        listing = subprocess.run([GITNEXUS, "list"], env={**os.environ, "HOME": str(home)},
+                                 text=True, capture_output=True, timeout=30, check=True)
+        for row in registry:
+            self.assertIn(row["name"], listing.stdout, marker)
+        elapsed = time.monotonic() - started
+        print(f"INTAKE_RESOURCE target={ROOT} scale=2-full-repos limit=180s observed={elapsed:.3f}s peak={peak}")
+        self.assertLess(elapsed, 180, marker)
+        return output_outside_lock
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_two_real_intakes_never_run_two_producers(self) -> None:
+        self.intake_pair()
+
+    @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
+    def test_output_does_not_hold_the_producer_lock(self) -> None:
+        self.assertTrue(self.intake_pair(), "OUTPUT_HELD_PRODUCER_LOCK")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
