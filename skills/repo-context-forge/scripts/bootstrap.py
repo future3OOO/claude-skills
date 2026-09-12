@@ -152,12 +152,13 @@ def _run_producer(args: list[str]) -> int:
     and evidence recording stay concurrent. Upstream fix: future3OOO/GitNexus#25."""
     INTAKE_LOCK.parent.mkdir(parents=True, exist_ok=True)
     with open(INTAKE_LOCK, "a+", encoding="utf-8") as lock:
-        # Closing the file releases the flock, on the error path too.
+        # The producer retains the same lock if this adapter is terminated.
         fcntl.flock(lock, fcntl.LOCK_EX)
         result = subprocess.run(
             [sys.executable, str(BOOTSTRAP), *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            pass_fds=(lock.fileno(),),
             check=False,
         )
     sys.stdout.buffer.write(result.stdout)
