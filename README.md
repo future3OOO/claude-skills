@@ -210,7 +210,7 @@ also keeps files this repo has never tracked. Classify each unexplained
 
 Retire orphans rather than leaving them, because an orphan keeps its executable
 bit and `ls` does not distinguish it from a live hook. PR #55 renamed seven
-python-shebang files and orphaned all seven at once.
+Python-shebang files and orphaned all seven at once.
 
 ```bash
 mv ~/.claude/hooks/<old-file> ~/.claude/hooks/<old-file>.deprecated
