@@ -93,6 +93,8 @@ def _acquire_intake_slot() -> int:
     """
     slots = _real_home() / ".cache" / "repo-context-forge" / "intake-slots"
     slots.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    noticed = False
     while True:
         for index in range(_intake_permits()):
             fd = os.open(slots / f"slot-{index}.lock", os.O_WRONLY | os.O_CREAT, 0o600)
@@ -102,6 +104,10 @@ def _acquire_intake_slot() -> int:
                 os.close(fd)
                 continue
             return fd
+        if not noticed and time.monotonic() - started > 5:
+            print("repo-context-forge: intake waiting on account producer capacity",
+                  file=sys.stderr)
+            noticed = True
         time.sleep(INTAKE_POLL_SECONDS)
 
 

@@ -1523,6 +1523,36 @@ class IntakeSerialisationTests(unittest.TestCase):
             pass
         return held
 
+    def foreign_slot_holders(self, children: list[list[int]], *adapters: subprocess.Popen) -> set[int]:
+        """Pids outside these adapters' own trees holding a real slot lock.
+
+        The capacity files live in the account home, so an unrelated intake on
+        this host can legitimately shrink the permits a test sees; a cap-2
+        assertion may only relax when that contention is observed, not assumed.
+        Takes the caller's producer snapshot so the check adds no extra `ps`
+        gap between the census and any same-iteration fd inspection.
+        """
+        inodes = {path.stat().st_ino for path in self.slot_dir().glob("slot-*.lock")}
+        ours = {adapter.pid for adapter in adapters}
+        for prods in children:
+            ours.update(prods)
+        foreign = set()
+        try:
+            for line in Path("/proc/locks").read_text().splitlines():
+                fields = line.split()
+                # "N: FLOCK  ADVISORY  WRITE  <pid> <maj>:<min>:<ino> ..."
+                if len(fields) < 6 or fields[1] != "FLOCK":
+                    continue
+                try:
+                    pid, inode = int(fields[4]), int(fields[5].rsplit(":", 1)[-1])
+                except ValueError:
+                    continue
+                if inode in inodes and pid not in ours:
+                    foreign.add(pid)
+        except OSError:
+            pass
+        return foreign
+
     @unittest.skipUnless(GITNEXUS, "the real GitNexus CLI is unavailable")
     def test_isolated_home_intakes_respect_the_machine_bound(self) -> None:
         """Three isolated-HOME intakes under a cap of two: a bound, not a mutex."""
@@ -1536,12 +1566,13 @@ class IntakeSerialisationTests(unittest.TestCase):
         homes = [tmp / f"home-{name}" for name in "abc"]
         started = time.monotonic()
         adapters = [self.start_intake(repo, home, cap) for repo, home in zip(repos, homes)]
-        peak, seen, done = 0, set(), False
+        peak, seen, done, foreign = 0, set(), False, set()
         while time.monotonic() - started < 300:
             children = self.producers(*adapters)
             for prods in children:
                 seen.update(prods)
             peak = max(peak, sum(map(len, children)))
+            foreign.update(self.foreign_slot_holders(children, *adapters))
             if len(seen) == 3 and not any(children):
                 # All producers observed and gone; the adapters only remain
                 # to drain packet output through the narrow test pipes.
@@ -1553,7 +1584,11 @@ class IntakeSerialisationTests(unittest.TestCase):
             stdout, stderr = adapter.communicate(timeout=30)
             self.assertEqual(adapter.returncode, 0, marker + ": " + stderr.decode()[-300:])
         self.assertTrue(done, marker + ": producers outlived the 300s poll window")
-        self.assertEqual(peak, 2, marker + f": {peak} producers ran at once under cap 2")
+        self.assertLessEqual(peak, 2, marker + f": {peak} producers exceeded cap 2")
+        if peak < 2:
+            if foreign:
+                self.skipTest(marker + f": foreign intake held {sorted(foreign)}; permits were below cap")
+            self.fail(marker + f": only {peak} producers ran at once under cap 2")
         for home in homes:
             registry = json.loads((home / ".gitnexus/registry.json").read_text())
             self.assertEqual(len(registry), 1, marker + ": per-home registry lost its intake")
@@ -1631,7 +1666,7 @@ class IntakeSerialisationTests(unittest.TestCase):
         self.await_producer(first_a)
         second_a = self.start_intake(repo_a2, home_a, cap)
         third = self.start_intake(repo_b, home_b, cap)
-        peak, overlap_while_queued, seen, done = 0, False, set(), False
+        peak, overlap_while_queued, seen, done, foreign = 0, False, set(), False, set()
         while time.monotonic() - started < 300:
             children = self.producers(first_a, second_a, third)
             for prods in children:
@@ -1642,9 +1677,16 @@ class IntakeSerialisationTests(unittest.TestCase):
             # While A1's producer lives, A1's adapter still holds the HOME
             # lock, so a correctly queued A2 cannot have reached the slots:
             # any slot fd it holds is proof of the wrong acquisition order.
+            # A held fd read races the producer census by a few ms — A1's
+            # producer may have exited and released the lock since — so only
+            # a hold that survives a fresh census counts.
             if children[0] and not children[1]:
                 held = self.held_paths(second_a, self.slot_dir())
-                self.assertFalse(held, marker + f": queued waiter holds {held}")
+                if held:
+                    recheck = self.producers(first_a, second_a, third)
+                    self.assertFalse(recheck[0] and not recheck[1],
+                                     marker + f": queued waiter holds {held}")
+            foreign.update(self.foreign_slot_holders(children, first_a, second_a, third))
             if children[0] and children[2] and not children[1]:
                 overlap_while_queued = True
             if len(seen) == 3 and not any(children):
@@ -1657,6 +1699,9 @@ class IntakeSerialisationTests(unittest.TestCase):
             stdout, stderr = adapter.communicate(timeout=30)
             self.assertEqual(adapter.returncode, 0, marker + ": " + stderr.decode()[-300:])
         self.assertTrue(done, marker + ": producers outlived the 300s poll window")
+        self.assertLessEqual(peak, 2, marker + f": {peak} producers exceeded cap 2")
+        if peak < 2 and foreign:
+            self.skipTest(marker + f": foreign intake held {sorted(foreign)}; permits were below cap")
         self.assertTrue(overlap_while_queued,
                         marker + ": B never ran while A2 queued on the HOME lock")
         self.assertEqual(peak, 2, marker + f": {peak} producers ran at once under cap 2")
@@ -1677,10 +1722,11 @@ class IntakeSerialisationTests(unittest.TestCase):
         first = self.start_intake(repos[0], homes[0], no_cap)
         self.await_producer(first)
         second = self.start_intake(repos[1], homes[1], no_cap)
-        peak, windows, done = 0, {}, False
+        peak, windows, done, foreign = 0, {}, False, set()
         while time.monotonic() - started < 300:
             now = time.monotonic()
             children = self.producers(first, second)
+            foreign.update(self.foreign_slot_holders(children, first, second))
             for owner, prods in zip((first, second), children):
                 for pid in prods:
                     windows.setdefault((owner.pid, pid), [now, now])[1] = now
@@ -1695,8 +1741,12 @@ class IntakeSerialisationTests(unittest.TestCase):
         for adapter in (first, second):
             stdout, stderr = adapter.communicate(timeout=30)
             self.assertEqual(adapter.returncode, 0, marker + ": " + stderr.decode()[-300:])
-        self.assertEqual(peak, 2, marker + f": only {peak} producers ran under default permits")
         self.assertTrue(done, marker + ": producers outlived the 300s poll window")
+        self.assertLessEqual(peak, 2, marker + f": {peak} producers exceeded default permits")
+        if peak < 2:
+            if foreign:
+                self.skipTest(marker + f": foreign intake held {sorted(foreign)}; permits were below cap")
+            self.fail(marker + f": only {peak} producers ran under default permits")
         # Measured producer lifetimes, not adapter wall-clock: the producers'
         # [first-seen, last-seen] windows must overlap, and their union span
         # must beat the serialized floor sum(lifetimes). A serialised run —
@@ -1811,8 +1861,11 @@ class IntakeSerialisationTests(unittest.TestCase):
             # The budget shrinks to one permit; slot-1 and slot-2 leave the
             # range. Freeing out-of-range slot-1 must not unblock the waiter —
             # only slot-0 counts now, and it is still held — while slot-2
-            # stays occupied through the transition.
+            # stays occupied through the transition. Let the waiter re-poll
+            # under the shrunk count first: a waiter still running a stale
+            # three-permit iteration could take the freed slot legitimately.
             available(5000)
+            time.sleep(0.6)
             held[1].close()
             deadline = time.monotonic() + 1.5
             while time.monotonic() < deadline:
